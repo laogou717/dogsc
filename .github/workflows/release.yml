@@ -1,0 +1,116 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build app
+        env:
+          DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+        run: |
+          set -euo pipefail
+          swift build -c release --product DogSC
+
+          app="$RUNNER_TEMP/DogSC.app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/Wallpapers"
+          cp ".build/release/DogSC" "$app/Contents/MacOS/DogSC"
+          cp "Resources/Info.plist" "$app/Contents/Info.plist"
+          cp "Resources/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
+          ditto "Resources/Wallpapers" "$app/Contents/Resources/Wallpapers"
+
+          codesign \
+            --force \
+            --deep \
+            --entitlements "Resources/DogSC.entitlements" \
+            --sign - \
+            "$app"
+          codesign --verify --deep --strict "$app"
+
+      - name: Create disk image
+        run: |
+          set -euo pipefail
+
+          app="$RUNNER_TEMP/DogSC.app"
+          disk_image="$RUNNER_TEMP/DogSC-${GITHUB_REF_NAME}-macOS.dmg"
+          settings="$RUNNER_TEMP/dmg-settings.py"
+          dmgbuild_env="$RUNNER_TEMP/dmgbuild"
+
+          cat > "$settings" <<'PY'
+          application = defines["app"]
+          background = defines["background"]
+          icon = defines["icon"]
+          files = [application]
+          symlinks = {"Applications": "/Applications"}
+          icon_locations = {
+              "DogSC.app": (170, 225),
+              "Applications": (550, 225),
+          }
+          hide_extension = ["DogSC.app"]
+          window_rect = ((200, 120), (720, 420))
+          default_view = "icon-view"
+          show_status_bar = False
+          show_tab_view = False
+          show_toolbar = False
+          show_pathbar = False
+          show_sidebar = False
+          show_icon_preview = False
+          arrange_by = None
+          label_pos = "bottom"
+          text_size = 14
+          icon_size = 112
+          format = "UDZO"
+          compression_level = 9
+          PY
+
+          python3 -m venv "$dmgbuild_env"
+          "$dmgbuild_env/bin/pip" install \
+            --disable-pip-version-check \
+            --quiet \
+            dmgbuild==1.6.7
+          "$dmgbuild_env/bin/dmgbuild" \
+            -s "$settings" \
+            -D app="$app" \
+            -D background="$GITHUB_WORKSPACE/Resources/DMGBackground.png" \
+            -D icon="$GITHUB_WORKSPACE/Resources/AppIcon.icns" \
+            "DogSC Installer" \
+            "$disk_image"
+
+          hdiutil verify "$disk_image"
+
+          mounted_image="$RUNNER_TEMP/mounted-image"
+          mkdir -p "$mounted_image"
+          diskutil image attach \
+            --readOnly \
+            --nobrowse \
+            --mountPoint "$mounted_image" \
+            "$disk_image" >/dev/null
+          trap 'diskutil eject "$mounted_image" >/dev/null 2>&1 || true' EXIT
+          [[ -d "$mounted_image/DogSC.app" ]]
+          [[ -L "$mounted_image/Applications" ]]
+          [[ "$(readlink "$mounted_image/Applications")" = "/Applications" ]]
+          [[ -f "$mounted_image/.DS_Store" ]]
+          codesign --verify --deep --strict "$mounted_image/DogSC.app"
+          diskutil eject "$mounted_image"
+          trap - EXIT
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "$RUNNER_TEMP/DogSC-${GITHUB_REF_NAME}-macOS.dmg" \
+            --latest \
+            --notes "" \
+            --title "DogSC $GITHUB_REF_NAME" \
+            --verify-tag
