@@ -319,15 +319,19 @@ struct CameraCaptureDiagnosticsAccumulator: Equatable, Sendable {
 /// `CameraRecorder` only reports capture events; it no longer coordinates four
 /// independent counters/snapshots alongside the recording state machine.
 final class CameraCaptureDiagnosticsMonitor {
+#if DEBUG
     private static let logger = Logger(
         subsystem: "cn.laogou.dogsc",
         category: "camera-recorder"
     )
+#endif
 
     private var current = CameraCaptureDiagnosticsAccumulator()
     private var lastCompleted: CameraCaptureDiagnostics?
+#if DEBUG
     private var lastLogged: CameraCaptureDiagnostics?
     private var lastLogHostTime: TimeInterval?
+#endif
 
     var snapshot: CameraCaptureDiagnostics? {
         current.snapshot() ?? lastCompleted
@@ -336,8 +340,10 @@ final class CameraCaptureDiagnosticsMonitor {
     func beginRecording() {
         current = CameraCaptureDiagnosticsAccumulator()
         lastCompleted = nil
+#if DEBUG
         lastLogged = nil
         lastLogHostTime = nil
+#endif
     }
 
     func finishRecording() {
@@ -345,8 +351,10 @@ final class CameraCaptureDiagnosticsMonitor {
             lastCompleted = completed
         }
         current = CameraCaptureDiagnosticsAccumulator()
+#if DEBUG
         lastLogged = nil
         lastLogHostTime = nil
+#endif
     }
 
     func beginNewIntervalRun() {
@@ -393,6 +401,7 @@ final class CameraCaptureDiagnosticsMonitor {
     }
 
     func logIfDue(hostTime: TimeInterval) {
+#if DEBUG
         guard hostTime.isFinite,
               hostTime - (lastLogHostTime ?? -.infinity) >= 1,
               let diagnostics = current.snapshot() else { return }
@@ -425,6 +434,7 @@ final class CameraCaptureDiagnosticsMonitor {
         Self.logger.notice("\(message, privacy: .public)")
         lastLogHostTime = hostTime
         lastLogged = diagnostics
+#endif
     }
 
     private static func systemDropReason(

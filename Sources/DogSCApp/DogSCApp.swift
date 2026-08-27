@@ -43,7 +43,11 @@ struct RecorderMainWindowRoot: View {
         Group {
             switch phase {
             case .setup:
-                SetupView(model: model)
+                if model.showsRequiredPermissionGate {
+                    RequiredRecordingPermissionView(model: model)
+                } else {
+                    SetupView(model: model)
+                }
             case .preparing:
                 RecorderPhaseProgressView(
                     title: model.recorderTransitionStage.title,
@@ -68,6 +72,21 @@ struct RecorderMainWindowRoot: View {
                 )
             }
         }
+        .modifier(RecorderSystemWindowDragModifier())
+    }
+}
+
+/// SwiftUI fills the complete borderless recorder window, so the official
+/// window gesture is its one drag owner on current macOS. It delegates the
+/// drag to the system and contains no coordinate, screen or frame logic.
+private struct RecorderSystemWindowDragModifier: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) {
+            content.gesture(WindowDragGesture())
+        } else {
+            content
+        }
     }
 }
 
@@ -82,12 +101,9 @@ struct RecorderPhaseProgressView: View {
             Text(title).font(.callout.weight(.medium))
         }
         .frame(width: 320, height: 46)
-        .background {
-            ZStack {
-                Capsule().fill(Color(red: 0.055, green: 0.058, blue: 0.067))
-                WindowDragArea(purpose: .recorderPanel(phase: phase)).clipShape(Capsule())
-            }
-        }
+        .background(
+            Capsule().fill(Color(red: 0.055, green: 0.058, blue: 0.067))
+        )
         .overlay {
             Capsule()
                 .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.75)
@@ -142,11 +158,10 @@ enum WindowCoordinator {
         switch phase {
         case .editor:
             recorderPanelController.present(phase: phase)
-            if let packageURL = model.currentSession?.packageURL {
-                EditorWindowManager.shared.openProject(at: packageURL)
-            } else {
-                editorWindowController.show(model: model)
-            }
+            // The active recording/open-project flow is owned by AppModel. Its
+            // editor keeps using that same document and workspace so close,
+            // project replacement and save all cross one persistence barrier.
+            editorWindowController.show(model: model)
         case .setup, .preparing, .recording, .finishing:
             editorWindowController.closeForPhaseChange()
             recorderPanelController.present(phase: phase)
@@ -172,9 +187,6 @@ enum WindowCoordinator {
     }
 
     static func bringCurrentWindowFront() {
-        if EditorWindowManager.shared.bringAnyWindowToFront() {
-            return
-        }
         if model?.phase == .editor {
             editorWindowController.bringToFront()
         } else {
@@ -182,11 +194,11 @@ enum WindowCoordinator {
         }
     }
 
-    /// Menu-bar "打开项目…" entry. Routed through EditorWindowManager so multiple
-    /// project windows can be opened and edited concurrently.
+    /// Menu-bar "打开项目…" entry. A recorder/editor has one authoritative
+    /// current project; replacing it first crosses AppModel's save barrier.
     static func openProjectFromMenu() {
         NSApplication.shared.activate(ignoringOtherApps: true)
-        EditorWindowManager.shared.openProjectPicker()
+        model?.openProjectPicker()
     }
 
     static func setDefaultSystemAudioRecordingEnabled(_ enabled: Bool) {
@@ -228,6 +240,13 @@ enum WindowCoordinator {
 private final class EditorWindowController: NSObject, NSWindowDelegate {
     private weak var model: AppModel?
     private var windowController: NSWindowController?
+    /// Keep the type-erased hosting view so phase teardown can replace its
+    /// root before AppKit detaches the window. Merely setting
+    /// `contentViewController = nil` does not synchronously dismantle a
+    /// SwiftUI graph; its local event monitors can otherwise keep the entire
+    /// editor generation (players and Core Image surfaces included) alive in
+    /// the recorder phase.
+    private var hostingView: EditorFirstMouseHostingView<AnyView>?
     private var firstMouseActivationMonitor: Any?
     private var isClosingForPhaseChange = false
     private var isRequestingProjectClose = false
@@ -242,9 +261,11 @@ private final class EditorWindowController: NSObject, NSWindowDelegate {
         }
 
         let hostingController = NSViewController()
-        hostingController.view = EditorFirstMouseHostingView(
-            rootView: EditorSessionHost(model: model)
+        let hostingView = EditorFirstMouseHostingView(
+            rootView: AnyView(EditorSessionHost(model: model))
         )
+        self.hostingView = hostingView
+        hostingController.view = hostingView
         let window = NSWindow(
             contentRect: editorInitialFrame(),
             styleMask: [
@@ -258,7 +279,7 @@ private final class EditorWindowController: NSObject, NSWindowDelegate {
             defer: false
         )
         window.identifier = recorderEditorWindowIdentifier
-        window.title = "DogSC编辑器"
+        window.title = "\(AppIdentity.displayName) 编辑器"
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
@@ -311,12 +332,19 @@ private final class EditorWindowController: NSObject, NSWindowDelegate {
         guard let controller = windowController else { return }
         removeFirstMouseActivationMonitor()
         isClosingForPhaseChange = true
+        // Force SwiftUI's disappearance hooks while the host still has a live
+        // window. They own the editor's keyboard/mouse monitors and explicit
+        // player/preview invalidation; relying on AppKit's later controller
+        // release left those hooks deferred indefinitely.
+        hostingView?.rootView = AnyView(EmptyView())
+        hostingView?.layoutSubtreeIfNeeded()
         if let window = controller.window {
             window.delegate = nil
             window.orderOut(nil)
             window.contentViewController = nil
             window.close()
         }
+        hostingView = nil
         windowController = nil
         model = nil
         isRequestingProjectClose = false
@@ -409,38 +437,5 @@ private final class EditorWindowController: NSObject, NSWindowDelegate {
             width: min(1120, max(visibleFrame.width - 24, 840)),
             height: min(680, max(visibleFrame.height - 24, 640))
         )
-    }
-}
-
-struct WindowDragArea: NSViewRepresentable {
-    let purpose: CrossDisplayWindowPurpose
-
-    func makeNSView(context: Context) -> DragView {
-        DragView(purpose: purpose)
-    }
-
-    func updateNSView(_ nsView: DragView, context: Context) {
-        nsView.purpose = purpose
-    }
-
-    final class DragView: NSView {
-        var purpose: CrossDisplayWindowPurpose
-        private let dragRestorer = CrossDisplayWindowDragRestorer()
-
-        init(purpose: CrossDisplayWindowPurpose) {
-            self.purpose = purpose
-            super.init(frame: .zero)
-        }
-
-        required init?(coder: NSCoder) {
-            fatalError("init(coder:) has not been implemented")
-        }
-
-        override var mouseDownCanMoveWindow: Bool { true }
-
-        override func mouseDown(with event: NSEvent) {
-            guard let window else { return }
-            dragRestorer.performDrag(window: window, event: event, purpose: purpose)
-        }
     }
 }

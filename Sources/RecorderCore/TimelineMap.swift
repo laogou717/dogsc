@@ -16,14 +16,14 @@ extension TimelineMapError: LocalizedError {
             return "主录屏时长必须是正的有限数。"
         case .emptyEditedSequence:
             return "剪辑后至少需要保留一个主录屏片段。"
-        case let .duplicateSegmentID(id):
-            return "主片段 ID 重复：\(id)。"
-        case let .invalidSegment(id):
-            return "主片段 \(id) 包含非有限、负数或空时长。"
-        case let .segmentOutsideSource(id):
-            return "主片段 \(id) 超出原始录屏可用时长。"
-        case let .nonMonotonicSegments(previous, current):
-            return "主片段不能重复使用同一段源素材：\(previous) / \(current)。"
+        case .duplicateSegmentID:
+            return "时间线中存在重复的主片段。"
+        case .invalidSegment:
+            return "主片段包含无效的时间范围。"
+        case .segmentOutsideSource:
+            return "主片段超出原始录屏可用时长。"
+        case .nonMonotonicSegments:
+            return "主片段不能重复使用同一段源素材。"
         }
     }
 }
@@ -32,29 +32,33 @@ public struct ResolvedRecordingSegment: Equatable, Identifiable, Sendable {
     public let id: UUID
     public let sourceStart: TimeInterval
     public let sourceDuration: TimeInterval
+    public let playbackRate: Double
     public let outputStart: TimeInterval
 
     public init(
         id: UUID,
         sourceStart: TimeInterval,
         sourceDuration: TimeInterval,
+        playbackRate: Double = 1,
         outputStart: TimeInterval
     ) {
         self.id = id
         self.sourceStart = sourceStart
         self.sourceDuration = sourceDuration
+        self.playbackRate = playbackRate
         self.outputStart = outputStart
     }
 
     public var sourceEnd: TimeInterval { sourceStart + sourceDuration }
-    public var outputEnd: TimeInterval { outputStart + sourceDuration }
+    public var outputDuration: TimeInterval { sourceDuration / playbackRate }
+    public var outputEnd: TimeInterval { outputStart + outputDuration }
 
     public var sourceRange: MediaTimeRange? {
         MediaTimeRange(start: sourceStart, duration: sourceDuration)
     }
 
     public var outputRange: MediaTimeRange? {
-        MediaTimeRange(start: outputStart, duration: sourceDuration)
+        MediaTimeRange(start: outputStart, duration: outputDuration)
     }
 }
 
@@ -125,8 +129,10 @@ public struct TimelineMap: Equatable, Sendable {
             }
             guard segment.sourceStart.isFinite,
                   segment.sourceDuration.isFinite,
+                  segment.playbackRate.isFinite,
                   segment.sourceStart >= 0,
                   segment.sourceDuration > 0,
+                  segment.playbackRate > 0,
                   segment.sourceEnd.isFinite else {
                 throw TimelineMapError.invalidSegment(segment.id)
             }
@@ -142,10 +148,11 @@ public struct TimelineMap: Equatable, Sendable {
                     id: segment.id,
                     sourceStart: segment.sourceStart,
                     sourceDuration: resolvedDuration,
+                    playbackRate: segment.playbackRate,
                     outputStart: outputStart
                 )
             )
-            outputStart += resolvedDuration
+            outputStart += resolvedDuration / segment.playbackRate
         }
         let sourceOrdered = authored.sorted {
             if $0.sourceStart != $1.sourceStart { return $0.sourceStart < $1.sourceStart }
@@ -184,7 +191,8 @@ public struct TimelineMap: Equatable, Sendable {
 
     public func sourceTime(atOutputTime time: TimeInterval) -> TimeInterval? {
         guard let segment = segment(atOutputTime: time) else { return nil }
-        return segment.sourceStart + time - segment.outputStart
+        return segment.sourceStart
+            + (time - segment.outputStart) * segment.playbackRate
     }
 
     public func outputTime(forSourceTime time: TimeInterval) -> TimeInterval? {
@@ -192,7 +200,8 @@ public struct TimelineMap: Equatable, Sendable {
         guard let segment = segments.first(where: {
             time >= $0.sourceStart && time < $0.sourceEnd
         }) else { return nil }
-        return segment.outputStart + time - segment.sourceStart
+        return segment.outputStart
+            + (time - segment.sourceStart) / segment.playbackRate
     }
 
     public func outputRange(forSegmentID id: UUID) -> MediaTimeRange? {
@@ -209,7 +218,8 @@ public struct TimelineMap: Equatable, Sendable {
                 RecordingSegment(
                     id: $0.id,
                     sourceStart: $0.sourceStart,
-                    sourceDuration: $0.sourceDuration
+                    sourceDuration: $0.sourceDuration,
+                    playbackRate: $0.playbackRate
                 )
             }
         )
@@ -245,7 +255,8 @@ public struct TimelineMap: Equatable, Sendable {
             }
             mapped.append(contentsOf: eventsInRange.map { event in
                 PointerEventRecord(
-                    time: segment.outputStart + event.time - segment.sourceStart,
+                    time: segment.outputStart
+                        + (event.time - segment.sourceStart) / segment.playbackRate,
                     location: event.location,
                     kind: event.kind,
                     modifiers: event.modifiers

@@ -20,5 +20,5 @@ let package = Package(
             path: "Sources/DogSCApp"
         ),
     ],
-    swiftLanguageModes: [.v5]
+    swiftLanguageModes: [.v6]
 )

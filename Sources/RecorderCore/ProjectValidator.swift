@@ -30,12 +30,12 @@ extension ProjectValidationError: LocalizedError {
             return "光标参数无效：\(reason)"
         case let .invalidMotion(reason):
             return "动画参数无效：\(reason)"
-        case let .invalidZoom(id, reason):
-            return "缩放 \(id) 无效：\(reason)"
-        case let .duplicateZoomID(id):
-            return "缩放片段 ID 重复：\(id)。"
-        case let .overlappingZoom(id, otherID):
-            return "缩放 \(id) 与片段 \(otherID) 的生效区间重叠。"
+        case let .invalidZoom(_, reason):
+            return "缩放片段无效：\(reason)"
+        case .duplicateZoomID:
+            return "缩放轨道中存在重复片段。"
+        case .overlappingZoom:
+            return "缩放片段的生效区间发生重叠。"
         case let .invalidTimeline(reason):
             return "时间线无效：\(reason)"
         }
@@ -58,6 +58,7 @@ public enum ProjectValidator {
               finite(style.shadowStrength, in: 0...1),
               finite(style.backgroundBlur, in: 0...96),
               finite(style.insetOpacity, in: 0...1),
+              finite(style.screenFrameScale, in: 0.6...1.6),
               style.crop == style.crop.clamped()
         else {
             throw ProjectValidationError.invalidCanvas(
@@ -97,18 +98,18 @@ public enum ProjectValidator {
     public static func validate(_ style: CursorStyle) throws {
         guard !style.assetID.rawValue.isEmpty,
               finite(style.size, in: 0.25...6),
-              finite(style.idleDelay, in: 0.2...8)
+              finite(style.idleDelay, in: 0.2...8),
+              finite(style.motionTiltStrength, in: 0...2)
         else {
             throw ProjectValidationError.invalidCursor(
-                reason: "尺寸或静止延迟超出支持范围。"
+                reason: "尺寸、静止延迟或摆动强度超出支持范围。"
             )
         }
     }
 
     public static func validate(_ style: MotionStyle) throws {
         guard finite(style.motionBlur, in: 0...1),
-              finite(style.frameMotionBlur.shutterAngle, in: 0...360),
-              (2...32).contains(style.frameMotionBlur.sampleCount),
+              finite(style.frameMotionBlur.strength, in: 0...1),
               finite(style.screenSpringMass, in: 0.01...20),
               finite(style.screenSpringStiffness, in: 1...5_000),
               finite(style.screenSpringDamping, in: 0.1...1_000),

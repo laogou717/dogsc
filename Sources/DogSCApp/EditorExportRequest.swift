@@ -67,17 +67,20 @@ struct EditorExportAssets: Equatable, Sendable {
     let camera: EditorExportAsset?
     let microphone: EditorExportAsset?
     let wallpaper: EditorExportAsset?
+    let stickers: [String: EditorExportAsset]
 
     fileprivate init(
         source: EditorExportAsset,
         camera: EditorExportAsset?,
         microphone: EditorExportAsset?,
-        wallpaper: EditorExportAsset?
+        wallpaper: EditorExportAsset?,
+        stickers: [String: EditorExportAsset]
     ) {
         self.source = source
         self.camera = camera
         self.microphone = microphone
         self.wallpaper = wallpaper
+        self.stickers = stickers
     }
 
     /// Called once while building the request and again as the worker starts.
@@ -88,11 +91,15 @@ struct EditorExportAssets: Equatable, Sendable {
         try camera?.validateCurrentVersion(role: .cameraRecording)
         try microphone?.validateCurrentVersion(role: .microphoneRecording)
         try wallpaper?.validateCurrentVersion(role: .wallpaper)
+        for sticker in stickers.values {
+            try sticker.validateCurrentVersion(role: .sticker)
+        }
     }
 
     fileprivate var inputURLs: [URL] {
         [source, camera, microphone, wallpaper]
             .compactMap { $0?.url.standardizedFileURL }
+            + stickers.values.map { $0.url.standardizedFileURL }
     }
 }
 
@@ -169,6 +176,7 @@ enum EditorExportRequestBuilder {
         project: RecorderProject,
         preparedMedia: EditorPreparedMedia,
         wallpaperURL: URL?,
+        stickerURLs: [String: URL] = [:],
         outputURL: URL? = nil
     ) throws -> EditorExportRequest {
         let preparedRequest = preparedMedia.request
@@ -208,11 +216,21 @@ enum EditorExportRequestBuilder {
         let wallpaper = try requiredMedia.backgroundImage
             ? requiredWallpaper(at: wallpaperURL)
             : nil
+        let stickerPaths = Set(project.timeline.stickerClips.map(\.relativePath))
+        var stickers: [String: EditorExportAsset] = [:]
+        stickers.reserveCapacity(stickerPaths.count)
+        for relativePath in stickerPaths {
+            guard let url = stickerURLs[relativePath] else {
+                throw EditorExportRequestError.missingAssetReference(.sticker)
+            }
+            stickers[relativePath] = try EditorExportAsset(url: url, role: .sticker)
+        }
         let assets = EditorExportAssets(
             source: source,
             camera: camera,
             microphone: microphone,
-            wallpaper: wallpaper
+            wallpaper: wallpaper,
+            stickers: stickers
         )
 
         // Reject a replacement that occurred after preview preparation.
@@ -254,7 +272,10 @@ enum EditorExportRequestBuilder {
         )
     }
 
-    static func makeDefaultOutputURL(for project: RecorderProject) throws -> URL {
+    static func makeDefaultOutputURL(
+        for project: RecorderProject,
+        preferredProjectName: String? = nil
+    ) throws -> URL {
         let folder = AppPreferences.exportDirectoryURL
         try FileManager.default.createDirectory(
             at: folder,
@@ -264,7 +285,10 @@ enum EditorExportRequestBuilder {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd-HH-mm-ss"
         let frameRate = project.exportSettings.frameRate
-        let baseName = "成片-\(formatter.string(from: Date()))-\(frameRate.rawValue)fps"
+        let projectName = preferredProjectName.flatMap(exportFileNameComponent)
+        let baseName = projectName.map {
+            "\($0)-\(frameRate.rawValue)fps"
+        } ?? "成片-\(formatter.string(from: Date()))-\(frameRate.rawValue)fps"
         var candidate = folder.appendingPathComponent("\(baseName).mp4")
         var suffix = 2
         while FileManager.default.fileExists(atPath: candidate.path) {
@@ -272,6 +296,20 @@ enum EditorExportRequestBuilder {
             suffix += 1
         }
         return candidate
+    }
+
+    private static func exportFileNameComponent(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let forbidden = CharacterSet(charactersIn: "/:")
+            .union(.newlines)
+            .union(.controlCharacters)
+        let pieces = trimmed.components(separatedBy: forbidden)
+        let cleaned = pieces
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "-")
+        return cleaned.isEmpty ? nil : cleaned
     }
 
     private static func requiredAsset(

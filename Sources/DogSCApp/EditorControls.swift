@@ -103,38 +103,47 @@ struct EditorToggle: View {
     @Binding var isOn: Bool
     var title: String? = nil
 
+    @ViewBuilder
     var body: some View {
-        let control = Button {
-            isOn.toggle()
-        } label: {
-            ZStack(alignment: isOn ? .trailing : .leading) {
-                Capsule(style: .continuous)
-                    .fill(isOn ? editorAccent : Color.white.opacity(0.13))
-                Circle()
-                    .fill(Color(white: 0.96))
-                    .shadow(color: .black.opacity(0.3), radius: 1.5, y: 0.5)
-                    .padding(2)
-            }
-            .frame(width: 32, height: 19)
-            .animation(.easeOut(duration: 0.15), value: isOn)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityElement()
-        .accessibilityAddTraits(.isToggle)
-        .accessibilityValue(isOn ? "开启" : "关闭")
-
         if let title {
-            HStack {
-                Text(title).font(.caption)
-                Spacer(minLength: 8)
-                control
+            Button {
+                isOn.toggle()
+            } label: {
+                HStack {
+                    Text(title).font(.caption)
+                    Spacer(minLength: 8)
+                    toggleIndicator
+                }
+                .contentShape(Rectangle())
             }
-            .accessibilityElement(children: .contain)
+            .buttonStyle(.plain)
             .accessibilityLabel(title)
+            .accessibilityValue(isOn ? "开启" : "关闭")
+            .accessibilityAddTraits(.isToggle)
         } else {
-            control
+            Button {
+                isOn.toggle()
+            } label: {
+                toggleIndicator
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityAddTraits(.isToggle)
+            .accessibilityValue(isOn ? "开启" : "关闭")
         }
+    }
+
+    private var toggleIndicator: some View {
+        ZStack(alignment: isOn ? .trailing : .leading) {
+            Capsule(style: .continuous)
+                .fill(isOn ? editorAccent : Color.white.opacity(0.13))
+            Circle()
+                .fill(Color(white: 0.96))
+                .shadow(color: .black.opacity(0.3), radius: 1.5, y: 0.5)
+                .padding(2)
+        }
+        .frame(width: 32, height: 19)
+        .animation(.easeOut(duration: 0.15), value: isOn)
     }
 }
 

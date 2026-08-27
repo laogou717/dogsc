@@ -23,15 +23,21 @@ public struct PointerSample: Equatable, Sendable {
     public var location: NormalizedPoint
     public var isClicking: Bool
     public var clickPhase: PointerClickPhase?
+    /// A restrained post-production lean derived from recent cursor velocity.
+    /// The renderer rotates the bitmap around its declared hotspot, so the
+    /// authored click coordinate remains exact.
+    public var rotationRadians: Double
 
     public init(
         location: NormalizedPoint,
         isClicking: Bool,
-        clickPhase: PointerClickPhase? = nil
+        clickPhase: PointerClickPhase? = nil,
+        rotationRadians: Double = 0
     ) {
         self.location = location
         self.isClicking = isClicking
         self.clickPhase = clickPhase
+        self.rotationRadians = rotationRadians.isFinite ? rotationRadians : 0
     }
 }
 
@@ -181,12 +187,139 @@ public struct PointerTrack: Equatable, Sendable {
             clickPhase = nil
         }
         let clicking = clickPhase != nil
+        let rotationRadians = cursorRotationRadians(
+            at: time,
+            currentLocation: rawLocation,
+            motion: motion,
+            strength: style.motionTiltStrength
+        )
         return PointerTrackEvaluation(
             position: rawLocation,
             cursor: cursorIsVisible
-                ? PointerSample(location: rawLocation, isClicking: clicking, clickPhase: clickPhase)
+                ? PointerSample(
+                    location: rawLocation,
+                    isClicking: clicking,
+                    clickPhase: clickPhase,
+                    rotationRadians: rotationRadians
+                )
                 : nil
         )
+    }
+
+    /// Treats the hotspot as a heavy leading tip. The visible arrow body keeps
+    /// part of the previous movement direction, so it trails the tip slightly
+    /// through acceleration and turns instead of remaining a rigid sprite.
+    /// Evaluation is causal and deterministic: only past reconstructed
+    /// positions are sampled, so preview and export stay identical.
+    private func cursorRotationRadians(
+        at time: TimeInterval,
+        currentLocation: NormalizedPoint,
+        motion: MotionStyle,
+        strength: Double
+    ) -> Double {
+        let boundedStrength = min(max(strength, 0), 2)
+        guard boundedStrength > 0.000_1 else { return 0 }
+
+        let sampleWindow: TimeInterval
+        let maximumDegrees: Double
+        let previousVelocityWeight: Double
+        let responseSpan: Double
+        switch motion.cursor {
+        case .smooth:
+            sampleWindow = 0.08
+            maximumDegrees = 9
+            previousVelocityWeight = 0.38
+            responseSpan = 0.18
+        case .medium:
+            sampleWindow = 0.065
+            maximumDegrees = 8
+            previousVelocityWeight = 0.24
+            responseSpan = 0.22
+        case .rapid:
+            sampleWindow = 0.05
+            maximumDegrees = 7
+            previousVelocityWeight = 0.12
+            responseSpan = 0.28
+        case .none:
+            return 0
+        }
+        guard let previous = resolvedLocation(
+            at: time - sampleWindow,
+            motion: motion
+        ), let older = resolvedLocation(
+            at: time - sampleWindow * 2,
+            motion: motion
+        ) else { return 0 }
+
+        let recentVelocityX = (currentLocation.x - previous.x) / sampleWindow
+        let recentVelocityY = (currentLocation.y - previous.y) / sampleWindow
+        let previousVelocityX = (previous.x - older.x) / sampleWindow
+        let previousVelocityY = (previous.y - older.y) / sampleWindow
+        let retainedWeight = previousVelocityWeight
+        let velocityX = recentVelocityX * (1 - retainedWeight)
+            + previousVelocityX * retainedWeight
+        let velocityY = recentVelocityY * (1 - retainedWeight)
+            + previousVelocityY * retainedWeight
+        let speed = hypot(velocityX, velocityY)
+        // Strength deliberately changes both parts of the response. Merely
+        // multiplying the final angle would leave slow motion visually dead;
+        // lowering the threshold/response span lets a high setting react
+        // earlier while the velocity curve still distinguishes slow and fast.
+        let responseGain = max(boundedStrength, 0.25)
+        let stationaryThreshold = 0.006 / responseGain
+        guard speed.isFinite, speed > stationaryThreshold else { return 0 }
+
+        // The arrow's unrotated tail extends down-right from its hotspot. A
+        // cross product against the reverse movement vector expresses how far
+        // that tail should swing behind the leading tip. Equal X/Y weighting
+        // is deliberate: vertical and curved moves must be as alive as a
+        // horizontal sweep.
+        let inverseSpeed = 1 / max(speed, 0.000_001)
+        let trailingTorque = min(max(
+            (velocityX - velocityY) * inverseSpeed / sqrt(2),
+            -1
+        ), 1)
+        let response = min(max(
+            (speed - stationaryThreshold) / (responseSpan / responseGain),
+            0
+        ), 1)
+        let smoothResponse = response * response * (3 - 2 * response)
+        let idleDecay: Double = {
+            let lowerIndex = max(firstIndex(after: time) - 1, events.startIndex)
+            let elapsed = max(time - events[lowerIndex].time, 0)
+            return min(max(1 - elapsed / 0.18, 0), 1)
+        }()
+        let amplitudeScale = 0.35 + 0.65 * boundedStrength
+        let degrees = -maximumDegrees
+            * amplitudeScale
+            * smoothResponse
+            * trailingTorque
+            * idleDecay
+        return degrees * .pi / 180
+    }
+
+    private func resolvedLocation(
+        at time: TimeInterval,
+        motion: MotionStyle
+    ) -> NormalizedPoint? {
+        guard let first = events.first, time >= first.time else { return nil }
+        let upperIndex = firstIndex(after: time)
+        let lowerIndex = upperIndex > events.startIndex
+            ? upperIndex - 1
+            : events.startIndex
+        let lower = events[lowerIndex]
+        if motion.cursor == .smooth {
+            return springLocation(at: time, motion: motion) ?? lower.location
+        }
+        if upperIndex < events.endIndex, events[upperIndex].time > lower.time {
+            return interpolatedLocation(
+                lowerIndex: lowerIndex,
+                upperIndex: upperIndex,
+                time: time,
+                motion: motion
+            )
+        }
+        return lower.location
     }
 
     /// A real second-order spring for the reconstructed cursor. Unlike easing

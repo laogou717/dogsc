@@ -26,16 +26,16 @@ struct EditorShortcutCheatsheet: View {
             Entry(keys: "滚轮 / 捏合", action: "以指针为锚缩放时间线"),
         ]),
         Group(title: "剪辑", entries: [
-            Entry(keys: "S", action: "在播放头处分割选中项"),
-            Entry(keys: "Q", action: "波纹删除播放头之前"),
-            Entry(keys: "W", action: "波纹删除播放头之后"),
+            Entry(keys: "S", action: "在播放头分割选中动画；未选动画时分割主片段"),
+            Entry(keys: "Q", action: "修剪动画起点；未选动画时波纹删除前段"),
+            Entry(keys: "W", action: "修剪动画终点；未选动画时波纹删除后段"),
             Entry(keys: "D / Delete", action: "删除当前选中项"),
-            Entry(keys: "⌥ 点击片段", action: "在点击处直接切分"),
+            Entry(keys: "⌥ 点击主片段", action: "在点击处直接切分"),
             Entry(keys: "悬停剪切缝", action: "合并或还原该处剪切"),
         ]),
         Group(title: "运镜与轨道", entries: [
             Entry(keys: "拖动缩放轨空白", action: "创建缩放片段"),
-            Entry(keys: "拖动运动轨空白", action: "创建屏幕 / 摄像头动画"),
+            Entry(keys: "拖动运动轨空白", action: "创建屏幕 3D / 摄像运动"),
             Entry(keys: "双击同步轨空白", action: "添加摄像头同步点"),
             Entry(keys: "双击分栏柄", action: "恢复时间线默认高度"),
         ]),
@@ -45,7 +45,7 @@ struct EditorShortcutCheatsheet: View {
             Entry(keys: "⌘O", action: "打开项目"),
             Entry(keys: "⌘E", action: "导出成片"),
             Entry(keys: "⌥⌘I", action: "显示 / 隐藏检查器"),
-            Entry(keys: "Esc", action: "取消裁切 / 取消当前操作"),
+            Entry(keys: "Esc", action: "取消裁切 / 中止时间线拖动"),
         ]),
     ]
 

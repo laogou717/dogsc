@@ -58,7 +58,8 @@ public struct TimelineMediaPlan: Equatable, Sendable {
                 segmentID: $0.id,
                 outputStart: $0.outputStart,
                 sourceStart: $0.sourceStart,
-                duration: $0.sourceDuration
+                duration: $0.outputDuration,
+                sourceTimeScale: $0.playbackRate
             )
         }
     }
@@ -87,18 +88,20 @@ public struct TimelineMediaPlan: Equatable, Sendable {
                 )
                 let outputStart = startsAtPrimaryBoundary
                     ? segment.outputStart
-                    : segment.outputStart + retainedStart - segment.sourceStart
+                    : segment.outputStart
+                        + (retainedStart - segment.sourceStart) / segment.playbackRate
                 let duration: TimeInterval
                 if startsAtPrimaryBoundary, endsAtPrimaryBoundary {
                     // Reuse the primary duration verbatim. Recomputing
                     // `(sourceStart + duration) - sourceStart` can be a few
                     // ulps shorter, leaving a microscopic hole at a cut. A
                     // 60 fps output frame landing in that hole loses camera.
-                    duration = segment.sourceDuration
+                    duration = segment.outputDuration
                 } else {
                     let outputEnd = endsAtPrimaryBoundary
                         ? segment.outputEnd
-                        : segment.outputStart + retainedEnd - segment.sourceStart
+                        : segment.outputStart
+                            + (retainedEnd - segment.sourceStart) / segment.playbackRate
                     duration = outputEnd - outputStart
                 }
                 guard duration > 0 else { return nil }
@@ -108,7 +111,7 @@ public struct TimelineMediaPlan: Equatable, Sendable {
                     outputStart: outputStart,
                     sourceStart: placement.sourceTime(at: retainedStart) ?? placement.sourceStart,
                     duration: duration,
-                    sourceTimeScale: placement.sourceTimeScale
+                    sourceTimeScale: placement.sourceTimeScale * segment.playbackRate
                 )
             }
             return
@@ -142,12 +145,14 @@ public struct TimelineMediaPlan: Equatable, Sendable {
                 )
                 let outputStart = startsAtPrimaryBoundary
                     ? segment.outputStart
-                    : segment.outputStart + primaryStart - segment.sourceStart
+                    : segment.outputStart
+                        + (primaryStart - segment.sourceStart) / segment.playbackRate
                 let outputEnd = endsAtPrimaryBoundary
                     ? segment.outputEnd
-                    : segment.outputStart + primaryEnd - segment.sourceStart
+                    : segment.outputStart
+                        + (primaryEnd - segment.sourceStart) / segment.playbackRate
                 let duration = startsAtPrimaryBoundary && endsAtPrimaryBoundary
-                    ? segment.sourceDuration
+                    ? segment.outputDuration
                     : outputEnd - outputStart
                 guard duration > 0.000_001 else { return nil }
 

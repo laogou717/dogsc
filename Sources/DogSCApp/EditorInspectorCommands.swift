@@ -9,6 +9,7 @@ extension EditorInspectorView {
         if let active = clips.first(where: {
             playbackTime >= $0.timing.startTime && playbackTime < $0.timing.endTime
         }) {
+            visibleTimelineTracks.insert(.screenMotion)
             editorStore.selection = .screenMotion(active.id)
             return
         }
@@ -21,7 +22,7 @@ extension EditorInspectorView {
             returnDuration: editorStore.project.motion.defaultZoomTransitionDuration,
             leadInDuration: editorStore.project.motion.defaultZoomTransitionDuration
         ) else {
-            onError("播放头附近没有空间添加屏幕动画，请先移动播放头。")
+            onError("播放头附近没有空间添加屏幕 3D，请先移动播放头。")
             return
         }
         let clip = ScreenMotionClip(
@@ -29,7 +30,8 @@ extension EditorInspectorView {
             target: MotionInspectorLogic.screenTarget(at: timing.startTime, in: editorStore.project)
         )
         performEditorCommand {
-            try editorStore.insertScreenMotion(clip, actionName: "在播放头添加屏幕动画")
+            try editorStore.insertScreenMotion(clip, actionName: "在播放头添加屏幕 3D")
+            visibleTimelineTracks.insert(.screenMotion)
             editorStore.selection = .screenMotion(clip.id)
         }
     }
@@ -39,6 +41,7 @@ extension EditorInspectorView {
         if let active = clips.first(where: {
             playbackTime >= $0.timing.startTime && playbackTime < $0.timing.endTime
         }) {
+            visibleTimelineTracks.insert(.cameraMotion)
             editorStore.selection = .cameraMotion(active.id)
             return
         }
@@ -51,7 +54,7 @@ extension EditorInspectorView {
             returnDuration: editorStore.project.motion.defaultZoomTransitionDuration,
             leadInDuration: editorStore.project.motion.defaultZoomTransitionDuration
         ) else {
-            onError("播放头附近没有空间添加摄像头动画，请先移动播放头。")
+            onError("播放头附近没有空间添加摄像运动，请先移动播放头。")
             return
         }
         let clip = CameraMotionClip(
@@ -59,7 +62,8 @@ extension EditorInspectorView {
             target: MotionInspectorLogic.cameraTarget(at: timing.startTime, in: editorStore.project)
         )
         performEditorCommand {
-            try editorStore.insertCameraMotion(clip, actionName: "在播放头添加摄像头动画")
+            try editorStore.insertCameraMotion(clip, actionName: "在播放头添加摄像运动")
+            visibleTimelineTracks.insert(.cameraMotion)
             editorStore.selection = .cameraMotion(clip.id)
         }
     }
@@ -153,6 +157,10 @@ extension EditorInspectorView {
 
         performEditorCommand {
             try editorStore.replaceTimeline(with: timeline, actionName: "切换摄像头布局")
+            visibleTimelineTracks.insert(.cameraMotion)
+            if screenTarget != nil {
+                visibleTimelineTracks.insert(.screenMotion)
+            }
             editorStore.selection = .cameraMotion(selectedCameraClipID)
         }
     }
@@ -313,29 +321,7 @@ extension EditorInspectorView {
         )
     }
 
-    func zoomAnimationEasingBinding(_ index: Int) -> Binding<ZoomEasingPreset> {
-        let id = editorStore.previewProject.zoomAnimations.indices.contains(index)
-            ? editorStore.previewProject.zoomAnimations[index].id
-            : selectedZoomID
-        return Binding(
-            get: {
-                guard let id,
-                      let currentIndex = editorStore.previewProject.zoomAnimations.firstIndex(where: { $0.id == id })
-                else { return .cubic }
-                return editorStore.previewProject.zoomAnimations[currentIndex].easing
-            },
-            set: { value in
-                guard let id,
-                      let current = editorStore.previewProject.zoomAnimations.first(where: { $0.id == id })
-                else { return }
-                var updated = current
-                updated.easing = value
-                updateZoomAnimation(updated)
-            }
-        )
-    }
-
-    func zoomMotionFeelPresetBinding(_ index: Int) -> Binding<ZoomMotionFeelPreset> {
+    func zoomAnimationTransitionDurationBinding(_ index: Int) -> Binding<Double> {
         let id = editorStore.previewProject.zoomAnimations.indices.contains(index)
             ? editorStore.previewProject.zoomAnimations[index].id
             : selectedZoomID
@@ -344,64 +330,17 @@ extension EditorInspectorView {
                 guard let id,
                       let animation = editorStore.previewProject.zoomAnimations.first(where: {
                           $0.id == id
-                      }) else { return .custom }
-                return ZoomMotionFeelPreset(animation: animation)
-            },
-            set: { preset in
-                guard preset != .custom,
-                      let id,
-                      let animation = editorStore.previewProject.zoomAnimations.first(where: {
-                          $0.id == id
-                      }) else { return }
-                updateZoomAnimation(preset.applying(to: animation))
-                auditionZoomAnimation(id: id)
-            }
-        )
-    }
-
-    func auditionZoomAnimation(id: UUID) {
-        guard let animation = editorStore.previewProject.zoomAnimations.first(where: {
-            $0.id == id
-        }) else { return }
-        zoomAuditionTask?.cancel()
-        let preRoll = min(max(animation.enterDuration * 0.35, 0.12), 0.35)
-        let start = max(animation.startTime - preRoll, 0)
-        let previewDuration = min(max(preRoll + animation.enterDuration + 0.45, 1.1), 2)
-        playbackController.seek(
-            to: start,
-            pausing: true,
-            resumeAfterCompletion: true,
-            loadsPausedFrame: false
-        )
-        zoomAuditionTask = Task { @MainActor in
-            do {
-                try await Task.sleep(for: .seconds(previewDuration))
-            } catch {
-                return
-            }
-            playbackController.pause()
-            zoomAuditionTask = nil
-        }
-    }
-
-    func zoomAnimationCustomCurveBinding(_ index: Int) -> Binding<ZoomBezierCurve> {
-        let id = editorStore.previewProject.zoomAnimations.indices.contains(index)
-            ? editorStore.previewProject.zoomAnimations[index].id
-            : selectedZoomID
-        return Binding(
-            get: {
-                guard let id,
-                      let currentIndex = editorStore.previewProject.zoomAnimations.firstIndex(where: { $0.id == id })
-                else { return .cubic }
-                return editorStore.previewProject.zoomAnimations[currentIndex].customCurve
+                      }) else { return 0.7 }
+                return (animation.enterDuration + animation.exitDuration) / 2
             },
             set: { value in
                 guard let id,
                       let current = editorStore.previewProject.zoomAnimations.first(where: { $0.id == id })
                 else { return }
                 var updated = current
-                updated.customCurve = value
-                updated.easing = .custom
+                let duration = min(max(value, 0.08), 3)
+                updated.enterDuration = duration
+                updated.exitDuration = duration
                 updateZoomAnimation(updated)
             }
         )
@@ -487,49 +426,10 @@ extension EditorInspectorView {
             + "\(max(Int((crop.height * sourcePixelSize.height).rounded()), 1))"
     }
 
-    var cropPositionText: String {
-        let crop = cropDraft.clamped()
-        return "X \(max(Int((crop.x * sourcePixelSize.width).rounded()), 0))  "
-            + "Y \(max(Int((crop.y * sourcePixelSize.height).rounded()), 0))"
-    }
-
     func isNearPosition(_ position: NormalizedPoint, x: Double, y: Double) -> Bool {
         abs(position.x - x) < 0.08 && abs(position.y - y) < 0.08
     }
 
-    func gradientName(for preset: BackgroundGradientPreset) -> String {
-        switch preset {
-        case .aurora: return "极光"
-        case .twilight: return "暮色"
-        case .sunrise: return "日出"
-        case .graphite: return "石墨"
-        }
-    }
-
-    func gradientColors(for preset: BackgroundGradientPreset) -> [Color] {
-        switch preset {
-        case .aurora:
-            return [
-                Color(hex: HexColor(rgb24: 0x6A_5A_E0)),
-                Color(hex: HexColor(rgb24: 0x2D_B7_D3)),
-            ]
-        case .twilight:
-            return [
-                Color(hex: HexColor(rgb24: 0x30_2B_63)),
-                Color(hex: HexColor(rgb24: 0xD7_6D_77)),
-            ]
-        case .sunrise:
-            return [
-                Color(hex: HexColor(rgb24: 0xFF_8A_5B)),
-                Color(hex: HexColor(rgb24: 0xFF_D5_6B)),
-            ]
-        case .graphite:
-            return [
-                Color(hex: HexColor(rgb24: 0x12_15_1C)),
-                Color(hex: HexColor(rgb24: 0x45_4B_58)),
-            ]
-        }
-    }
 
     func updateZoomAnimation(_ animation: ZoomAnimationClip) {
         if editorStore.interaction?.commandScope == .selection,

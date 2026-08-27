@@ -1,10 +1,17 @@
 import AppKit
 import AVFoundation
 import Combine
+import CoreGraphics
 import Foundation
 import OSLog
 import RecorderCore
+import ScreenCaptureKit
 import UniformTypeIdentifiers
+
+private let projectOpenLogger = Logger(
+    subsystem: "cn.laogou.dogsc",
+    category: "project-open"
+)
 
 extension AppModel {
     func updateSurfaceVisibility(
@@ -182,10 +189,9 @@ extension AppModel {
             return
         }
         captureSetup.stopPresentation()
-        let previousCanvas = project.canvas
-        let previousCamera = project.camera
+        let nextRecordingStyle = EditorStylePreset(name: "上次使用", project: project)
+        EditorStylePresetStore.rememberLastUsedStyle(from: project)
         let previousAudio = project.audio
-        let previousMotion = project.motion.preparedForNewRecording()
         let previousExportSettings = project.exportSettings
         recoveryHeartbeatTask?.cancel()
         recoveryHeartbeatTask = nil
@@ -200,14 +206,16 @@ extension AppModel {
         recorderTransitionStage = .idle
         offersDiscardForUntouchedRecording = false
         currentRecordingHasEditorChanges = false
-        project = RecorderProject(
+        let nextRecordingBaseline = RecorderProject(
             capture: configuration,
-            canvas: previousCanvas,
-            camera: previousCamera,
             audio: previousAudio,
-            motion: previousMotion,
             exportSettings: previousExportSettings
         )
+        // Use the same source-safe style boundary as a cold launch. Directly
+        // copying the previous CanvasStyle carried that episode's crop (and a
+        // project-relative background image) into the next recording even
+        // though saved presets correctly exclude both.
+        project = nextRecordingStyle.applying(to: nextRecordingBaseline)
         captureSetup.reset()
         resumeLiveInputIndicatorsForSetup()
         phase = .setup
@@ -259,6 +267,62 @@ extension AppModel {
         }
     }
 
+    func chooseOverlayImageAsset() -> (relativePath: String, url: URL)? {
+        guard let currentSession else {
+            errorMessage = "请先打开一个可编辑项目。"
+            return nil
+        }
+        let panel = NSOpenPanel()
+        panel.title = "选择贴图"
+        panel.prompt = "添加"
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.png, .jpeg, .heic, .tiff]
+        guard panel.runModal() == .OK, let sourceURL = panel.url else { return nil }
+        do {
+            return try ProjectStore.importOverlayImage(
+                from: sourceURL,
+                session: currentSession
+            )
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
+    func importOverlayImageFromPasteboard() -> (relativePath: String, url: URL)? {
+        guard let currentSession else { return nil }
+        let pasteboard = NSPasteboard.general
+        if let urls = pasteboard.readObjects(forClasses: [NSURL.self]) as? [URL],
+           let sourceURL = urls.first {
+            do {
+                return try ProjectStore.importOverlayImage(
+                    from: sourceURL,
+                    session: currentSession
+                )
+            } catch {
+                errorMessage = error.localizedDescription
+                return nil
+            }
+        }
+        guard let image = NSImage(pasteboard: pasteboard),
+              let tiff = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff),
+              let png = bitmap.representation(using: .png, properties: [:]) else {
+            return nil
+        }
+        do {
+            return try ProjectStore.importOverlayImage(
+                data: png,
+                fileExtension: "png",
+                session: currentSession
+            )
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
     /// 把用户当前桌面壁纸导入项目。macOS 只对"用户自己设置的图片"
     /// 提供可读文件；系统默认/系统图库壁纸走 MobileAssets 下发，本地
     /// 没有可用文件——此时明确告知，而不是静默失败。
@@ -302,6 +366,7 @@ extension AppModel {
         let panel = NSOpenPanel()
         panel.title = "选择源文件导出文件夹"
         panel.prompt = "导出到这里"
+        panel.directoryURL = AppPreferences.exportDirectoryURL
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.canCreateDirectories = true
@@ -341,7 +406,7 @@ extension AppModel {
               !isMediaExchangeRunning,
               !exporter.isExporting,
               let session = currentSession,
-              project.media != nil else { return }
+              project.media?.camera != nil else { return }
         guard let camera = chooseAlignedMediaFile(
             title: "选择替换用摄像头文件",
             prompt: "替换摄像头",
@@ -428,7 +493,25 @@ extension AppModel {
     }
 
     func openProjectPicker() {
-        EditorWindowManager.shared.openProjectPicker()
+        let panel = NSOpenPanel()
+        panel.title = "打开 \(AppIdentity.displayName) 项目"
+        panel.prompt = "打开"
+        panel.message = "选择要继续编辑的项目"
+        panel.directoryURL = ProjectStore.savedProjectsFolder
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        if let projectContentType = UTType("cn.laogou.dogsc-project") {
+            panel.allowedContentTypes = [projectContentType]
+        }
+        guard panel.runModal() == .OK, let selectedURL = panel.url else { return }
+        let packageExtensions = ["dogscproject", "silkyproject"]
+        let packageURL = packageExtensions.contains(selectedURL.pathExtension.lowercased())
+            ? selectedURL
+            : (selectedURL.lastPathComponent == "project.json"
+                ? selectedURL.deletingLastPathComponent()
+                : selectedURL)
+        requestOpenProject(at: packageURL)
     }
 
     func openMostRecentProject() {
@@ -442,8 +525,20 @@ extension AppModel {
     }
 
     func openScreenRecordingSettings() {
+        openPrivacySettings(section: "Privacy_ScreenCapture")
+    }
+
+    func openCameraPrivacySettings() {
+        openPrivacySettings(section: "Privacy_Camera")
+    }
+
+    func openMicrophonePrivacySettings() {
+        openPrivacySettings(section: "Privacy_Microphone")
+    }
+
+    private func openPrivacySettings(section: String) {
         guard let url = URL(
-            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+            string: "x-apple.systempreferences:com.apple.preference.security?\(section)"
         ) else { return }
         NSWorkspace.shared.open(url)
     }
@@ -517,6 +612,9 @@ extension AppModel {
             } catch is CancellationError {
                 return
             } catch {
+                projectOpenLogger.error(
+                    "project open failed url=\(packageURL.path, privacy: .private) error=\(String(reflecting: error), privacy: .public)"
+                )
                 errorMessage = error.localizedDescription
                 resumeLiveInputIndicatorsForSetup()
                 recorderTransitionStage = .idle
@@ -548,6 +646,7 @@ extension AppModel {
         errorMessage = loaded.warnings.isEmpty
             ? nil
             : "项目已打开，但\(loaded.warnings.joined(separator: " "))"
+        exporter.resetResultForNewEditorSession()
         editorSessionID = UUID()
         phase = .editor
         if loaded.wasInterrupted, recordingURL != nil {
@@ -593,6 +692,11 @@ extension AppModel {
 
     func selectCaptureSource(_ source: CaptureSource) {
         guard phase == .setup else { return }
+        guard hasRequiredRecordingPermissions else {
+            captureSetup.stopPresentation()
+            beginRequiredPermissionOnboardingIfNeeded()
+            return
+        }
         captureSetup.selectSource(source)
     }
 
@@ -602,6 +706,11 @@ extension AppModel {
 
     func selectCaptureDisplay(_ display: CaptureDisplay) {
         guard phase == .setup else { return }
+        guard hasRequiredRecordingPermissions else {
+            captureSetup.stopPresentation()
+            beginRequiredPermissionOnboardingIfNeeded()
+            return
+        }
         captureSetup.selectDisplay(display)
     }
 
@@ -610,7 +719,128 @@ extension AppModel {
     }
 
     func refreshCaptureReadiness() {
+        refreshRequiredRecordingPermissions()
+    }
+
+    func refreshRequiredRecordingPermissions() {
         captureSetup.refreshReadiness()
+        let accessibilityGranted = AXIsProcessTrusted()
+        if hasAccessibilityPermission != accessibilityGranted {
+            hasAccessibilityPermission = accessibilityGranted
+        }
+
+        if !captureReadiness.hasScreenRecordingPermission {
+            hasVerifiedScreenRecordingPermission = false
+            setRequiredPermissionOnboardingCompleted(false)
+        }
+        if !hasAccessibilityPermission {
+            setRequiredPermissionOnboardingCompleted(false)
+        }
+        if showsRequiredPermissionGate {
+            captureSetup.stopPresentation()
+            WindowCoordinator.endCaptureSourceSelection()
+        }
+        if hasRequiredRecordingPermissions,
+           errorMessage?.contains("权限") == true {
+            errorMessage = nil
+        }
+    }
+
+    func beginRequiredPermissionOnboardingIfNeeded() {
+        refreshRequiredRecordingPermissions()
+        guard showsRequiredPermissionGate,
+              !hasStartedPermissionOnboardingThisLaunch else { return }
+        hasStartedPermissionOnboardingThisLaunch = true
+        // If screen access is already present, keep the gate visible until the
+        // user explicitly continues. Auto-verifying and immediately replacing
+        // the gate made the hierarchy visually indistinguishable from the old
+        // toolbar-first flow. A truly missing permission is still requested on
+        // first launch without exposing any capture selector underneath it.
+        if !captureReadiness.hasScreenRecordingPermission {
+            continueRequiredPermissionOnboarding()
+        }
+    }
+
+    func resumeRequiredPermissionOnboardingAfterActivation() {
+        refreshRequiredRecordingPermissions()
+    }
+
+    func continueRequiredPermissionOnboarding() {
+        guard phase == .setup, !isCheckingRequiredPermissions else { return }
+        errorMessage = nil
+        captureSetup.stopPresentation()
+        WindowCoordinator.endCaptureSourceSelection()
+        captureSetup.refreshReadiness()
+
+        // Checking and entering are two visible steps. A successful check
+        // leaves both green statuses on this bar; only the next explicit
+        // enter action replaces it with the recorder controls.
+        if hasVerifiedScreenRecordingPermission,
+           hasAccessibilityPermission {
+            setRequiredPermissionOnboardingCompleted(true)
+            return
+        }
+
+        if !captureReadiness.hasScreenRecordingPermission {
+            hasVerifiedScreenRecordingPermission = false
+            setRequiredPermissionOnboardingCompleted(false)
+            if hasRequestedScreenPermissionThisLaunch {
+                openScreenRecordingSettings()
+            } else {
+                hasRequestedScreenPermissionThisLaunch = true
+                _ = CGRequestScreenCaptureAccess()
+                captureSetup.refreshReadiness()
+            }
+            guard captureReadiness.hasScreenRecordingPermission else { return }
+        }
+
+        isCheckingRequiredPermissions = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { isCheckingRequiredPermissions = false }
+            do {
+                _ = try await SCShareableContent.excludingDesktopWindows(
+                    false,
+                    onScreenWindowsOnly: true
+                )
+                hasVerifiedScreenRecordingPermission = true
+            } catch {
+                hasVerifiedScreenRecordingPermission = false
+                setRequiredPermissionOnboardingCompleted(false)
+                openScreenRecordingSettings()
+                return
+            }
+
+            let accessibilityGranted = AXIsProcessTrusted()
+            hasAccessibilityPermission = accessibilityGranted
+            guard !accessibilityGranted else { return }
+
+            if hasRequestedAccessibilityPermissionThisLaunch {
+                openAccessibilitySettings()
+            } else {
+                hasRequestedAccessibilityPermissionThisLaunch = true
+                _ = AXIsProcessTrustedWithOptions(
+                    ["AXTrustedCheckOptionPrompt": true] as CFDictionary
+                )
+                hasAccessibilityPermission = AXIsProcessTrusted()
+            }
+        }
+    }
+
+    private func setRequiredPermissionOnboardingCompleted(_ completed: Bool) {
+        guard hasCompletedRequiredPermissionOnboarding != completed else { return }
+        hasCompletedRequiredPermissionOnboarding = completed
+        UserDefaults.standard.set(
+            completed,
+            forKey: "permissions.required-onboarding-completed"
+        )
+    }
+
+    private func openAccessibilitySettings() {
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+        ) else { return }
+        NSWorkspace.shared.open(url)
     }
 
     func refreshCaptureDevices() {

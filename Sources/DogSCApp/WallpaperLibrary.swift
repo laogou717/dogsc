@@ -165,6 +165,7 @@ enum WallpaperThumbnailLoader {
 
     /// 打开"背景"分区时后台预热全部缩略图：首次切换集合的网格立即
     /// 呈现，不会逐格等待解码（此前大图的首次解码让切换看起来"没反应"）。
+    @MainActor
     static func prewarmAll(
         into cache: NSCache<NSString, NSImage>
     ) async {

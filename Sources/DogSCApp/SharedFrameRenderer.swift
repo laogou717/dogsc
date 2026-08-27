@@ -1,3 +1,4 @@
+import AppKit
 import CoreImage
 import Foundation
 import RecorderCore
@@ -11,6 +12,7 @@ struct SharedFrameRenderResources: @unchecked Sendable {
     var camera: CIImage?
     var wallpaper: CIImage?
     var cursor: CIImage?
+    var stickers: [String: CIImage]
     /// A caller-owned, already-lowered canvas background. The editor keeps
     /// this immutable CIImage alive across playback frames so Core Image can
     /// retain one GPU intermediate instead of uploading and blurring the same
@@ -23,12 +25,14 @@ struct SharedFrameRenderResources: @unchecked Sendable {
         camera: CIImage? = nil,
         wallpaper: CIImage? = nil,
         cursor: CIImage? = nil,
+        stickers: [String: CIImage] = [:],
         preparedBackground: CIImage? = nil
     ) {
         self.screen = screen
         self.camera = camera
         self.wallpaper = wallpaper
         self.cursor = cursor
+        self.stickers = stickers
         self.preparedBackground = preparedBackground
     }
 }
@@ -47,10 +51,9 @@ enum SharedFrameRenderer {
         render(scene: scene, resources: resources, over: nil)
     }
 
-    /// Renders the scene over a caller-provided background. The compositor
-    /// renders the (time-invariant) wallpaper/gradient background once per
-    /// output frame and reuses it across every motion-blur sample, avoiding
-    /// `sampleCount - 1` full-canvas Gaussian blurs per frame at 4K/120 FPS.
+    /// Renders the scene over a caller-provided background. Moving layers use
+    /// their evaluated one-frame displacement; the canvas background remains
+    /// sharp and is never re-rendered as blur history.
     nonisolated static func render(
         scene: FrameScene,
         resources: SharedFrameRenderResources,
@@ -75,6 +78,7 @@ enum SharedFrameRenderer {
             && resources.cursor != nil
         let projectsScreen = !isIdentityProjection(scene.screen)
 
+        let transparent = CIImage(color: .clear).cropped(to: canvasRect)
         for role in scene.layerOrder where role != .background {
             switch role {
             case .background:
@@ -89,10 +93,14 @@ enum SharedFrameRenderer {
                     attachedCursorSource: projectsScreen && hasAttachedCursor
                         ? resources.cursor
                         : nil,
-                    over: result,
+                    over: transparent,
                     canvasRect: canvasRect
                 ) else { return result }
-                result = renderedScreen
+                result = SharedFrameOverlayRenderer.motionBlurred(
+                    renderedScreen,
+                    motion: scene.screen.motion,
+                    canvasRect: canvasRect
+                ).composited(over: result).cropped(to: canvasRect)
             case .cursor:
                 // A projected screen owns its cursor so both are lowered by
                 // the same homography. The identity fast path deliberately
@@ -100,25 +108,256 @@ enum SharedFrameRenderer {
                 if projectsScreen && hasAttachedCursor { continue }
                 guard let cursorScene = scene.cursor,
                       let cursorImage = resources.cursor else { continue }
-                result = renderCursor(
+                let cursorLayer = SharedFrameCursorRenderer.render(
                     source: cursorImage,
                     scene: cursorScene,
-                    over: result,
+                    over: transparent,
+                    canvasRect: canvasRect
+                )
+                result = SharedFrameOverlayRenderer.motionBlurred(
+                    cursorLayer,
+                    motion: cursorScene.motion,
+                    canvasRect: canvasRect
+                ).composited(over: result).cropped(to: canvasRect)
+            case .spotlight:
+                result = applyingSpotlights(
+                    scene.screen.mosaics,
+                    source: resources.screen,
+                    screen: scene.screen,
+                    to: result,
                     canvasRect: canvasRect
                 )
             case .camera:
                 guard let cameraScene = scene.camera,
                       cameraScene.opacity > 0,
                       let cameraImage = resources.camera else { continue }
-                result = renderCamera(
+                let cameraLayer = renderCamera(
                     source: cameraImage,
                     scene: cameraScene,
+                    over: transparent,
+                    canvasRect: canvasRect
+                )
+                result = SharedFrameOverlayRenderer.motionBlurred(
+                    cameraLayer,
+                    motion: cameraScene.motion,
+                    canvasRect: canvasRect
+                ).composited(over: result).cropped(to: canvasRect)
+            case .stickers:
+                guard !scene.stickers.isEmpty else { continue }
+                let blur = scene.stickers.map(\.backdropBlur).max() ?? 0
+                if blur > 0.01 {
+                    result = result.clampedToExtent()
+                        .applyingFilter(
+                            "CIGaussianBlur",
+                            parameters: [kCIInputRadiusKey: blur]
+                        )
+                        .cropped(to: canvasRect)
+                }
+                for sticker in scene.stickers {
+                    guard let source = resources.stickers[sticker.relativePath] else {
+                        continue
+                    }
+                    result = SharedFrameOverlayRenderer.renderSticker(
+                        source: source,
+                        scene: sticker,
+                        over: result,
+                        canvasRect: canvasRect
+                    )
+                }
+            case .progress:
+                guard let progress = scene.progress else { continue }
+                result = SharedFrameOverlayRenderer.renderProgress(
+                    progress,
                     over: result,
                     canvasRect: canvasRect
                 )
             }
         }
         return result.cropped(to: canvasRect)
+    }
+
+    /// Spotlight is a single effect over the complete base composite. At this
+    /// point the wallpaper, recorded pixels, screen chrome, border, shadow and
+    /// cursor already form one image; camera, stickers and progress have not
+    /// yet been drawn. The authored source rectangle is transformed through
+    /// the same crop, zoom and perspective geometry as the recorded screen.
+    private nonisolated static func applyingSpotlights(
+        _ mosaics: [FrameMosaicScene],
+        source: CIImage,
+        screen: FrameScreenScene,
+        to base: CIImage,
+        canvasRect: CGRect
+    ) -> CIImage {
+        let spotlights = mosaics.filter {
+            $0.style == .spotlight && $0.transitionProgress > 0.001
+        }
+        guard !spotlights.isEmpty else { return base }
+
+        let normalizedSource = normalized(source)
+        let sourceExtent = normalizedSource.extent
+        let cropRect = sourceCropRect(
+            sourceExtent: sourceExtent,
+            crop: screen.sourceCrop
+        )
+        guard cropRect.width > 1, cropRect.height > 1 else { return base }
+
+        let baseRect = coreImageRect(
+            from: screen.baseRect,
+            canvasHeight: canvasRect.height
+        )
+        let finalRect = coreImageRect(
+            from: screen.finalRect,
+            canvasHeight: canvasRect.height
+        )
+        guard baseRect.width > 0, baseRect.height > 0,
+              finalRect.width > 0, finalRect.height > 0 else { return base }
+
+        let fitScale = min(
+            baseRect.width / cropRect.width,
+            baseRect.height / cropRect.height
+        )
+        let zoomScale = finalRect.width / baseRect.width
+        let finalScale = fitScale * zoomScale
+        guard finalScale.isFinite, finalScale > 0 else { return base }
+        let placedCropRect = CGRect(
+            x: finalRect.midX - cropRect.width * finalScale / 2,
+            y: finalRect.midY - cropRect.height * finalScale / 2,
+            width: cropRect.width * finalScale,
+            height: cropRect.height * finalScale
+        )
+
+        let visibleScreenMask: CIImage = switch screen.decoration {
+        case .none:
+            roundedMask(rect: finalRect, radius: screen.cornerRadius)
+        case .chrome:
+            CIImage(color: .white).cropped(to: finalRect)
+        }
+        let identityProjection = isIdentityProjection(screen)
+        let projectionRect = coreImageRect(
+            from: screen.projectionRect,
+            canvasHeight: canvasRect.height
+        )
+        let mapping = identityProjection
+            ? nil
+            : projectionMapping(
+                projectedQuad: screen.projectedQuad,
+                canvasHeight: canvasRect.height
+            )
+        var focusMask = CIImage(color: .clear).cropped(to: canvasRect)
+        var hasVisibleFocus = false
+
+        for spotlight in spotlights {
+            let normalizedRect = spotlight.sourceRect.clamped()
+            let authoredRect = CGRect(
+                x: sourceExtent.minX + sourceExtent.width * normalizedRect.x,
+                y: sourceExtent.minY + sourceExtent.height
+                    * (1 - normalizedRect.y - normalizedRect.height),
+                width: sourceExtent.width * normalizedRect.width,
+                height: sourceExtent.height * normalizedRect.height
+            )
+            let visibleRect = authoredRect.intersection(cropRect)
+            guard !visibleRect.isNull,
+                  visibleRect.width > 1,
+                  visibleRect.height > 1 else { continue }
+
+            let authoredRadius = min(authoredRect.width, authoredRect.height)
+                * spotlight.cornerRadius
+            let sourceMask = roundedMask(
+                rect: authoredRect,
+                radius: authoredRadius
+            )
+            let placedMask = sourceMask
+                .cropped(to: cropRect)
+                .transformed(by: CGAffineTransform(
+                    translationX: -cropRect.minX,
+                    y: -cropRect.minY
+                ))
+                .transformed(by: CGAffineTransform(
+                    scaleX: finalScale,
+                    y: finalScale
+                ))
+                .transformed(by: CGAffineTransform(
+                    translationX: placedCropRect.minX,
+                    y: placedCropRect.minY
+                ))
+            let maskExtent = placedMask.extent.intersection(finalRect)
+            guard !maskExtent.isNull,
+                  maskExtent.width > 0,
+                  maskExtent.height > 0 else { continue }
+            let clippedMask = placedMask.applyingFilter(
+                "CIBlendWithMask",
+                parameters: [
+                    kCIInputBackgroundImageKey: CIImage(color: .clear)
+                        .cropped(to: maskExtent),
+                    kCIInputMaskImageKey: visibleScreenMask,
+                ]
+            ).cropped(to: maskExtent)
+            let outputMask: CIImage
+            if identityProjection {
+                outputMask = clippedMask
+            } else if let projected = perspectiveTransform(
+                clippedMask,
+                sourceRect: projectionRect,
+                contentExtent: clippedMask.extent,
+                mapping: mapping
+            ) {
+                outputMask = projected
+            } else {
+                continue
+            }
+            let progress = spotlight.transitionProgress
+            let transitioningMask = outputMask.applyingFilter(
+                "CIColorMatrix",
+                parameters: [
+                    "inputRVector": CIVector(x: progress, y: 0, z: 0, w: 0),
+                    "inputGVector": CIVector(x: 0, y: progress, z: 0, w: 0),
+                    "inputBVector": CIVector(x: 0, y: 0, z: progress, w: 0),
+                    "inputAVector": CIVector(x: 0, y: 0, z: 0, w: progress),
+                ]
+            )
+            focusMask = transitioningMask
+                .composited(over: focusMask)
+                .cropped(to: canvasRect)
+            hasVisibleFocus = true
+        }
+        guard hasVisibleFocus else { return base }
+
+        let styleScale = max(min(canvasRect.width, canvasRect.height), 1) / 1_080
+        let blurRadius = spotlights.reduce(0.0) { radius, spotlight in
+            max(
+                radius,
+                (4 + spotlight.intensity * 44)
+                    * styleScale
+                    * spotlight.transitionProgress
+            )
+        }
+        let softenedBase = base.clampedToExtent()
+            .applyingFilter(
+                "CIGaussianBlur",
+                parameters: [kCIInputRadiusKey: blurRadius]
+            )
+            .cropped(to: canvasRect)
+        let dimming = spotlights.map {
+            $0.spotlightDimming * $0.transitionProgress
+        }.max() ?? 0
+        let softenedOutside: CIImage
+        if dimming > 0.001 {
+            softenedOutside = CIImage(
+                color: CIColor(red: 0, green: 0, blue: 0, alpha: dimming)
+            )
+            .cropped(to: canvasRect)
+            .composited(over: softenedBase)
+            .cropped(to: canvasRect)
+        } else {
+            softenedOutside = softenedBase
+        }
+        return base.applyingFilter(
+            "CIBlendWithMask",
+            parameters: [
+                kCIInputBackgroundImageKey: softenedOutside,
+                kCIInputMaskImageKey: focusMask,
+            ]
+        ).cropped(to: canvasRect)
     }
 
     nonisolated static func coreImageRect(
@@ -155,7 +394,10 @@ enum SharedFrameRenderer {
         canvasRect: CGRect
     ) -> CIImage? {
         let transparent = CIImage(color: .clear).cropped(to: canvasRect)
-        let normalizedSource = normalized(source)
+        let normalizedSource = SharedFrameOverlayRenderer.applyingMosaics(
+            scene.mosaics,
+            to: normalized(source)
+        )
         let cropRect = sourceCropRect(
             sourceExtent: normalizedSource.extent,
             crop: scene.sourceCrop
@@ -208,7 +450,15 @@ enum SharedFrameRenderer {
                 )
             )
 
-        let finalMask = roundedMask(rect: finalRect, radius: scene.cornerRadius)
+        // Picture rounding belongs to the plain-picture style. Once window or
+        // browser chrome is selected, recorded pixels fill the opening and the
+        // independent chrome silhouette clips the complete card exactly once.
+        let finalMask: CIImage = switch scene.decoration {
+        case .none:
+            roundedMask(rect: finalRect, radius: scene.cornerRadius)
+        case .chrome:
+            CIImage(color: .white).cropped(to: finalRect)
+        }
         let crispSource = transformed.applyingFilter(
             "CIBlendWithMask",
             parameters: [
@@ -240,6 +490,13 @@ enum SharedFrameRenderer {
             let layer = screenChromeLayer(chrome, canvasRect: canvasRect)
             chromeLayer = layer
             decoratedLayer = crispSource.composited(over: layer)
+                .applyingFilter(
+                    "CIBlendWithMask",
+                    parameters: [
+                        kCIInputBackgroundImageKey: transparent,
+                        kCIInputMaskImageKey: projectionMask,
+                    ]
+                )
         }
         var projectionSourceRect = projectionRect
         var borderLayer: CIImage?
@@ -268,9 +525,9 @@ enum SharedFrameRenderer {
             projectionSourceRect = projectionSourceRect.union(borderRect)
         }
 
-        let attachedCursor: CursorLayer? = if let cursorScene = attachedCursorScene,
+        let attachedCursor: SharedFrameCursorLayer? = if let cursorScene = attachedCursorScene,
                                              let cursorSource = attachedCursorSource {
-            cursorLayer(
+            SharedFrameCursorRenderer.layer(
                 source: cursorSource,
                 scene: cursorScene,
                 canvasRect: canvasRect
@@ -291,31 +548,36 @@ enum SharedFrameRenderer {
             projectedLayer = decoratedLayer
         } else {
             // Every screen sublayer shares the exact same authored quad. Solve
-            // its 8×8 homography once for this temporal sample, then reuse it
-            // for native pixels, chrome, border and an attached cursor. The old
-            // path solved and allocated the matrix independently for each
-            // sublayer (up to 128 solves for one 32-sample blur frame).
+            // its 8×8 homography once, then reuse it for native pixels, chrome,
+            // border and an attached cursor.
             let projectionMapping = projectionMapping(
                 projectedQuad: scene.projectedQuad,
                 canvasHeight: canvasRect.height
             )
             // Clip rounded corners in native source coordinates before the
-            // single perspective sample. Projecting a second full-card mask
-            // would preserve sharpness but add another perspective kernel to
-            // every temporal sample in full-resolution preview.
-            let sourceCornerRadius = scene.cornerRadius / max(finalScale, 0.000_1)
-            let nativeMask = roundedMask(
-                rect: croppedSource.extent,
-                radius: sourceCornerRadius
-            )
-            let nativeTransparent = CIImage(color: .clear).cropped(to: croppedSource.extent)
-            let nativeClippedSource = croppedSource.applyingFilter(
-                "CIBlendWithMask",
-                parameters: [
-                    kCIInputBackgroundImageKey: nativeTransparent,
-                    kCIInputMaskImageKey: nativeMask,
-                ]
-            )
+            // single perspective pass. Projecting a second full-card mask
+            // would add another perspective kernel in full-resolution preview.
+            let nativeClippedSource: CIImage
+            switch scene.decoration {
+            case .none:
+                let sourceCornerRadius = scene.cornerRadius
+                    / max(finalScale, 0.000_1)
+                let nativeMask = roundedMask(
+                    rect: croppedSource.extent,
+                    radius: sourceCornerRadius
+                )
+                let nativeTransparent = CIImage(color: .clear)
+                    .cropped(to: croppedSource.extent)
+                nativeClippedSource = croppedSource.applyingFilter(
+                    "CIBlendWithMask",
+                    parameters: [
+                        kCIInputBackgroundImageKey: nativeTransparent,
+                        kCIInputMaskImageKey: nativeMask,
+                    ]
+                )
+            case .chrome:
+                nativeClippedSource = croppedSource
+            }
             if let directSource = directPerspectiveTransform(
                 nativeClippedSource,
                 canonicalDestinationRect: transformed.extent,
@@ -336,8 +598,23 @@ enum SharedFrameRenderer {
                        sourceRect: projectionRect,
                        contentExtent: projectionRect,
                        mapping: projectionMapping
-                   ) {
+                ) {
                     projected = projected.composited(over: projectedChrome)
+                    if let projectedMask = perspectiveTransform(
+                        projectionMask,
+                        sourceRect: projectionRect,
+                        contentExtent: projectionRect,
+                        mapping: projectionMapping
+                    ) {
+                        projected = projected.applyingFilter(
+                            "CIBlendWithMask",
+                            parameters: [
+                                kCIInputBackgroundImageKey: CIImage(color: .clear)
+                                    .cropped(to: canvasRect),
+                                kCIInputMaskImageKey: projectedMask,
+                            ]
+                        )
+                    }
                 }
                 if let borderLayer,
                    let projectedBorder = perspectiveTransform(
@@ -670,211 +947,6 @@ enum SharedFrameRenderer {
         return crop
     }
 
-    private nonisolated static func renderCursor(
-        source: CIImage,
-        scene: FrameCursorScene,
-        over background: CIImage,
-        canvasRect: CGRect
-    ) -> CIImage {
-        guard let layer = cursorLayer(
-            source: source,
-            scene: scene,
-            canvasRect: canvasRect
-        ) else { return background }
-        return layer.image.composited(over: background).cropped(to: canvasRect)
-    }
-
-    private struct CursorLayer {
-        var image: CIImage
-        var footprint: CGRect
-    }
-
-    private nonisolated static func cursorLayer(
-        source: CIImage,
-        scene: FrameCursorScene,
-        canvasRect: CGRect
-    ) -> CursorLayer? {
-        let normalizedSource = normalized(source)
-        guard normalizedSource.extent.width > 0,
-              normalizedSource.extent.height > 0 else { return nil }
-        let layout = scene.layout
-        let scaled = normalizedSource.transformed(
-            by: CGAffineTransform(
-                scaleX: layout.size.width / normalizedSource.extent.width,
-                y: layout.size.height / normalizedSource.extent.height
-            )
-        )
-        let placed = scaled.transformed(
-            by: CGAffineTransform(
-                translationX: layout.origin.x,
-                y: Double(canvasRect.maxY) - layout.origin.y - layout.size.height
-            )
-        )
-
-        var layer = placed
-        var footprint = placed.extent
-        if scene.isClicking {
-            let pointer = CGPoint(
-                x: layout.pointer.x,
-                y: Double(canvasRect.maxY) - layout.pointer.y
-            )
-            let progress = scene.clickPhase?.progress ?? 0.25
-            let effectiveColor = scene.effectiveClickColor
-            if let clickGeom = CursorRenderGeometry.clickGeometry(
-                style: scene.clickStyle,
-                progress: progress,
-                baseHeight: layout.size.height,
-                opacityMultiplier: scene.clickOpacity,
-                scaleMultiplier: scene.clickScale
-            ) {
-                var clickLayerAccum: CIImage?
-
-                if scene.clickStyle == .glow {
-                    let diameter = CGFloat(clickGeom.primaryDiameter)
-                    let outerRect = CGRect(
-                        x: pointer.x - diameter / 2,
-                        y: pointer.y - diameter / 2,
-                        width: diameter,
-                        height: diameter
-                    )
-                    let r = diameter / 2
-                    if let gradient = CIFilter(name: "CIRadialGradient", parameters: [
-                        "inputCenter": CIVector(x: pointer.x, y: pointer.y),
-                        "inputRadius0": 0.0,
-                        "inputRadius1": r,
-                        "inputColor0": CIColor(effectiveColor, alpha: CGFloat(clickGeom.primaryOpacity)),
-                        "inputColor1": CIColor(effectiveColor, alpha: 0.0)
-                    ])?.outputImage?.cropped(to: outerRect) {
-                        clickLayerAccum = gradient
-                        footprint = footprint.union(outerRect)
-                    }
-                } else {
-                    // Render secondary shape first (spark dot, inner ring, or bounce bubble)
-                    if clickGeom.secondaryDiameter > 0 && clickGeom.secondaryOpacity > 0.001 {
-                        let secDiameter = CGFloat(clickGeom.secondaryDiameter)
-                        let secOuterRect = CGRect(
-                            x: pointer.x - secDiameter / 2,
-                            y: pointer.y - secDiameter / 2,
-                            width: secDiameter,
-                            height: secDiameter
-                        )
-                        let secImage: CIImage
-                        if clickGeom.secondaryIsFilled {
-                            secImage = coloredLayer(
-                                color: CIColor(effectiveColor, alpha: CGFloat(clickGeom.secondaryOpacity)),
-                                mask: roundedMask(rect: secOuterRect, radius: secDiameter / 2),
-                                canvasRect: canvasRect
-                            )
-                        } else {
-                            let secInnerRect = secOuterRect.insetBy(
-                                dx: CGFloat(clickGeom.secondaryLineWidth),
-                                dy: CGFloat(clickGeom.secondaryLineWidth)
-                            )
-                            secImage = coloredLayer(
-                                color: CIColor(effectiveColor, alpha: CGFloat(clickGeom.secondaryOpacity)),
-                                mask: ringMask(
-                                    outer: roundedMask(rect: secOuterRect, radius: secDiameter / 2),
-                                    inner: roundedMask(rect: secInnerRect, radius: max(secInnerRect.width / 2, 0)),
-                                    canvasRect: canvasRect
-                                ),
-                                canvasRect: canvasRect
-                            )
-                        }
-                        clickLayerAccum = secImage
-                        footprint = footprint.union(secOuterRect)
-                    }
-
-                    // Render accent burst dots (for burst style)
-                    if clickGeom.accentSize > 0 && clickGeom.accentOpacity > 0.001 && clickGeom.accentOffset > 0 {
-                        let sz = CGFloat(clickGeom.accentSize)
-                        let offset = CGFloat(clickGeom.accentOffset)
-                        let accentPositions = [
-                            CGPoint(x: pointer.x, y: pointer.y - offset),
-                            CGPoint(x: pointer.x, y: pointer.y + offset),
-                            CGPoint(x: pointer.x - offset, y: pointer.y),
-                            CGPoint(x: pointer.x + offset, y: pointer.y),
-                        ]
-                        for pos in accentPositions {
-                            let dotRect = CGRect(x: pos.x - sz / 2, y: pos.y - sz / 2, width: sz, height: sz)
-                            let dotImg = coloredLayer(
-                                color: CIColor(effectiveColor, alpha: CGFloat(clickGeom.accentOpacity)),
-                                mask: roundedMask(rect: dotRect, radius: sz / 2),
-                                canvasRect: canvasRect
-                            )
-                            clickLayerAccum = clickLayerAccum?.composited(over: dotImg) ?? dotImg
-                            footprint = footprint.union(dotRect)
-                        }
-                    }
-
-                    // Render primary shape (outer ring, main pulse ring, etc.)
-                    if clickGeom.primaryDiameter > 0 && clickGeom.primaryOpacity > 0.001 {
-                        let diameter = CGFloat(clickGeom.primaryDiameter)
-                        let outerRect = CGRect(
-                            x: pointer.x - diameter / 2,
-                            y: pointer.y - diameter / 2,
-                            width: diameter,
-                            height: diameter
-                        )
-                        let primaryImage: CIImage
-                        if clickGeom.primaryIsFilled {
-                            primaryImage = coloredLayer(
-                                color: CIColor(effectiveColor, alpha: CGFloat(clickGeom.primaryOpacity)),
-                                mask: roundedMask(rect: outerRect, radius: diameter / 2),
-                                canvasRect: canvasRect
-                            )
-                        } else {
-                            let innerRect = outerRect.insetBy(
-                                dx: CGFloat(clickGeom.primaryLineWidth),
-                                dy: CGFloat(clickGeom.primaryLineWidth)
-                            )
-                            primaryImage = coloredLayer(
-                                color: CIColor(effectiveColor, alpha: CGFloat(clickGeom.primaryOpacity)),
-                                mask: ringMask(
-                                    outer: roundedMask(rect: outerRect, radius: diameter / 2),
-                                    inner: roundedMask(rect: innerRect, radius: max(innerRect.width / 2, 0)),
-                                    canvasRect: canvasRect
-                                ),
-                                canvasRect: canvasRect
-                            )
-                        }
-                        clickLayerAccum = clickLayerAccum != nil ? primaryImage.composited(over: clickLayerAccum!) : primaryImage
-                        footprint = footprint.union(outerRect)
-                    }
-                }
-
-                if let clickLayerAccum {
-                    layer = placed.composited(over: clickLayerAccum)
-                }
-            } else {
-                let diameter = CGFloat(layout.clickDiameter) * CGFloat(scene.clickScale)
-                let outerRect = CGRect(
-                    x: pointer.x - diameter / 2,
-                    y: pointer.y - diameter / 2,
-                    width: diameter,
-                    height: diameter
-                )
-                let innerRect = outerRect.insetBy(
-                    dx: layout.clickLineWidth,
-                    dy: layout.clickLineWidth
-                )
-                let ring = coloredLayer(
-                    color: CIColor(effectiveColor, alpha: CGFloat(scene.clickOpacity)),
-                    mask: ringMask(
-                        outer: roundedMask(rect: outerRect, radius: diameter / 2),
-                        inner: roundedMask(rect: innerRect, radius: innerRect.width / 2),
-                        canvasRect: canvasRect
-                    ),
-                    canvasRect: canvasRect
-                )
-                layer = placed.composited(over: ring)
-                footprint = footprint.union(outerRect)
-            }
-        }
-        return CursorLayer(
-            image: layer.cropped(to: footprint),
-            footprint: footprint
-        )
-    }
 
     /// The tolerance is intentionally sub-pixel. Authored zero rotations are
     /// mathematically exact, while negligible floating-point residue from an

@@ -59,6 +59,8 @@ struct EditorExportEstimate: Equatable, Sendable {
 
 struct ExportSheet: View {
     let wallpaperURLResolver: EditorSessionContext.WallpaperURLResolver
+    let projectAssetURLResolver: EditorSessionContext.ProjectAssetURLResolver
+    let projectDisplayName: String
     @ObservedObject var exporter: VideoExporter
     @ObservedObject var editorStore: EditorStore
     @ObservedObject var mediaSession: EditorMediaSession
@@ -67,11 +69,15 @@ struct ExportSheet: View {
 
     init(
         wallpaperURLResolver: @escaping EditorSessionContext.WallpaperURLResolver,
+        projectAssetURLResolver: @escaping EditorSessionContext.ProjectAssetURLResolver,
+        projectDisplayName: String,
         exporter: VideoExporter,
         editorStore: EditorStore,
         mediaSession: EditorMediaSession
     ) {
         self.wallpaperURLResolver = wallpaperURLResolver
+        self.projectAssetURLResolver = projectAssetURLResolver
+        self.projectDisplayName = projectDisplayName
         self.exporter = exporter
         self.editorStore = editorStore
         self.mediaSession = mediaSession
@@ -82,28 +88,17 @@ struct ExportSheet: View {
             HStack {
                 Text("导出").font(.title2.weight(.semibold))
                 Spacer()
-                if exporter.isExporting {
-                    Text("\(Int((exporter.exportProgress * 100).rounded()))%")
-                        .font(.system(.headline, design: .monospaced).weight(.semibold))
-                        .foregroundStyle(editorAccent)
-                        .contentTransition(.numericText())
-                        .accessibilityLabel("导出进度")
-                }
-                Button {
-                    if exporter.isExporting {
-                        exporter.cancelExport()
-                    } else {
+                if !exporter.isExporting {
+                    Button {
                         dismiss()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
                     }
-                } label: {
-                    Image(systemName: exporter.isExporting
-                        ? "stop.circle.fill"
-                        : "xmark.circle.fill")
-                }
                     .buttonStyle(.plain)
-                    .foregroundStyle(exporter.isExporting ? Color.orange : Color.secondary)
-                    .help(exporter.isExporting ? "取消导出" : "关闭导出面板")
-                    .accessibilityLabel(exporter.isExporting ? "取消导出" : "关闭导出面板")
+                    .foregroundStyle(Color.secondary)
+                    .help("关闭导出面板")
+                    .accessibilityLabel("关闭导出面板")
+                }
             }
             .padding(.horizontal, 22)
             .padding(.vertical, 18)
@@ -125,6 +120,7 @@ struct ExportSheet: View {
                         }
                         .labelsHidden()
                         .frame(width: 160)
+                        .disabled(exporter.isExporting)
                     }
                     LabeledContent("分辨率") {
                         Picker("", selection: resolutionBinding) {
@@ -134,9 +130,10 @@ struct ExportSheet: View {
                         }
                         .labelsHidden()
                         .frame(width: 160)
+                        .disabled(exporter.isExporting)
                     }
                     if let outputEstimate {
-                        LabeledContent("预计大小") {
+                        LabeledContent("建议预留") {
                             Text(
                                 "约 \(ByteCountFormatter.string(fromByteCount: outputEstimate.byteCount, countStyle: .file))"
                             )
@@ -144,37 +141,13 @@ struct ExportSheet: View {
                         }
                     }
 
-                    HStack(spacing: 8) {
-                        Image(systemName: "bolt.fill").foregroundStyle(.green)
-                        Text("优先使用 VideoToolbox 硬件编码，自动回退软件编码。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(10)
-                    .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
-
-                    HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: "info.circle.fill").foregroundStyle(.orange)
-                        Text(
-                            "录制素材保留可变帧率与真实时间戳；导出会按所选帧率精确重采样，"
-                                + "不会增加源素材没有的动态细节。"
-                        )
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .padding(10)
-                    .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
                 }
                 .padding(.horizontal, 22)
-
-                Spacer(minLength: 0)
 
                 exportStatusRegion
                     .padding(.horizontal, 22)
             }
             .padding(.vertical, 20)
-            .frame(maxHeight: .infinity)
 
             Divider().overlay(dividerColor)
 
@@ -186,10 +159,14 @@ struct ExportSheet: View {
                         .frame(maxWidth: .infinity, alignment: .center)
                 }
                 Button {
-                    startExport()
+                    if exporter.isExporting {
+                        exporter.cancelExport()
+                    } else {
+                        startExport()
+                    }
                 } label: {
                     Text(exporter.isExporting
-                        ? "正在导出 \(Int((exporter.exportProgress * 100).rounded()))%"
+                        ? "取消导出"
                         : "导出 MP4")
                         .fontWeight(.semibold)
                         .frame(maxWidth: .infinity)
@@ -197,20 +174,18 @@ struct ExportSheet: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .foregroundStyle(Color.black.opacity(0.85))
-                .tint(editorAccent)
-                .disabled(exporter.isExporting || mediaSession.prepared == nil)
+                .tint(exporter.isExporting ? Color.orange : editorAccent)
+                .disabled(!exporter.isExporting && mediaSession.prepared == nil)
             }
             .padding(18)
         }
-        .frame(width: 440, height: 520)
+        .frame(width: 440)
         .background(panelBackground)
         .interactiveDismissDisabled(exporter.isExporting)
     }
 
     @ViewBuilder
     private var exportStatusRegion: some View {
-        // A fixed-height status slot keeps the options and primary action at
-        // identical positions before, during and after a render.
         VStack(alignment: .leading, spacing: 8) {
             if exporter.isExporting {
                 ProgressView(value: exporter.exportProgress, total: 1) {
@@ -219,10 +194,6 @@ struct ExportSheet: View {
                     Text("\(Int((exporter.exportProgress * 100).rounded()))%")
                         .font(.system(.caption, design: .monospaced))
                 }
-                Button("取消导出", role: .cancel) {
-                    exporter.cancelExport()
-                }
-                .buttonStyle(.link)
             } else if mediaSession.prepared == nil {
                 HStack(alignment: .top, spacing: 8) {
                     if mediaSession.errorMessage == nil {
@@ -239,6 +210,9 @@ struct ExportSheet: View {
                 Label("导出完成", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
                     .font(.caption.weight(.semibold))
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("导出状态")
+                    .accessibilityValue("导出完成")
                 Button("在 Finder 中显示导出文件") {
                     NSWorkspace.shared.activateFileViewerSelecting([url])
                 }
@@ -247,6 +221,9 @@ struct ExportSheet: View {
                 Label("已就绪，导出时再选择保存位置", systemImage: "checkmark.circle")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("导出状态")
+                    .accessibilityValue("已就绪，导出时再选择保存位置")
             }
 
             if let message = exporter.errorMessage ?? requestErrorMessage {
@@ -257,7 +234,8 @@ struct ExportSheet: View {
             }
         }
         .padding(10)
-        .frame(maxWidth: .infinity, minHeight: 68, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .fixedSize(horizontal: false, vertical: true)
         .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
     }
 
@@ -333,6 +311,15 @@ struct ExportSheet: View {
                 project: project,
                 preparedMedia: preparedMedia,
                 wallpaperURL: wallpaperURLResolver(project.canvas.backgroundSource),
+                stickerURLs: Dictionary(
+                    uniqueKeysWithValues: Set(
+                        project.timeline.stickerClips.map(\.relativePath)
+                    ).compactMap { relativePath in
+                        projectAssetURLResolver(relativePath).map {
+                            (relativePath, $0)
+                        }
+                    }
+                ),
                 outputURL: outputURL
             )
             exporter.export(request: request)
@@ -343,7 +330,8 @@ struct ExportSheet: View {
 
     private func chooseExportURL(for project: RecorderProject) -> URL? {
         let suggested = try? EditorExportRequestBuilder.makeDefaultOutputURL(
-            for: project
+            for: project,
+            preferredProjectName: projectDisplayName
         )
         let panel = NSSavePanel()
         panel.title = "选择成片导出位置"
@@ -353,7 +341,7 @@ struct ExportSheet: View {
         panel.isExtensionHidden = false
         panel.directoryURL = AppPreferences.exportDirectoryURL
         panel.nameFieldStringValue = suggested?.lastPathComponent
-            ?? "\(project.title).mp4"
+            ?? "\(projectDisplayName)-\(project.exportSettings.frameRate.rawValue)fps.mp4"
         guard panel.runModal() == .OK, let url = panel.url else { return nil }
         AppPreferences.rememberExportDirectory(url.deletingLastPathComponent())
         return url

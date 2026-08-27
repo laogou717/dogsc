@@ -11,10 +11,11 @@ import Foundation
 /// screen-frame decoration selected by the editor. Version 7 makes the source
 /// recording's native pixel dimensions the default full-quality canvas.
 /// Version 8 persists camera framing inside its mask independently from the
-/// mask's own canvas position and size.
+/// mask's own canvas position and size. Version 9 adds segment playback rates,
+/// redactions, stickers and the authored chapter progress overlay.
 public enum ProjectSchema {
     public static let minimumSupportedVersion = 1
-    public static let currentVersion = 8
+    public static let currentVersion = 9
 
     static func validateForDecoding(_ version: Int) throws {
         guard version >= minimumSupportedVersion else {
@@ -341,6 +342,10 @@ public struct CursorStyle: Codable, Equatable, Sendable {
     public var clickColor: HexColor?
     public var clickOpacity: Double
     public var clickScale: Double
+    /// User-facing strength of the hotspot-anchored cursor body swing.
+    /// `1` preserves the original tuned response, `0` disables the swing,
+    /// and values above `1` make slower motion react more visibly.
+    public var motionTiltStrength: Double
 
     public var showsClickEffect: Bool {
         get { clickEffectStyle != .none }
@@ -361,7 +366,8 @@ public struct CursorStyle: Codable, Equatable, Sendable {
         clickEffectStyle: CursorClickEffectStyle = .ripple,
         clickColor: HexColor? = nil,
         clickOpacity: Double = 0.8,
-        clickScale: Double = 1.0
+        clickScale: Double = 1.0,
+        motionTiltStrength: Double = 1.0
     ) {
         self.assetID = assetID.rawValue.isEmpty ? .systemArrow : assetID
         self.size = min(max(size, 0.25), 6)
@@ -371,6 +377,7 @@ public struct CursorStyle: Codable, Equatable, Sendable {
         self.clickColor = clickColor
         self.clickOpacity = min(max(clickOpacity, 0.05), 1.0)
         self.clickScale = min(max(clickScale, 0.4), 3.0)
+        self.motionTiltStrength = min(max(motionTiltStrength, 0), 2)
     }
 
     public init(
@@ -451,7 +458,9 @@ public struct CursorStyle: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case assetID, appearance, size, hideWhenIdle, idleDelay, showsClickEffect, clickEffectStyle, clickColor, clickOpacity, clickScale
+        case assetID, appearance, size, hideWhenIdle, idleDelay
+        case showsClickEffect, clickEffectStyle, clickColor, clickOpacity, clickScale
+        case motionTiltStrength
     }
 
     public init(from decoder: any Decoder) throws {
@@ -485,7 +494,11 @@ public struct CursorStyle: Codable, Equatable, Sendable {
             clickEffectStyle: effectiveStyle,
             clickColor: try container.decodeIfPresent(HexColor.self, forKey: .clickColor),
             clickOpacity: try container.decodeIfPresent(Double.self, forKey: .clickOpacity) ?? 0.8,
-            clickScale: try container.decodeIfPresent(Double.self, forKey: .clickScale) ?? 1.0
+            clickScale: try container.decodeIfPresent(Double.self, forKey: .clickScale) ?? 1.0,
+            motionTiltStrength: try container.decodeIfPresent(
+                Double.self,
+                forKey: .motionTiltStrength
+            ) ?? 1.0
         )
     }
 
@@ -582,6 +595,9 @@ public struct CanvasStyle: Codable, Equatable, Sendable {
     public var backgroundBlur: Double
     public var insetOpacity: Double
     public var screenFrame: ScreenFrameStyle
+    /// Scales the authored toolbar and bezel measurements of a screen frame
+    /// without changing the recorded content itself.
+    public var screenFrameScale: Double
 
     public init(
         aspectRatio: CanvasAspectRatio = .adaptive,
@@ -596,7 +612,8 @@ public struct CanvasStyle: Codable, Equatable, Sendable {
         shadowStrength: Double = 0.28,
         backgroundBlur: Double = 0,
         insetOpacity: Double = 0.125,
-        screenFrame: ScreenFrameStyle = .none
+        screenFrame: ScreenFrameStyle = .none,
+        screenFrameScale: Double = 1
     ) {
         self.aspectRatio = aspectRatio
         self.backgroundSource = backgroundSource
@@ -611,6 +628,7 @@ public struct CanvasStyle: Codable, Equatable, Sendable {
         self.backgroundBlur = backgroundBlur
         self.insetOpacity = insetOpacity
         self.screenFrame = screenFrame
+        self.screenFrameScale = min(max(screenFrameScale, 0.6), 1.6)
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -633,6 +651,7 @@ public struct CanvasStyle: Codable, Equatable, Sendable {
         case backgroundBlur
         case insetOpacity
         case screenFrame
+        case screenFrameScale
     }
 
     public init(from decoder: any Decoder) throws {
@@ -696,6 +715,10 @@ public struct CanvasStyle: Codable, Equatable, Sendable {
         insetOpacity = try container.decodeIfPresent(Double.self, forKey: .insetOpacity) ?? 0.125
         screenFrame = try container.decodeIfPresent(ScreenFrameStyle.self, forKey: .screenFrame)
             ?? .none
+        screenFrameScale = min(max(
+            try container.decodeIfPresent(Double.self, forKey: .screenFrameScale) ?? 1,
+            0.6
+        ), 1.6)
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -713,6 +736,7 @@ public struct CanvasStyle: Codable, Equatable, Sendable {
         try container.encode(backgroundBlur, forKey: .backgroundBlur)
         try container.encode(insetOpacity, forKey: .insetOpacity)
         try container.encode(screenFrame, forKey: .screenFrame)
+        try container.encode(screenFrameScale, forKey: .screenFrameScale)
     }
 
     private static func migrateLegacyBackground(
@@ -998,13 +1022,11 @@ public struct MotionStyle: Codable, Equatable, Sendable {
         self.defaultZoomTransitionDuration = min(max(defaultZoomTransitionDuration, 0.05), 5)
     }
 
-    /// MOT-002/PRE-004: temporal blur is an explicit per-project effect, not a
-    /// recorder preference. Starting another recording may keep the selected
-    /// spring preset, but it must not silently inherit an enabled blur switch
-    /// and make an otherwise untouched source look grey/soft on first open.
+    /// New recordings use the inexpensive layer-local motion treatment by
+    /// default. Existing projects retain the switch persisted in their file.
     public func preparedForNewRecording() -> MotionStyle {
         var result = self
-        result.frameMotionBlur.isEnabled = false
+        result.frameMotionBlur.isEnabled = true
         return result
     }
 
@@ -1024,7 +1046,7 @@ public struct MotionStyle: Codable, Equatable, Sendable {
             frameMotionBlur: try container.decodeIfPresent(
                 MotionBlurDescriptor.self,
                 forKey: .frameMotionBlur
-            ) ?? MotionBlurDescriptor(),
+            ) ?? MotionBlurDescriptor(isEnabled: false),
             screenSpringMass: try container.decodeIfPresent(Double.self, forKey: .screenSpringMass) ?? 2.4,
             screenSpringStiffness: try container.decodeIfPresent(Double.self, forKey: .screenSpringStiffness) ?? 210,
             screenSpringDamping: try container.decodeIfPresent(Double.self, forKey: .screenSpringDamping) ?? 42,
@@ -1037,72 +1059,6 @@ public struct MotionStyle: Codable, Equatable, Sendable {
                 forKey: .defaultZoomTransitionDuration
             ) ?? 0.7
         )
-    }
-}
-
-/// CAM-007: product-level camera feels layered over editable spring values.
-/// Presets are recognized from their concrete values instead of adding a new
-/// persisted flag, so existing hand-tuned projects remain "custom" and are
-/// never silently rewritten during decoding.
-public enum AutomaticCameraMotionPreset: String, CaseIterable, Identifiable, Sendable {
-    case gentle = "柔和跟随"
-    case natural = "标准聚焦"
-    case responsive = "快速强调"
-    case custom = "自定义"
-
-    public var id: String { rawValue }
-
-    public init(motion: MotionStyle) {
-        self = Self.authoredCases.first(where: { $0.matches(motion) }) ?? .custom
-    }
-
-    public func applying(to source: MotionStyle) -> MotionStyle {
-        guard self != .custom else { return source }
-        var result = source
-        switch self {
-        case .gentle:
-            result.screen = .smooth
-            result.screenSpringMass = 3.2
-            result.screenSpringStiffness = 150
-            result.screenSpringDamping = 52
-            result.defaultZoomEasing = .quintic
-            result.defaultZoomTransitionDuration = 0.85
-        case .natural:
-            result.screen = .focused
-            result.screenSpringMass = 2.4
-            result.screenSpringStiffness = 210
-            result.screenSpringDamping = 42
-            result.defaultZoomEasing = .spring
-            result.defaultZoomTransitionDuration = 0.7
-        case .responsive:
-            result.screen = .focused
-            result.screenSpringMass = 1.6
-            result.screenSpringStiffness = 320
-            result.screenSpringDamping = 47
-            result.defaultZoomEasing = .spring
-            result.defaultZoomTransitionDuration = 0.52
-        case .custom:
-            break
-        }
-        return result
-    }
-
-    private static let authoredCases: [AutomaticCameraMotionPreset] = [
-        .gentle, .natural, .responsive,
-    ]
-
-    private func matches(_ motion: MotionStyle) -> Bool {
-        let authored = applying(to: MotionStyle())
-        let tolerance = 0.000_001
-        return motion.screen == authored.screen
-            && abs(motion.screenSpringMass - authored.screenSpringMass) < tolerance
-            && abs(motion.screenSpringStiffness - authored.screenSpringStiffness) < tolerance
-            && abs(motion.screenSpringDamping - authored.screenSpringDamping) < tolerance
-            && motion.defaultZoomEasing == authored.defaultZoomEasing
-            && abs(
-                motion.defaultZoomTransitionDuration
-                    - authored.defaultZoomTransitionDuration
-            ) < tolerance
     }
 }
 

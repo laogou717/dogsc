@@ -27,11 +27,15 @@ enum EditorSelection: Equatable, Hashable, Sendable {
     case crop
     case zoomTrack
     case zoom(UUID)
+    case screenMotionTrack
     case screenMotion(UUID)
     case cursor
     case camera
     case cameraMotion(UUID)
     case audio(EditorAudioTrack)
+    case mosaic(UUID)
+    case sticker(UUID)
+    case progress
 }
 
 enum EditorTool: String, CaseIterable, Codable, Sendable {
@@ -460,8 +464,10 @@ enum ProjectCommand: Equatable, Sendable {
             return replacingAudio(in: before, with: after.audio)
         case .cursor:
             return replacingCursor(in: before, with: after.cursorStyle)
-        case .zoomTrack:
+        case .zoomTrack, .screenMotionTrack:
             return nil
+        case .mosaic, .sticker, .progress:
+            return replacingTimeline(in: before, with: after.timeline)
         case .zoom:
             // 缩放手势可能同时改动相邻片段（相接修复/回落时长归一），按整段
             // 数组比对并作为一次时间线替换提交，撤销才能精确还原全部改动。
@@ -471,7 +477,7 @@ enum ProjectCommand: Equatable, Sendable {
             return replacingTimeline(in: before, with: timeline)
         case let .screenMotion(id):
             guard let edited = after.timeline.screenMotionClips.first(where: { $0.id == id }) else {
-                throw ProjectCommandError.invalidTimeline(reason: "屏幕动画草稿不完整。")
+                throw ProjectCommandError.invalidTimeline(reason: "屏幕 3D 草稿不完整。")
             }
             let isolatedTimeline = try ProjectTimelineEditing.replacingScreenMotion(
                 id: id,
@@ -481,7 +487,7 @@ enum ProjectCommand: Equatable, Sendable {
             return replacingTimeline(in: before, with: isolatedTimeline)
         case let .cameraMotion(id):
             guard let edited = after.timeline.cameraMotionClips.first(where: { $0.id == id }) else {
-                throw ProjectCommandError.invalidTimeline(reason: "摄像头动画草稿不完整。")
+                throw ProjectCommandError.invalidTimeline(reason: "摄像运动草稿不完整。")
             }
             let isolatedTimeline = try ProjectTimelineEditing.replacingCameraMotion(
                 id: id,
@@ -507,16 +513,16 @@ enum ProjectCommandError: Error, Equatable, LocalizedError, Sendable {
         switch self {
         case let .staleState(domain):
             return "无法应用命令：\(domain) 已被其他编辑修改。"
-        case let .duplicateZoomID(id):
-            return "无法添加缩放：ID \(id) 已存在。"
-        case let .missingZoom(id):
-            return "无法修改缩放：找不到 ID \(id)。"
-        case let .mismatchedZoomID(expected, actual):
-            return "无法替换缩放：期望 ID \(expected)，实际为 \(actual)。"
-        case let .invalidZoom(id, reason):
-            return "缩放 \(id) 无效：\(reason)"
-        case let .overlappingZoom(id, otherID):
-            return "缩放 \(id) 与片段 \(otherID) 的生效区间重叠。"
+        case .duplicateZoomID:
+            return "无法添加缩放：轨道中已存在相同片段。"
+        case .missingZoom:
+            return "无法修改缩放：片段已不存在，请重新选择后再试。"
+        case .mismatchedZoomID:
+            return "无法替换缩放：片段已发生变化，请重新选择后再试。"
+        case let .invalidZoom(_, reason):
+            return "缩放片段无效：\(reason)"
+        case .overlappingZoom:
+            return "缩放片段的生效区间发生重叠。"
         case let .invalidTimeline(reason):
             return "时间线无效：\(reason)"
         case let .invalidProjectDomain(domain, reason):
@@ -912,7 +918,15 @@ final class EditorStore: ObservableObject {
             in: project,
             with: settings
         ) else { return }
-        try perform(command, actionName: actionName)
+        // Export choices are persisted with the project, but they are not an
+        // edit to the video itself. Keeping them out of the document undo
+        // stack means Cmd-Z still targets the user's last visible edit after
+        // the export sheet closes.
+        try apply(
+            command,
+            actionName: actionName ?? "调整导出设置",
+            registersUndo: false
+        )
     }
 
     func splitPrimarySegment(
@@ -928,6 +942,133 @@ final class EditorStore: ObservableObject {
             fullSourceDuration: fullSourceDuration
         )
         try replaceTimeline(with: timeline, actionName: actionName ?? "拆分主片段")
+    }
+
+    func setPrimarySegmentPlaybackRate(
+        id: UUID,
+        rate: Double,
+        fullSourceDuration: TimeInterval,
+        actionName: String? = nil
+    ) throws {
+        let timeline = try ProjectTimelineEditing.settingPlaybackRate(
+            rate,
+            for: id,
+            in: project.timeline,
+            fullSourceDuration: fullSourceDuration
+        )
+        try replaceTimeline(with: timeline, actionName: actionName ?? "调整片段速度")
+    }
+
+    @discardableResult
+    func addMosaic(
+        at time: TimeInterval,
+        outputDuration: TimeInterval,
+        actionName: String = "添加打码"
+    ) throws -> UUID {
+        let safeStart = min(
+            max(time, 0),
+            max(outputDuration - min(0.25, max(outputDuration, 0)), 0)
+        )
+        let clip = MosaicClip(
+            timing: OverlayTiming(
+                startTime: safeStart,
+                duration: max(
+                    min(3, outputDuration - safeStart),
+                    min(0.25, max(outputDuration, 0))
+                )
+            )
+        )
+        var timeline = project.timeline
+        timeline.mosaicClips.append(clip)
+        try replaceTimeline(with: timeline, actionName: actionName)
+        selection = .mosaic(clip.id)
+        return clip.id
+    }
+
+    @discardableResult
+    func addSticker(
+        relativePath: String,
+        at time: TimeInterval,
+        outputDuration: TimeInterval,
+        actionName: String = "添加贴图"
+    ) throws -> UUID {
+        let safeStart = min(
+            max(time, 0),
+            max(outputDuration - min(0.25, max(outputDuration, 0)), 0)
+        )
+        let activeStickers = project.timeline.stickerClips.filter {
+            $0.timing.contains(safeStart)
+        }
+        let candidatePositions = [
+            NormalizedPoint(x: 0.5, y: 0.5),
+            NormalizedPoint(x: 0.20, y: 0.22),
+            NormalizedPoint(x: 0.80, y: 0.22),
+            NormalizedPoint(x: 0.20, y: 0.78),
+            NormalizedPoint(x: 0.80, y: 0.78),
+            NormalizedPoint(x: 0.5, y: 0.20),
+            NormalizedPoint(x: 0.5, y: 0.80),
+            NormalizedPoint(x: 0.18, y: 0.5),
+            NormalizedPoint(x: 0.82, y: 0.5),
+        ]
+        let position = candidatePositions.max { lhs, rhs in
+            func clearance(_ candidate: NormalizedPoint) -> Double {
+                guard !activeStickers.isEmpty else {
+                    return candidate == candidatePositions[0] ? 1 : 0
+                }
+                return activeStickers.map {
+                    hypot(
+                        candidate.x - $0.position.x,
+                        candidate.y - $0.position.y
+                    )
+                }.min() ?? 0
+            }
+            return clearance(lhs) < clearance(rhs)
+        } ?? candidatePositions[0]
+        let clip = StickerClip(
+            timing: OverlayTiming(
+                startTime: safeStart,
+                duration: max(
+                    min(3, outputDuration - safeStart),
+                    min(0.25, max(outputDuration, 0))
+                )
+            ),
+            relativePath: relativePath,
+            position: position,
+            width: activeStickers.isEmpty ? 0.38 : 0.28,
+            layerIndex: (project.timeline.stickerClips.map(\.layerIndex).max() ?? -1) + 1
+        )
+        var timeline = project.timeline
+        timeline.stickerClips.append(clip)
+        try replaceTimeline(with: timeline, actionName: actionName)
+        selection = .sticker(clip.id)
+        return clip.id
+    }
+
+    func enableProgressOverlay(actionName: String = "添加进度条") throws {
+        var timeline = project.timeline
+        guard timeline.progressOverlay == nil else {
+            selection = .progress
+            return
+        }
+        timeline.progressOverlay = ProgressOverlay()
+        try replaceTimeline(with: timeline, actionName: actionName)
+        selection = .progress
+    }
+
+    func removeSelectedOverlay(actionName: String = "删除叠加内容") throws {
+        var timeline = project.timeline
+        switch selection {
+        case let .mosaic(id):
+            timeline.mosaicClips.removeAll { $0.id == id }
+        case let .sticker(id):
+            timeline.stickerClips.removeAll { $0.id == id }
+        case .progress:
+            timeline.progressOverlay = nil
+        default:
+            return
+        }
+        try replaceTimeline(with: timeline, actionName: actionName)
+        selection = .canvas
     }
 
     func trimPrimarySegment(
@@ -1037,7 +1178,7 @@ final class EditorStore: ObservableObject {
 
     func insertScreenMotion(_ clip: ScreenMotionClip, actionName: String? = nil) throws {
         let timeline = try ProjectTimelineEditing.insertingScreenMotion(clip, in: project.timeline)
-        try replaceTimeline(with: timeline, actionName: actionName ?? "添加屏幕动画")
+        try replaceTimeline(with: timeline, actionName: actionName ?? "添加屏幕 3D")
     }
 
     func removeScreenMotion(id: UUID, actionName: String? = nil) throws {
@@ -1046,21 +1187,12 @@ final class EditorStore: ObservableObject {
             from: project.timeline,
             defaultReturn: project.motion.defaultZoomTransitionDuration
         )
-        try replaceTimeline(with: timeline, actionName: actionName ?? "删除屏幕动画")
-    }
-
-    func replaceScreenMotion(_ clip: ScreenMotionClip, actionName: String? = nil) throws {
-        let timeline = try ProjectTimelineEditing.replacingScreenMotion(
-            id: clip.id,
-            in: project.timeline,
-            with: clip
-        )
-        try replaceTimeline(with: timeline, actionName: actionName ?? "调整屏幕动画")
+        try replaceTimeline(with: timeline, actionName: actionName ?? "删除屏幕 3D")
     }
 
     func insertCameraMotion(_ clip: CameraMotionClip, actionName: String? = nil) throws {
         let timeline = try ProjectTimelineEditing.insertingCameraMotion(clip, in: project.timeline)
-        try replaceTimeline(with: timeline, actionName: actionName ?? "添加摄像头动画")
+        try replaceTimeline(with: timeline, actionName: actionName ?? "添加摄像运动")
     }
 
     func removeCameraMotion(id: UUID, actionName: String? = nil) throws {
@@ -1069,7 +1201,7 @@ final class EditorStore: ObservableObject {
             from: project.timeline,
             defaultReturn: project.motion.defaultZoomTransitionDuration
         )
-        try replaceTimeline(with: timeline, actionName: actionName ?? "删除摄像头动画")
+        try replaceTimeline(with: timeline, actionName: actionName ?? "删除摄像运动")
     }
 
     func replaceCameraMotion(_ clip: CameraMotionClip, actionName: String? = nil) throws {
@@ -1078,7 +1210,7 @@ final class EditorStore: ObservableObject {
             in: project.timeline,
             with: clip
         )
-        try replaceTimeline(with: timeline, actionName: actionName ?? "调整摄像头动画")
+        try replaceTimeline(with: timeline, actionName: actionName ?? "调整摄像运动")
     }
 
     func replaceProject(with replacement: RecorderProject, actionName: String? = nil) throws {
@@ -1107,7 +1239,14 @@ final class EditorStore: ObservableObject {
         try perform(command, actionName: actionName)
     }
 
-    private func apply(_ command: ProjectCommand, actionName: String, registersUndo: Bool) throws {
+    private func apply(
+        _ command: ProjectCommand,
+        actionName: String,
+        registersUndo: Bool,
+        restoresSelection: Bool = false,
+        restoredSelection: EditorSelection? = nil
+    ) throws {
+        let selectionBeforeApply = selection
         var nextProject = project
         try ProjectReducer.apply(command, to: &nextProject)
 
@@ -1117,18 +1256,35 @@ final class EditorStore: ObservableObject {
         document.replace(with: nextProject)
         projectSink?(nextProject)
         revision &+= 1
+        if restoresSelection {
+            selection = restoredSelection
+        }
 
         guard registersUndo, let undoManager else { return }
         let inverse = command.inverse
         undoManager.registerUndo(withTarget: self) { store in
-            store.performFromUndo(inverse, actionName: actionName)
+            store.performFromUndo(
+                inverse,
+                actionName: actionName,
+                restoredSelection: selectionBeforeApply
+            )
         }
         undoManager.setActionName(actionName)
     }
 
-    private func performFromUndo(_ command: ProjectCommand, actionName: String) {
+    private func performFromUndo(
+        _ command: ProjectCommand,
+        actionName: String,
+        restoredSelection: EditorSelection?
+    ) {
         do {
-            try apply(command, actionName: actionName, registersUndo: true)
+            try apply(
+                command,
+                actionName: actionName,
+                registersUndo: true,
+                restoresSelection: true,
+                restoredSelection: restoredSelection
+            )
         } catch {
             assertionFailure("Undo command failed: \(error)")
         }

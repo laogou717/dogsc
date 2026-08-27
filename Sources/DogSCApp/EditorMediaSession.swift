@@ -2,6 +2,7 @@ import AVFoundation
 import Combine
 import CoreGraphics
 import Foundation
+import OSLog
 import RecorderCore
 
 /// Stable file identity plus the version fields that can change while a URL
@@ -284,6 +285,9 @@ struct EditorPreparedMediaPayload {
 }
 
 struct EditorPreparedCameraSource {
+    /// Camera timing may be rebuilt after the initial loader has returned.
+    /// Retain the source asset alongside its original track.
+    let asset: AVURLAsset
     let track: AVAssetTrack
     let timeRange: CMTimeRange
     let preferredTransform: CGAffineTransform
@@ -323,6 +327,11 @@ enum EditorMediaSessionLifecycle: Equatable {
 @MainActor
 final class EditorMediaSession: ObservableObject {
     typealias Preparation = (EditorMediaRequest) async throws -> EditorPreparedMediaPayload
+
+    private static let logger = Logger(
+        subsystem: "cn.laogou.dogsc",
+        category: "editor-media"
+    )
 
     @Published private(set) var state: EditorMediaSessionState = .empty
     @Published private(set) var cameraTimingRevision: UInt64 = 0
@@ -462,6 +471,9 @@ final class EditorMediaSession: ObservableObject {
         } catch {
             guard generation == requestedGeneration,
                   currentRequest == request else { return }
+            Self.logger.error(
+                "media preparation failed generation=\(requestedGeneration, privacy: .public) error=\(String(reflecting: error), privacy: .public)"
+            )
             state = .failed(
                 generation: requestedGeneration,
                 message: error.localizedDescription

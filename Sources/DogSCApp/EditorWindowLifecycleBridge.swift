@@ -45,10 +45,6 @@ final class WindowObservationView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    deinit {
-        stopObserving()
-    }
-
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         stopObserving()
@@ -67,8 +63,8 @@ final class WindowObservationView: NSView {
         guard let window else { return }
         let trimmed = projectTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         window.title = trimmed.isEmpty
-            ? "DogSC编辑器"
-            : "\(trimmed) — DogSC"
+            ? "\(AppIdentity.displayName) 编辑器"
+            : "\(trimmed) — \(AppIdentity.displayName)"
     }
 
     func invalidate() {

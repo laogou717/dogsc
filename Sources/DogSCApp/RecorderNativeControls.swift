@@ -136,7 +136,7 @@ final class RecorderMenuButtonNSView: NSButton {
 struct RecorderActionTrigger: NSViewRepresentable {
     let action: () -> Void
     let accessibilityLabel: String
-    let isEnabled: Bool
+    var isEnabled = true
     var accessibilityIdentifier: String? = nil
     var cornerRadius: CGFloat = 10
     var highlightOpacity: Double = 0.075
@@ -294,6 +294,10 @@ struct RecorderPopupMenuButton<Content: View>: View {
     var body: some View {
         ZStack {
             content
+                // The AppKit trigger below owns the menu action and accessible
+                // name. Its SwiftUI artwork is only a visual label; exposing
+                // both creates separate icon/text stops before the real button.
+                .accessibilityHidden(true)
 
             RecorderMenuTrigger(
                 items: items,

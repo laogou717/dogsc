@@ -16,6 +16,9 @@ struct PreviewRenderJob: @unchecked Sendable {
     /// orders every submitted frame; epoch decides whether an older playback
     /// job still belongs to the currently visible transport interval.
     let presentationEpochID: UInt64
+    /// The display-link deadline this playback frame was evaluated for.
+    /// Stationary frames have no deadline and present immediately.
+    let presentationHostTime: CFTimeInterval?
     let plan: FrameRenderPlan
     /// An actual project 3D frame evaluated at the same raster size. It is
     /// rendered offscreen after the visible paused frame so playback never
@@ -57,24 +60,18 @@ struct PreviewVisualSignature: Equatable {
               lhs.backingScale == rhs.backingScale,
               lhs.destinationPixelSize == rhs.destinationPixelSize,
               lhs.colorContract == rhs.colorContract,
-              lhs.plan.frameRate == rhs.plan.frameRate,
-              lhs.plan.samples.count == rhs.plan.samples.count else {
+              lhs.plan.frameRate == rhs.plan.frameRate else {
             return false
         }
 
         // Presentation/output time and FrameScene.time are evaluation
         // provenance. Every renderable value has already been lowered into the
-        // scene. Comparing those clocks made a visually identical frame look
-        // dirty; normalizing them by mapping every temporal sample allocated a
-        // fresh 8-32-scene array on each display tick instead.
-        return zip(lhs.plan.samples, rhs.plan.samples).allSatisfy { lhsSample, rhsSample in
-            lhsSample.weight == rhsSample.weight
-                && scenesMatchVisually(
-                    lhsSample.scene,
-                    rhsSample.scene,
-                    ignoringCursor: lhs.separatesCursor
-                )
-        }
+        // scene. Comparing those clocks made a visually identical frame dirty.
+        return scenesMatchVisually(
+            lhs.plan.scene,
+            rhs.plan.scene,
+            ignoringCursor: lhs.separatesCursor
+        )
     }
 
     private static func scenesMatchVisually(
@@ -86,7 +83,9 @@ struct PreviewVisualSignature: Equatable {
               lhs.color == rhs.color,
               lhs.background == rhs.background,
               lhs.screen == rhs.screen,
-              lhs.camera == rhs.camera else {
+              lhs.camera == rhs.camera,
+              lhs.stickers == rhs.stickers,
+              lhs.progress == rhs.progress else {
             return false
         }
         if !ignoringCursor, lhs.cursor != rhs.cursor {
@@ -249,7 +248,6 @@ enum PreviewLayerRetirementPolicy {
 struct PreviewPerspectivePrewarmSignature: Equatable, Hashable, Sendable {
     let destinationWidth: Int
     let destinationHeight: Int
-    let temporalSampleCount: Int
     let hasProjectedBorder: Bool
     let hasProjectedShadow: Bool
     let hasScreenChrome: Bool
@@ -260,30 +258,24 @@ struct PreviewPerspectivePrewarmSignature: Equatable, Hashable, Sendable {
     let hasBackgroundBlur: Bool
 
     init?(plan: FrameRenderPlan, destinationPixelSize: CGSize) {
-        guard plan.samples.contains(where: {
-            !SharedFrameRenderer.isIdentityProjection($0.scene.screen)
-        }) else { return nil }
-        let scenes = plan.samples.map(\.scene)
+        let scene = plan.scene
+        guard !SharedFrameRenderer.isIdentityProjection(scene.screen) else {
+            return nil
+        }
         destinationWidth = max(Int(destinationPixelSize.width.rounded()), 2)
         destinationHeight = max(Int(destinationPixelSize.height.rounded()), 2)
-        temporalSampleCount = max(plan.samples.count, 1)
-        hasProjectedBorder = scenes.contains { $0.screen.borderWidth > 0 }
-        hasProjectedShadow = scenes.contains {
-            ($0.screen.shadow?.opacity ?? 0) > 0
+        hasProjectedBorder = scene.screen.borderWidth > 0
+        hasProjectedShadow = (scene.screen.shadow?.opacity ?? 0) > 0
+        if case .chrome = scene.screen.decoration {
+            hasScreenChrome = true
+        } else {
+            hasScreenChrome = false
         }
-        hasScreenChrome = scenes.contains {
-            if case .chrome = $0.screen.decoration { return true }
-            return false
-        }
-        hasRasterCursor = scenes.contains { scene in
-            scene.cursor != nil && scene.layerOrder.contains(.cursor)
-        }
-        hasCamera = scenes.contains { ($0.camera?.opacity ?? 0) > 0 }
-        hasCameraBorder = scenes.contains { ($0.camera?.borderWidth ?? 0) > 0 }
-        hasCameraShadow = scenes.contains {
-            ($0.camera?.shadow?.opacity ?? 0) > 0
-        }
-        hasBackgroundBlur = scenes.contains { $0.background.blurRadius > 0 }
+        hasRasterCursor = scene.cursor != nil && scene.layerOrder.contains(.cursor)
+        hasCamera = (scene.camera?.opacity ?? 0) > 0
+        hasCameraBorder = (scene.camera?.borderWidth ?? 0) > 0
+        hasCameraShadow = (scene.camera?.shadow?.opacity ?? 0) > 0
+        hasBackgroundBlur = scene.background.blurRadius > 0
     }
 }
 
@@ -352,17 +344,17 @@ typealias SharedPreviewPlaybackFrameProvider = @MainActor (
 /// the same compositor used by export.
 enum SharedPreviewFramePipeline {
     nonisolated static func canSeparateCursor(in plan: FrameRenderPlan) -> Bool {
-        !plan.samples.isEmpty && plan.samples.allSatisfy {
-            // CUR-002/PRE-002: a 3D screen still keeps its pointer in a tiny
-            // independent layer. The previous identity-only gate moved the
-            // pointer into the full 4K temporal compositor at the first 3D
-            // frame, producing both a one-time mode-switch hitch and visibly
-            // lower pointer cadence. A later camera layer remains the only
-            // reason to retain raster composition under perspective.
-            (!SharedFrameRenderer.isIdentityProjection($0.scene.screen)
-                ? $0.scene.camera == nil
-                : !cursorIntersectsLaterCamera(in: $0.scene))
-        }
+        let scene = plan.scene
+        // A separated CALayer cursor would sit above the raster spotlight and
+        // stay sharp outside its focus. Keep it in the base composite whenever
+        // spotlight is active so "everything below" has one visual result.
+        if scene.layerOrder.contains(.spotlight) { return false }
+        // CUR-002/PRE-002: a 3D screen still keeps its pointer in a tiny
+        // independent layer. A later camera layer remains the only reason to
+        // retain raster composition under perspective.
+        return !SharedFrameRenderer.isIdentityProjection(scene.screen)
+            ? scene.camera == nil
+            : !cursorIntersectsLaterCamera(in: scene)
     }
 
     /// The authored camera is above the cursor. A separate SwiftUI cursor is
@@ -429,8 +421,7 @@ enum SharedPreviewFramePipeline {
     }
 
     /// The visible preview surface already needs this decision for its CALayer
-    /// cursor. Passing the same per-frame result here prevents a second scan of
-    /// every temporal sample (up to 32 with authored motion blur).
+    /// cursor, so pass the same per-frame result into raster preparation.
     nonisolated static func rasterPlan(
         _ plan: FrameRenderPlan,
         separatesCursor: Bool
@@ -438,17 +429,15 @@ enum SharedPreviewFramePipeline {
         var result = plan
         result.presentationTime = 0
         result.outputDuration = 0
-        result.samples = plan.samples.map { sample in
-            var scene = sample.scene
-            // `time` has already been lowered into concrete geometry/style and
-            // is not read by SharedFrameRenderer. Ignore it for visual identity.
-            scene.time = 0
-            if separatesCursor {
-                scene.cursor = nil
-                scene.layerOrder.removeAll { $0 == .cursor }
-            }
-            return FrameSceneSample(scene: scene, weight: sample.weight)
+        var scene = plan.scene
+        // `time` has already been lowered into concrete geometry/style and is
+        // not read by SharedFrameRenderer. Ignore it for visual identity.
+        scene.time = 0
+        if separatesCursor {
+            scene.cursor = nil
+            scene.layerOrder.removeAll { $0 == .cursor }
         }
+        result.scene = scene
         return result
     }
 
@@ -466,21 +455,21 @@ enum SharedPreviewFramePipeline {
         plan: FrameRenderPlan,
         resources: SharedFrameRenderResources
     ) -> CIImage? {
-        guard let scene = plan.samples.first?.scene else { return nil }
+        let scene = plan.scene
         let extent = CGRect(
             x: 0,
             y: 0,
             width: max(scene.canvasSize.width, 2),
             height: max(scene.canvasSize.height, 2)
         )
-        return WeightedFrameCompositor.composite(
+        return SharedFrameCompositor.composite(
             plan,
             resources: resources,
             extent: extent
         )
     }
 
-    /// Compatibility entry for non-temporal surfaces such as the crop tool.
+    /// Compatibility entry for static surfaces such as the crop tool.
     /// It still travels through the render-plan compositor, so a sharp preview
     /// cannot acquire a separate pixel path from export.
     nonisolated static func render(
@@ -494,7 +483,7 @@ enum SharedPreviewFramePipeline {
             presentationTime: scene.time,
             outputDuration: max(scene.time, 0),
             frameRate: 1,
-            samples: [FrameSceneSample(scene: scene, weight: 1)]
+            scene: scene
         )
         let resources = SharedFrameRenderResources(
             screen: screen,

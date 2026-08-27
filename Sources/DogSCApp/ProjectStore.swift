@@ -806,11 +806,45 @@ enum ProjectStore {
     }
 
     static func importWallpaper(from sourceURL: URL, session: RecordingSession) throws -> (relativePath: String, url: URL) {
+        try importImageAsset(
+            from: sourceURL,
+            prefix: "wallpaper",
+            session: session
+        )
+    }
+
+    static func importOverlayImage(
+        from sourceURL: URL,
+        session: RecordingSession
+    ) throws -> (relativePath: String, url: URL) {
+        try importImageAsset(from: sourceURL, prefix: "overlay", session: session)
+    }
+
+    static func importOverlayImage(
+        data: Data,
+        fileExtension: String,
+        session: RecordingSession
+    ) throws -> (relativePath: String, url: URL) {
         let assetsURL = session.packageURL.appendingPathComponent("assets", isDirectory: true)
         try FileManager.default.createDirectory(at: assetsURL, withIntermediateDirectories: true)
+        let safeExtension = fileExtension.lowercased() == "jpg" ? "jpg" : "png"
+        let filename = "overlay-\(UUID().uuidString).\(safeExtension)"
+        let destinationURL = assetsURL.appendingPathComponent(filename)
+        try data.write(to: destinationURL, options: .atomic)
+        return ("assets/\(filename)", destinationURL)
+    }
 
-        let fileExtension = sourceURL.pathExtension.isEmpty ? "png" : sourceURL.pathExtension.lowercased()
-        let filename = "wallpaper-\(UUID().uuidString).\(fileExtension)"
+    private static func importImageAsset(
+        from sourceURL: URL,
+        prefix: String,
+        session: RecordingSession
+    ) throws -> (relativePath: String, url: URL) {
+        let assetsURL = session.packageURL.appendingPathComponent("assets", isDirectory: true)
+        try FileManager.default.createDirectory(at: assetsURL, withIntermediateDirectories: true)
+        let fileExtension = sourceURL.pathExtension.isEmpty
+            ? "png"
+            : sourceURL.pathExtension.lowercased()
+        let filename = "\(prefix)-\(UUID().uuidString).\(fileExtension)"
         let destinationURL = assetsURL.appendingPathComponent(filename)
         try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
         return ("assets/\(filename)", destinationURL)

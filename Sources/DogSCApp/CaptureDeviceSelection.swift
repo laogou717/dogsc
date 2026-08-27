@@ -199,6 +199,7 @@ private struct IOSDeviceSelectionOverlay: View {
                     .font(.system(size: 42, weight: .medium))
                     .foregroundStyle(captureSelectionAccent)
                     .symbolEffect(.bounce, value: selectedDeviceID)
+                    .accessibilityHidden(true)
                 Text("选择要录制的设备")
                     .font(.system(size: 25, weight: .semibold))
                     .foregroundStyle(.white)
@@ -247,6 +248,13 @@ private struct IOSDeviceSelectionOverlay: View {
                                 }
                             }
                             .buttonStyle(.plain)
+                            .accessibilityLabel(device.name)
+                            .accessibilityValue(
+                                selectedDeviceID == device.id ? "已选择" : "未选择"
+                            )
+                            .accessibilityAddTraits(
+                                selectedDeviceID == device.id ? .isSelected : []
+                            )
                         }
                     }
                 }

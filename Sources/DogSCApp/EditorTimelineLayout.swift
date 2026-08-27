@@ -128,6 +128,7 @@ extension EditorTimelineView {
                         isRestoreCutMode.toggle()
                         if isRestoreCutMode {
                             primaryTrimDraft = nil
+                            primaryRetimeDraft = nil
                         }
                     } label: {
                         Image(systemName: "arrow.uturn.backward.circle")
@@ -229,7 +230,8 @@ extension EditorTimelineView {
 
     var timelineLabels: some View {
         VStack(spacing: 0) {
-            Color.clear.frame(height: timelineRulerHeight)
+            timelineTrackManager
+                .frame(height: timelineRulerHeight)
             timelineLabel(
                 "片段",
                 symbol: "film",
@@ -244,21 +246,44 @@ extension EditorTimelineView {
                     height: cameraSyncTimelineHeight
                 )
             }
-            timelineLabel("缩放", symbol: "magnifyingglass", tint: editorZoomClip, height: 56)
+            if showsZoomTimeline {
+                optionalTimelineLabel(
+                    "缩放",
+                    tint: editorZoomClip,
+                    height: 56,
+                    track: .zoom
+                )
+            }
             if showsScreenMotionTimeline {
-                timelineLabel(
-                    "屏幕运动",
-                    symbol: "viewfinder",
+                optionalTimelineLabel(
+                    "屏幕 3D",
                     tint: motionTrackColor(.screen),
-                    height: motionTimelineHeight
+                    height: motionTimelineHeight,
+                    track: .screenMotion
                 )
             }
             if showsCameraMotionTimeline {
-                timelineLabel(
+                optionalTimelineLabel(
                     "摄像运动",
-                    symbol: "video.fill",
                     tint: motionTrackColor(.camera),
-                    height: motionTimelineHeight
+                    height: motionTimelineHeight,
+                    track: .cameraMotion
+                )
+            }
+            if showsOverlayTimeline {
+                optionalTimelineLabel(
+                    "叠加",
+                    tint: .pink,
+                    height: overlayTimelineHeight,
+                    track: .overlays
+                )
+            }
+            if showsProgressTimeline {
+                optionalTimelineLabel(
+                    "进度条",
+                    tint: .mint,
+                    height: overlayTimelineHeight,
+                    track: .progress
                 )
             }
         }
@@ -292,6 +317,7 @@ extension EditorTimelineView {
             .overlay(alignment: .bottom) { Divider().overlay(dividerColor) }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("\(title)轨道")
+            .accessibilityAddTraits(.isHeader)
     }
 
     func timelineCanvas(width: CGFloat, duration: TimeInterval) -> some View {
@@ -308,7 +334,9 @@ extension EditorTimelineView {
                 if showsCameraSyncTimeline {
                     cameraSyncTimeline(width: width, duration: duration)
                 }
-                zoomTimeline(width: width, duration: duration)
+                if showsZoomTimeline {
+                    zoomTimeline(width: width, duration: duration)
+                }
                 if showsScreenMotionTimeline {
                     motionTimeline(
                         track: .screen,
@@ -324,6 +352,12 @@ extension EditorTimelineView {
                         width: width,
                         duration: duration
                     )
+                }
+                if showsOverlayTimeline {
+                    combinedOverlayTimeline(width: width, duration: duration)
+                }
+                if showsProgressTimeline {
+                    progressOverlayTimeline(width: width, duration: duration)
                 }
             }
 
@@ -431,6 +465,7 @@ extension EditorTimelineView {
                         y: 10
                     )
                     .allowsHitTesting(false)
+                    .accessibilityHidden(true)
             }
             if primaryTrimDraft == nil && isRestoreCutMode {
                 let junctions = primarySegmentJunctions
@@ -585,9 +620,14 @@ extension EditorTimelineView {
                         Text(segmentsCount == 1 ? "屏幕片段" : "片段 \(index + 1)")
                             .font(.system(size: 9.5, weight: .medium))
                         if segmentWidth > 120 {
-                            Text(timelineTimestamp(segment.sourceDuration))
+                            Text(timelineTimestamp(segment.outputDuration))
                                 .font(.system(size: 9, design: .monospaced))
                                 .foregroundStyle(.white.opacity(0.65))
+                            if abs(segment.playbackRate - 1) > 0.000_1 {
+                                Text(timelinePlaybackRateText(segment.playbackRate))
+                                    .font(.system(size: 8.5, weight: .semibold))
+                                    .foregroundStyle(.white.opacity(0.82))
+                            }
                         }
                     }
                     .foregroundStyle(.white.opacity(0.88))
@@ -604,7 +644,7 @@ extension EditorTimelineView {
             }
             .overlay {
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .stroke(
+                    .strokeBorder(
                         isSelected ? Color.white.opacity(0.95) : Color.white.opacity(0.16),
                         lineWidth: isSelected ? 1.5 : 0.75
                     )
@@ -697,7 +737,14 @@ extension EditorTimelineView {
                 : 0)
         )
         .opacity(draggedPrimarySegmentID == segment.id ? 0.82 : 1)
-        .zIndex(draggedPrimarySegmentID == segment.id ? 10 : 0)
+        // Keep the selected short/retimed clip above its neighbours. A centred
+        // outline at a shared boundary was previously overdrawn by the next
+        // segment and looked as though the clip had been covered.
+        .zIndex(
+            draggedPrimarySegmentID == segment.id
+                ? 10
+                : isSelected ? 3 : showsHandles ? 1 : 0
+        )
         .shadow(
             color: draggedPrimarySegmentID == segment.id
                 ? Color.black.opacity(0.55)
@@ -713,9 +760,15 @@ extension EditorTimelineView {
             }
         }
         .help("主片段 \(index + 1) · \(timelineTimestamp(segment.sourceDuration)) · 拖动可调整顺序 · 按住 ⌥ 单击快捷切分")
-        .accessibilityElement(children: .contain)
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel("主片段 \(index + 1)")
         .accessibilityValue(timelineTimestamp(segment.sourceDuration))
+        .accessibilityAddTraits(
+            isSelected ? [.isButton, .isSelected] : .isButton
+        )
+        .accessibilityAction {
+            selectPrimarySegment(segment.id)
+        }
         .accessibilityIdentifier("editor.timeline.primary.segment.\(segment.id.uuidString)")
     }
 
@@ -765,7 +818,7 @@ extension EditorTimelineView {
                 let segment = segments[index]
                 let startX = CGFloat(segment.outputStart / max(duration, 0.001)) * width
                 let segmentWidth = max(
-                    CGFloat(segment.sourceDuration / max(duration, 0.001)) * width,
+                    CGFloat(segment.outputDuration / max(duration, 0.001)) * width,
                     1
                 )
                 let isSelected = selectedPrimarySegmentID == segment.id
@@ -1002,18 +1055,15 @@ extension EditorTimelineView {
                     .font(.system(size: 8, weight: .bold))
             }
             .help("画面延后 \(cameraSyncAdjustmentStepMilliseconds)ms，并自动试听")
-            .focusable(false)
             Button { nudgeCameraSyncAnchor(id: anchor.id, by: cameraSyncAdjustmentStep) } label: {
                 Text("提\(cameraSyncAdjustmentStepMilliseconds)")
                     .font(.system(size: 8, weight: .bold))
             }
             .help("画面提前 \(cameraSyncAdjustmentStepMilliseconds)ms，并自动试听")
-            .focusable(false)
             Button(role: .destructive) { removeCameraSyncAnchor(id: anchor.id) } label: {
                 Image(systemName: "trash").font(.system(size: 8, weight: .bold))
             }
             .help("删除同步点")
-            .focusable(false)
         }
         .buttonStyle(.borderless)
         .padding(.horizontal, 7)

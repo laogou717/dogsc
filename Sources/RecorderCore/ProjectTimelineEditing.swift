@@ -10,6 +10,9 @@ public enum ProjectTimelineTrack: String, Equatable, Sendable {
     case zoom
     case screenMotion
     case cameraMotion
+    case mosaic
+    case sticker
+    case progress
 }
 
 public enum ProjectTimelineEditingError: Error, Equatable, Sendable {
@@ -24,6 +27,7 @@ public enum ProjectTimelineEditingError: Error, Equatable, Sendable {
     case noRestorableLeadingSourceGap(UUID)
     case noRestorableTrailingSourceGap(UUID)
     case cannotMergeDeletedGap(previous: UUID, next: UUID)
+    case cannotMergeDifferentPlaybackRates(previous: UUID, next: UUID)
     case duplicateClipID(track: ProjectTimelineTrack, id: UUID)
     case missingClip(track: ProjectTimelineTrack, id: UUID)
     case mismatchedClipID(track: ProjectTimelineTrack, expected: UUID, actual: UUID)
@@ -36,36 +40,52 @@ extension ProjectTimelineEditingError: LocalizedError {
         switch self {
         case .invalidSourceSequence:
             return "主录屏片段必须有效、不重复使用源素材且至少保留一段。"
-        case let .segmentNotFound(id):
-            return "找不到主录屏片段：\(id)。"
+        case .segmentNotFound:
+            return "找不到要编辑的主片段。"
         case .splitOutsideSegment:
             return "拆分点必须位于主录屏片段内部。"
-        case let .duplicateSegmentID(id):
-            return "主录屏片段 ID 重复：\(id)。"
-        case let .trimOutsideSegment(id):
-            return "片段 \(id) 的裁切点必须位于当前片段内部，且不能裁成空片段。"
+        case .duplicateSegmentID:
+            return "主片段数据重复，无法继续编辑。"
+        case .trimOutsideSegment:
+            return "裁切点必须位于当前片段内部，且不能裁成空片段。"
         case .cannotRemoveFinalSegment:
             return "项目必须至少保留一个主录屏片段。"
-        case let .restoreJunctionNotFound(previous, next):
-            return "找不到要还原的相邻剪切点：\(previous) → \(next)。"
-        case let .noRestorableSourceGap(previous, next):
-            return "该剪切点没有可还原的源素材：\(previous) → \(next)。"
-        case let .noRestorableLeadingSourceGap(next):
-            return "开头剪切点没有可还原的源素材：→ \(next)。"
-        case let .noRestorableTrailingSourceGap(previous):
-            return "结尾剪切点没有可还原的源素材：\(previous) →。"
-        case let .cannotMergeDeletedGap(previous, next):
-            return "该剪切点包含已删除素材，应先还原而不是直接合并：\(previous) → \(next)。"
-        case let .duplicateClipID(track, id):
-            return "\(track.rawValue) 轨道中存在重复片段 ID：\(id)。"
-        case let .missingClip(track, id):
-            return "\(track.rawValue) 轨道中找不到片段：\(id)。"
-        case let .mismatchedClipID(track, expected, actual):
-            return "\(track.rawValue) 轨道替换片段的 ID 不匹配：\(expected) / \(actual)。"
-        case let .invalidClip(track, id):
-            return "\(track.rawValue) 轨道中的片段无效：\(id)。"
-        case let .overlappingClips(track, first, second):
-            return "\(track.rawValue) 轨道片段重叠：\(first) / \(second)。"
+        case .restoreJunctionNotFound:
+            return "找不到要还原的相邻剪切点。"
+        case .noRestorableSourceGap:
+            return "该剪切点没有可还原的源素材。"
+        case .noRestorableLeadingSourceGap:
+            return "开头没有可还原的源素材。"
+        case .noRestorableTrailingSourceGap:
+            return "结尾没有可还原的源素材。"
+        case .cannotMergeDeletedGap:
+            return "该剪切点包含已删除素材，应先还原而不是直接合并。"
+        case .cannotMergeDifferentPlaybackRates:
+            return "相邻片段速度不同，无法直接合并。"
+        case let .duplicateClipID(track, _):
+            return "\(track.userFacingName)轨道中存在重复片段。"
+        case let .missingClip(track, _):
+            return "\(track.userFacingName)轨道中找不到要编辑的片段。"
+        case let .mismatchedClipID(track, _, _):
+            return "\(track.userFacingName)轨道中的片段已发生变化，请重新选择后再试。"
+        case let .invalidClip(track, _):
+            return "\(track.userFacingName)轨道中存在无效片段。"
+        case let .overlappingClips(track, _, _):
+            return "\(track.userFacingName)轨道中的片段发生重叠。"
+        }
+    }
+}
+
+private extension ProjectTimelineTrack {
+    var userFacingName: String {
+        switch self {
+        case .primaryRecording: "主片段"
+        case .zoom: "缩放"
+        case .screenMotion: "屏幕 3D"
+        case .cameraMotion: "摄像运动"
+        case .mosaic: "打码"
+        case .sticker: "贴图"
+        case .progress: "进度"
         }
     }
 }
@@ -106,7 +126,7 @@ public enum ProjectTimelineEditing {
         var output = 0.0
         var gapJunctions: [TimeInterval] = []
         for index in segments.indices {
-            output += segments[index].sourceDuration
+            output += segments[index].outputDuration
             guard segments.indices.contains(index + 1),
                   segments[index + 1].sourceStart
                     - (segments[index].sourceStart + segments[index].sourceDuration)
@@ -213,17 +233,19 @@ public enum ProjectTimelineEditing {
             throw ProjectTimelineEditingError.duplicateSegmentID(newRightSegmentID)
         }
 
-        let splitOffset = outputTime - resolved.outputStart
+        let splitOutputOffset = outputTime - resolved.outputStart
+        let splitSourceOffset = splitOutputOffset * resolved.playbackRate
         var segments = map.segments.map(Self.authoredSegment)
         guard let index = segments.firstIndex(where: { $0.id == resolved.id }) else {
             throw ProjectTimelineEditingError.segmentNotFound(resolved.id)
         }
-        segments[index].sourceDuration = splitOffset
+        segments[index].sourceDuration = splitSourceOffset
         segments.insert(
             RecordingSegment(
                 id: newRightSegmentID,
-                sourceStart: resolved.sourceStart + splitOffset,
-                sourceDuration: resolved.sourceDuration - splitOffset
+                sourceStart: resolved.sourceStart + splitSourceOffset,
+                sourceDuration: resolved.sourceDuration - splitSourceOffset,
+                playbackRate: resolved.playbackRate
             ),
             at: index + 1
         )
@@ -271,22 +293,35 @@ public enum ProjectTimelineEditing {
                     .map { $0.element.sourceEnd }
                     .max() ?? 0
                 let available = max(resolved.sourceStart - previousSourceEnd, 0)
-                let amount = resolved.outputStart - outputTime
-                guard amount <= available + epsilon else {
+                let outputAmount = resolved.outputStart - outputTime
+                let sourceAmount = outputAmount * resolved.playbackRate
+                guard sourceAmount <= available + epsilon else {
                     throw ProjectTimelineEditingError.trimOutsideSegment(segmentID)
                 }
-                segments[index].sourceStart -= amount
-                segments[index].sourceDuration += amount
+                segments[index].sourceStart -= sourceAmount
+                segments[index].sourceDuration += sourceAmount
                 var result = timeline
                 result.sourceSequence = .edited(segments)
                 result.zoomClips = timeline.zoomClips.map {
-                    inserting($0, at: resolved.outputStart, duration: amount)
+                    inserting($0, at: resolved.outputStart, duration: outputAmount)
                 }
                 result.screenMotionClips = timeline.screenMotionClips.map {
-                    inserting($0, at: resolved.outputStart, duration: amount)
+                    inserting($0, at: resolved.outputStart, duration: outputAmount)
                 }
                 result.cameraMotionClips = timeline.cameraMotionClips.map {
-                    inserting($0, at: resolved.outputStart, duration: amount)
+                    inserting($0, at: resolved.outputStart, duration: outputAmount)
+                }
+                result.mosaicClips = timeline.mosaicClips.map {
+                    inserting($0, at: resolved.outputStart, duration: outputAmount)
+                }
+                result.stickerClips = timeline.stickerClips.map {
+                    inserting($0, at: resolved.outputStart, duration: outputAmount)
+                }
+                if var progress = timeline.progressOverlay {
+                    progress.chapters = progress.chapters.map {
+                        inserting($0, at: resolved.outputStart, duration: outputAmount)
+                    }
+                    result.progressOverlay = progress
                 }
                 sortZoom(&result.zoomClips)
                 sortScreenMotion(&result.screenMotionClips)
@@ -298,9 +333,9 @@ public enum ProjectTimelineEditing {
                   outputTime < resolved.outputEnd - epsilon else {
                 throw ProjectTimelineEditingError.trimOutsideSegment(segmentID)
             }
-            let amount = outputTime - resolved.outputStart
-            segments[index].sourceStart += amount
-            segments[index].sourceDuration -= amount
+            let sourceAmount = (outputTime - resolved.outputStart) * resolved.playbackRate
+            segments[index].sourceStart += sourceAmount
+            segments[index].sourceDuration -= sourceAmount
             deletion = OutputDeletion(start: resolved.outputStart, end: outputTime)
 
         case .right:
@@ -313,21 +348,34 @@ public enum ProjectTimelineEditing {
                     .map { $0.element.sourceStart }
                     .min() ?? fullSourceDuration
                 let available = max(nextSourceStart - resolved.sourceEnd, 0)
-                let amount = outputTime - resolved.outputEnd
-                guard amount <= available + epsilon else {
+                let outputAmount = outputTime - resolved.outputEnd
+                let sourceAmount = outputAmount * resolved.playbackRate
+                guard sourceAmount <= available + epsilon else {
                     throw ProjectTimelineEditingError.trimOutsideSegment(segmentID)
                 }
-                segments[index].sourceDuration += amount
+                segments[index].sourceDuration += sourceAmount
                 var result = timeline
                 result.sourceSequence = .edited(segments)
                 result.zoomClips = timeline.zoomClips.map {
-                    inserting($0, at: resolved.outputEnd, duration: amount)
+                    inserting($0, at: resolved.outputEnd, duration: outputAmount)
                 }
                 result.screenMotionClips = timeline.screenMotionClips.map {
-                    inserting($0, at: resolved.outputEnd, duration: amount)
+                    inserting($0, at: resolved.outputEnd, duration: outputAmount)
                 }
                 result.cameraMotionClips = timeline.cameraMotionClips.map {
-                    inserting($0, at: resolved.outputEnd, duration: amount)
+                    inserting($0, at: resolved.outputEnd, duration: outputAmount)
+                }
+                result.mosaicClips = timeline.mosaicClips.map {
+                    inserting($0, at: resolved.outputEnd, duration: outputAmount)
+                }
+                result.stickerClips = timeline.stickerClips.map {
+                    inserting($0, at: resolved.outputEnd, duration: outputAmount)
+                }
+                if var progress = timeline.progressOverlay {
+                    progress.chapters = progress.chapters.map {
+                        inserting($0, at: resolved.outputEnd, duration: outputAmount)
+                    }
+                    result.progressOverlay = progress
                 }
                 sortZoom(&result.zoomClips)
                 sortScreenMotion(&result.screenMotionClips)
@@ -339,7 +387,8 @@ public enum ProjectTimelineEditing {
                   outputTime < resolved.outputEnd - epsilon else {
                 throw ProjectTimelineEditingError.trimOutsideSegment(segmentID)
             }
-            segments[index].sourceDuration = outputTime - resolved.outputStart
+            segments[index].sourceDuration =
+                (outputTime - resolved.outputStart) * resolved.playbackRate
             deletion = OutputDeletion(start: outputTime, end: resolved.outputEnd)
         }
 
@@ -434,6 +483,31 @@ public enum ProjectTimelineEditing {
             newStarts: newStarts,
             outputDuration: newMap.outputDuration
         )
+        result.mosaicClips = remappedMosaicClips(
+            timeline.mosaicClips,
+            oldMap: oldMap,
+            newStarts: newStarts,
+            outputDuration: newMap.outputDuration
+        )
+        result.stickerClips = remappedStickerClips(
+            timeline.stickerClips,
+            oldMap: oldMap,
+            newStarts: newStarts,
+            outputDuration: newMap.outputDuration
+        )
+        if var progress = timeline.progressOverlay {
+            progress.chapters = progress.chapters.map { chapter in
+                let delta = reorderedOutputOffset(
+                    at: chapter.time,
+                    oldMap: oldMap,
+                    newStarts: newStarts
+                )
+                var moved = chapter
+                moved.time = min(max(chapter.time + delta, 0), newMap.outputDuration)
+                return moved
+            }.sorted { $0.time < $1.time }
+            result.progressOverlay = progress
+        }
         try validate(result, fullSourceDuration: fullSourceDuration)
         return result
     }
@@ -498,6 +572,18 @@ public enum ProjectTimelineEditing {
         result.cameraMotionClips = timeline.cameraMotionClips.map {
             inserting($0, at: insertionTime, duration: restoredDuration)
         }
+        result.mosaicClips = timeline.mosaicClips.map {
+            inserting($0, at: insertionTime, duration: restoredDuration)
+        }
+        result.stickerClips = timeline.stickerClips.map {
+            inserting($0, at: insertionTime, duration: restoredDuration)
+        }
+        if var progress = timeline.progressOverlay {
+            progress.chapters = progress.chapters.map {
+                inserting($0, at: insertionTime, duration: restoredDuration)
+            }
+            result.progressOverlay = progress
+        }
         sortZoom(&result.zoomClips)
         sortScreenMotion(&result.screenMotionClips)
         sortCameraMotion(&result.cameraMotionClips)
@@ -547,6 +633,18 @@ public enum ProjectTimelineEditing {
         }
         result.cameraMotionClips = timeline.cameraMotionClips.map {
             inserting($0, at: 0, duration: restoredDuration)
+        }
+        result.mosaicClips = timeline.mosaicClips.map {
+            inserting($0, at: 0, duration: restoredDuration)
+        }
+        result.stickerClips = timeline.stickerClips.map {
+            inserting($0, at: 0, duration: restoredDuration)
+        }
+        if var progress = timeline.progressOverlay {
+            progress.chapters = progress.chapters.map {
+                inserting($0, at: 0, duration: restoredDuration)
+            }
+            result.progressOverlay = progress
         }
         sortZoom(&result.zoomClips)
         sortScreenMotion(&result.screenMotionClips)
@@ -620,6 +718,12 @@ public enum ProjectTimelineEditing {
         let next = map.segments[previousIndex + 1]
         guard abs(next.sourceStart - previous.sourceEnd) <= epsilon else {
             throw ProjectTimelineEditingError.cannotMergeDeletedGap(
+                previous: previousSegmentID,
+                next: nextSegmentID
+            )
+        }
+        guard abs(next.playbackRate - previous.playbackRate) <= epsilon else {
+            throw ProjectTimelineEditingError.cannotMergeDifferentPlaybackRates(
                 previous: previousSegmentID,
                 next: nextSegmentID
             )
@@ -777,6 +881,9 @@ public enum ProjectTimelineEditing {
         try validateZoomClips(timeline.zoomClips)
         try validateScreenMotionClips(timeline.screenMotionClips)
         try validateCameraMotionClips(timeline.cameraMotionClips)
+        try validateMosaicClips(timeline.mosaicClips)
+        try validateStickerClips(timeline.stickerClips)
+        try validateProgressOverlay(timeline.progressOverlay)
     }
 
     public static func validate(

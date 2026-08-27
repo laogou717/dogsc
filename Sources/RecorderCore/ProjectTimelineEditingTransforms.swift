@@ -20,6 +20,18 @@ extension ProjectTimelineEditing {
         result.cameraMotionClips = try timeline.cameraMotionClips.compactMap {
             try ripple($0, deleting: deletion, deletesOutputTail: deletesOutputTail)
         }
+        result.mosaicClips = timeline.mosaicClips.compactMap {
+            ripple($0, deleting: deletion, deletesOutputTail: deletesOutputTail)
+        }
+        result.stickerClips = timeline.stickerClips.compactMap {
+            ripple($0, deleting: deletion, deletesOutputTail: deletesOutputTail)
+        }
+        if var progress = timeline.progressOverlay {
+            progress.chapters = progress.chapters.compactMap {
+                ripple($0, deleting: deletion, deletesOutputTail: deletesOutputTail)
+            }
+            result.progressOverlay = progress
+        }
         sortZoom(&result.zoomClips)
         sortScreenMotion(&result.screenMotionClips)
         sortCameraMotion(&result.cameraMotionClips)
@@ -136,6 +148,124 @@ extension ProjectTimelineEditing {
         } else if timing.endTime > insertionTime + epsilon {
             edited.duration += duration
         }
+        return edited
+    }
+
+    static func inserting(
+        _ timing: OverlayTiming,
+        at insertionTime: TimeInterval,
+        duration: TimeInterval
+    ) -> OverlayTiming {
+        var edited = timing
+        if timing.startTime >= insertionTime - epsilon {
+            edited.startTime += duration
+        } else if timing.endTime > insertionTime + epsilon {
+            edited.duration += duration
+        }
+        return edited
+    }
+
+    static func inserting(
+        _ clip: MosaicClip,
+        at insertionTime: TimeInterval,
+        duration: TimeInterval
+    ) -> MosaicClip {
+        var edited = clip
+        edited.timing = inserting(clip.timing, at: insertionTime, duration: duration)
+        return edited
+    }
+
+    static func inserting(
+        _ clip: StickerClip,
+        at insertionTime: TimeInterval,
+        duration: TimeInterval
+    ) -> StickerClip {
+        var edited = clip
+        edited.timing = inserting(clip.timing, at: insertionTime, duration: duration)
+        return edited
+    }
+
+    static func inserting(
+        _ chapter: ProgressChapter,
+        at insertionTime: TimeInterval,
+        duration: TimeInterval
+    ) -> ProgressChapter {
+        guard chapter.time >= insertionTime - epsilon else { return chapter }
+        var edited = chapter
+        edited.time += duration
+        return edited
+    }
+
+    static func ripple(
+        _ timing: OverlayTiming,
+        deleting deletion: OutputDeletion,
+        deletesOutputTail: Bool
+    ) -> OverlayTiming? {
+        if timing.endTime <= deletion.start + epsilon { return timing }
+        if deletesOutputTail {
+            guard timing.startTime < deletion.start - epsilon else { return nil }
+            return OverlayTiming(
+                startTime: timing.startTime,
+                duration: max(deletion.start - timing.startTime, 0)
+            )
+        }
+        if timing.startTime >= deletion.end - epsilon {
+            return OverlayTiming(
+                startTime: timing.startTime - deletion.duration,
+                duration: timing.duration
+            )
+        }
+        if timing.startTime >= deletion.start - epsilon,
+           timing.endTime <= deletion.end + epsilon {
+            return nil
+        }
+        let start = deletion.map(timing.startTime)
+        let end = deletion.map(timing.endTime)
+        guard end - start > epsilon else { return nil }
+        return OverlayTiming(startTime: start, duration: end - start)
+    }
+
+    static func ripple(
+        _ clip: MosaicClip,
+        deleting deletion: OutputDeletion,
+        deletesOutputTail: Bool
+    ) -> MosaicClip? {
+        guard let timing = ripple(
+            clip.timing,
+            deleting: deletion,
+            deletesOutputTail: deletesOutputTail
+        ) else { return nil }
+        var edited = clip
+        edited.timing = timing
+        return edited
+    }
+
+    static func ripple(
+        _ clip: StickerClip,
+        deleting deletion: OutputDeletion,
+        deletesOutputTail: Bool
+    ) -> StickerClip? {
+        guard let timing = ripple(
+            clip.timing,
+            deleting: deletion,
+            deletesOutputTail: deletesOutputTail
+        ) else { return nil }
+        var edited = clip
+        edited.timing = timing
+        edited.enterDuration = min(edited.enterDuration, timing.duration)
+        edited.exitDuration = min(edited.exitDuration, timing.duration)
+        return edited
+    }
+
+    static func ripple(
+        _ chapter: ProgressChapter,
+        deleting deletion: OutputDeletion,
+        deletesOutputTail: Bool
+    ) -> ProgressChapter? {
+        if chapter.time < deletion.start - epsilon { return chapter }
+        if deletesOutputTail || chapter.time < deletion.end - epsilon { return nil }
+        var edited = chapter
+        edited.time -= deletion.duration
         return edited
     }
 
@@ -761,6 +891,65 @@ extension ProjectTimelineEditing {
         return normalizedCameraMotionSequence(translated)
     }
 
+    static func remappedMosaicClips(
+        _ clips: [MosaicClip],
+        oldMap: TimelineMap,
+        newStarts: [UUID: TimeInterval],
+        outputDuration: TimeInterval
+    ) -> [MosaicClip] {
+        clips.compactMap { clip in
+            let delta = reorderedOutputOffset(
+                at: clip.timing.startTime,
+                oldMap: oldMap,
+                newStarts: newStarts
+            )
+            var moved = clip
+            moved.timing.startTime = min(
+                max(clip.timing.startTime + delta, 0),
+                outputDuration
+            )
+            moved.timing.duration = min(
+                clip.timing.duration,
+                max(outputDuration - moved.timing.startTime, 0)
+            )
+            return moved.timing.duration > epsilon ? moved : nil
+        }.sorted {
+            $0.timing.startTime == $1.timing.startTime
+                ? $0.id.uuidString < $1.id.uuidString
+                : $0.timing.startTime < $1.timing.startTime
+        }
+    }
+
+    static func remappedStickerClips(
+        _ clips: [StickerClip],
+        oldMap: TimelineMap,
+        newStarts: [UUID: TimeInterval],
+        outputDuration: TimeInterval
+    ) -> [StickerClip] {
+        clips.compactMap { clip in
+            let delta = reorderedOutputOffset(
+                at: clip.timing.startTime,
+                oldMap: oldMap,
+                newStarts: newStarts
+            )
+            var moved = clip
+            moved.timing.startTime = min(
+                max(clip.timing.startTime + delta, 0),
+                outputDuration
+            )
+            moved.timing.duration = min(
+                clip.timing.duration,
+                max(outputDuration - moved.timing.startTime, 0)
+            )
+            moved.enterDuration = min(moved.enterDuration, moved.timing.duration)
+            moved.exitDuration = min(moved.exitDuration, moved.timing.duration)
+            return moved.timing.duration > epsilon ? moved : nil
+        }.sorted {
+            if $0.layerIndex != $1.layerIndex { return $0.layerIndex < $1.layerIndex }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+    }
+
     static func normalizedScreenMotionSequence(
         _ clips: [ScreenMotionClip]
     ) -> [ScreenMotionClip] {
@@ -837,8 +1026,10 @@ extension ProjectTimelineEditing {
             }
             guard segment.sourceStart.isFinite,
                   segment.sourceDuration.isFinite,
+                  segment.playbackRate.isFinite,
                   segment.sourceStart >= 0,
                   segment.sourceDuration > 0,
+                  segment.playbackRate > 0,
                   segment.sourceEnd.isFinite else {
                 throw ProjectTimelineEditingError.invalidSourceSequence
             }
@@ -965,6 +1156,113 @@ extension ProjectTimelineEditing {
         }
     }
 
+    static func validateMosaicClips(_ clips: [MosaicClip]) throws {
+        var identifiers = Set<UUID>()
+        for clip in clips {
+            guard identifiers.insert(clip.id).inserted else {
+                throw ProjectTimelineEditingError.duplicateClipID(track: .mosaic, id: clip.id)
+            }
+            let rect = clip.sourceRect
+            guard valid(clip.timing),
+                  rect == rect.clamped(),
+                  clip.cornerRadius.isFinite,
+                  (0...0.5).contains(clip.cornerRadius),
+                  clip.intensity.isFinite,
+                  (0...1).contains(clip.intensity),
+                  clip.spotlightDimming.isFinite,
+                  (0...0.75).contains(clip.spotlightDimming),
+                  clip.transitionInDuration.isFinite,
+                  clip.transitionOutDuration.isFinite,
+                  (0...5).contains(clip.transitionInDuration),
+                  (0...5).contains(clip.transitionOutDuration) else {
+                throw ProjectTimelineEditingError.invalidClip(track: .mosaic, id: clip.id)
+            }
+        }
+    }
+
+    static func validateStickerClips(_ clips: [StickerClip]) throws {
+        var identifiers = Set<UUID>()
+        for clip in clips {
+            guard identifiers.insert(clip.id).inserted else {
+                throw ProjectTimelineEditingError.duplicateClipID(track: .sticker, id: clip.id)
+            }
+            let components = clip.relativePath.split(separator: "/")
+            guard valid(clip.timing),
+                  !clip.relativePath.isEmpty,
+                  !clip.relativePath.hasPrefix("/"),
+                  !components.contains(".."),
+                  normalized(clip.position),
+                  clip.width.isFinite,
+                  (0.02...1.5).contains(clip.width),
+                  clip.rotationDegrees.isFinite,
+                  (-1_080...1_080).contains(clip.rotationDegrees),
+                  clip.opacity.isFinite,
+                  (0...1).contains(clip.opacity),
+                  clip.cornerRadius.isFinite,
+                  (0...500).contains(clip.cornerRadius),
+                  clip.borderWidth.isFinite,
+                  (0...60).contains(clip.borderWidth),
+                  clip.shadowOpacity.isFinite,
+                  (0...1).contains(clip.shadowOpacity),
+                  clip.shadowRadius.isFinite,
+                  (0...160).contains(clip.shadowRadius),
+                  clip.shadowOffsetX.isFinite,
+                  clip.shadowOffsetY.isFinite,
+                  clip.enterDuration.isFinite,
+                  clip.exitDuration.isFinite,
+                  (0...5).contains(clip.enterDuration),
+                  (0...5).contains(clip.exitDuration),
+                  clip.backdropBlur.isFinite,
+                  (0...96).contains(clip.backdropBlur) else {
+                throw ProjectTimelineEditingError.invalidClip(track: .sticker, id: clip.id)
+            }
+        }
+    }
+
+    static func validateProgressOverlay(_ overlay: ProgressOverlay?) throws {
+        guard let overlay else { return }
+        guard normalized(overlay.position),
+              overlay.width.isFinite,
+              (0.05...1).contains(overlay.width),
+              overlay.bandHeight.isFinite,
+              (28...180).contains(overlay.bandHeight),
+              overlay.textSize.isFinite,
+              (10...72).contains(overlay.textSize),
+              overlay.thickness.isFinite,
+              (1...40).contains(overlay.thickness),
+              overlay.backgroundOpacity.isFinite,
+              (0...1).contains(overlay.backgroundOpacity) else {
+            throw ProjectTimelineEditingError.invalidClip(
+                track: .progress,
+                id: UUID()
+            )
+        }
+        var identifiers = Set<UUID>()
+        for chapter in overlay.chapters {
+            guard identifiers.insert(chapter.id).inserted else {
+                throw ProjectTimelineEditingError.duplicateClipID(
+                    track: .progress,
+                    id: chapter.id
+                )
+            }
+            guard chapter.time.isFinite,
+                  chapter.time >= 0 else {
+                throw ProjectTimelineEditingError.invalidClip(
+                    track: .progress,
+                    id: chapter.id
+                )
+            }
+        }
+    }
+
+    static func valid(_ timing: OverlayTiming) -> Bool {
+        timing.startTime.isFinite
+            && timing.startTime >= 0
+            && timing.duration.isFinite
+            && timing.duration > 0
+            && timing.endTime.isFinite
+    }
+
     static func valid(_ timing: TransitionTiming) -> Bool {
         timing.startTime.isFinite
             && timing.startTime >= 0
@@ -996,7 +1294,8 @@ extension ProjectTimelineEditing {
         RecordingSegment(
             id: segment.id,
             sourceStart: segment.sourceStart,
-            sourceDuration: segment.sourceDuration
+            sourceDuration: segment.sourceDuration,
+            playbackRate: segment.playbackRate
         )
     }
 

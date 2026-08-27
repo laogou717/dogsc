@@ -30,6 +30,29 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
 
         Divider()
 
+        Menu {
+            ForEach([1.0, 1.5, 2.0, 4.0, 8.0, 12.0, 16.0, 20.0], id: \.self) { rate in
+                Button {
+                    setPrimarySegmentPlaybackRate(segment.id, rate: rate)
+                } label: {
+                    if abs(segment.playbackRate - rate) < 0.000_1 {
+                        Label(timelinePlaybackRateText(rate), systemImage: "checkmark")
+                    } else {
+                        Text(timelinePlaybackRateText(rate))
+                    }
+                }
+            }
+            Divider()
+            Button {} label: {
+                Label("按住 Control 拖右端自由变速", systemImage: "arrow.left.and.right")
+            }
+            .disabled(true)
+        } label: {
+            Label("片段速度", systemImage: "speedometer")
+        }
+
+        Divider()
+
         Button {
             rippleDeleteBeforePlayhead()
         } label: {
@@ -109,6 +132,27 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
         } label: {
             Label("删除主片段", systemImage: "trash")
         }
+    }
+
+    func setPrimarySegmentPlaybackRate(_ id: UUID, rate: Double) {
+        do {
+            try editorStore.setPrimarySegmentPlaybackRate(
+                id: id,
+                rate: rate,
+                fullSourceDuration: fullSourceDuration,
+                actionName: "调整片段速度"
+            )
+            editorStore.selection = .primarySegment(id)
+        } catch {
+            onError(error.localizedDescription)
+        }
+    }
+
+    func timelinePlaybackRateText(_ rate: Double) -> String {
+        if abs(rate.rounded() - rate) < 0.000_1 {
+            return "\(Int(rate.rounded()))×"
+        }
+        return String(format: "%.1f×", rate)
     }
 
     func segmentJunctionAction(
@@ -211,6 +255,7 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
                 actionName: "还原该处剪切"
             )
             primaryTrimDraft = nil
+            primaryRetimeDraft = nil
             selectPrimarySegment(restoredID)
             seekTimeline(to: junction.outputTime)
             isRestoreCutMode = false
@@ -228,6 +273,7 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
                 actionName: "还原开头剪辑"
             )
             primaryTrimDraft = nil
+            primaryRetimeDraft = nil
             selectPrimarySegment(restoredID)
             seekTimeline(to: 0)
             isRestoreCutMode = false
@@ -245,6 +291,7 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
                 actionName: "还原结尾剪辑"
             )
             primaryTrimDraft = nil
+            primaryRetimeDraft = nil
             selectPrimarySegment(restoredID)
             seekTimeline(to: gap.outputTime)
             isRestoreCutMode = false
@@ -262,6 +309,7 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
                 actionName: "合并相邻主片段"
             )
             primaryTrimDraft = nil
+            primaryRetimeDraft = nil
             selectPrimarySegment(junction.previousSegmentID)
             seekTimeline(to: junction.outputTime)
             isRestoreCutMode = false
@@ -321,8 +369,10 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
         }
         .frame(width: width, height: primaryClipContentHeight, alignment: .leading)
         .clipped()
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("片段内音频波形")
+        // The waveform is a non-interactive visual preview inside the primary
+        // clips. Exposing its container and two canvases creates three dead
+        // VoiceOver stops between the clip and its animation tracks.
+        .accessibilityHidden(true)
     }
 
     func clipWaveforms(
@@ -445,7 +495,8 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
         guard let timelineMap else { return [] }
         return EditorPrimaryTimelinePresentation.displaySegments(
             from: timelineMap,
-            trimDraft: primaryTrimDraft
+            trimDraft: primaryTrimDraft,
+            retimeDraft: primaryRetimeDraft
         )
     }
 
@@ -519,8 +570,40 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
                     coordinateSpace: .named(editorTimelineDocumentCoordinateSpace)
                     )
                     .onChanged { value in
-                        guard beginTimelineGesture(intent) else { return }
+                        let isRetime = edge == .right && (
+                            primaryRetimeDraft?.segmentID == segment.id
+                                || (primaryTrimDraft == nil
+                                    && NSEvent.modifierFlags.contains(.control))
+                        )
+                        let activeIntent: EditorTimelineGestureIntent = isRetime
+                            ? .primaryRetime(segment.id)
+                            : intent
+                        guard beginTimelineGesture(activeIntent) else { return }
                         selectPrimarySegment(segment.id)
+                        if isRetime {
+                            let rawEndTime = TimeInterval(
+                                value.location.x / max(laneWidth, 1)
+                            ) * duration
+                            let minimumDuration = segment.sourceDuration / 20
+                            let proposedDuration = min(
+                                max(rawEndTime - segment.outputStart, minimumDuration),
+                                segment.sourceDuration
+                            )
+                            let proposedRate = min(max(
+                                segment.sourceDuration / max(proposedDuration, 0.000_1),
+                                1
+                            ), 20)
+                            primaryRetimeDraft = PrimarySegmentRetimeDraft(
+                                segmentID: segment.id,
+                                original: segment,
+                                proposedRate: proposedRate
+                            )
+                            playbackController.beginScrubbing()
+                            playbackController.updateScrubbing(
+                                to: segment.outputStart + proposedDuration
+                            )
+                            return
+                        }
                         let origin: PrimarySegmentTrimDraft
                         if let current = primaryTrimDraft,
                            current.segmentID == segment.id,
@@ -569,13 +652,22 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
                         )
                     }
                     .onEnded { _ in
-                        guard gestureOwnership.activeIntent == intent else { return }
+                        let activeIntent = gestureOwnership.activeIntent
+                        guard activeIntent == intent
+                            || activeIntent == .primaryRetime(segment.id) else { return }
                         playbackController.endScrubbing()
-                        commitPrimaryTrimDraft()
-                        endTimelineGesture(intent)
+                        if activeIntent == .primaryRetime(segment.id) {
+                            commitPrimaryRetimeDraft()
+                            endTimelineGesture(.primaryRetime(segment.id))
+                        } else {
+                            commitPrimaryTrimDraft()
+                            endTimelineGesture(intent)
+                        }
                     }
             )
-            .help(edge == .left ? "拖动裁切或恢复左端" : "拖动裁切或恢复右端")
+            .help(edge == .left
+                ? "拖动裁切或恢复左端"
+                : "拖动裁切或恢复右端；按住 Control 拖动可自由变速")
             .accessibilityLabel(edge == .left ? "裁切主片段左端" : "裁切主片段右端")
             .accessibilityIdentifier(
                 "editor.timeline.primary.trim.\(segment.id.uuidString).\(edge.rawValue)"
@@ -631,6 +723,7 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
 
     func clearTimelineSelection() {
         primaryTrimDraft = nil
+        primaryRetimeDraft = nil
         hoveredPrimarySegmentID = nil
         hoveredZoomID = nil
         editorStore.selection = .canvas
@@ -733,6 +826,7 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
                 actionName: "调整主片段顺序"
             )
             primaryTrimDraft = nil
+            primaryRetimeDraft = nil
             hoveredPrimarySegmentID = nil
             selectPrimarySegment(draggedID)
             if let updatedMap = try? EditorPrimaryTimelinePresentation.timelineMap(
@@ -811,6 +905,7 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
         }
 
         primaryTrimDraft = nil
+        primaryRetimeDraft = nil
         hoveredPrimarySegmentID = nil
         let updatedIDs = EditorTimelineSelectionPresentation.primarySegmentIDs(
             in: editorStore.project.timeline.sourceSequence
@@ -830,7 +925,10 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
 
     func commitPrimaryTrimDraft() {
         guard let draft = primaryTrimDraft else { return }
-        defer { primaryTrimDraft = nil }
+        defer {
+            primaryTrimDraft = nil
+            primaryRetimeDraft = nil
+        }
         let finalPlayheadTime: TimeInterval = switch draft.edge {
         case .left: draft.original.outputStart
         case .right: draft.proposedOutputTime
@@ -854,5 +952,18 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
         // resulting edit point so the replacement generation preserves the
         // intended frame instead of an unrelated pre-ripple position.
         seekTimeline(to: finalPlayheadTime)
+    }
+
+    func commitPrimaryRetimeDraft() {
+        guard let draft = primaryRetimeDraft else { return }
+        defer { primaryRetimeDraft = nil }
+        setPrimarySegmentPlaybackRate(
+            draft.segmentID,
+            rate: draft.proposedRate
+        )
+        seekTimeline(
+            to: draft.original.outputStart
+                + draft.original.sourceDuration / draft.proposedRate
+        )
     }
 }

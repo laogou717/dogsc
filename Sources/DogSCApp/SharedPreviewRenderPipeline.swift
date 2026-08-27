@@ -117,7 +117,15 @@ extension SharedRenderedPreviewNSView {
             commandBuffer.commit()
             return
         }
-        commandBuffer.present(drawable)
+        if let presentationHostTime = job.presentationHostTime {
+            // The display link and AVPlayerItemVideoOutput evaluated this
+            // exact host-time deadline. Scheduling the drawable for the same
+            // deadline prevents a slow frame from being followed by two
+            // immediate catch-up presentations.
+            commandBuffer.present(drawable, atTime: presentationHostTime)
+        } else {
+            commandBuffer.present(drawable)
+        }
         commandBuffer.addCompletedHandler { completed in
             presentationCompletion(completed.status == .completed)
         }
@@ -182,9 +190,8 @@ extension SharedRenderedPreviewNSView {
         commandQueue: MTLCommandQueue,
         colorSpace: CGColorSpace
     ) -> MTLCommandBuffer? {
-        guard plan.samples.contains(where: {
-            !SharedFrameRenderer.isIdentityProjection($0.scene.screen)
-        }), let scene = plan.samples.first?.scene,
+        let scene = plan.scene
+        guard !SharedFrameRenderer.isIdentityProjection(scene.screen),
            let rendered = SharedPreviewFramePipeline.render(
                plan: plan,
                resources: resources
@@ -197,7 +204,10 @@ extension SharedRenderedPreviewNSView {
             height: height,
             mipmapped: false
         )
-        descriptor.usage = [.renderTarget, .shaderRead]
+        // Core Image may choose a compute kernel for this off-screen pass.
+        // A private texture that only advertises renderTarget/shaderRead can
+        // therefore fail to create a CIRenderDestination on some GPUs.
+        descriptor.usage = [.renderTarget, .shaderRead, .shaderWrite]
         descriptor.storageMode = .private
         guard let texture = device.makeTexture(descriptor: descriptor),
               let commandBuffer = commandQueue.makeCommandBuffer() else { return nil }
@@ -236,7 +246,7 @@ extension SharedRenderedPreviewNSView {
             height: size,
             mipmapped: false
         )
-        textureDescriptor.usage = [.renderTarget, .shaderRead]
+        textureDescriptor.usage = [.renderTarget, .shaderRead, .shaderWrite]
         textureDescriptor.storageMode = .private
         guard let texture = device.makeTexture(descriptor: textureDescriptor),
               let commandBuffer = commandQueue.makeCommandBuffer(),

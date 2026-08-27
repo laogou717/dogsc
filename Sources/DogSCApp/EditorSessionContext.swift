@@ -76,6 +76,14 @@ struct EditorWallpaperResolver: Sendable {
             return nil
         }
     }
+
+    func resolve(relativePath: String) -> URL? {
+        guard let projectSession else { return nil }
+        return ProjectStore.resolve(
+            relativePath: relativePath,
+            session: projectSession
+        )
+    }
 }
 
 /// Narrow observable bridge for state and commands owned by the application
@@ -88,6 +96,8 @@ final class EditorHostActions: ObservableObject {
     private let openProjectAction: () -> Void
     private let deleteProjectAction: () -> Void
     private let chooseWallpaperAction: () -> String?
+    private let importOverlayImageAction: () -> String?
+    private let pasteOverlayImageAction: () -> String?
     private let setErrorAction: (String?) -> Void
     private let saveProjectAction: () -> Void
     private let revealProjectAction: () -> Void
@@ -105,6 +115,8 @@ final class EditorHostActions: ObservableObject {
         openProject: @escaping () -> Void,
         deleteProject: @escaping () -> Void,
         chooseWallpaper: @escaping () -> String?,
+        importOverlayImage: @escaping () -> String? = { nil },
+        pasteOverlayImage: @escaping () -> String? = { nil },
         setError: @escaping (String?) -> Void,
         saveProject: @escaping () -> Void = {},
         revealProject: @escaping () -> Void = {},
@@ -118,6 +130,8 @@ final class EditorHostActions: ObservableObject {
         openProjectAction = openProject
         deleteProjectAction = deleteProject
         chooseWallpaperAction = chooseWallpaper
+        importOverlayImageAction = importOverlayImage
+        pasteOverlayImageAction = pasteOverlayImage
         setErrorAction = setError
         saveProjectAction = saveProject
         revealProjectAction = revealProject
@@ -152,6 +166,14 @@ final class EditorHostActions: ObservableObject {
 
     func chooseWallpaper() -> String? {
         chooseWallpaperAction()
+    }
+
+    func importOverlayImage() -> String? {
+        importOverlayImageAction()
+    }
+
+    func pasteOverlayImage() -> String? {
+        pasteOverlayImageAction()
     }
 
     func reportError(_ message: String) {
@@ -193,6 +215,7 @@ final class EditorHostActions: ObservableObject {
 @MainActor
 struct EditorSessionContext {
     typealias WallpaperURLResolver = (BackgroundSource) -> URL?
+    typealias ProjectAssetURLResolver = (String) -> URL?
 
     let id: EditorSessionID
     let document: ProjectDocument
@@ -203,6 +226,7 @@ struct EditorSessionContext {
 
     private let mediaPreparation: EditorMediaSession.Preparation
     private let wallpaperURLResolver: WallpaperURLResolver
+    private let projectAssetURLResolver: ProjectAssetURLResolver
 
     init(
         id: EditorSessionID,
@@ -212,7 +236,8 @@ struct EditorSessionContext {
         exporter: VideoExporter,
         hostActions: EditorHostActions,
         mediaPreparation: @escaping EditorMediaSession.Preparation,
-        wallpaperURLResolver: @escaping WallpaperURLResolver
+        wallpaperURLResolver: @escaping WallpaperURLResolver,
+        projectAssetURLResolver: @escaping ProjectAssetURLResolver
     ) {
         self.id = id
         self.document = document
@@ -222,6 +247,7 @@ struct EditorSessionContext {
         self.hostActions = hostActions
         self.mediaPreparation = mediaPreparation
         self.wallpaperURLResolver = wallpaperURLResolver
+        self.projectAssetURLResolver = projectAssetURLResolver
     }
 
     /// Dynamic timeline/media-manifest state comes from the shared document;
@@ -252,6 +278,10 @@ struct EditorSessionContext {
 
     func wallpaperURL(for source: BackgroundSource) -> URL? {
         wallpaperURLResolver(source)
+    }
+
+    func projectAssetURL(for relativePath: String) -> URL? {
+        projectAssetURLResolver(relativePath)
     }
 }
 
@@ -309,6 +339,14 @@ extension EditorSessionContext {
             chooseWallpaper: { [weak model] in
                 guard model?.editorSessionID == id.rawValue else { return nil }
                 return model?.chooseWallpaperAsset()?.relativePath
+            },
+            importOverlayImage: { [weak model] in
+                guard model?.editorSessionID == id.rawValue else { return nil }
+                return model?.chooseOverlayImageAsset()?.relativePath
+            },
+            pasteOverlayImage: { [weak model] in
+                guard model?.editorSessionID == id.rawValue else { return nil }
+                return model?.importOverlayImageFromPasteboard()?.relativePath
             },
             setError: { [weak model] message in
                 guard model?.editorSessionID == id.rawValue else { return }
@@ -368,7 +406,8 @@ extension EditorSessionContext {
             mediaPreparation: { request in
                 try await TimelinePreviewCompositionLoader.prepare(request: request)
             },
-            wallpaperURLResolver: wallpaperResolver.resolve
+            wallpaperURLResolver: wallpaperResolver.resolve,
+            projectAssetURLResolver: wallpaperResolver.resolve(relativePath:)
         )
     }
 }

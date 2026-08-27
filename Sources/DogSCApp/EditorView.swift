@@ -4,6 +4,7 @@ import Combine
 import QuartzCore
 import RecorderCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 extension Notification.Name {
     /// Sent synchronously before the editor handles a user-initiated Space
@@ -17,8 +18,9 @@ extension Notification.Name {
 enum EditorInspectorRouting {
     static func tab(for selection: EditorSelection?) -> InspectorTab {
         switch selection {
-        case .canvas, .screen, .primarySegment, .crop, nil: return .frame
-        case .zoomTrack, .zoom, .screenMotion: return .zoom
+        case .canvas, .screen, .primarySegment, .crop,
+             .mosaic, .sticker, .progress, nil: return .frame
+        case .zoomTrack, .zoom, .screenMotionTrack, .screenMotion: return .zoom
         case .cursor: return .cursor
         case .camera, .cameraMotion: return .camera
         case .audio: return .audio
@@ -84,12 +86,16 @@ struct EditorView: View {
     @Environment(\.undoManager) private var undoManager
     @State private var showsExportSheet = false
     @State private var showsShortcutCheatsheet = false
+    @State var savedStylePresets: [EditorStylePreset] = []
+    @State var isNamingStylePreset = false
+    @State var stylePresetName = ""
     @State private var spaceKeyMonitor: Any?
     @State private var isEditingTitle = false
     @State private var titleDraft = ""
     /// Sync repair is an exceptional workflow, not a permanent editor lane.
     /// The camera inspector owns its disclosure while the timeline mirrors it.
     @State private var isCameraSyncEditing = false
+    @State private var timelineTrackVisibility: EditorTimelineTrackVisibility
     @AppStorage(AppPreferences.previewResolutionModeKey)
     private var previewResolutionMode = EditorPreviewResolutionMode.low
     @AppStorage(AppPreferences.editorTimelinePrimaryLaneHeightKey)
@@ -110,6 +116,7 @@ struct EditorView: View {
     @State private var inspectorResizeStartWidth: CGFloat?
     @State private var isInspectorResizeHandleHovered = false
     @FocusState private var titleFieldFocused: Bool
+    @FocusState private var previewCanvasFocused: Bool
     @State private var timelineResizeStartHeight: CGFloat?
     @State private var isTimelineResizeHandleHovered = false
     /// A notification or another panel can take key status while this process
@@ -129,6 +136,11 @@ struct EditorView: View {
         )
         _mediaSession = StateObject(wrappedValue: context.makeMediaSession())
         _playbackController = StateObject(wrappedValue: EditorPlaybackController())
+        _timelineTrackVisibility = State(
+            initialValue: AppPreferences.timelineTrackVisibility(
+                for: context.document.project
+            )
+        )
     }
 
     var body: some View {
@@ -183,6 +195,8 @@ struct EditorView: View {
         .sheet(isPresented: $showsExportSheet) {
             ExportSheet(
                 wallpaperURLResolver: context.wallpaperURL,
+                projectAssetURLResolver: context.projectAssetURL,
+                projectDisplayName: projectDisplayTitle,
                 exporter: exporter,
                 editorStore: editorStore,
                 mediaSession: mediaSession
@@ -191,11 +205,36 @@ struct EditorView: View {
         .sheet(isPresented: $showsShortcutCheatsheet) {
             EditorShortcutCheatsheet()
         }
+        .alert("保存工作样式", isPresented: $isNamingStylePreset) {
+            TextField("样式名称", text: $stylePresetName)
+            Button("保存") { saveCurrentStylePreset() }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("保存画布、屏幕外观、摄像头、光标和运镜默认值；不会保存裁切、片段或动画。")
+        }
         .onReceive(EditorMenuBridge.shared.exportRequest) { _ in
             // 菜单栏 ⌘E 与工具栏导出按钮同一条路径。
             guard !isCropping, !showsExportSheet else { return }
             _ = editorStore.prepareForExternalAction(.export)
             showsExportSheet = true
+        }
+        .onReceive(EditorMenuBridge.shared.quitRequest) { _ in
+            let needsPanelDismissal = showsExportSheet
+                || showsShortcutCheatsheet
+                || isNamingStylePreset
+            showsExportSheet = false
+            showsShortcutCheatsheet = false
+            isNamingStylePreset = false
+            if needsPanelDismissal {
+                // Let AppKit detach the SwiftUI sheet/alert before it asks the
+                // editor window to close. The following terminate call still
+                // uses the existing save barrier in windowShouldClose.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    NSApplication.shared.terminate(nil)
+                }
+            } else {
+                NSApplication.shared.terminate(nil)
+            }
         }
         .animation(.easeOut(duration: 0.16), value: hostActions.errorMessage)
         .task(id: editorMediaRequest) {
@@ -224,10 +263,18 @@ struct EditorView: View {
         .onChange(of: editorStore.project.audio) { _, audio in
             playbackController.updateAudio(audio)
         }
+        .onChange(of: timelineTrackVisibility) { _, visibility in
+            AppPreferences.rememberTimelineTrackVisibility(
+                visibility,
+                for: editorStore.project
+            )
+            restoreSelectionAfterHidingTimelineTrack(visibility)
+        }
         .onChange(of: mediaSession.cameraTimingErrorMessage) { _, message in
             if let message { hostActions.reportError(message) }
         }
         .onAppear {
+            savedStylePresets = EditorStylePresetStore.load()
             editorStore.attachUndoManager(undoManager)
             if editorStore.selection == nil {
                 editorStore.selection = .canvas
@@ -283,6 +330,28 @@ struct EditorView: View {
 
     private var sourceHasAudio: Bool { mediaSession.inventories.source.hasAudio }
     private var microphoneHasAudio: Bool { mediaSession.inventories.microphone.hasAudio }
+
+    /// A hidden row can no longer explain or reselect the clip being edited.
+    /// Leave the authored animation untouched, but return the inspector to the
+    /// matching track/global context as soon as its selected row is hidden.
+    private func restoreSelectionAfterHidingTimelineTrack(
+        _ visibility: EditorTimelineTrackVisibility
+    ) {
+        let fallback: EditorSelection?
+        switch editorStore.selection {
+        case .zoom where !visibility.contains(.zoom):
+            fallback = .zoomTrack
+        case .screenMotion where !visibility.contains(.screenMotion):
+            fallback = .screenMotionTrack
+        case .cameraMotion where !visibility.contains(.cameraMotion):
+            fallback = .camera
+        default:
+            fallback = nil
+        }
+        guard let fallback else { return }
+        editorStore.cancelInteraction()
+        editorStore.selection = fallback
+    }
 
     /// Crop mode is not independent view state. The interaction draft is the
     /// single owner of both the active tool and its preview project, so every
@@ -349,9 +418,11 @@ struct EditorView: View {
                     Button(action: hostActions.exportProjectSourceMedia) {
                         Label("导出项目源文件…", systemImage: "square.and.arrow.up")
                     }
+                    .disabled(context.media.source == nil)
                     Button(action: hostActions.importCameraReplacement) {
                         Label("替换当前项目摄像头…", systemImage: "video.badge.plus")
                     }
+                    .disabled(editorStore.project.media?.camera == nil)
                     Divider()
                     Button {
                         showsShortcutCheatsheet = true
@@ -363,13 +434,84 @@ struct EditorView: View {
                         Label("删除当前项目…", systemImage: "trash")
                     }
                 } label: {
-                    EditorToolbarIconSurface(systemName: "folder")
+                    Label {
+                        Text("项目")
+                    } icon: {
+                        EditorToolbarIconSurface(systemName: "folder")
+                    }
+                    .labelStyle(.iconOnly)
                 }
                 .menuStyle(.borderlessButton)
                 .disabled(isCropping)
                 .help("项目")
+                .accessibilityIdentifier("editor.project.menu")
 
                 previewControls
+
+                toolbarCapsule {
+                    Button(action: addMosaicAtPlayhead) {
+                        EditorToolbarIconSurface(systemName: "drop.halffull")
+                    }
+                    .buttonStyle(.plain)
+                    .help("在播放头添加柔化或突出区域")
+
+                    Button(action: addStickerAtPlayhead) {
+                        EditorToolbarIconSurface(systemName: "photo.badge.plus")
+                    }
+                    .buttonStyle(.plain)
+                    .help("导入贴图（也可直接 ⌘V 粘贴）")
+
+                    Button(action: addOrSelectProgressOverlay) {
+                        EditorToolbarIconSurface(systemName: "chart.bar.fill")
+                    }
+                    .buttonStyle(.plain)
+                    .help("添加或选中进度条")
+
+                    Button(action: toggleFrameMotionBlur) {
+                        Label("动态模糊", systemImage: "wind")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(
+                                editorStore.project.motion.frameMotionBlur.isEnabled
+                                    ? Color.black.opacity(0.88)
+                                    : Color.primary.opacity(0.85)
+                            )
+                            .padding(.horizontal, 9)
+                            .frame(height: 28)
+                            .background(
+                                editorStore.project.motion.frameMotionBlur.isEnabled
+                                    ? Color(white: 0.92)
+                                    : Color.white.opacity(0.045),
+                                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            )
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                    .stroke(
+                                        editorStore.project.motion.frameMotionBlur.isEnabled
+                                            ? Color.white.opacity(0.68)
+                                            : Color.white.opacity(0.08),
+                                        lineWidth: 1
+                                    )
+                            }
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .animation(
+                        .easeOut(duration: 0.14),
+                        value: editorStore.project.motion.frameMotionBlur.isEnabled
+                    )
+                    .help(
+                        editorStore.project.motion.frameMotionBlur.isEnabled
+                            ? "关闭动态模糊"
+                            : "开启动态模糊"
+                    )
+                    .accessibilityLabel("动态模糊")
+                    .accessibilityValue(
+                        editorStore.project.motion.frameMotionBlur.isEnabled
+                            ? "已开启"
+                            : "已关闭"
+                    )
+                }
+                .disabled(isCropping || mediaSession.outputDuration <= 0)
 
                 Spacer()
 
@@ -420,66 +562,15 @@ struct EditorView: View {
                     .accessibilityIdentifier("editor.inspector.visibility")
                 }
 
-                Menu {
-                    Section("全片样式") {
-                        Button {
-                            applyDogSCFlowPreset()
-                        } label: {
-                            Label("丝滑流光", systemImage: "sparkles")
-                        }
-                    }
-
-                    Section("仅画布布局") {
-                        Button {
-                            var canvas = editorStore.project.canvas
-                            canvas.padding = 28
-                            canvas.cornerRadius = 20
-                            canvas.shadowStrength = 0.22
-                            performEditorCommand {
-                                try editorStore.replaceCanvas(
-                                    with: canvas,
-                                    actionName: "应用紧凑画布预设"
-                                )
-                            }
-                        } label: {
-                            Label("紧凑画布", systemImage: "rectangle")
-                        }
-
-                        Button {
-                            var canvas = editorStore.project.canvas
-                            canvas.padding = 0
-                            performEditorCommand {
-                                try editorStore.replaceCanvas(
-                                    with: canvas,
-                                    actionName: "应用无边距预设"
-                                )
-                            }
-                        } label: {
-                            Label(
-                                "无边距",
-                                systemImage: "arrow.up.left.and.arrow.down.right"
-                            )
-                        }
-                    }
-                } label: {
-                    Label("样式", systemImage: "paintpalette")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(Color.primary.opacity(0.88))
-                        .padding(.horizontal, 10)
-                        .frame(height: 30)
-                        .contentShape(Rectangle())
-                }
-                .menuStyle(.borderlessButton)
-                .background(
-                    Color.white.opacity(0.045),
-                    in: RoundedRectangle(cornerRadius: 9, style: .continuous)
-                )
-                .overlay {
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                toolbarCapsule {
+                    stylePresetControl
                 }
                 .disabled(isCropping)
-                .help("快速应用全片样式或只调整画布布局")
+                .help(
+                    savedStylePresets.isEmpty
+                        ? "保存当前画布、摄像头、光标与运镜样式"
+                        : "保存或复用自己的画布、摄像头、光标与运镜样式"
+                )
 
                 Button {
                     _ = editorStore.prepareForExternalAction(.export)
@@ -505,6 +596,8 @@ struct EditorView: View {
             Image(systemName: "checkmark.circle")
                 .foregroundStyle(.secondary)
                 .help("项目已自动保存")
+                .accessibilityLabel("项目已自动保存")
+                .accessibilityRemoveTraits(.isSelected)
         case .saving:
             ProgressView()
                 .controlSize(.small)
@@ -584,7 +677,7 @@ struct EditorView: View {
         }
         .frame(width: 22, height: 22)
         .clipShape(RoundedRectangle(cornerRadius: 5.5, style: .continuous))
-        .accessibilityLabel("DogSC")
+        .accessibilityHidden(true)
     }
 
     /// 居中项目名：点击进入编辑，回车或失焦提交，改名命令走撤销与自动保存。
@@ -602,29 +695,33 @@ struct EditorView: View {
                     if !focused { commitTitleEdit() }
                 }
         } else {
-            Text(projectDisplayTitle)
-                .font(.callout.weight(.semibold))
-                .foregroundStyle(.primary.opacity(0.9))
-                .lineLimit(1)
-                .truncationMode(.middle)
-                // ZStack 绝对居中：限制最大宽度，窄窗或裁切模式下不与
-                // 两侧控件簇重叠。
-                .frame(maxWidth: 340)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background {
-                    Capsule()
-                        .fill(Color.white.opacity(0.055))
-                }
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    titleDraft = context.projectIdentity.titleDraft(
-                        for: editorStore.project.title
-                    )
-                    isEditingTitle = true
-                    titleFieldFocused = true
-                }
-                .help("点击重命名项目")
+            Button {
+                titleDraft = context.projectIdentity.titleDraft(
+                    for: editorStore.project.title
+                )
+                isEditingTitle = true
+                titleFieldFocused = true
+            } label: {
+                Text(projectDisplayTitle)
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(.primary.opacity(0.9))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    // ZStack 绝对居中：限制最大宽度，窄窗或裁切模式下不与
+                    // 两侧控件簇重叠。
+                    .frame(maxWidth: 340)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background {
+                        Capsule()
+                            .fill(Color.white.opacity(0.055))
+                    }
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("重命名项目")
+            .accessibilityValue(projectDisplayTitle)
+            .help("点击重命名项目")
         }
     }
 
@@ -643,6 +740,73 @@ struct EditorView: View {
             try editorStore.replaceProject(with: renamed, actionName: "重命名项目")
             hostActions.saveProjectImmediately()
             _ = hostActions.renameProject(to: trimmed)
+        } catch {
+            hostActions.reportError(error.localizedDescription)
+        }
+    }
+
+    private func addMosaicAtPlayhead() {
+        let insertionTime = overlayInsertionTime
+        playbackController.seek(to: insertionTime, pausing: true)
+        do {
+            _ = try editorStore.addMosaic(
+                at: insertionTime,
+                outputDuration: mediaSession.outputDuration
+            )
+            timelineTrackVisibility.formUnion(.overlays)
+        } catch {
+            hostActions.reportError(error.localizedDescription)
+        }
+    }
+
+    private func addStickerAtPlayhead() {
+        guard let relativePath = hostActions.importOverlayImage() else { return }
+        addSticker(relativePath: relativePath)
+    }
+
+    private func addPastedSticker() {
+        guard !isCropping,
+              mediaSession.outputDuration > 0,
+              let relativePath = hostActions.pasteOverlayImage() else { return }
+        addSticker(relativePath: relativePath)
+    }
+
+    private func addSticker(relativePath: String) {
+        let insertionTime = overlayInsertionTime
+        playbackController.seek(to: insertionTime, pausing: true)
+        do {
+            _ = try editorStore.addSticker(
+                relativePath: relativePath,
+                at: insertionTime,
+                outputDuration: mediaSession.outputDuration
+            )
+            timelineTrackVisibility.formUnion(.overlays)
+        } catch {
+            hostActions.reportError(error.localizedDescription)
+        }
+    }
+
+    private var overlayInsertionTime: TimeInterval {
+        min(
+            max(playbackController.outputTime, 0),
+            max(mediaSession.outputDuration, 0)
+        )
+    }
+
+    private func toggleFrameMotionBlur() {
+        var motion = editorStore.project.motion
+        motion.frameMotionBlur.isEnabled.toggle()
+        do {
+            try editorStore.replaceMotion(with: motion, actionName: "切换动态模糊")
+        } catch {
+            hostActions.reportError(error.localizedDescription)
+        }
+    }
+
+    private func addOrSelectProgressOverlay() {
+        do {
+            try editorStore.enableProgressOverlay()
+            timelineTrackVisibility.insert(.progress)
         } catch {
             hostActions.reportError(error.localizedDescription)
         }
@@ -677,7 +841,7 @@ struct EditorView: View {
                     }
                 } label: {
                     HStack(spacing: 6) {
-                        Image(systemName: "rectangle.ratio")
+                        Image(systemName: "aspectratio")
                         Text(editorStore.project.canvas.aspectRatio.rawValue)
                             .frame(minWidth: 38, alignment: .leading)
                         Image(systemName: "chevron.down")
@@ -732,22 +896,21 @@ struct EditorView: View {
                 }
             }
         } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "display")
-                Text(previewResolutionMode == .full ? "画质·完整" : "画质·低清")
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 8)
+            Text(previewResolutionMode == .full ? "画质·完整" : "画质·低清")
+            .padding(.horizontal, 9)
             .frame(height: 28)
             .contentShape(Rectangle())
+            // A borderless macOS Menu may rebuild its native accessibility
+            // cell after first display and drop modifiers applied only to the
+            // outer Menu. Pin the stable name/value to the extracted label too.
+            .accessibilityLabel("预览分辨率")
+            .accessibilityValue(previewResolutionMode.label)
         }
         .menuStyle(.borderlessButton)
         .accessibilityIdentifier("editor.preview.resolution")
         .accessibilityLabel("预览分辨率")
         .accessibilityValue(previewResolutionMode.label)
-        .help("低分辨率优先流畅；完整分辨率按录制素材的实际像素进行 GPU 合成")
+        .help("低清优先流畅；完整分辨率在播放与暂停时都保留素材细节")
     }
 
     private var previewArea: some View {
@@ -763,8 +926,16 @@ struct EditorView: View {
                 isSplitterResizing: isTimelineHeightResizing || isInspectorWidthResizing,
                 cropDraft: cropDraftBinding,
                 wallpaperURLResolver: context.wallpaperURL,
+                projectAssetURLResolver: context.projectAssetURL,
+                onCanvasFocused: { previewCanvasFocused = true },
                 onError: hostActions.reportError
             )
+            .focusable(true)
+            .focused($previewCanvasFocused)
+            .focusEffectDisabled()
+            .onPasteCommand(of: [.image, .fileURL]) { _ in
+                addPastedSticker()
+            }
             .padding(.horizontal, 54)
             .padding(.vertical, 28)
 
@@ -879,6 +1050,7 @@ struct EditorView: View {
             isCameraSyncEditing: isCameraSyncEditing && selectedInspector == .camera,
             windowDeactivationRevision: windowDeactivationRevision,
             primaryLaneHeight: resolvedTimelinePrimaryLaneHeight,
+            visibleTracks: $timelineTrackVisibility,
             onError: hostActions.reportError
         )
     }
@@ -1136,6 +1308,7 @@ struct EditorView: View {
             pointerEvents: context.media.pointerEvents,
             selectedInspector: selectedInspectorBinding,
             isCameraSyncEditing: $isCameraSyncEditing,
+            visibleTimelineTracks: $timelineTrackVisibility,
             isCropping: cropPresentation.inspectorMode == .cropInspector,
             cropDraft: cropDraftBinding,
             contentWidth: resolvedInspectorContentWidth,

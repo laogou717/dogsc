@@ -9,6 +9,7 @@ enum ExportAssetRole: String, Equatable, Sendable {
     case cameraRecording
     case microphoneRecording
     case wallpaper
+    case sticker
 
     var displayName: String {
         switch self {
@@ -16,6 +17,7 @@ enum ExportAssetRole: String, Equatable, Sendable {
         case .cameraRecording: return "摄像头"
         case .microphoneRecording: return "麦克风"
         case .wallpaper: return "背景图片"
+        case .sticker: return "贴图"
         }
     }
 }
@@ -134,6 +136,16 @@ final class VideoExporter: ObservableObject {
         exportTask?.cancel()
     }
 
+    /// An export result belongs to the editor generation that produced it.
+    /// Reusing the application-wide exporter for another project must not show
+    /// the previous project's file as if the new project had just exported.
+    func resetResultForNewEditorSession() {
+        guard !isExporting else { return }
+        exportProgress = 0
+        lastExportURL = nil
+        errorMessage = nil
+    }
+
     nonisolated private static func performExport(
         request: EditorExportRequest,
         cursorSource: CursorRenderSource?,
@@ -237,6 +249,21 @@ final class VideoExporter: ObservableObject {
         } else {
             wallpaperImage = nil
         }
+        var stickerImages: [String: CIImage] = [:]
+        stickerImages.reserveCapacity(request.assets.stickers.count)
+        for (relativePath, asset) in request.assets.stickers {
+            guard let image = CIImage(
+                contentsOf: asset.url,
+                options: [.applyOrientationProperty: true]
+            ) else {
+                throw VideoExporterError.unreadableAsset(
+                    role: .sticker,
+                    path: asset.url.path,
+                    reason: "文件不是可解码的图片。"
+                )
+            }
+            stickerImages[relativePath] = image
+        }
         let mediaPlan = request.mediaPlan
         if requiredMedia.cameraVideo,
            mediaPlan.camera?.playableDuration ?? 0 <= 0 {
@@ -278,6 +305,7 @@ final class VideoExporter: ObservableObject {
         let pipeline = try DirectExportPipeline(
             media: compositionBundle,
             wallpaperImage: wallpaperImage,
+            stickerImages: stickerImages,
             outputURL: temporaryOutputURL,
             canvasSize: canvasSize,
             project: project,

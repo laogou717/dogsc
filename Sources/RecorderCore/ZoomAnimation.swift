@@ -321,68 +321,6 @@ public struct ZoomAnimationClip: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
-/// Product-facing zoom motion choices. The persisted source of truth remains
-/// the clip's easing and transition durations, so old projects and hand-tuned
-/// values stay editable and are recognized as `.custom` without migration.
-public enum ZoomMotionFeelPreset: String, CaseIterable, Identifiable, Sendable {
-    case gentle = "柔和跟随"
-    case standard = "标准聚焦"
-    case quick = "快速强调"
-    case custom = "自定义"
-
-    public var id: String { rawValue }
-
-    public init(animation: ZoomAnimationClip) {
-        self = Self.authoredCases.first(where: { $0.matches(animation) }) ?? .custom
-    }
-
-    public func applying(to source: ZoomAnimationClip) -> ZoomAnimationClip {
-        guard self != .custom else { return source }
-        var result = source
-        switch self {
-        case .gentle:
-            result.easing = .quintic
-            result.customCurve = .quintic
-            result.enterDuration = 0.85
-            result.exitDuration = 0.85
-        case .standard:
-            result.easing = .spring
-            result.customCurve = .cubic
-            result.enterDuration = 0.7
-            result.exitDuration = 0.7
-        case .quick:
-            result.easing = .spring
-            result.customCurve = .cubic
-            result.enterDuration = 0.52
-            result.exitDuration = 0.52
-        case .custom:
-            break
-        }
-        return result
-    }
-
-    public var detail: String {
-        switch self {
-        case .gentle: "慢起慢停，适合讲解与长距离移动。"
-        case .standard: "自然弹簧与 0.7 秒过渡，适合大多数点击聚焦。"
-        case .quick: "更快进入和回落，适合短促强调。"
-        case .custom: "当前曲线或时长已单独调整，高级参数会原样保留。"
-        }
-    }
-
-    private static let authoredCases: [ZoomMotionFeelPreset] = [
-        .gentle, .standard, .quick,
-    ]
-
-    private func matches(_ animation: ZoomAnimationClip) -> Bool {
-        let authored = applying(to: animation)
-        let tolerance = 0.000_001
-        return animation.easing == authored.easing
-            && abs(animation.enterDuration - authored.enterDuration) < tolerance
-            && abs(animation.exitDuration - authored.exitDuration) < tolerance
-    }
-}
-
 public struct ZoomKeyframe: Codable, Equatable, Identifiable, Sendable {
     public var id: UUID
     public var time: TimeInterval

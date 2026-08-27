@@ -9,19 +9,44 @@ public struct RecordingSegment: Codable, Equatable, Identifiable, Sendable {
     public var id: UUID
     public var sourceStart: TimeInterval
     public var sourceDuration: TimeInterval
+    /// Source seconds consumed by one output second. The editor currently
+    /// exposes 1x...8x fast-forward while the storage contract remains ready
+    /// for any positive rate supported by a future UI.
+    public var playbackRate: Double
 
     public init(
         id: UUID = UUID(),
         sourceStart: TimeInterval,
-        sourceDuration: TimeInterval
+        sourceDuration: TimeInterval,
+        playbackRate: Double = 1
     ) {
         self.id = id
         self.sourceStart = sourceStart
         self.sourceDuration = sourceDuration
+        self.playbackRate = playbackRate.isFinite && playbackRate > 0
+            ? playbackRate : 1
     }
 
     public var sourceEnd: TimeInterval {
         sourceStart + sourceDuration
+    }
+
+    public var outputDuration: TimeInterval {
+        sourceDuration / playbackRate
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, sourceStart, sourceDuration, playbackRate
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try container.decode(UUID.self, forKey: .id),
+            sourceStart: try container.decode(TimeInterval.self, forKey: .sourceStart),
+            sourceDuration: try container.decode(TimeInterval.self, forKey: .sourceDuration),
+            playbackRate: try container.decodeIfPresent(Double.self, forKey: .playbackRate) ?? 1
+        )
     }
 }
 
@@ -162,17 +187,26 @@ public struct ProjectTimeline: Codable, Equatable, Sendable {
     public var zoomClips: [ZoomAnimationClip]
     public var screenMotionClips: [ScreenMotionClip]
     public var cameraMotionClips: [CameraMotionClip]
+    public var mosaicClips: [MosaicClip]
+    public var stickerClips: [StickerClip]
+    public var progressOverlay: ProgressOverlay?
 
     public init(
         sourceSequence: SourceSequence = .fullRecording,
         zoomClips: [ZoomAnimationClip] = [],
         screenMotionClips: [ScreenMotionClip] = [],
-        cameraMotionClips: [CameraMotionClip] = []
+        cameraMotionClips: [CameraMotionClip] = [],
+        mosaicClips: [MosaicClip] = [],
+        stickerClips: [StickerClip] = [],
+        progressOverlay: ProgressOverlay? = nil
     ) {
         self.sourceSequence = sourceSequence
         self.zoomClips = zoomClips
         self.screenMotionClips = screenMotionClips
         self.cameraMotionClips = cameraMotionClips
+        self.mosaicClips = mosaicClips
+        self.stickerClips = stickerClips
+        self.progressOverlay = progressOverlay
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -180,6 +214,9 @@ public struct ProjectTimeline: Codable, Equatable, Sendable {
         case zoomClips
         case screenMotionClips
         case cameraMotionClips
+        case mosaicClips
+        case stickerClips
+        case progressOverlay
     }
 
     public init(from decoder: any Decoder) throws {
@@ -200,5 +237,17 @@ public struct ProjectTimeline: Codable, Equatable, Sendable {
             [CameraMotionClip].self,
             forKey: .cameraMotionClips
         ) ?? []
+        mosaicClips = try container.decodeIfPresent(
+            [MosaicClip].self,
+            forKey: .mosaicClips
+        ) ?? []
+        stickerClips = try container.decodeIfPresent(
+            [StickerClip].self,
+            forKey: .stickerClips
+        ) ?? []
+        progressOverlay = try container.decodeIfPresent(
+            ProgressOverlay.self,
+            forKey: .progressOverlay
+        )
     }
 }

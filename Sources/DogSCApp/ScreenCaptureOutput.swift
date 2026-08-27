@@ -155,11 +155,13 @@ final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
     private var deliveredFrameCount = 0
     private var writerDroppedFrameCount = 0
     private var idleFrameCount = 0
+#if DEBUG
     private var lastDiagnosticLogTime: TimeInterval = 0
     private var lastDiagnosticReceivedFrameCount = 0
     private var lastDiagnosticDeliveredFrameCount = 0
     private var lastDiagnosticIdleFrameCount = 0
     private var lastDiagnosticWriterDropCount = 0
+#endif
     private var droppedAudioSampleCount = 0
     private var receivedAudioSampleBufferCount = 0
     private var appendedAudioSampleBufferCount = 0
@@ -195,7 +197,9 @@ final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
     /// The once-per-second logger sorts only this bounded recent window. The
     /// complete run is sorted once, during finish, so diagnostics never become
     /// an increasing recording-time CPU cost.
+#if DEBUG
     private var recentFrameIntervals: [TimeInterval] = []
+#endif
     private var isPaused = false
     private var isAwaitingResumeVideo = false
     private var pauseStartRawVideoTime: CMTime?
@@ -298,9 +302,9 @@ final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
             ]
             if codec == .hevc {
                 // REC-003: AverageBitRate is only a soft target. The hardware
-                // encoder undershot a requested 130 Mbps to 9.45 Mbps in the
-                // real 5120x2666 `测试2` recording, visibly softening small
-                // UI text even though the native pixel dimensions survived.
+                // encoder undershot a requested 130 Mbps to 9.45 Mbps in a
+                // real 5120x2666 recording, visibly softening small UI text
+                // even though the native pixel dimensions survived.
                 // Keep hardware real-time encoding, but make visual quality a
                 // first-class rate-control constraint instead of hoping that a
                 // high soft bitrate target will be consumed.
@@ -326,7 +330,7 @@ final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
             if codec == .hevc {
                 // NAT-001/REC-001: never silently fall back to a 5K software
                 // encoder. A missing hardware path must fail visibly instead
-                // of recreating the ~23 fps 5K H.264 behavior from `测试1`.
+                // of recreating the observed ~23 fps 5K H.264 fallback.
                 encoderSpecification = [
                     kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder
                         as String: true,
@@ -477,7 +481,9 @@ final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
             if interval.isFinite, interval > 0 {
                 maximumFrameInterval = max(maximumFrameInterval, interval)
                 frameIntervals.append(interval)
+#if DEBUG
                 recentFrameIntervals.append(interval)
+#endif
             }
         }
         lastReceivedVideoTime = presentationTime
@@ -987,6 +993,7 @@ final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
     /// console can separate display limits, encoder throughput and idle
     /// content when diagnosing a low delivered frame rate.
     private func logDiagnosticIfDue(_ measurement: FrameRateMeasurement) {
+#if DEBUG
         let now = CACurrentMediaTime()
         let recentElapsed = lastDiagnosticLogTime > 0
             ? now - lastDiagnosticLogTime
@@ -1018,5 +1025,6 @@ final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
             + "recentLongestOver33msRun="
             + "\(recentGaps.maximumConsecutiveOver33Milliseconds)"
         Self.logger.notice("\(message, privacy: .public)")
+#endif
     }
 }

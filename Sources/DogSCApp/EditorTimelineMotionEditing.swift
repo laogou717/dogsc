@@ -40,7 +40,7 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
             motionTrackColor(track).opacity(0.055)
 
             if clips.isEmpty {
-                Text(track == .screen ? "拖动空白处添加屏幕动画" : "拖动空白处添加摄像头动画")
+                Text(track == .screen ? "拖动空白处添加屏幕 3D" : "拖动空白处添加摄像运动")
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.secondary.opacity(0.78))
                     .padding(.leading, 10)
@@ -136,11 +136,18 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
                         hoveredMotionClip = nil
                     }
                 }
+                .accessibilityElement(children: .ignore)
                 .help("单击选中；拖动移动过渡；拖两端调整时长；右键可删除")
-                .accessibilityLabel(track == .screen ? "屏幕运动 \(index + 1)" : "摄像头运动 \(index + 1)")
+                .accessibilityLabel(track == .screen ? "屏幕 3D \(index + 1)" : "摄像运动 \(index + 1)")
                 .accessibilityValue(
                     "\(timelineTimestamp(clip.timing.startTime)) 至 \(timelineTimestamp(clip.timing.endTime))"
                 )
+                .accessibilityAddTraits(
+                    selected ? [.isButton, .isSelected] : .isButton
+                )
+                .accessibilityAction {
+                    selectMotionClip(clip)
+                }
                 .accessibilityIdentifier(
                     "editor.timeline.motion.\(track == .screen ? "screen" : "camera").\(clip.id.uuidString)"
                 )
@@ -517,7 +524,7 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
                         scale: 1.2
                     )
                 )
-                try editorStore.insertScreenMotion(clip, actionName: "添加屏幕动画")
+                try editorStore.insertScreenMotion(clip, actionName: "添加屏幕 3D")
                 editorStore.selection = .screenMotion(clip.id)
             case .camera:
                 let base = editorStore.project.camera
@@ -531,7 +538,7 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
                         opacity: 1
                     )
                 )
-                try editorStore.insertCameraMotion(clip, actionName: "添加摄像头动画")
+                try editorStore.insertCameraMotion(clip, actionName: "添加摄像运动")
                 editorStore.selection = .cameraMotion(clip.id)
             }
         } catch {
@@ -791,10 +798,10 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
         guard let origin else { return }
         let actionName: String
         switch (origin.clip.track, origin.mode) {
-        case (.screen, .move): actionName = "移动屏幕动画"
-        case (.screen, _): actionName = "调整屏幕动画时长"
-        case (.camera, .move): actionName = "移动摄像头动画"
-        case (.camera, _): actionName = "调整摄像头动画时长"
+        case (.screen, .move): actionName = "移动屏幕 3D"
+        case (.screen, _): actionName = "调整屏幕 3D 时长"
+        case (.camera, .move): actionName = "移动摄像运动"
+        case (.camera, _): actionName = "调整摄像运动时长"
         }
         do {
             _ = try editorStore.commitInteraction(actionName: actionName)
@@ -806,6 +813,7 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
 
     func selectMotionClip(_ clip: EditorMotionTimelineClip) {
         primaryTrimDraft = nil
+        primaryRetimeDraft = nil
         switch clip.track {
         case .screen:
             editorStore.selection = .screenMotion(clip.id)
@@ -846,7 +854,7 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
             timeline.screenMotionClips.append(contentsOf: [left, right])
             timeline.screenMotionClips.sort { $0.timing.startTime < $1.timing.startTime }
             do {
-                try editorStore.replaceTimeline(with: timeline, actionName: "分割屏幕动画")
+                try editorStore.replaceTimeline(with: timeline, actionName: "分割屏幕 3D")
                 editorStore.selection = .screenMotion(right.id)
             } catch {
                 onError(error.localizedDescription)
@@ -896,7 +904,7 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
             timeline.cameraMotionClips.append(contentsOf: [left, right])
             timeline.cameraMotionClips.sort { $0.timing.startTime < $1.timing.startTime }
             do {
-                try editorStore.replaceTimeline(with: timeline, actionName: "分割摄像头动画")
+                try editorStore.replaceTimeline(with: timeline, actionName: "分割摄像运动")
                 editorStore.selection = .cameraMotion(right.id)
             } catch {
                 onError(error.localizedDescription)
@@ -942,10 +950,10 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
         do {
             switch clip.track {
             case .screen:
-                try editorStore.removeScreenMotion(id: clip.id, actionName: "删除屏幕动画")
-                editorStore.selection = .screen
+                try editorStore.removeScreenMotion(id: clip.id, actionName: "删除屏幕 3D")
+                editorStore.selection = .screenMotionTrack
             case .camera:
-                try editorStore.removeCameraMotion(id: clip.id, actionName: "删除摄像头动画")
+                try editorStore.removeCameraMotion(id: clip.id, actionName: "删除摄像运动")
                 editorStore.selection = .camera
             }
         } catch {

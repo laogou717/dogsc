@@ -19,7 +19,12 @@ extension CanvasPreview {
                 height: max(Int(sourcePixelSize.height.rounded()), 2)
             )
         )
-        let rasterCanvasSize = CanvasPreviewRasterPolicy.pixelSize(
+        // The selected preview quality is a real rendering contract, not a
+        // paused-frame-only inspection hint. Low mode uses the editor view's
+        // Retina backing pixels; full mode keeps the source-native raster for
+        // both playback and pause. Silently forcing playback back to low made
+        // this control appear broken and made authored edges change at Play.
+        let previewRasterCanvasSize = CanvasPreviewRasterPolicy.pixelSize(
             points: canvasSize,
             displayScale: displayScale,
             mode: previewResolutionMode,
@@ -28,12 +33,12 @@ extension CanvasPreview {
                 height: sourceCanvasDimensions.height
             )
         )
-        let evaluatedProject = project
+        let evaluatedProject = overlayAuthoringProject(at: playbackTime)
         let mediaPlan = mediaSession.mediaPlan
         let pointerEvaluation = mediaPlan?.pointer.evaluation(
             at: playbackTime,
-            motion: project.motion,
-            style: project.cursorStyle
+            motion: evaluatedProject.motion,
+            style: evaluatedProject.cursorStyle
         ) ?? PointerTrackEvaluation(position: nil, cursor: nil)
         let activeZoomClip = tracks.zoom.activeClip(at: playbackTime)
         let activeAutomaticClip = activeZoomClip.flatMap {
@@ -99,36 +104,78 @@ extension CanvasPreview {
             screenMotionTrack: tracks.screenMotion,
             cameraMotionTrack: tracks.cameraMotion
         )
-        let playbackEvaluation = CanvasPlaybackEvaluationContext(
-            project: evaluatedProject,
-            outputDuration: mediaSession.outputDuration,
-            frameRate: evaluatedProject.exportSettings.frameRate.rawValue,
-            rasterCanvasSize: CompositionSize(
-                width: Double(rasterCanvasSize.width),
-                height: Double(rasterCanvasSize.height)
-            ),
-            sourceAspectRatio: Double(sourceAspect),
-            cameraSourceSize: hasCameraTrack
-                ? mediaSession.cameraDisplaySize.map {
-                    CompositionSize(width: Double($0.width), height: Double($0.height))
-                }
-                : nil,
-            primaryPlan: mediaPlan?.primary,
-            cameraPlan: mediaPlan?.camera,
-            pointerTrack: mediaPlan?.pointer,
-            cursorMetrics: cursorMetrics,
-            zoomTrack: tracks.zoom,
-            screenMotionTrack: tracks.screenMotion,
-            cameraMotionTrack: tracks.cameraMotion
-        )
-        let playbackFrame = playbackEvaluation.frame(at: playbackTime)
+        let makeEvaluation: (CGSize) -> CanvasPlaybackEvaluationContext = { rasterSize in
+            CanvasPlaybackEvaluationContext(
+                project: evaluatedProject,
+                outputDuration: mediaSession.outputDuration,
+                frameRate: evaluatedProject.exportSettings.frameRate.rawValue,
+                rasterCanvasSize: CompositionSize(
+                    width: Double(rasterSize.width),
+                    height: Double(rasterSize.height)
+                ),
+                sourceAspectRatio: Double(sourceAspect),
+                cameraSourceSize: hasCameraTrack
+                    ? mediaSession.cameraDisplaySize.map {
+                        CompositionSize(width: Double($0.width), height: Double($0.height))
+                    }
+                    : nil,
+                primaryPlan: mediaPlan?.primary,
+                cameraPlan: mediaPlan?.camera,
+                pointerTrack: mediaPlan?.pointer,
+                cursorMetrics: cursorMetrics,
+                zoomTrack: tracks.zoom,
+                screenMotionTrack: tracks.screenMotion,
+                cameraMotionTrack: tracks.cameraMotion
+            )
+        }
+        let previewEvaluation = makeEvaluation(previewRasterCanvasSize)
+        let visibleFrame = previewEvaluation.frame(at: playbackTime)
         return CanvasPreviewLayout(
             sourceAspect: sourceAspect,
             scene: scene,
             frameScene: frameScene,
-            rasterFrameScene: playbackFrame.semanticScene,
-            renderPlan: playbackFrame.renderPlan,
-            playbackEvaluation: playbackEvaluation
+            rasterFrameScene: visibleFrame.semanticScene,
+            renderPlan: visibleFrame.renderPlan,
+            playbackEvaluation: previewEvaluation
         )
+    }
+
+    /// A newly inserted sticker normally begins at opacity zero because its
+    /// persisted entrance animation starts on that exact frame. While paused
+    /// and authoring that selected sticker, expose its final appearance so the
+    /// user can immediately position and style it. Playback and export still
+    /// evaluate the original 0.7-second animation from the persisted project.
+    func overlayAuthoringProject(at playbackTime: TimeInterval) -> RecorderProject {
+        guard !playbackController.isPlaying else { return project }
+        let frameDuration = 1 / Double(max(project.exportSettings.frameRate.rawValue, 1))
+        switch editorStore.selection {
+        case let .sticker(id):
+            guard let index = project.timeline.stickerClips.firstIndex(where: {
+                $0.id == id
+            }) else { return project }
+            let clip = project.timeline.stickerClips[index]
+            guard clip.timing.contains(playbackTime),
+                  playbackTime - clip.timing.startTime <= frameDuration + 0.000_1
+            else { return project }
+            var authored = project
+            authored.timeline.stickerClips[index].enterDuration = 0
+            return authored
+        case let .mosaic(id):
+            guard let index = project.timeline.mosaicClips.firstIndex(where: {
+                $0.id == id
+            }) else { return project }
+            let clip = project.timeline.mosaicClips[index]
+            guard clip.timing.contains(playbackTime),
+                  playbackTime - clip.timing.startTime <= frameDuration + 0.000_1
+            else { return project }
+            // The copy exists only for paused authoring. A newly inserted
+            // transitioning effect must still be fully visible while it is
+            // selected; playback/export retain the persisted entrance.
+            var authored = project
+            authored.timeline.mosaicClips[index].transitionInDuration = 0
+            return authored
+        default:
+            return project
+        }
     }
 }

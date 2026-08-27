@@ -1,11 +1,7 @@
 import RecorderCore
 import SwiftUI
 
-/// Pure edit state for a canonical project color.
-///
-/// Keystrokes only mutate `text`. A caller receives a value exactly once when
-/// `submit()` advances the committed baseline. Cancelling or finishing an
-/// invalid draft restores the baseline without producing a project command.
+/// Local text state plus the stable color captured when an edit begins.
 struct HexColorDraft: Equatable {
     private(set) var committed: HexColor
     private(set) var text: String
@@ -31,33 +27,8 @@ struct HexColorDraft: Equatable {
         text = value
     }
 
-    /// Returns a new canonical value only when this edit advances the current
-    /// committed baseline. Calling it again after Return followed by focus loss
-    /// is therefore a no-op rather than a second command.
-    mutating func submit() -> HexColor? {
-        guard let value = parsed else { return nil }
-        text = value.hexString
-        guard value != committed else { return nil }
-        committed = value
-        return value
-    }
-
-    /// Focus loss commits a valid draft and restores an invalid one.
-    mutating func finishEditing() -> HexColor? {
-        guard parsed != nil else {
-            cancel()
-            return nil
-        }
-        return submit()
-    }
-
     mutating func cancel() {
         text = committed.hexString
-    }
-
-    mutating func applyPicker(_ value: HexColor) -> HexColor? {
-        text = value.hexString
-        return submit()
     }
 
     /// Synchronizes an external undo, preset or project switch while this
@@ -68,27 +39,31 @@ struct HexColorDraft: Equatable {
     }
 }
 
-/// Shared background/border color editor. The text field and ColorPicker both
-/// remain local until an explicit submit boundary, so neither can create one
-/// undo/autosave entry per character or picker sample.
+/// Shared background/border color editor. Valid picker and text changes are
+/// published immediately for visual feedback; the owner decides how the whole
+/// editing session is committed as one undoable command.
 struct EditorHexColorInput: View {
     let title: String
     let value: HexColor
-    let onCommit: (HexColor) -> Void
+    let onEditingChanged: (Bool) -> Void
+    let onPreview: (HexColor) -> Void
 
     @State private var draft: HexColorDraft
     @State private var pickerDraft: HexColor
     @State private var showsPicker = false
+    @State private var interactionIsActive = false
     @FocusState private var textIsFocused: Bool
 
     init(
         title: String,
         value: HexColor,
-        onCommit: @escaping (HexColor) -> Void
+        onEditingChanged: @escaping (Bool) -> Void = { _ in },
+        onPreview: @escaping (HexColor) -> Void
     ) {
         self.title = title
         self.value = value
-        self.onCommit = onCommit
+        self.onEditingChanged = onEditingChanged
+        self.onPreview = onPreview
         _draft = State(initialValue: HexColorDraft(committed: value))
         _pickerDraft = State(initialValue: value)
     }
@@ -97,6 +72,10 @@ struct EditorHexColorInput: View {
         VStack(alignment: .leading, spacing: 5) {
             Text(title)
                 .font(.caption)
+                // Both actual controls below already carry this context:
+                // "选择\(title)" and "\(title)十六进制值". Keep the
+                // visual heading without adding a third, non-actionable stop.
+                .accessibilityHidden(true)
 
             HStack(spacing: 8) {
                 Button {
@@ -121,7 +100,7 @@ struct EditorHexColorInput: View {
                     "#RRGGBB",
                     text: Binding(
                         get: { draft.text },
-                        set: { draft.updateText($0) }
+                        set: { updateTextDraft($0) }
                     )
                 )
                 .textFieldStyle(.roundedBorder)
@@ -129,12 +108,18 @@ struct EditorHexColorInput: View {
                 .focused($textIsFocused)
                 .onSubmit(submitTextDraft)
                 .onExitCommand {
+                    pickerDraft = draft.committed
                     draft.cancel()
+                    onPreview(draft.committed)
                     textIsFocused = false
                 }
                 .onChange(of: textIsFocused) { _, isFocused in
-                    guard !isFocused else { return }
-                    finishTextEditing()
+                    if isFocused {
+                        beginColorInteraction()
+                    } else {
+                        finishTextEditing()
+                        endColorInteraction()
+                    }
                 }
                 .accessibilityLabel("\(title)十六进制值")
             }
@@ -147,9 +132,20 @@ struct EditorHexColorInput: View {
             }
         }
         .onChange(of: value) { _, newValue in
-            guard !textIsFocused, !showsPicker else { return }
+            guard !interactionIsActive else { return }
             draft.rebase(newValue)
             pickerDraft = newValue
+        }
+        .onChange(of: showsPicker) { _, isPresented in
+            if isPresented {
+                beginColorInteraction()
+            } else {
+                draft.rebase(pickerDraft)
+                endColorInteraction()
+            }
+        }
+        .onDisappear {
+            endColorInteraction()
         }
     }
 
@@ -162,7 +158,7 @@ struct EditorHexColorInput: View {
                 title,
                 selection: Binding(
                     get: { Color(hex: pickerDraft) },
-                    set: { pickerDraft = $0.hexColor }
+                    set: { previewPickerColor($0.hexColor) }
                 ),
                 supportsOpacity: false
             )
@@ -171,32 +167,92 @@ struct EditorHexColorInput: View {
             Text(pickerDraft.hexString)
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(.secondary)
-
-            HStack {
-                Button("取消") {
-                    pickerDraft = draft.parsed ?? draft.committed
-                    showsPicker = false
-                }
-                Spacer()
-                Button("应用") {
-                    showsPicker = false
-                    guard let color = draft.applyPicker(pickerDraft) else { return }
-                    onCommit(color)
-                }
-                .buttonStyle(.borderedProminent)
-            }
         }
         .padding(14)
         .frame(width: 220)
     }
 
     private func submitTextDraft() {
-        guard let color = draft.submit() else { return }
-        onCommit(color)
+        guard let color = draft.parsed else { return }
+        pickerDraft = color
+        onPreview(color)
+        draft.rebase(color)
+        textIsFocused = false
     }
 
     private func finishTextEditing() {
-        guard let color = draft.finishEditing() else { return }
-        onCommit(color)
+        guard let color = draft.parsed else {
+            draft.updateText(pickerDraft.hexString)
+            return
+        }
+        pickerDraft = color
+        onPreview(color)
+        draft.rebase(color)
+    }
+
+    private func updateTextDraft(_ text: String) {
+        draft.updateText(text)
+        guard let color = draft.parsed else { return }
+        beginColorInteraction()
+        pickerDraft = color
+        onPreview(color)
+    }
+
+    private func previewPickerColor(_ color: HexColor) {
+        beginColorInteraction()
+        pickerDraft = color
+        draft.updateText(color.hexString)
+        onPreview(color)
+    }
+
+    private func beginColorInteraction() {
+        guard !interactionIsActive else { return }
+        interactionIsActive = true
+        onEditingChanged(true)
+    }
+
+    private func endColorInteraction() {
+        guard interactionIsActive else { return }
+        interactionIsActive = false
+        onEditingChanged(false)
+    }
+}
+
+/// Gives every editor color well the same direct-preview and single-command
+/// lifecycle as the transactional sliders.
+struct EditorTransactionalColorInput: View {
+    @ObservedObject var editorStore: EditorStore
+    let title: String
+    let value: Binding<HexColor>
+    let commandScope: EditorInteractionCommandScope
+    var selection: EditorSelection? = nil
+    let actionName: String
+    let onError: (String) -> Void
+
+    var body: some View {
+        EditorHexColorInput(
+            title: title,
+            value: value.wrappedValue,
+            onEditingChanged: updateInteraction
+        ) { color in
+            value.wrappedValue = color
+        }
+    }
+
+    private func updateInteraction(_ isEditing: Bool) {
+        if isEditing {
+            _ = editorStore.beginContinuousInteraction(
+                commandScope: commandScope,
+                selection: selection
+            )
+            return
+        }
+        guard editorStore.interaction?.commandScope == commandScope else { return }
+        do {
+            _ = try editorStore.commitInteraction(actionName: actionName)
+        } catch {
+            editorStore.cancelInteraction()
+            onError(error.localizedDescription)
+        }
     }
 }

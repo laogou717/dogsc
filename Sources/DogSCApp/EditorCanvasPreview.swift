@@ -5,6 +5,17 @@ import QuartzCore
 import RecorderCore
 import SwiftUI
 
+enum OverlayResizeCorner: String, CaseIterable, Identifiable {
+    case topLeft
+    case topRight
+    case bottomRight
+    case bottomLeft
+
+    var id: String { rawValue }
+    var xSign: Double { self == .topLeft || self == .bottomLeft ? -1 : 1 }
+    var ySign: Double { self == .topLeft || self == .topRight ? -1 : 1 }
+}
+
 struct CanvasPreview: View {
     @Environment(\.displayScale) var displayScale
     @ObservedObject var editorStore: EditorStore
@@ -19,8 +30,11 @@ struct CanvasPreview: View {
     let isSplitterResizing: Bool
     @Binding var cropDraft: NormalizedCrop
     let wallpaperURLResolver: EditorSessionContext.WallpaperURLResolver
+    let projectAssetURLResolver: EditorSessionContext.ProjectAssetURLResolver
+    let onCanvasFocused: () -> Void
     let onError: (String) -> Void
     @State var resolvedWallpaperImage: NSImage?
+    @State var resolvedStickerImages: [String: NSImage] = [:]
     @State var playbackTrackCache: EditorCanvasPlaybackTrackCache
     @State var perspectivePrewarmPlanCache: EditorCanvasPerspectivePrewarmPlanCache
     @State var cropSourceFrameCache: EditorCanvasCropSourceFrameCache
@@ -49,6 +63,12 @@ struct CanvasPreview: View {
     @State var canvasSnapGuideX: Double?
     @State var canvasSnapGuideY: Double?
     @State var cropDragOrigin: NormalizedCrop?
+    @State var overlayDragOrigin: NormalizedPoint?
+    @State var overlayDragSelection: EditorSelection?
+    @State var mosaicDragOrigin: NormalizedOverlayRect?
+    @State var mosaicResizeOrigin: NormalizedOverlayRect?
+    @State var stickerResizeOrigin: Double?
+    @State var overlayResizeSelection: EditorSelection?
     /// 分栏拖动起始时的画布点尺寸；nil 表示不在拖动中。
     @State var splitterResizeFrozenCanvasSize: CGSize?
     /// 非拖动状态下最近一次实际画布尺寸，供拖动起手时冻结。
@@ -64,6 +84,8 @@ struct CanvasPreview: View {
         isSplitterResizing: Bool = false,
         cropDraft: Binding<NormalizedCrop>,
         wallpaperURLResolver: @escaping EditorSessionContext.WallpaperURLResolver,
+        projectAssetURLResolver: @escaping EditorSessionContext.ProjectAssetURLResolver,
+        onCanvasFocused: @escaping () -> Void = {},
         onError: @escaping (String) -> Void
     ) {
         self.editorStore = editorStore
@@ -75,6 +97,8 @@ struct CanvasPreview: View {
         self.isSplitterResizing = isSplitterResizing
         _cropDraft = cropDraft
         self.wallpaperURLResolver = wallpaperURLResolver
+        self.projectAssetURLResolver = projectAssetURLResolver
+        self.onCanvasFocused = onCanvasFocused
         self.onError = onError
         _playbackTrackCache = State(
             initialValue: EditorCanvasPlaybackTrackCache(
@@ -114,6 +138,11 @@ struct CanvasPreview: View {
     var cameraInteractionScope: EditorCanvasEditScope {
         if case .camera = editScope { return editScope }
         return .camera(.base)
+    }
+
+    var isScreenSelectionActive: Bool {
+        if case .screen = editScope { return true }
+        return false
     }
 
     var body: some View {
@@ -182,20 +211,9 @@ struct CanvasPreview: View {
                           let prewarmTime = perspectivePrewarmTime(
                               atOrAfter: renderedFrame.playbackTime
                           ) else { return nil }
-                    // Editing a 3D motion pins playbackTime inside that exact
-                    // authored state. The old path rebuilt the complete scene,
-                    // evaluation context and render plan a second time even
-                    // when prewarmTime was identical. Reuse the real visible
-                    // plan in that hot path; only a genuinely future 3D clip
-                    // needs its own evaluation.
-                    if abs(prewarmTime - renderedFrame.playbackTime) <= 1.0 / 120_000.0 {
-                        return renderedFrame.layout.renderPlan
-                    }
-                    // A future clip shares the exact immutable playback
-                    // context already built for the visible frame. Cache its
-                    // one render plan across unrelated hover/focus refreshes;
-                    // any project, media-plan, raster-size or time change is
-                    // represented by the Equatable context and invalidates it.
+                    // Prewarm the authored graph at the user's selected preview
+                    // raster. Playback must not silently switch to a different
+                    // quality contract after this paused frame.
                     return perspectivePrewarmPlanCache.plan(
                         at: prewarmTime,
                         using: renderedFrame.layout.playbackEvaluation
@@ -203,6 +221,13 @@ struct CanvasPreview: View {
                 }()
 
                 ZStack {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            guard !isCropping else { return }
+                            onCanvasFocused()
+                            editorStore.selection = .canvas
+                        }
                     if isCropping {
                         cropEditor(
                             canvasSize: liveCanvasSize,
@@ -230,6 +255,7 @@ struct CanvasPreview: View {
                             pausedScreenImage: playbackController.pausedScreenImage,
                             pausedCameraImage: playbackController.pausedCameraImage,
                             wallpaperImage: resolvedWallpaperImage,
+                            stickerImages: resolvedStickerImages,
                             suppressCameraContent: cameraCompositorSuppressed,
                             suppressScreenContent: screenCompositorSuppressed,
                             playbackController: playbackController,
@@ -259,6 +285,7 @@ struct CanvasPreview: View {
                                 scene: layout.frameScene.screen,
                                 canvasSize: rasterCanvasSize
                             )
+                            .accessibilityHidden(isScreenSelectionActive)
 
                             if CanvasPreviewInteractionPolicy.showsEditingOverlays(
                                 isPlaying: playbackController.isPlaying
@@ -292,6 +319,16 @@ struct CanvasPreview: View {
                                     dragPreviewImage: cameraDragPreviewImage
                                 )
                             }
+
+                            if CanvasPreviewInteractionPolicy.showsEditingOverlays(
+                                isPlaying: playbackController.isPlaying
+                            ) {
+                                overlaySelectionTargets(
+                                    scene: layout.frameScene,
+                                    canvasSize: rasterCanvasSize,
+                                    time: renderedFrame.playbackTime
+                                )
+                            }
                         }
 
                         if let canvasSnapGuideX {
@@ -314,10 +351,6 @@ struct CanvasPreview: View {
                         }
                     }
 
-                    if let previewMediaError = playbackController.errorMessage
-                        ?? mediaSession.errorMessage {
-                        previewErrorOverlay(previewMediaError)
-                    }
                 }
                 .frame(width: liveCanvasSize.width, height: liveCanvasSize.height)
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -341,6 +374,23 @@ struct CanvasPreview: View {
             let image = await WallpaperFullImageLoader.image(at: url)
             guard !Task.isCancelled else { return }
             resolvedWallpaperImage = image
+        }
+        .task(id: project.timeline.stickerClips.map(\.relativePath).sorted()) {
+            let relativePaths = Set(
+                project.timeline.stickerClips.map(\.relativePath)
+            )
+            var images: [String: NSImage] = [:]
+            images.reserveCapacity(relativePaths.count)
+            for relativePath in relativePaths {
+                guard let url = projectAssetURLResolver(relativePath),
+                      let image = await WallpaperFullImageLoader.image(at: url) else {
+                    continue
+                }
+                guard !Task.isCancelled else { return }
+                images[relativePath] = image
+            }
+            guard !Task.isCancelled else { return }
+            resolvedStickerImages = images
         }
     }
 
@@ -375,25 +425,6 @@ struct CanvasPreview: View {
         )
     }
 
-    func previewErrorOverlay(_ message: String) -> some View {
-        ZStack {
-            Color.black.opacity(0.72)
-            VStack(spacing: 8) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
-                Text("剪辑预览无法构建")
-                    .font(.caption.weight(.semibold))
-                Text(message)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(3)
-            }
-            .padding(18)
-        }
-        .allowsHitTesting(false)
-    }
-
     func screenSelectionTarget(
         scene: FrameScreenScene,
         canvasSize: CGSize
@@ -403,9 +434,16 @@ struct CanvasPreview: View {
         .fill(.clear)
         .contentShape(shape)
         .frame(width: canvasSize.width, height: canvasSize.height)
-        .onTapGesture { editorStore.selection = .screen }
+        .onTapGesture {
+            onCanvasFocused()
+            editorStore.selection = .screen
+        }
         .accessibilityLabel("屏幕素材")
         .accessibilityHint("点击以选择屏幕")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction {
+            editorStore.selection = .screen
+        }
     }
 
     func cropEditor(canvasSize: CGSize, sourceAspect: CGFloat) -> some View {
@@ -455,6 +493,7 @@ struct CanvasPreview: View {
                 pausedScreenImage: playbackController.pausedScreenImage,
                 pausedCameraImage: nil,
                 wallpaperImage: nil,
+                stickerImages: [:],
                 suppressCameraContent: false,
                 suppressScreenContent: false,
                 playbackController: playbackController,
@@ -475,8 +514,11 @@ struct CanvasPreview: View {
                 .frame(width: selectionRect.width, height: selectionRect.height)
                 .position(x: selectionRect.midX, y: selectionRect.midY)
                 .gesture(cropMoveGesture(sourceSize: sourceSize))
-                .accessibilityLabel("裁切选区")
-                .accessibilityHint("拖动以移动裁切选区")
+                // Canvas dragging remains the direct-manipulation path. The
+                // four named pixel steppers in the inspector are the precise
+                // keyboard/VoiceOver path, so this mouse-only layer must not
+                // become an inert accessibility stop.
+                .accessibilityHidden(true)
 
             ForEach(CropHandle.allCases, id: \.self) { handle in
                 cropHandle(handle, in: selectionRect, sourceSize: sourceSize)
@@ -551,7 +593,7 @@ struct CanvasPreview: View {
                 presentationTime: scene.time,
                 outputDuration: 0,
                 frameRate: cropProject.exportSettings.frameRate.rawValue,
-                samples: [FrameSceneSample(scene: scene, weight: 1)]
+                scene: scene
             ),
             semanticScene: scene
         )
@@ -610,8 +652,7 @@ struct CanvasPreview: View {
             .contentShape(Rectangle())
             .position(position)
             .highPriorityGesture(cropResizeGesture(handle: handle, sourceSize: sourceSize))
-            .accessibilityLabel(handle.accessibilityName)
-            .accessibilityHint("拖动以裁切")
+            .accessibilityHidden(true)
     }
 
     func cropHandlePosition(_ handle: CropHandle, in rect: CGRect) -> CGPoint {
@@ -804,7 +845,7 @@ struct CanvasPreview: View {
                                 commitCanvasInteraction(
                                     actionName: scope == .screen(.base)
                                         ? "移动屏幕素材"
-                                        : "调整屏幕动画位置"
+                                        : "调整屏幕 3D 位置"
                                 )
                             }
                             screenDragOrigin = nil
@@ -822,6 +863,12 @@ struct CanvasPreview: View {
                 .accessibilityValue(
                     "水平 \(Int(contentPosition.x * 100))%，垂直 \(Int(contentPosition.y * 100))%"
                 )
+                .accessibilityAddTraits([.isButton, .isSelected])
+                .accessibilityAction {
+                    if let selection = scope.selection {
+                        editorStore.selection = selection
+                    }
+                }
 
             ZStack {
                 Circle()
@@ -881,7 +928,7 @@ struct CanvasPreview: View {
                                 commitCanvasInteraction(
                                     actionName: scope == .screen(.base)
                                         ? "缩放屏幕素材"
-                                        : "调整屏幕动画大小"
+                                        : "调整屏幕 3D 大小"
                                 )
                             }
                             screenScaleOrigin = nil
@@ -892,9 +939,7 @@ struct CanvasPreview: View {
                             scheduleCameraDragPreviewClear()
                         }
                 )
-                .accessibilityLabel("调整素材大小")
-                .accessibilityHint("拖动以缩放素材")
-                .accessibilityValue(String(format: "%.2f 倍", contentScale))
+                .accessibilityHidden(true)
 
             Label("拖动移动", systemImage: "hand.draw")
                 .font(.caption2.weight(.semibold))
@@ -1025,7 +1070,7 @@ struct CanvasPreview: View {
                             commitCanvasInteraction(
                                 actionName: scope == .camera(.base)
                                     ? "移动摄像头"
-                                    : "调整摄像头动画位置"
+                                    : "调整摄像运动位置"
                             )
                         }
                         cameraDragOrigin = nil
@@ -1039,6 +1084,19 @@ struct CanvasPreview: View {
             )
             .accessibilityLabel("摄像头画面")
             .accessibilityHint("拖动以移动，拖右下角圆点调整大小")
+            .accessibilityValue(
+                "水平 \(Int(effectivePosition.x * 100))%，"
+                    + "垂直 \(Int(effectivePosition.y * 100))%，"
+                    + "大小 \(Int(effectiveSize * 100))%"
+            )
+            .accessibilityAddTraits(
+                isSelected ? [.isButton, .isSelected] : .isButton
+            )
+            .accessibilityAction {
+                if let selection = scope.selection {
+                    editorStore.selection = selection
+                }
+            }
 
             if isSelected {
                 ZStack {
@@ -1087,7 +1145,7 @@ struct CanvasPreview: View {
                                     commitCanvasInteraction(
                                         actionName: scope == .camera(.base)
                                             ? "调整摄像头大小"
-                                            : "调整摄像头动画大小"
+                                            : "调整摄像运动大小"
                                     )
                                 }
                                 cameraSizeOrigin = nil
@@ -1096,8 +1154,7 @@ struct CanvasPreview: View {
                                 scheduleCameraDragPreviewClear()
                             }
                     )
-                    .accessibilityLabel("调整摄像头大小")
-                    .accessibilityHint("拖动以调整大小")
+                    .accessibilityHidden(true)
             }
         }
         .frame(width: cameraOuterSize.width, height: cameraOuterSize.height)

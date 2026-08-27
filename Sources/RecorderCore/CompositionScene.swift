@@ -85,13 +85,11 @@ public enum CompositionSceneEvaluator {
         max(min(canvasWidth, canvasHeight), 1) / 1080
     }
 
-    /// Motion-blur rendering evaluates the scene once per temporal sample;
-    /// rebuilding the sorted motion tracks for every sample is pure waste
-    /// since the clip arrays are unchanged within an output frame. A tiny
-    /// exact-match cache (Equatable arrays, no fingerprints) keeps this cheap
-    /// and safe across preview and export threads. `static let` keeps the
-    /// reference immutable; the `@unchecked Sendable` + NSLock boundary is
-    /// the same pattern the export pipeline uses for its shared state.
+    /// The current scene and previous-frame geometry read the same authored
+    /// motion tracks. A tiny exact-match cache (Equatable arrays, no
+    /// fingerprints) prevents rebuilding their sorted indexes on every frame.
+    /// `static let` keeps the reference immutable; the `@unchecked Sendable` +
+    /// NSLock boundary matches the export pipeline's shared-state pattern.
     private static let motionTrackCache = MotionTrackCacheStore()
 
     public static func evaluate(
@@ -171,8 +169,10 @@ public enum CompositionSceneEvaluator {
         let offsetY = screenMotionSample.manualOffset?.y
             ?? (positionY - 0.5) * (height - decoratedHeight)
         let baseRect = CompositionRect(
-            x: fittedRect.midX - fittedRect.width * manualScale / 2 + offsetX,
-            y: fittedRect.midY - fittedRect.height * manualScale / 2 + offsetY,
+            x: fittedRect.midX - fittedRect.width * manualScale / 2
+                + offsetX,
+            y: fittedRect.midY - fittedRect.height * manualScale / 2
+                + offsetY,
             width: fittedRect.width * manualScale,
             height: fittedRect.height * manualScale
         )

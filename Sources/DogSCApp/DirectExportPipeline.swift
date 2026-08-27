@@ -65,6 +65,7 @@ final class DirectExportPipeline: @unchecked Sendable {
     private let frameRate: OutputFrameRate
     private let outputFrameSchedule: OutputFrameSchedule
     private let wallpaperImage: CIImage?
+    private let stickerImages: [String: CIImage]
     private let cursorSource: CursorRenderSource?
     private let pointerTrack: ProjectPointerTrack
     private let zoomTrack: ZoomAnimationTrack
@@ -108,6 +109,7 @@ final class DirectExportPipeline: @unchecked Sendable {
     init(
         media: TimelineCompositionBundle,
         wallpaperImage: CIImage?,
+        stickerImages: [String: CIImage] = [:],
         outputURL: URL,
         canvasSize: CGSize,
         project: RecorderProject,
@@ -143,6 +145,7 @@ final class DirectExportPipeline: @unchecked Sendable {
         self.sourcePreferredTransform = media.primaryVideoTrack.preferredTransform
         self.cameraPreferredTransform = media.cameraVideoTrack?.preferredTransform ?? .identity
         self.wallpaperImage = wallpaperImage
+        self.stickerImages = stickerImages
         self.cursorSource = cursorSource
         self.pointerTrack = media.plan.pointer
         self.zoomTrack = ZoomAnimationTrack(project.zoomAnimations)
@@ -268,6 +271,7 @@ final class DirectExportPipeline: @unchecked Sendable {
                     ? 0
                     : Float(min(max(project.audio.microphoneVolume, 0), 1))
             )
+            output.audioTimePitchAlgorithm = .timeDomain
             guard reader.canAdd(output) else {
                 throw VideoExporterError.exportFailed("无法创建麦克风混音读取器")
             }
@@ -536,10 +540,11 @@ final class DirectExportPipeline: @unchecked Sendable {
                     screen: sourceImage,
                     camera: cameraImage,
                     wallpaper: wallpaperImage,
-                    cursor: cursorSource?.image
+                    cursor: cursorSource?.image,
+                    stickers: stickerImages
                 )
                 let canvasRect = CGRect(origin: .zero, size: canvasSize)
-                guard let outputImage = WeightedFrameCompositor.composite(
+                guard let outputImage = SharedFrameCompositor.composite(
                     renderPlan,
                     resources: resources,
                     extent: canvasRect

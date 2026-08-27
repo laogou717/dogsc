@@ -18,7 +18,9 @@ let editorClipAmberBottom = Color(red: 0.64, green: 0.43, blue: 0.14)
 let setupBarBackground = Color(red: 0.075, green: 0.078, blue: 0.09)
 
 func setupWindowWidth() -> CGFloat { 856 }
-func recordingWindowWidth() -> CGFloat { 360 }
+func recordingWindowWidth(recordsMicrophone: Bool) -> CGFloat {
+    recordsMicrophone ? 360 : 288
+}
 
 private struct RecorderHoverEffect: ViewModifier {
     @State private var isHovering = false
@@ -105,10 +107,10 @@ struct SetupView: View {
     var body: some View {
         HStack(spacing: 0) {
             HStack(spacing: 2) {
-                captureModeButton("显示器", icon: "display", source: .display, enabled: true)
-                captureModeButton("窗口", icon: "macwindow", source: .window, enabled: true)
-                captureModeButton("区域", icon: "viewfinder", source: .area, enabled: true)
-                captureModeButton("设备", icon: "iphone", source: .device, enabled: true)
+                captureModeButton("显示器", icon: "display", source: .display)
+                captureModeButton("窗口", icon: "macwindow", source: .window)
+                captureModeButton("区域", icon: "viewfinder", source: .area)
+                captureModeButton("设备", icon: "iphone", source: .device)
             }
 
             Divider()
@@ -131,8 +133,8 @@ struct SetupView: View {
             HStack(spacing: 4) {
                 RecorderPopupMenuButton(
                     width: 44,
-                    items: settingsMenuItems,
-                    accessibilityLabel: "录制质量与状态",
+                    items: recordingFormatMenuItems,
+                    accessibilityLabel: "录制格式，当前\(recordingFormatSummary)",
                     accessibilityIdentifier: RecorderAccessibilityID.setupSettings,
                     cornerRadius: 12,
                     highlightOpacity: 0.11
@@ -149,7 +151,10 @@ struct SetupView: View {
                     )
                 }
                 .frame(width: 44, height: 44)
-                .help(model.captureReadiness.frameRateWarningText ?? "录制质量与状态")
+                .help(
+                    model.captureReadiness.frameRateWarningText
+                        ?? "录制格式：\(recordingFormatSummary)"
+                )
 
                 RecorderPopupMenuButton(
                     width: 44,
@@ -176,10 +181,8 @@ struct SetupView: View {
                         .frame(width: 44, height: 44)
                 }
                 .buttonStyle(.plain)
-                .focusable(false)
-                .focusEffectDisabled()
-                .help("退出DogSC")
-                .accessibilityLabel("退出DogSC")
+                .help("退出\(AppIdentity.displayName)")
+                .accessibilityLabel("退出\(AppIdentity.displayName)")
                 .recorderHover(
                     cornerRadius: 12,
                     highlightOpacity: 0.11
@@ -205,8 +208,6 @@ struct SetupView: View {
                     .background(startButtonBackground, in: Capsule())
                 }
                 .buttonStyle(.plain)
-                .focusable(false)
-                .focusEffectDisabled()
                 .foregroundStyle(
                     model.canStartRecording
                         ? Color.white
@@ -225,14 +226,10 @@ struct SetupView: View {
         }
         .padding(.horizontal, 8)
         .frame(width: setupWindowWidth(), height: 64)
-        .background {
-            ZStack {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(setupBarBackground)
-                WindowDragArea(purpose: .recorderPanel(phase: .setup))
-                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-            }
-        }
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(setupBarBackground)
+        )
         .overlay {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.75)
@@ -246,16 +243,33 @@ struct SetupView: View {
             model.refreshCaptureDevices()
         }
         .alert(
-            "录制提示",
+            AppIdentity.displayName,
             isPresented: Binding(
                 get: { model.errorMessage != nil },
                 set: { if !$0 { model.errorMessage = nil } }
             )
         ) {
-            if model.errorMessage?.contains("屏幕录制权限") == true {
-                Button("打开系统设置", action: model.openScreenRecordingSettings)
+            if model.errorMessage?.hasPrefix("没有摄像头采集权限") == true {
+                Button("打开系统设置") {
+                    model.errorMessage = nil
+                    model.openCameraPrivacySettings()
+                }
+                Button("暂不使用摄像头", role: .cancel) {
+                    model.selectCamera(nil)
+                    model.errorMessage = nil
+                }
+            } else if model.errorMessage?.hasPrefix("没有麦克风权限") == true {
+                Button("打开系统设置") {
+                    model.errorMessage = nil
+                    model.openMicrophonePrivacySettings()
+                }
+                Button("暂不使用麦克风", role: .cancel) {
+                    model.selectMicrophone(nil)
+                    model.errorMessage = nil
+                }
+            } else {
+                Button("知道了", role: .cancel) { model.errorMessage = nil }
             }
-            Button("知道了", role: .cancel) { model.errorMessage = nil }
         } message: {
             Text(model.errorMessage ?? "未知错误")
         }
@@ -373,8 +387,7 @@ struct SetupView: View {
     private func captureModeButton(
         _ title: String,
         icon: String,
-        source: CaptureSource?,
-        enabled: Bool
+        source: CaptureSource
     ) -> some View {
         let selected = source == model.confirmedCaptureSource
         let isChoosing = !selected && source == model.selectedCaptureSource
@@ -383,6 +396,7 @@ struct SetupView: View {
                 Image(systemName: icon).font(.system(size: 13, weight: .medium))
                 Text(title).font(.caption2.weight(.medium))
             }
+            .accessibilityHidden(true)
             .frame(width: 44, height: 44)
             .background(
                 selected
@@ -401,101 +415,86 @@ struct SetupView: View {
             )
 
             RecorderActionTrigger(
-                action: {
-                    if let source { model.selectCaptureSource(source) }
-                },
+                action: { model.selectCaptureSource(source) },
                 accessibilityLabel: selected
                     ? "\(title)，已选择"
                     : (isChoosing
                         ? "正在选择\(title)录制范围"
-                        : "选择\(title)录制范围"),
-                isEnabled: enabled
+                        : "选择\(title)录制范围")
             )
             .frame(width: 44, height: 44)
         }
         .frame(width: 44, height: 44)
-        .foregroundStyle(enabled ? (selected ? Color.white : Color.secondary) : Color.secondary.opacity(0.45))
-        .help(
-            enabled
-                ? (isChoosing ? "正在选择\(title)录制范围" : title)
-                : "设备直录将在后续版本开放"
-        )
+        .foregroundStyle(selected ? Color.white : Color.secondary)
+        .help(isChoosing ? "正在选择\(title)录制范围" : title)
     }
 
-    private var settingsMenuItems: [RecorderMenuItem] {
-        var items: [RecorderMenuItem] = [
-            .info("录制节奏"),
-            .info(model.configuration.source == .device
-                ? "设备原生可变帧率（VFR）"
-                : "可变帧率（VFR）"),
-            .info("保留系统实际交付帧；导出时再选择 30/60 FPS"),
-        ]
-
+    private var recordingFormatMenuItems: [RecorderMenuItem] {
         if model.configuration.source == .device {
-            items.append(.info("设备源保留 iPhone/iPad 提供的原始时间戳"))
-        } else {
-            if let warning = model.captureReadiness.frameRateWarningText {
-                items.append(.info(warning))
-            }
+            return [.info("设备录制沿用 iPhone/iPad 原始格式与时间戳")]
         }
 
-        items.append(contentsOf: [
-            .separator,
-            .info("录制格式"),
-        ])
-        items.append(contentsOf: CaptureCodec.allCases.map { codec in
+        var items: [RecorderMenuItem] = CaptureCodec.allCases.map { codec in
             .action(
                 codec.recordingLabel,
-                isOn: model.configuration.captureCodec == codec,
-                isEnabled: model.configuration.source != .device
+                isOn: model.configuration.captureCodec == codec
             ) {
                 model.captureSetup.setCaptureCodec(codec)
             }
-        })
+        }
         if model.configuration.captureCodec == .hevc {
-            items.append(.info("HEVC：保留屏幕/窗口 Retina 原生像素，使用 Apple 硬件编码"))
-            items.append(.info("导出 4K/1440p/1080p 时可转为 H.264"))
+            items.append(.separator)
+            items.append(.info("保留 Retina 原生像素；导出时可转为 H.264"))
         } else if model.configuration.captureCodec == .proRes422 {
-            items.append(.info("ProRes 422：录制即近乎无损，文件很大；导出时再压缩"))
+            items.append(.separator)
+            items.append(.info("近乎无损，但文件很大；导出时再压缩"))
         }
 
-        items.append(contentsOf: [
-            .separator,
-            .info("状态"),
-            .info("录屏权限：\(model.captureReadiness.permissionText)"),
-            .info("摄像头：\(model.captureReadiness.cameraPermission.label)"),
-            .info("麦克风：\(model.captureReadiness.microphonePermission.label)"),
-            .info("显示器：\(model.captureReadiness.displayText)"),
-            .info("磁盘：\(model.captureReadiness.diskText)"),
-            .info("编码器：\(model.captureReadiness.encoderText)"),
-        ])
         if let warning = model.captureReadiness.frameRateWarningText {
+            items.append(.separator)
             items.append(.info(warning))
         }
 
         if !model.captureReadiness.hasScreenRecordingPermission {
+            items.append(.separator)
             items.append(.action("打开录屏权限设置", handler: model.openScreenRecordingSettings))
         }
         return items
     }
 
+    private var recordingFormatSummary: String {
+        if model.configuration.source == .device {
+            return "原格式"
+        }
+        return switch model.configuration.captureCodec {
+        case .hevc: "HEVC"
+        case .h264: "H.264"
+        case .proRes422: "ProRes"
+        }
+    }
+
     private var projectMenuItems: [RecorderMenuItem] {
-        [
-            .info("项目与恢复"),
+        var items: [RecorderMenuItem] = [
             .action("打开项目…", handler: model.openProjectPicker),
             .action(
-                "继续上次",
+                "继续上次项目",
                 isEnabled: !model.recentProjects.isEmpty,
                 handler: model.openMostRecentProject
             ),
             .separator,
-            .action(
-                "恢复中断录制",
-                isEnabled: !model.recoverableProjects.isEmpty,
-                handler: model.recoverMostRecentProject
-            ),
-            .action("项目保存位置…", handler: model.chooseProjectsFolder),
         ]
+
+        if !model.recoverableProjects.isEmpty {
+            items.append(
+                .action(
+                    "恢复中断录制",
+                    handler: model.recoverMostRecentProject
+                )
+            )
+        }
+
+        items.append(.action("项目保存位置…", handler: model.chooseProjectsFolder))
+        return items
     }
 
     private var cameraMenuItems: [RecorderMenuItem] {
@@ -548,8 +547,11 @@ struct SetupView: View {
             if effects.names.isEmpty {
                 items.append(.info("系统视频效果：未开启"))
             } else {
-                items.append(.info("系统视频效果：\(effects.names.joined(separator: "、"))"))
-                items.append(.info("视频效果会额外占用 GPU / 神经网络算力，并可能限制帧率"))
+                items.append(
+                    .info(
+                        "系统视频效果：\(effects.names.joined(separator: "、"))；可能降低帧率"
+                    )
+                )
             }
             items.append(.action("管理系统视频效果…") {
                 CaptureDeviceCatalog.showSystemVideoEffects()
@@ -786,14 +788,15 @@ struct RecordingBar: View {
                 .layoutPriority(2)
         }
         .padding(.horizontal, 12)
-        .frame(width: recordingWindowWidth(), height: 46)
-        .background {
-            ZStack {
-                Capsule().fill(Color(red: 0.055, green: 0.058, blue: 0.067))
-                WindowDragArea(purpose: .recorderPanel(phase: .recording))
-                    .clipShape(Capsule())
-            }
-        }
+        .frame(
+            width: recordingWindowWidth(
+                recordsMicrophone: model.configuration.recordsMicrophone
+            ),
+            height: 46
+        )
+        .background(
+            Capsule().fill(Color(red: 0.055, green: 0.058, blue: 0.067))
+        )
         .overlay {
             Capsule()
                 .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.75)
@@ -906,13 +909,7 @@ struct RecordingBar: View {
                     )
             }
         } else {
-            Text(
-                model.isRecordingPaused
-                    ? "已暂停"
-                    : (model.configuration.source == .device
-                        ? "设备原生"
-                        : "VFR")
-            )
+            Text(model.isRecordingPaused ? "已暂停" : "录制中")
             .foregroundStyle(.secondary)
         }
     }
@@ -938,7 +935,7 @@ struct RecordingBar: View {
             RecorderPopupMenuButton(
                 width: 34,
                 items: recordingMenuItems,
-                accessibilityLabel: "录制画面与更多操作",
+                accessibilityLabel: "更多录制操作",
                 accessibilityIdentifier: RecorderAccessibilityID.recordingMore,
                 height: 32,
                 cornerRadius: 10,
@@ -950,7 +947,7 @@ struct RecordingBar: View {
                     .foregroundStyle(.primary)
             }
             .frame(width: 34, height: 32)
-            .help("录制画面与更多操作")
+            .help("更多录制操作")
         }
     }
 
@@ -971,6 +968,7 @@ struct RecordingBar: View {
                     in: Circle()
                 )
                 .foregroundStyle(emphasized ? Color.black : Color.primary)
+                .accessibilityHidden(true)
 
             RecorderActionTrigger(
                 action: action,
@@ -991,43 +989,38 @@ struct RecordingBar: View {
         let canHideDesktopElements = model.configuration.source != .window
             && model.configuration.source != .device
 
-        let items: [RecorderMenuItem] = [
-            .info("录制画面"),
-            .action(
-                "隐藏桌面文件",
-                isOn: model.configuration.hidesDesktopFiles,
-                isEnabled: canHideDesktopElements
-            ) {
-                model.setHidesDesktopFiles(!model.configuration.hidesDesktopFiles)
-            },
-            .action(
-                "隐藏 Dock",
-                isOn: model.configuration.hidesDock,
-                isEnabled: canHideDesktopElements
-            ) {
-                model.setHidesDock(!model.configuration.hidesDock)
-            },
-            .info(recordingMenuScopeHint),
-            .separator,
+        var items: [RecorderMenuItem] = []
+        if canHideDesktopElements {
+            items.append(
+                .action(
+                    "录制画面中隐藏桌面文件",
+                    isOn: model.configuration.hidesDesktopFiles
+                ) {
+                    model.setHidesDesktopFiles(!model.configuration.hidesDesktopFiles)
+                }
+            )
+            items.append(
+                .action(
+                    "录制画面中隐藏 Dock",
+                    isOn: model.configuration.hidesDock
+                ) {
+                    model.setHidesDock(!model.configuration.hidesDock)
+                }
+            )
+            items.append(.separator)
+        }
+
+        items.append(
             .action("重新录制…", isEnabled: !model.isPauseTransitioning) {
                 pendingAction = .restart
-            },
+            }
+        )
+        items.append(
             .action("丢弃这次录制…", isEnabled: !model.isPauseTransitioning) {
                 pendingAction = .discard
-            },
-        ]
+            }
+        )
         return items
-    }
-
-    private var recordingMenuScopeHint: String {
-        switch model.configuration.source {
-        case .window:
-            "单窗口录制不会包含桌面和 Dock"
-        case .device:
-            "设备录制不会包含 Mac 桌面和 Dock"
-        default:
-            "只影响录制画面，不修改系统设置"
-        }
     }
 
     private func elapsedText(at date: Date) -> String {

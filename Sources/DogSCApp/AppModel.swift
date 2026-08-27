@@ -206,6 +206,15 @@ final class AppModel: ObservableObject {
     @Published var editorSessionID = UUID()
     @Published var editorContextRevision: UInt64 = 0
     @Published var isMediaExchangeRunning = false
+    @Published var hasVerifiedScreenRecordingPermission = false
+    @Published var hasAccessibilityPermission = AXIsProcessTrusted()
+    @Published var isCheckingRequiredPermissions = false
+    @Published var hasCompletedRequiredPermissionOnboarding = UserDefaults.standard.bool(
+        forKey: "permissions.required-onboarding-completed"
+    )
+    var hasRequestedScreenPermissionThisLaunch = false
+    var hasRequestedAccessibilityPermissionThisLaunch = false
+    var hasStartedPermissionOnboardingThisLaunch = false
 
     /// A freshly recorded project may be discarded from its first editor
     /// session only while the user has not authored any edit. The project is
@@ -221,6 +230,33 @@ final class AppModel: ObservableObject {
     var availableScreenDevices: [CaptureDeviceInfo] { captureSetup.availableScreenDevices }
     var isRefreshingWindows: Bool { captureSetup.isRefreshingWindows }
     var captureReadiness: CaptureReadiness { captureSetup.readiness }
+
+    var hasRequiredRecordingPermissions: Bool {
+        let screenPermissionIsReady = hasVerifiedScreenRecordingPermission
+            || (hasCompletedRequiredPermissionOnboarding
+                && captureReadiness.hasScreenRecordingPermission)
+        return screenPermissionIsReady && hasAccessibilityPermission
+    }
+
+    var showsRequiredPermissionGate: Bool {
+        phase == .setup
+            && (!hasRequiredRecordingPermissions
+                || !hasCompletedRequiredPermissionOnboarding)
+    }
+
+    var requiredPermissionActionTitle: String {
+        if isCheckingRequiredPermissions { return "正在检查…" }
+        if !captureReadiness.hasScreenRecordingPermission {
+            return hasRequestedScreenPermissionThisLaunch
+                ? "打开录屏设置" : "授权屏幕录制"
+        }
+        if !hasVerifiedScreenRecordingPermission { return "检查录屏权限" }
+        if !hasAccessibilityPermission {
+            return hasRequestedAccessibilityPermissionThisLaunch
+                ? "打开辅助功能设置" : "授权辅助功能"
+        }
+        return "进入 \(AppIdentity.displayName)"
+    }
 
     let recorder = ScreenRecorder()
     let exporter = VideoExporter()
@@ -263,6 +299,7 @@ final class AppModel: ObservableObject {
             workspace: ProjectWorkspace(),
             captureSetup: CaptureSetupController()
         )
+        project = EditorStylePresetStore.applyingLastUsedStyle(to: project)
         applySavedSystemAudioPreference()
     }
 
@@ -404,17 +441,12 @@ final class AppModel: ObservableObject {
             errorMessage = "磁盘空间不足，无法保证 30 分钟录制安全完成。请先释放空间。"
             return
         }
-        if plan.configuration.source != .device,
-           !AXIsProcessTrusted() {
-            // 指针事件素材依赖全局鼠标监听（辅助功能权限）。在所有权限就绪
-            // 之前不开始录制：授权请求在此处弹出，而不是在录制进行中弹出。
-            // 注意：授权后需要重启应用才生效。
-            _ = AXIsProcessTrustedWithOptions(
-                ["AXTrustedCheckOptionPrompt": true] as CFDictionary
-            )
-            errorMessage = "需要辅助功能权限才能记录鼠标移动素材。"
-                + "请在 系统设置→隐私与安全性→辅助功能 中允许DogSC，"
-                + "然后重启应用，再开始录制。"
+        guard hasRequiredRecordingPermissions else {
+            // The permission gate owns authorization. Recording preparation
+            // must never prompt after an area/window overlay is already live.
+            captureSetup.stopPresentation()
+            errorMessage = nil
+            refreshRequiredRecordingPermissions()
             return
         }
         resumeLiveInputIndicatorsForRecording(plan: plan)
@@ -457,10 +489,8 @@ final class AppModel: ObservableObject {
                     guard permitted else {
                         throw CameraRecorderError.permissionDenied("iPhone/iPad 屏幕")
                     }
-                } else {
-                    guard recorder.requestPermissionIfNeeded() else {
-                        throw ScreenRecorderError.permissionDenied
-                    }
+                } else if !hasRequiredRecordingPermissions {
+                    throw ScreenRecorderError.permissionDenied
                 }
                 preparationLogger.notice("prepare: screen permission ok")
                 if plan.configuration.recordsCamera {
@@ -482,9 +512,8 @@ final class AppModel: ObservableObject {
                 // 让 WindowServer 和编码器刚释放资源就立刻再次抢占，用户按下
                 // 录制后也会白等三秒。真实试录保留为显式诊断入口；正常入口
                 // 只做上面的权限/设备预检，运行期错误由录制状态机即时上报。
-                // A temporal blur toggle belongs to the previous edit, not to
-                // this new capture. Keeping it enabled here made every newly
-                // recorded project open with a softened moving screen.
+                // Start every new project from the intentionally chosen motion
+                // defaults without inheriting the previous project's edits.
                 project.motion = project.motion.preparedForNewRecording()
                 recorderTransitionStage = .creatingProject
                 let session = try ProjectStore.createSession()
@@ -953,6 +982,7 @@ final class AppModel: ObservableObject {
                 suspendLiveInputIndicators()
                 offersDiscardForUntouchedRecording = true
                 currentRecordingHasEditorChanges = false
+                exporter.resetResultForNewEditorSession()
                 editorSessionID = UUID()
                 recorderTransitionStage = .openingEditor
                 phase = .editor

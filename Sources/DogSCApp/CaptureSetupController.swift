@@ -233,6 +233,9 @@ final class CaptureSetupController: ObservableObject {
     private var windowsRefreshToken: CaptureSelectionToken?
     private var focusRestorationGeneration: UInt64 = 0
     private var startRequestedToken: CaptureSelectionToken?
+    private var selectionBaselineToken: CaptureSelectionToken?
+    private var selectionBaselineConfiguration: CaptureConfiguration?
+    private var selectionBaselineTarget: CaptureSelectionTarget?
 
     init(
         configuration: CaptureConfiguration = CaptureConfiguration(),
@@ -270,7 +273,12 @@ final class CaptureSetupController: ObservableObject {
 
     func selectSource(_ source: CaptureSource) {
         focusRestorationGeneration &+= 1
+        let baselineConfiguration = configuration
+        let baselineTarget = selection.state.target
         let session = selection.choose(source)
+        selectionBaselineToken = session.token
+        selectionBaselineConfiguration = baselineConfiguration
+        selectionBaselineTarget = baselineTarget
         startRequestedToken = nil
         stopPresentation()
         onSelectionPresentationStarted?()
@@ -321,6 +329,9 @@ final class CaptureSetupController: ObservableObject {
     /// overlay.
     func selectDisplay(_ display: CaptureDisplay) {
         let session = selection.choose(.display)
+        selectionBaselineToken = nil
+        selectionBaselineConfiguration = nil
+        selectionBaselineTarget = nil
         startRequestedToken = nil
         stopPresentation()
         var updated = configuration
@@ -484,6 +495,9 @@ final class CaptureSetupController: ObservableObject {
     func reset() {
         focusRestorationGeneration &+= 1
         startRequestedToken = nil
+        selectionBaselineToken = nil
+        selectionBaselineConfiguration = nil
+        selectionBaselineTarget = nil
         _ = selection.reset()
         // Invalidate the semantic session before closing AppKit surfaces.
         // Some selectors synchronously report cancellation while stopping;
@@ -622,6 +636,11 @@ final class CaptureSetupController: ObservableObject {
         guard selection.isCurrent(token), target != nil,
               startRequestedToken != token else { return }
         startRequestedToken = token
+        if selectionBaselineToken == token {
+            selectionBaselineToken = nil
+            selectionBaselineConfiguration = nil
+            selectionBaselineTarget = nil
+        }
         onStartRequested?()
     }
 
@@ -632,12 +651,30 @@ final class CaptureSetupController: ObservableObject {
         guard let source = selection.state.session?.source,
               selection.cancel(token: token) else { return }
         startRequestedToken = nil
+        let baselineConfiguration = selectionBaselineToken == token
+            ? selectionBaselineConfiguration
+            : nil
+        let baselineTarget = selectionBaselineToken == token
+            ? selectionBaselineTarget
+            : nil
+        selectionBaselineToken = nil
+        selectionBaselineConfiguration = nil
+        selectionBaselineTarget = nil
         stopPresentation()
-        var updated = configuration
-        clearTarget(for: source, in: &updated)
-        publishConfiguration(updated)
+        if let baselineConfiguration {
+            publishConfiguration(baselineConfiguration)
+        } else {
+            var updated = configuration
+            clearTarget(for: source, in: &updated)
+            publishConfiguration(updated)
+        }
+        if let baselineTarget {
+            let restoredSession = selection.choose(baselineTarget.source)
+            _ = selection.confirm(baselineTarget, token: restoredSession.token)
+        }
+        refreshReadiness()
         onError?(errorMessage)
-        restoreFocus(allowingSelectedSource: false)
+        restoreFocus(allowingSelectedSource: baselineTarget != nil)
     }
 
     private func refreshWindows(token: CaptureSelectionToken) {

@@ -129,6 +129,58 @@ public enum FrameScreenDecoration: Equatable, Sendable {
     }
 }
 
+/// One-frame displacement used by the layer-local motion treatment. Values are
+/// authored in the scene's top-left canvas coordinate system.
+public struct FrameLayerMotion: Equatable, Sendable {
+    public var deltaX: Double
+    public var deltaY: Double
+    public var strength: Double
+
+    public init(deltaX: Double, deltaY: Double, strength: Double) {
+        self.deltaX = deltaX.isFinite ? deltaX : 0
+        self.deltaY = deltaY.isFinite ? deltaY : 0
+        self.strength = min(max(strength.isFinite ? strength : 0, 0), 1)
+    }
+
+    public static let none = FrameLayerMotion(deltaX: 0, deltaY: 0, strength: 0)
+
+    public var distance: Double {
+        hypot(deltaX, deltaY) * strength
+    }
+}
+
+public struct FrameMosaicScene: Equatable, Sendable {
+    public var sourceRect: NormalizedOverlayRect
+    public var cornerRadius: Double
+    public var style: MosaicEffectStyle
+    public var intensity: Double
+    public var spotlightDimming: Double
+    /// Eased visibility shared by blur and dimming during interval edges.
+    public var transitionProgress: Double
+
+    public init(
+        sourceRect: NormalizedOverlayRect,
+        cornerRadius: Double,
+        style: MosaicEffectStyle,
+        intensity: Double,
+        spotlightDimming: Double = 0.22,
+        transitionProgress: Double = 1
+    ) {
+        self.sourceRect = sourceRect.clamped()
+        self.cornerRadius = min(max(cornerRadius.isFinite ? cornerRadius : 0, 0), 0.5)
+        self.style = style
+        self.intensity = min(max(intensity.isFinite ? intensity : 0.5, 0), 1)
+        self.spotlightDimming = min(
+            max(spotlightDimming.isFinite ? spotlightDimming : 0.22, 0),
+            0.75
+        )
+        self.transitionProgress = min(
+            max(transitionProgress.isFinite ? transitionProgress : 1, 0),
+            1
+        )
+    }
+}
+
 public struct FrameScreenScene: Equatable, Sendable {
     public var sourceCrop: NormalizedCrop
     public var fittedRect: CompositionRect
@@ -141,6 +193,8 @@ public struct FrameScreenScene: Equatable, Sendable {
     public var borderOpacity: Double
     public var shadow: FrameShadow?
     public var decoration: FrameScreenDecoration
+    public var mosaics: [FrameMosaicScene]
+    public var motion: FrameLayerMotion
 
     public var projectionRect: CompositionRect {
         decoration.projectionRect ?? finalRect
@@ -157,7 +211,9 @@ public struct FrameScreenScene: Equatable, Sendable {
         borderColor: HexColor,
         borderOpacity: Double,
         shadow: FrameShadow?,
-        decoration: FrameScreenDecoration = .none
+        decoration: FrameScreenDecoration = .none,
+        mosaics: [FrameMosaicScene] = [],
+        motion: FrameLayerMotion = .none
     ) {
         self.sourceCrop = sourceCrop.clamped()
         self.fittedRect = fittedRect
@@ -170,6 +226,8 @@ public struct FrameScreenScene: Equatable, Sendable {
         self.borderOpacity = min(max(borderOpacity, 0), 1)
         self.shadow = shadow
         self.decoration = decoration
+        self.mosaics = mosaics
+        self.motion = motion
     }
 }
 
@@ -182,6 +240,7 @@ public struct FrameCameraScene: Equatable, Sendable {
     public var shadow: FrameShadow?
     public var opacity: Double
     public var isMirrored: Bool
+    public var motion: FrameLayerMotion
 
     public init(
         rect: CompositionRect,
@@ -191,7 +250,8 @@ public struct FrameCameraScene: Equatable, Sendable {
         borderColor: HexColor = .white,
         shadow: FrameShadow?,
         opacity: Double,
-        isMirrored: Bool
+        isMirrored: Bool,
+        motion: FrameLayerMotion = .none
     ) {
         self.rect = rect
         self.contentFill = contentFill
@@ -201,6 +261,7 @@ public struct FrameCameraScene: Equatable, Sendable {
         self.shadow = shadow
         self.opacity = min(max(opacity, 0), 1)
         self.isMirrored = isMirrored
+        self.motion = motion
     }
 }
 
@@ -224,8 +285,10 @@ public struct FrameCursorScene: Equatable, Sendable {
     public var clickColor: HexColor?
     public var clickOpacity: Double
     public var clickScale: Double
+    public var rotationRadians: Double
     public var shadow: FrameShadow?
     public var attachment: FrameCursorAttachment
+    public var motion: FrameLayerMotion
 
     public var effectiveClickColor: HexColor {
         clickColor ?? metrics.clickColor
@@ -242,8 +305,10 @@ public struct FrameCursorScene: Equatable, Sendable {
         clickColor: HexColor? = nil,
         clickOpacity: Double = 0.8,
         clickScale: Double = 1.0,
+        rotationRadians: Double = 0,
         shadow: FrameShadow?,
-        attachment: FrameCursorAttachment = .screen
+        attachment: FrameCursorAttachment = .screen,
+        motion: FrameLayerMotion = .none
     ) {
         self.assetID = assetID
         self.metrics = metrics
@@ -255,8 +320,56 @@ public struct FrameCursorScene: Equatable, Sendable {
         self.clickColor = clickColor
         self.clickOpacity = min(max(clickOpacity, 0.05), 1.0)
         self.clickScale = min(max(clickScale, 0.4), 3.0)
+        self.rotationRadians = rotationRadians.isFinite ? rotationRadians : 0
         self.shadow = shadow
         self.attachment = attachment
+        self.motion = motion
+    }
+}
+
+public struct FrameStickerScene: Equatable, Sendable {
+    public var id: UUID
+    public var relativePath: String
+    public var position: NormalizedPoint
+    public var width: Double
+    public var rotationRadians: Double
+    public var opacity: Double
+    public var scale: Double
+    public var offset: NormalizedPoint
+    public var cornerRadius: Double
+    public var borderWidth: Double
+    public var borderColor: HexColor
+    public var shadowOpacity: Double
+    public var shadowRadius: Double
+    public var shadowOffset: CompositionPoint
+    public var backdropBlur: Double
+    public var layerIndex: Int
+}
+
+public struct FrameProgressScene: Equatable, Sendable {
+    public var placement: ProgressOverlayPlacement
+    public var position: NormalizedPoint
+    public var width: Double
+    public var bandHeight: Double
+    public var textSize: Double
+    public var thickness: Double
+    public var fraction: Double
+    public var backgroundColor: HexColor
+    public var backgroundOpacity: Double
+    public var trackColor: HexColor
+    public var fillColor: HexColor
+    public var nodeColor: HexColor
+    public var textColor: HexColor
+    public var chapters: [FrameProgressChapterScene]
+}
+
+public struct FrameProgressChapterScene: Equatable, Sendable {
+    public var fraction: Double
+    public var title: String
+
+    public init(fraction: Double, title: String) {
+        self.fraction = fraction
+        self.title = title
     }
 }
 
@@ -264,7 +377,10 @@ public enum FrameLayerRole: String, Equatable, Sendable {
     case background
     case screen
     case cursor
+    case spotlight
     case camera
+    case stickers
+    case progress
 }
 
 /// Complete immutable interpretation of one project time. A renderer may read
@@ -277,6 +393,8 @@ public struct FrameScene: Equatable, Sendable {
     public var screen: FrameScreenScene
     public var camera: FrameCameraScene?
     public var cursor: FrameCursorScene?
+    public var stickers: [FrameStickerScene]
+    public var progress: FrameProgressScene?
     public var layerOrder: [FrameLayerRole]
 
     public init(
@@ -287,6 +405,8 @@ public struct FrameScene: Equatable, Sendable {
         screen: FrameScreenScene,
         camera: FrameCameraScene?,
         cursor: FrameCursorScene?,
+        stickers: [FrameStickerScene] = [],
+        progress: FrameProgressScene? = nil,
         layerOrder: [FrameLayerRole]
     ) {
         self.time = time
@@ -296,39 +416,30 @@ public struct FrameScene: Equatable, Sendable {
         self.screen = screen
         self.camera = camera
         self.cursor = cursor
+        self.stickers = stickers
+        self.progress = progress
         self.layerOrder = layerOrder
     }
 }
 
-public struct FrameSceneSample: Equatable, Sendable {
-    public var scene: FrameScene
-    public var weight: Double
-
-    public init(scene: FrameScene, weight: Double) {
-        self.scene = scene
-        self.weight = weight
-    }
-}
-
-/// One output-frame request, including the complete temporal sample plan used
-/// for motion blur. Preview and export can lower media-decoding quality, but
-/// must preserve these sample times and weights for parity.
+/// One output-frame request. Motion treatment is already lowered into the
+/// scene's moving layers, so preview and export consume one identical scene.
 public struct FrameRenderPlan: Equatable, Sendable {
     public var presentationTime: TimeInterval
     public var outputDuration: TimeInterval
     public var frameRate: Int
-    public var samples: [FrameSceneSample]
+    public var scene: FrameScene
 
     public init(
         presentationTime: TimeInterval,
         outputDuration: TimeInterval,
         frameRate: Int,
-        samples: [FrameSceneSample]
+        scene: FrameScene
     ) {
         self.presentationTime = presentationTime
         self.outputDuration = outputDuration
         self.frameRate = frameRate
-        self.samples = samples
+        self.scene = scene
     }
 }
 
@@ -356,47 +467,75 @@ public enum FrameSceneEvaluator {
         let safeTime = presentationTime.isFinite
             ? min(max(presentationTime, 0), safeDuration)
             : 0
-        let temporalSamples = boundedTemporalSamples(
-            MotionBlurSampler.samples(
-                at: safeTime,
-                frameRate: frameRate,
-                duration: safeDuration,
-                descriptor: project.motion.frameMotionBlur
-            ),
-            activeRange: activePrimaryRange
+        let cameraIsAvailable = activeCameraRange.map {
+            safeTime >= $0.start && safeTime < $0.end
+        } ?? true
+        var current = scene(
+            project: project,
+            time: safeTime,
+            outputDuration: safeDuration,
+            canvasSize: canvasSize,
+            sourceAspectRatio: sourceAspectRatio,
+            cameraSourceSize: cameraIsAvailable ? cameraSourceSize : nil,
+            pointerTrack: pointerTrack,
+            cursorMetrics: cursorMetrics,
+            zoomTrack: zoomTrack,
+            screenMotionTrack: screenMotionTrack,
+            cameraMotionTrack: cameraMotionTrack,
+            color: color
         )
-        let samples = temporalSamples.map { sample in
-            let cameraIsAvailable = activeCameraRange.map {
-                sample.time >= $0.start && sample.time < $0.end
+        let descriptor = project.motion.frameMotionBlur
+        // Derive blur from the layer's outgoing motion. Sampling the previous
+        // frame left a non-zero trail on the exact animation endpoint, then
+        // removed it one frame later; borders and shadows consequently looked
+        // as if they popped after the movement had already finished.
+        let nextTime = min(
+            safeTime + 1 / Double(max(frameRate, 1)),
+            safeDuration
+        )
+        let staysInsidePrimary = activePrimaryRange.map {
+            safeTime >= $0.start && safeTime < $0.end
+                && nextTime >= $0.start && nextTime < $0.end
+        } ?? true
+        if descriptor.isEnabled,
+           descriptor.strength > 0,
+           nextTime > safeTime,
+           staysInsidePrimary {
+            let nextCameraIsAvailable = activeCameraRange.map {
+                nextTime >= $0.start && nextTime < $0.end
             } ?? true
-            return FrameSceneSample(
-                scene: scene(
-                    project: project,
-                    time: sample.time,
-                    canvasSize: canvasSize,
-                    sourceAspectRatio: sourceAspectRatio,
-                    cameraSourceSize: cameraIsAvailable ? cameraSourceSize : nil,
-                    pointerTrack: pointerTrack,
-                    cursorMetrics: cursorMetrics,
-                    zoomTrack: zoomTrack,
-                    screenMotionTrack: screenMotionTrack,
-                    cameraMotionTrack: cameraMotionTrack,
-                    color: color
-                ),
-                weight: sample.weight
+            let next = scene(
+                project: project,
+                time: nextTime,
+                outputDuration: safeDuration,
+                canvasSize: canvasSize,
+                sourceAspectRatio: sourceAspectRatio,
+                cameraSourceSize: nextCameraIsAvailable ? cameraSourceSize : nil,
+                pointerTrack: pointerTrack,
+                cursorMetrics: cursorMetrics,
+                zoomTrack: zoomTrack,
+                screenMotionTrack: screenMotionTrack,
+                cameraMotionTrack: cameraMotionTrack,
+                color: color
+            )
+            current = applyingLayerMotion(
+                to: current,
+                toward: next,
+                strength: descriptor.strength
             )
         }
         return FrameRenderPlan(
             presentationTime: safeTime,
             outputDuration: safeDuration,
             frameRate: max(frameRate, 1),
-            samples: samples
+            scene: current
         )
     }
 
     public static func scene(
         project: RecorderProject,
         time: TimeInterval,
+        outputDuration: TimeInterval? = nil,
         canvasSize: CompositionSize,
         sourceAspectRatio: Double,
         cameraSourceSize: CompositionSize? = nil,
@@ -476,6 +615,7 @@ public enum FrameSceneEvaluator {
             : nil
         let decoration = screenDecoration(
             style: project.canvas.screenFrame,
+            frameScale: project.canvas.screenFrameScale,
             geometry: geometry.screen,
             styleScale: styleScale
         )
@@ -487,6 +627,23 @@ public enum FrameSceneEvaluator {
             rotationZ: geometry.screen.rotationZ,
             perspective: geometry.screen.perspective
         )
+        let activeMosaics: [FrameMosaicScene] = project.timeline.mosaicClips.compactMap { clip in
+            guard clip.timing.contains(sampleTime) else { return nil }
+            return FrameMosaicScene(
+                sourceRect: clip.sourceRect,
+                cornerRadius: clip.cornerRadius,
+                style: clip.style,
+                intensity: clip.intensity,
+                spotlightDimming: clip.spotlightDimming,
+                transitionProgress: overlayEffectProgress(
+                    timing: clip.timing,
+                    style: clip.transitionStyle,
+                    enterDuration: clip.transitionInDuration,
+                    exitDuration: clip.transitionOutDuration,
+                    at: sampleTime
+                )
+            )
+        }
         let screen = FrameScreenScene(
             sourceCrop: project.canvas.crop,
             fittedRect: geometry.screen.fittedRect,
@@ -498,7 +655,8 @@ public enum FrameSceneEvaluator {
             borderColor: project.canvas.borderColor,
             borderOpacity: project.canvas.insetOpacity,
             shadow: screenShadow,
-            decoration: decoration
+            decoration: decoration,
+            mosaics: activeMosaics
         )
         let camera = geometry.camera.map { evaluation in
             FrameCameraScene(
@@ -541,9 +699,27 @@ public enum FrameSceneEvaluator {
             canvasSize: CompositionSize(width: width, height: height),
             styleScale: styleScale
         )
+        let stickers = stickerScenes(
+            project.timeline.stickerClips,
+            at: sampleTime
+        )
+        let progress = project.timeline.progressOverlay.flatMap { overlay in
+            progressScene(
+                overlay,
+                at: sampleTime,
+                outputDuration: outputDuration ?? 0
+            )
+        }
         var order: [FrameLayerRole] = [.background, .screen]
         if cursor != nil { order.append(.cursor) }
+        // Spotlight is one composite effect above the complete base picture,
+        // not two independent blurs on the wallpaper and screen texture.
+        if activeMosaics.contains(where: { $0.style == .spotlight }) {
+            order.append(.spotlight)
+        }
         if camera != nil, camera?.opacity ?? 0 > 0 { order.append(.camera) }
+        if !stickers.isEmpty { order.append(.stickers) }
+        if progress != nil { order.append(.progress) }
         return FrameScene(
             time: sampleTime,
             canvasSize: CompositionSize(width: width, height: height),
@@ -555,18 +731,293 @@ public enum FrameSceneEvaluator {
             screen: screen,
             camera: camera,
             cursor: cursor,
+            stickers: stickers,
+            progress: progress,
             layerOrder: order
         )
     }
 
+    private static func stickerScenes(
+        _ clips: [StickerClip],
+        at time: TimeInterval
+    ) -> [FrameStickerScene] {
+        clips.compactMap { clip in
+            guard clip.timing.contains(time) else { return nil }
+            let localTime = max(time - clip.timing.startTime, 0)
+            let remaining = max(clip.timing.endTime - time, 0)
+            // A shortened sticker can be briefer than its authored entry and
+            // exit combined. Scale both transitions together instead of
+            // letting them overlap and fight for the active transform.
+            let requestedEnter = max(clip.enterDuration, 0)
+            let requestedExit = max(clip.exitDuration, 0)
+            let requestedTransitionDuration = requestedEnter + requestedExit
+            let transitionScale = requestedTransitionDuration > clip.timing.duration
+                && requestedTransitionDuration > 0
+                ? clip.timing.duration / requestedTransitionDuration
+                : 1
+            let enterDuration = requestedEnter * transitionScale
+            let exitDuration = requestedExit * transitionScale
+            let linearEnter = enterDuration > 0
+                ? min(max(localTime / enterDuration, 0), 1)
+                : 1
+            let linearExit = exitDuration > 0
+                ? min(max(remaining / exitDuration, 0), 1)
+                : 1
+            let enterProgress = smootherStep(linearEnter)
+            let exitProgress = smootherStep(linearExit)
+            let exitPreset = clip.exitAnimation ?? clip.animation.automaticExit
+            let enterVisibility = clip.animation == .none ? 1 : enterProgress
+            let exitVisibility = exitPreset == .none ? 1 : exitProgress
+            let visibility = min(enterVisibility, exitVisibility)
+            let isExiting = exitDuration > 0 && remaining < exitDuration
+            let activePreset = isExiting ? exitPreset : clip.animation
+            let activeProgress = isExiting ? exitProgress : enterProgress
+            let transform = stickerAnimationTransform(
+                preset: activePreset,
+                progress: activeProgress,
+                position: clip.position,
+                width: clip.width
+            )
+            return FrameStickerScene(
+                id: clip.id,
+                relativePath: clip.relativePath,
+                position: clip.position,
+                width: min(max(clip.width, 0.02), 2),
+                rotationRadians: clip.rotationDegrees * .pi / 180,
+                opacity: min(max(clip.opacity, 0), 1) * visibility,
+                scale: transform.scale,
+                offset: transform.offset,
+                cornerRadius: max(clip.cornerRadius, 0),
+                borderWidth: max(clip.borderWidth, 0),
+                borderColor: clip.borderColor,
+                shadowOpacity: min(max(clip.shadowOpacity, 0), 1),
+                shadowRadius: max(clip.shadowRadius, 0),
+                shadowOffset: CompositionPoint(
+                    x: clip.shadowOffsetX,
+                    y: clip.shadowOffsetY
+                ),
+                backdropBlur: max(clip.backdropBlur, 0) * visibility,
+                layerIndex: clip.layerIndex
+            )
+        }
+        .sorted { lhs, rhs in
+            lhs.layerIndex == rhs.layerIndex
+                ? lhs.id.uuidString < rhs.id.uuidString
+                : lhs.layerIndex < rhs.layerIndex
+        }
+    }
+
+    /// Sticker motion deliberately travels from outside the canvas instead of
+    /// shifting by a token 8%. `progress` is eased before it reaches this
+    /// function, so entry and exit share one continuous, non-linear path.
+    private static func stickerAnimationTransform(
+        preset: StickerAnimationPreset,
+        progress: Double,
+        position: NormalizedPoint,
+        width: Double
+    ) -> (scale: Double, offset: NormalizedPoint) {
+        let p = min(max(progress, 0), 1)
+        let travel = 1 - p
+        // Keep the historical generous off-canvas travel for normal stickers,
+        // but extend it when a user makes the card unusually wide so no edge
+        // remains visible at progress zero.
+        let halfExtent = max(width, 0.02) / 2
+        let outsideLeading = min(-0.85, -halfExtent - 0.06)
+        let outsideTrailing = max(1.85, 1 + halfExtent + 0.06)
+        let left = outsideLeading - position.x
+        let right = outsideTrailing - position.x
+        let top = outsideLeading - position.y
+        let bottom = outsideTrailing - position.y
+        var offset = NormalizedPoint(x: 0, y: 0)
+        var scale = 1.0
+        switch preset {
+        case .none, .fade:
+            break
+        case .pop:
+            // The target stays stable while the card accelerates out of a
+            // smaller footprint; smootherStep avoids the old linear-looking
+            // scale and keeps the final frame exactly at 1×.
+            scale = 0.72 + p * 0.28
+        case .slideLeft:
+            offset.x = left * travel
+        case .slideRight:
+            offset.x = right * travel
+        case .slideUp:
+            offset.y = top * travel
+        case .slideDown:
+            offset.y = bottom * travel
+        case .slideTopLeft:
+            offset.x = left * travel
+            offset.y = top * travel
+        case .slideTopRight:
+            offset.x = right * travel
+            offset.y = top * travel
+        case .slideBottomLeft:
+            offset.x = left * travel
+            offset.y = bottom * travel
+        case .slideBottomRight:
+            offset.x = right * travel
+            offset.y = bottom * travel
+        }
+        return (scale, offset)
+    }
+
+    private static func progressScene(
+        _ overlay: ProgressOverlay,
+        at time: TimeInterval,
+        outputDuration: TimeInterval
+    ) -> FrameProgressScene? {
+        guard outputDuration.isFinite, outputDuration > 0 else { return nil }
+        let fraction = min(max(time / outputDuration, 0), 1)
+        var chapters = overlay.chapters
+            .filter { $0.time.isFinite && $0.time >= 0 && $0.time <= outputDuration }
+            .sorted { $0.time < $1.time }
+        if chapters.first?.time ?? 1 > 0.000_1 {
+            chapters.insert(ProgressChapter(time: 0, title: ""), at: 0)
+        }
+        return FrameProgressScene(
+            placement: overlay.placement,
+            position: overlay.position,
+            width: min(max(overlay.width, 0.05), 1),
+            bandHeight: min(max(overlay.bandHeight, 28), 180),
+            textSize: min(max(overlay.textSize, 10), 72),
+            thickness: max(overlay.thickness, 1),
+            fraction: fraction,
+            backgroundColor: overlay.backgroundColor,
+            backgroundOpacity: min(max(overlay.backgroundOpacity, 0), 1),
+            trackColor: overlay.trackColor,
+            fillColor: overlay.fillColor,
+            nodeColor: overlay.nodeColor,
+            textColor: overlay.textColor,
+            chapters: chapters.map {
+                FrameProgressChapterScene(
+                    fraction: $0.time / outputDuration,
+                    title: $0.title
+                )
+            }
+        )
+    }
+
+    private static func smootherStep(_ value: Double) -> Double {
+        let x = min(max(value, 0), 1)
+        return x * x * x * (x * (x * 6 - 15) + 10)
+    }
+
+    /// Keep privacy and presentation semantics explicit. Ordinary redaction
+    /// defaults to `.none`; authored linear/smooth transitions are evaluated
+    /// identically by preview and export, with independently hard edges when
+    /// either duration is zero.
+    private static func overlayEffectProgress(
+        timing: OverlayTiming,
+        style: MosaicTransitionStyle,
+        enterDuration: TimeInterval,
+        exitDuration: TimeInterval,
+        at time: TimeInterval
+    ) -> Double {
+        guard timing.duration > 0 else { return 0 }
+        guard style != .none else { return 1 }
+        let elapsed = max(time - timing.startTime, 0)
+        let remaining = max(timing.endTime - time, 0)
+        let linearEnter = enterDuration > 0
+            ? min(max(elapsed / enterDuration, 0), 1)
+            : 1
+        let linearExit = exitDuration > 0
+            ? min(max(remaining / exitDuration, 0), 1)
+            : 1
+        let enter: Double
+        let exit: Double
+        switch style {
+        case .none:
+            return 1
+        case .linear:
+            enter = linearEnter
+            exit = linearExit
+        case .smooth:
+            enter = smootherStep(linearEnter)
+            exit = smootherStep(linearExit)
+        }
+        return min(enter, exit)
+    }
+
+    private static func applyingLayerMotion(
+        to current: FrameScene,
+        toward next: FrameScene,
+        strength: Double
+    ) -> FrameScene {
+        var result = current
+        let cornerDeltas = zip(
+            next.screen.projectedQuad.corners,
+            current.screen.projectedQuad.corners
+        ).map { nextPoint, currentPoint in
+            (
+                x: nextPoint.x - currentPoint.x,
+                y: nextPoint.y - currentPoint.y
+            )
+        }
+        if let dominant = cornerDeltas.max(by: {
+            hypot($0.x, $0.y) < hypot($1.x, $1.y)
+        }) {
+            result.screen.motion = FrameLayerMotion(
+                deltaX: dominant.x,
+                deltaY: dominant.y,
+                strength: strength
+            )
+        }
+        if let currentCamera = current.camera,
+           let nextCamera = next.camera {
+            let cameraDeltas = [
+                (
+                    x: nextCamera.rect.x - currentCamera.rect.x,
+                    y: nextCamera.rect.y - currentCamera.rect.y
+                ),
+                (
+                    x: nextCamera.rect.x + nextCamera.rect.width
+                        - currentCamera.rect.x - currentCamera.rect.width,
+                    y: nextCamera.rect.y - currentCamera.rect.y
+                ),
+                (
+                    x: nextCamera.rect.x + nextCamera.rect.width
+                        - currentCamera.rect.x - currentCamera.rect.width,
+                    y: nextCamera.rect.y + nextCamera.rect.height
+                        - currentCamera.rect.y - currentCamera.rect.height
+                ),
+                (
+                    x: nextCamera.rect.x - currentCamera.rect.x,
+                    y: nextCamera.rect.y + nextCamera.rect.height
+                        - currentCamera.rect.y - currentCamera.rect.height
+                ),
+            ]
+            let cameraMotion = cameraDeltas.max {
+                hypot($0.x, $0.y) < hypot($1.x, $1.y)
+            } ?? (x: 0, y: 0)
+            result.camera?.motion = FrameLayerMotion(
+                deltaX: cameraMotion.x,
+                deltaY: cameraMotion.y,
+                strength: strength
+            )
+        }
+        if let currentCursor = current.cursor,
+           let nextCursor = next.cursor {
+            result.cursor?.motion = FrameLayerMotion(
+                deltaX: nextCursor.layout.pointer.x - currentCursor.layout.pointer.x,
+                deltaY: nextCursor.layout.pointer.y - currentCursor.layout.pointer.y,
+                strength: strength
+            )
+        }
+        return result
+    }
+
     private static func screenDecoration(
         style: ScreenFrameStyle,
+        frameScale: Double,
         geometry: ScreenSceneEvaluation,
         styleScale: Double
     ) -> FrameScreenDecoration {
         guard style != .none else { return .none }
+        let authoredFrameScale = min(max(frameScale, 0.6), 1.6)
         let scale = max(
-            styleScale * geometry.manualScale * geometry.viewport.scale,
+            styleScale * geometry.manualScale * geometry.viewport.scale
+                * authoredFrameScale,
             0.000_1
         )
         let idealHeight = 46 * scale
@@ -657,6 +1108,7 @@ public enum FrameSceneEvaluator {
             clickColor: project.cursorStyle.clickColor,
             clickOpacity: project.cursorStyle.clickOpacity,
             clickScale: project.cursorStyle.clickScale,
+            rotationRadians: sample.rotationRadians,
             shadow: FrameShadow(
                 opacity: 0.42,
                 radius: max(layout.size.height * 1.5 / 44, 0.5),
@@ -668,36 +1120,4 @@ public enum FrameSceneEvaluator {
         )
     }
 
-    /// Motion-blur samples must not read frames from the retained segment that
-    /// precedes a ripple cut. Duplicate boundary samples are merged so weights
-    /// remain normalized and deterministic.
-    private static func boundedTemporalSamples(
-        _ samples: [MotionBlurSample],
-        activeRange: MediaTimeRange?
-    ) -> [MotionBlurSample] {
-        guard let activeRange else { return samples }
-        // The overwhelmingly common frame is already wholly inside its
-        // retained primary segment. Rebuilding an array, reducing its weights
-        // and mapping it again on every preview tick is useful only when the
-        // exposure window actually crosses a ripple cut. This also makes the
-        // blur-disabled one-sample path allocation-free after sampling.
-        if samples.allSatisfy({
-            $0.time >= activeRange.start && $0.time <= activeRange.end
-        }) {
-            return samples
-        }
-        var merged: [MotionBlurSample] = []
-        merged.reserveCapacity(samples.count)
-        for sample in samples {
-            let time = min(max(sample.time, activeRange.start), activeRange.end)
-            if let last = merged.last, abs(last.time - time) < 0.000_000_1 {
-                merged[merged.count - 1].weight += sample.weight
-            } else {
-                merged.append(MotionBlurSample(time: time, weight: sample.weight))
-            }
-        }
-        let total = merged.reduce(0) { $0 + $1.weight }
-        guard total > 0 else { return [] }
-        return merged.map { MotionBlurSample(time: $0.time, weight: $0.weight / total) }
-    }
 }

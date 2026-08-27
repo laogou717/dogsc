@@ -41,6 +41,13 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                     CGFloat((segment.endTime - segment.startTime) / max(duration, 0.001)) * width,
                     14
                 )
+                let accessibilityValue =
+                    "\(timelineTimestamp(segment.startTime)) 至 "
+                    + "\(timelineTimestamp(segment.endTime))，"
+                    + "\(String(format: "%.1f", segment.scale)) 倍，"
+                    + (segment.origin == .manual ? "手动" : "自动")
+                let accessibilityTraits: AccessibilityTraits = selectedZoomID == segment.id
+                    ? [.isButton, .isSelected] : .isButton
                 ZStack {
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
                         .fill(
@@ -95,7 +102,17 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                 .onHover { hovering in
                     hoveredZoomID = hovering ? segment.id : (hoveredZoomID == segment.id ? nil : hoveredZoomID)
                 }
+                .accessibilityElement(children: .ignore)
                 .help("单击选中；拖动移动；拖两端调整保持时间；右键可删除")
+                .accessibilityLabel("缩放动画 \(index + 1)")
+                .accessibilityValue(accessibilityValue)
+                .accessibilityAddTraits(accessibilityTraits)
+                .accessibilityAction {
+                    beginSelectingZoom(segment)
+                }
+                .accessibilityIdentifier(
+                    "editor.timeline.zoom.\(segment.id.uuidString)"
+                )
             }
 
             // 悬浮空白处显示创建起点；需要水平拖动形成区间，单击只定位，
@@ -411,6 +428,7 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
 
     func beginSelectingZoom(_ segment: TimelineZoomSegment) {
         primaryTrimDraft = nil
+        primaryRetimeDraft = nil
         selectedZoomID = segment.id
     }
 
@@ -485,8 +503,11 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
         switch EditorTimelineDeleteTarget(selection: editorStore.selection) {
         case .primarySegment: return "删除选中的主片段"
         case .zoom: return "删除选中的缩放动画"
-        case .screenMotion: return "删除选中的屏幕运动"
-        case .cameraMotion: return "删除选中的摄像头运动"
+        case .screenMotion: return "删除选中的屏幕 3D"
+        case .cameraMotion: return "删除选中的摄像运动"
+        case .mosaic: return "删除选中的打码"
+        case .sticker: return "删除选中的贴图"
+        case .progress: return "删除进度条"
         case nil: return "删除当前时间线选中项"
         }
     }
@@ -538,6 +559,18 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                 $0.id == id
             }) else { return false }
             return Self.splitMotionTiming(of: clip.timing, at: time) != nil
+        case let .mosaic(id):
+            guard let clip = editorStore.project.timeline.mosaicClips.first(
+                where: { $0.id == id }
+            ) else { return false }
+            return time > clip.timing.startTime + 0.01
+                && time < clip.timing.endTime - 0.01
+        case let .sticker(id):
+            guard let clip = editorStore.project.timeline.stickerClips.first(
+                where: { $0.id == id }
+            ) else { return false }
+            return time > clip.timing.startTime + 0.01
+                && time < clip.timing.endTime - 0.01
         case nil:
             return primarySplitCandidate != nil
         }
@@ -548,9 +581,13 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
         case .zoom:
             return "在播放头处分割选中的缩放动画（S）"
         case .screenMotion:
-            return "在播放头处分割选中的屏幕运动（S）"
+            return "在播放头处分割选中的屏幕 3D（S）"
         case .cameraMotion:
-            return "在播放头处分割选中的摄像头运动（S）"
+            return "在播放头处分割选中的摄像运动（S）"
+        case .mosaic:
+            return "在播放头处分割选中的打码（S）"
+        case .sticker:
+            return "在播放头处分割选中的贴图（S）"
         case nil:
             return "在播放头处分割主片段（S）；按住 ⌥ 点击片段可直接切开"
         }
@@ -559,8 +596,10 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
     var currentTimelineSplitAccessibilityLabel: String {
         switch EditorTimelineSplitTarget(selection: editorStore.selection) {
         case .zoom: return "分割选中的缩放动画"
-        case .screenMotion: return "分割选中的屏幕运动"
-        case .cameraMotion: return "分割选中的摄像头运动"
+        case .screenMotion: return "分割选中的屏幕 3D"
+        case .cameraMotion: return "分割选中的摄像运动"
+        case .mosaic: return "分割选中的打码"
+        case .sticker: return "分割选中的贴图"
         case nil: return "在播放头处分割主片段"
         }
     }
@@ -574,6 +613,10 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
             splitMotionClip(track: .screen, id: id, atTime: time)
         case let .cameraMotion(id):
             splitMotionClip(track: .camera, id: id, atTime: time)
+        case let .mosaic(id):
+            splitMosaicClip(id: id, atTime: time)
+        case let .sticker(id):
+            splitStickerClip(id: id, atTime: time)
         case nil:
             splitPrimarySegmentAtPlayhead()
         }
@@ -631,6 +674,10 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
             trimMotionClip(track: .screen, id: id, edge: .left, at: editTime)
         case let .cameraMotion(id):
             trimMotionClip(track: .camera, id: id, edge: .left, at: editTime)
+        case let .mosaic(id):
+            trimMosaicClip(id: id, edge: .left, atTime: editTime)
+        case let .sticker(id):
+            trimStickerClip(id: id, edge: .left, atTime: editTime)
         case nil:
             guard let segment = timelineMap?.segment(atOutputTime: editTime),
                   editTime > segment.outputStart + timelineFrameDuration / 2,
@@ -644,6 +691,7 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                     actionName: "Q 波纹删除"
                 )
                 primaryTrimDraft = nil
+                primaryRetimeDraft = nil
                 selectPrimarySegment(segment.id)
                 seekTimeline(to: segment.outputStart)
             } catch {
@@ -664,6 +712,10 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
             trimMotionClip(track: .screen, id: id, edge: .right, at: editTime)
         case let .cameraMotion(id):
             trimMotionClip(track: .camera, id: id, edge: .right, at: editTime)
+        case let .mosaic(id):
+            trimMosaicClip(id: id, edge: .right, atTime: editTime)
+        case let .sticker(id):
+            trimStickerClip(id: id, edge: .right, atTime: editTime)
         case nil:
             guard let segment = timelineMap?.segment(atOutputTime: editTime),
                   editTime - segment.outputStart >= minimumPrimarySegmentDuration,
@@ -677,6 +729,7 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                     actionName: "W 波纹删除"
                 )
                 primaryTrimDraft = nil
+                primaryRetimeDraft = nil
                 selectPrimarySegment(segment.id)
                 seekTimeline(to: editTime)
             } catch {
@@ -697,6 +750,12 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
             removeMotionClip(clip)
         case let .zoom(id):
             removeZoomAnimation(id: id)
+        case .mosaic, .sticker, .progress:
+            do {
+                try editorStore.removeSelectedOverlay()
+            } catch {
+                onError(error.localizedDescription)
+            }
         }
     }
 
@@ -1019,121 +1078,6 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
         }
         selectedZoomID = pair.1.id
         seekTimeline(to: time)
-    }
-
-    var timelineCanvasHeight: CGFloat {
-        timelineRulerHeight + primaryTimelineHeight + 56
-            + (showsCameraSyncTimeline ? cameraSyncTimelineHeight : 0)
-            + (showsScreenMotionTimeline ? motionTimelineHeight : 0)
-            + (showsCameraMotionTimeline ? motionTimelineHeight : 0)
-    }
-
-    var cameraSyncTimelineHeight: CGFloat { 62 }
-    var motionTimelineHeight: CGFloat { 46 }
-    var timelineRulerHeight: CGFloat { 50 }
-    var timelineOverviewHeight: CGFloat { 16 }
-    var timelineLabelWidth: CGFloat { 78 }
-    var primaryTimelineHeight: CGFloat {
-        EditorTimelineSizing.clampedPrimaryLaneHeight(primaryLaneHeight)
-    }
-    var primaryClipContentHeight: CGFloat {
-        max(primaryTimelineHeight - 12, 44)
-    }
-
-    var timelineHeight: CGFloat {
-        46 + timelineOverviewHeight + timelineCanvasHeight
-    }
-
-    func seekTimeline(to time: TimeInterval) {
-        let snapped = snappedTimelineTime(time)
-        playbackController.seek(to: snapped, pausing: true)
-        scrollTimelineToEndpointIfNeeded(snapped)
-    }
-
-    var timelineFrameDuration: TimeInterval {
-        let frameRate = max(editorStore.project.capture.captureFrameRate.rawValue, 1)
-        return 1 / Double(frameRate)
-    }
-
-    func snappedToProjectFrame(_ time: TimeInterval) -> TimeInterval {
-        guard time.isFinite else { return 0 }
-        return (time / timelineFrameDuration).rounded() * timelineFrameDuration
-    }
-
-    /// Snap ordinary playhead/edit positions to the project frame grid while
-    /// preserving the media's exact final duration even when it is not an
-    /// integer multiple of the nominal frame interval.
-    func snappedTimelineTime(_ time: TimeInterval) -> TimeInterval {
-        let clamped = min(max(time.isFinite ? time : 0, 0), timelineDuration)
-        if clamped <= timelineFrameDuration / 2 { return 0 }
-        if timelineDuration - clamped <= timelineFrameDuration / 2 {
-            return timelineDuration
-        }
-        return min(max(snappedToProjectFrame(clamped), 0), timelineDuration)
-    }
-
-    func snappedEditableTime(
-        _ time: TimeInterval,
-        lowerBound: TimeInterval,
-        upperBound: TimeInterval
-    ) -> TimeInterval {
-        let lower = min(lowerBound, upperBound)
-        let upper = max(lowerBound, upperBound)
-        let clamped = min(max(time, lower), upper)
-        if clamped - lower <= timelineFrameDuration / 2 { return lower }
-        if upper - clamped <= timelineFrameDuration / 2 { return upper }
-        return min(max(snappedToProjectFrame(clamped), lower), upper)
-    }
-
-    func scrollTimelineToEndpointIfNeeded(_ time: TimeInterval) {
-        guard let scrollView = timelineScrollView else { return }
-        let viewportWidth = scrollView.contentView.bounds.width
-        let documentWidth = max(
-            scrollView.documentView?.bounds.width ?? timelineContentWidth,
-            viewportWidth
-        )
-        let targetX: CGFloat?
-        if time <= 0.000_001 {
-            targetX = 0
-        } else if timelineDuration - time <= 0.000_001 {
-            targetX = max(documentWidth - viewportWidth, 0)
-        } else {
-            targetX = nil
-        }
-        guard let targetX else { return }
-        scrollView.contentView.scroll(
-            to: NSPoint(x: targetX, y: scrollView.documentVisibleRect.origin.y)
-        )
-        scrollView.reflectScrolledClipView(scrollView.contentView)
-    }
-
-    func beginTimelineGesture(_ intent: EditorTimelineGestureIntent) -> Bool {
-        gestureOwnership.begin(intent)
-    }
-
-    func endTimelineGesture(_ intent: EditorTimelineGestureIntent) {
-        gestureOwnership.end(intent)
-    }
-
-    func cancelActiveTimelineGesture() {
-        if gestureOwnership.activeIntent?.seeksDuringDrag == true {
-            playbackController.endScrubbing()
-        }
-        gestureOwnership.cancel()
-        endPrimarySegmentDrag()
-        primaryTrimDraft = nil
-        manualZoomDragStart = nil
-        manualZoomDragEnd = nil
-        zoomGestureOrigin = nil
-        zoomTrackDrag = nil
-        motionGestureOrigin = nil
-        motionTrackDrag = nil
-        motionCreateDrag = nil
-        editorStore.cancelInteraction()
-    }
-
-    func stepTimeline(byFrames frames: Int) {
-        seekTimeline(to: playbackTime + Double(frames) * timelineFrameDuration)
     }
 
     func createZoomRange(

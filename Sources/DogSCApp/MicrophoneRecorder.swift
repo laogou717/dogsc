@@ -603,10 +603,10 @@ final class MicrophoneRecorder: NSObject,
         }
         writerInput.markAsFinished()
         scheduleStopTimeoutLocked(requestID: requestID)
-        writer.finishWriting { [weak self, weak writer] in
-            guard let self else { return }
-            self.sessionQueue.async { [self] in
-                guard let writer else {
+        writer.finishWriting { [weak self] in
+            self?.sessionQueue.async { [weak self] in
+                guard let self else { return }
+                guard let completedWriter = self.writer else {
                     self.completeStopLocked(
                         requestID: requestID,
                         result: .failure(MicrophoneRecorderError.recordingFailed(
@@ -615,7 +615,7 @@ final class MicrophoneRecorder: NSObject,
                     )
                     return
                 }
-                if writer.status == .completed {
+                if completedWriter.status == .completed {
                     Self.logger.notice(
                         "microphone writer completed droppedSamples=\(self.droppedSamples, privacy: .public)"
                     )
@@ -623,7 +623,7 @@ final class MicrophoneRecorder: NSObject,
                 } else {
                     self.completeStopLocked(
                         requestID: requestID,
-                        result: .failure(writer.error ?? MicrophoneRecorderError.recordingFailed(
+                        result: .failure(completedWriter.error ?? MicrophoneRecorderError.recordingFailed(
                             "麦克风文件没有完成封装"
                         ))
                     )

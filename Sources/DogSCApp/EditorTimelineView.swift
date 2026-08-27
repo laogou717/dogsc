@@ -32,24 +32,6 @@ enum EditorTimelineSizing {
 enum EditorMotionTimelinePresentation {
     static let minimumDuration: TimeInterval = 0.08
 
-    /// 轨道默认隐藏，保持时间线干净：有片段时、或用户切到对应检查器页
-    ///（即将编辑该域）时才出现；出现后可直接在轨道上添加与拖动。
-    static func shouldShowTrack(
-        _ track: EditorMotionTimelineTrack,
-        hasClips: Bool,
-        selection: EditorSelection?
-    ) -> Bool {
-        if hasClips { return true }
-        switch (track, selection) {
-        case (.screen, .screen), (.screen, .primarySegment), (.screen, .screenMotion):
-            return true
-        case (.camera, .camera), (.camera, .cameraMotion):
-            return true
-        default:
-            return false
-        }
-    }
-
     static func bounds(
         for id: UUID,
         timings: [(id: UUID, timing: TransitionTiming)],
@@ -724,7 +706,6 @@ struct EditorTimelineWaveformStripView: View, Equatable {
             )
         }
         .frame(width: width, height: height)
-        .accessibilityLabel("​\(lane.title)波形")
     }
 }
 
@@ -786,6 +767,7 @@ struct EditorTimelineView: View {
     /// active, for example when a system notification covers the editor.
     let windowDeactivationRevision: UInt64
     let primaryLaneHeight: CGFloat
+    @Binding var visibleTracks: EditorTimelineTrackVisibility
     let onError: (String) -> Void
 
     @State var derivedPresentationCache: EditorTimelineDerivedPresentationCache
@@ -807,6 +789,7 @@ struct EditorTimelineView: View {
     @State var primarySegmentDragLocalMonitor: Any?
     @State var primarySegmentDragGlobalMonitor: Any?
     @State var primaryTrimDraft: PrimarySegmentTrimDraft?
+    @State var primaryRetimeDraft: PrimarySegmentRetimeDraft?
     @State var isRestoreCutMode = false
     /// 时间轴鼠标点击标记开关（UX-019）：默认隐藏，避免遮挡波形；
     /// 在时间线工具栏剪辑胶囊内切换，跨会话记忆。
@@ -827,6 +810,8 @@ struct EditorTimelineView: View {
     @State var motionTrackDrag: MotionTrackDrag?
     @State var motionCreateDrag: MotionCreateDragState?
     @State var motionTrackHover: [EditorMotionTimelineTrack: CGPoint] = [:]
+    @State var hoveredOverlaySelection: EditorSelection?
+    @State var overlayTimelineDrag: EditorOverlayTimelineDrag?
     @State var gestureOwnership = EditorTimelineGestureOwnership()
     @State var deleteKeyMonitor: Any?
     @State var systemWaveform: EditorTimelineWaveformData?
@@ -845,6 +830,7 @@ struct EditorTimelineView: View {
         isCameraSyncEditing: Bool,
         windowDeactivationRevision: UInt64 = 0,
         primaryLaneHeight: CGFloat = EditorTimelineSizing.defaultPrimaryLaneHeight,
+        visibleTracks: Binding<EditorTimelineTrackVisibility>,
         onError: @escaping (String) -> Void
     ) {
         _editorStore = ObservedObject(wrappedValue: editorStore)
@@ -856,6 +842,7 @@ struct EditorTimelineView: View {
         self.primaryLaneHeight = EditorTimelineSizing.clampedPrimaryLaneHeight(
             primaryLaneHeight
         )
+        _visibleTracks = visibleTracks
         self.onError = onError
         _derivedPresentationCache = State(
             initialValue: EditorTimelineDerivedPresentationCache(
@@ -892,11 +879,23 @@ struct EditorTimelineView: View {
         if mediaSession.outputDuration > 0 {
             return mediaSession.outputDuration
         }
-        let effectEnd = max(
-            editorStore.project.zoomAnimations.map(\.endTime).max() ?? 0,
-            editorStore.project.timeline.screenMotionClips.map(\.timing.endTime).max() ?? 0,
-            editorStore.project.timeline.cameraMotionClips.map(\.timing.endTime).max() ?? 0
-        )
+        let project = editorStore.project
+        let zoomEnd = project.zoomAnimations.map(\.endTime).max() ?? 0
+        let screenMotionEnd = project.timeline.screenMotionClips
+            .map(\.timing.endTime).max() ?? 0
+        let cameraMotionEnd = project.timeline.cameraMotionClips
+            .map(\.timing.endTime).max() ?? 0
+        let mosaicEnd = project.timeline.mosaicClips
+            .map(\.timing.endTime).max() ?? 0
+        let stickerEnd = project.timeline.stickerClips
+            .map(\.timing.endTime).max() ?? 0
+        let effectEnd = [
+            zoomEnd,
+            screenMotionEnd,
+            cameraMotionEnd,
+            mosaicEnd,
+            stickerEnd,
+        ].max() ?? 0
         return max(effectEnd, 1)
     }
 
@@ -948,20 +947,19 @@ struct EditorTimelineView: View {
     }
 
     var showsScreenMotionTimeline: Bool {
-        EditorMotionTimelinePresentation.shouldShowTrack(
-            .screen,
-            hasClips: !editorStore.previewProject.timeline.screenMotionClips.isEmpty,
-            selection: editorStore.selection
-        )
+        visibleTracks.contains(.screenMotion)
     }
 
     var showsCameraMotionTimeline: Bool {
-        EditorMotionTimelinePresentation.shouldShowTrack(
-            .camera,
-            hasClips: !editorStore.previewProject.timeline.cameraMotionClips.isEmpty,
-            selection: editorStore.selection
-        )
+        visibleTracks.contains(.cameraMotion)
     }
+
+    var showsZoomTimeline: Bool { visibleTracks.contains(.zoom) }
+
+    var showsOverlayTimeline: Bool {
+        !visibleTracks.intersection(.overlays).isEmpty
+    }
+    var showsProgressTimeline: Bool { visibleTracks.contains(.progress) }
 
     var showsSystemWaveform: Bool {
         mediaSession.inventories.source.hasAudio
@@ -1069,6 +1067,8 @@ struct EditorTimelineView: View {
         // 是 primaryLaneHeight，不经过这些布尔值，拖高手感保持直连。
         .animation(.easeOut(duration: 0.16), value: showsScreenMotionTimeline)
         .animation(.easeOut(duration: 0.16), value: showsCameraMotionTimeline)
+        .animation(.easeOut(duration: 0.16), value: showsOverlayTimeline)
+        .animation(.easeOut(duration: 0.16), value: showsProgressTimeline)
         .animation(.easeOut(duration: 0.16), value: showsCameraSyncTimeline)
         .onChange(of: editorStore.project.timeline) { _, _ in
             // A ripple edit can remove the SwiftUI view that owned the current
@@ -1088,13 +1088,21 @@ struct EditorTimelineView: View {
             switch editorStore.selection {
             case let .screenMotion(id)
                 where !editorStore.project.timeline.screenMotionClips.contains(where: { $0.id == id }):
-                editorStore.selection = .screen
+                editorStore.selection = .screenMotionTrack
             case let .cameraMotion(id)
                 where !editorStore.project.timeline.cameraMotionClips.contains(where: { $0.id == id }):
                 editorStore.selection = .camera
             case let .zoom(id)
                 where !editorStore.project.zoomAnimations.contains(where: { $0.id == id }):
                 editorStore.selection = .zoomTrack
+            case let .mosaic(id)
+                where !editorStore.project.timeline.mosaicClips.contains(where: { $0.id == id }):
+                editorStore.selection = .canvas
+            case let .sticker(id)
+                where !editorStore.project.timeline.stickerClips.contains(where: { $0.id == id }):
+                editorStore.selection = .canvas
+            case .progress where editorStore.project.timeline.progressOverlay == nil:
+                editorStore.selection = .canvas
             default:
                 break
             }
@@ -1122,8 +1130,10 @@ struct EditorTimelineView: View {
                 dismissCameraSyncSelection()
             }
             guard case let .primarySegment(id) = selection,
-                  primaryTrimDraft?.segmentID == id else {
+                  primaryTrimDraft?.segmentID == id
+                    || primaryRetimeDraft?.segmentID == id else {
                 primaryTrimDraft = nil
+                primaryRetimeDraft = nil
                 return
             }
         }

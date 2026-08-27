@@ -29,6 +29,12 @@ struct PrimarySegmentTrimDraft: Equatable {
     }
 }
 
+struct PrimarySegmentRetimeDraft: Equatable {
+    let segmentID: UUID
+    let original: ResolvedRecordingSegment
+    var proposedRate: Double
+}
+
 struct EditorTimelineSegmentJunction: Equatable, Identifiable {
     let previousSegmentID: UUID
     let nextSegmentID: UUID
@@ -121,22 +127,31 @@ enum EditorPrimaryTimelinePresentation {
 
     static func displaySegments(
         from map: TimelineMap,
-        trimDraft: PrimarySegmentTrimDraft?
+        trimDraft: PrimarySegmentTrimDraft?,
+        retimeDraft: PrimarySegmentRetimeDraft?
     ) -> [ResolvedRecordingSegment] {
-        guard let trimDraft,
-              map.segments.contains(where: { $0.id == trimDraft.segmentID })
-        else { return map.segments }
+        let hasTrimDraft = trimDraft.map { draft in
+            map.segments.contains(where: { $0.id == draft.segmentID })
+        } ?? false
+        let hasRetimeDraft = retimeDraft.map { draft in
+            map.segments.contains(where: { $0.id == draft.segmentID })
+        } ?? false
+        guard hasTrimDraft || hasRetimeDraft else { return map.segments }
 
         var outputStart: TimeInterval = 0
         return map.segments.map { segment in
             var sourceStart = segment.sourceStart
             var sourceDuration = segment.sourceDuration
-            if segment.id == trimDraft.segmentID {
+            var playbackRate = segment.playbackRate
+            if let trimDraft, segment.id == trimDraft.segmentID {
                 switch trimDraft.edge {
                 case .left:
-                    let removedDuration = trimDraft.proposedOutputTime - segment.outputStart
-                    sourceStart += removedDuration
-                    sourceDuration -= removedDuration
+                    let removedOutputDuration = trimDraft.proposedOutputTime
+                        - segment.outputStart
+                    let removedSourceDuration = removedOutputDuration
+                        * segment.playbackRate
+                    sourceStart += removedSourceDuration
+                    sourceDuration -= removedSourceDuration
                     // Ripple trim keeps the authored edit point contiguous:
                     // the trimmed clip starts where the preceding clip ends,
                     // and every following clip shifts by the removed/inserted
@@ -144,16 +159,21 @@ enum EditorPrimaryTimelinePresentation {
                     // the draft can match the exact post-commit geometry
                     // without jumping left on mouse-up.
                 case .right:
-                    sourceDuration = trimDraft.proposedOutputTime - segment.outputStart
+                    sourceDuration = (trimDraft.proposedOutputTime - segment.outputStart)
+                        * segment.playbackRate
                 }
+            }
+            if let retimeDraft, segment.id == retimeDraft.segmentID {
+                playbackRate = min(max(retimeDraft.proposedRate, 1), 20)
             }
             let displayed = ResolvedRecordingSegment(
                 id: segment.id,
                 sourceStart: sourceStart,
                 sourceDuration: max(sourceDuration, 0),
+                playbackRate: playbackRate,
                 outputStart: outputStart
             )
-            outputStart += displayed.sourceDuration
+            outputStart += displayed.outputDuration
             return displayed
         }
     }
@@ -443,8 +463,9 @@ struct EditorTimelineZoomAnchor: Equatable {
 /// timeline and resizes NSScrollView several times before any of those frames
 /// can be shown. Keep the exact accumulated zoom target, but publish at most
 /// once per display frame.
+@MainActor
 final class EditorTimelineZoomInputCoalescer {
-    typealias Apply = (_ targetZoom: Double, _ pointerViewportX: CGFloat?) -> Void
+    typealias Apply = @MainActor (_ targetZoom: Double, _ pointerViewportX: CGFloat?) -> Void
 
     private var pendingTargetZoom: Double?
     private var latestPointerViewportX: CGFloat?
@@ -533,6 +554,39 @@ struct EditorMotionPartnerOrigin: Equatable {
     let timing: TransitionTiming
 }
 
+enum EditorOverlayTimelineKind: Equatable {
+    case mosaic
+    case sticker
+
+    func selection(id: UUID) -> EditorSelection {
+        switch self {
+        case .mosaic: return .mosaic(id)
+        case .sticker: return .sticker(id)
+        }
+    }
+
+    var moveActionName: String {
+        switch self {
+        case .mosaic: return "移动打码"
+        case .sticker: return "移动贴图"
+        }
+    }
+
+    var resizeActionName: String {
+        switch self {
+        case .mosaic: return "调整打码时长"
+        case .sticker: return "调整贴图时长"
+        }
+    }
+}
+
+struct EditorOverlayTimelineDrag: Equatable {
+    let kind: EditorOverlayTimelineKind
+    let id: UUID
+    let mode: EditorMotionTimelineEditMode
+    let original: OverlayTiming
+}
+
 /// Selection-only timeline policy. Segment identity is derived from the
 /// persisted source sequence, so it never depends on an asynchronously rebuilt
 /// media plan.
@@ -565,6 +619,9 @@ enum EditorTimelineDeleteTarget: Equatable {
     case screenMotion(UUID)
     case cameraMotion(UUID)
     case zoom(UUID)
+    case mosaic(UUID)
+    case sticker(UUID)
+    case progress
 
     init?(selection: EditorSelection?) {
         switch selection {
@@ -572,6 +629,9 @@ enum EditorTimelineDeleteTarget: Equatable {
         case let .screenMotion(id): self = .screenMotion(id)
         case let .cameraMotion(id): self = .cameraMotion(id)
         case let .zoom(id): self = .zoom(id)
+        case let .mosaic(id): self = .mosaic(id)
+        case let .sticker(id): self = .sticker(id)
+        case .progress: self = .progress
         default: return nil
         }
     }
@@ -584,12 +644,16 @@ enum EditorTimelineSplitTarget: Equatable {
     case zoom(UUID)
     case screenMotion(UUID)
     case cameraMotion(UUID)
+    case mosaic(UUID)
+    case sticker(UUID)
 
     init?(selection: EditorSelection?) {
         switch selection {
         case let .zoom(id): self = .zoom(id)
         case let .screenMotion(id): self = .screenMotion(id)
         case let .cameraMotion(id): self = .cameraMotion(id)
+        case let .mosaic(id): self = .mosaic(id)
+        case let .sticker(id): self = .sticker(id)
         default: return nil
         }
     }
@@ -600,15 +664,17 @@ enum EditorTimelineSplitTarget: Equatable {
 enum EditorTimelineGestureIntent: Equatable {
     case scrub
     case primaryTrim(UUID, RecordingSegmentTrimEdge)
+    case primaryRetime(UUID)
     case zoomCreate
     case zoomMove(UUID)
     case zoomResize(UUID, leading: Bool)
     case motionCreate(EditorMotionTimelineTrack)
     case motion(EditorMotionTimelineTrack, UUID, EditorMotionTimelineEditMode)
+    case overlay(EditorOverlayTimelineKind, UUID, EditorMotionTimelineEditMode)
 
     var seeksDuringDrag: Bool {
         switch self {
-        case .scrub, .primaryTrim:
+        case .scrub, .primaryTrim, .primaryRetime:
             return true
         default:
             return false

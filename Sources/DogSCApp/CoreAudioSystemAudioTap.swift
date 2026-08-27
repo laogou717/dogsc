@@ -89,7 +89,8 @@ final class CoreAudioSystemAudioTap: @unchecked Sendable {
             }
             description = CATapDescription(stereoMixdownOfProcesses: processIDs)
         }
-        description.name = "DogSC系统声音"
+        let privateDeviceName = "\(AppIdentity.displayName)系统声音"
+        description.name = privateDeviceName
         description.isPrivate = true
         description.muteBehavior = .unmuted
 
@@ -125,7 +126,7 @@ final class CoreAudioSystemAudioTap: @unchecked Sendable {
 
             let aggregateUID = "cn.laogou.dogsc.tap.\(UUID().uuidString)"
             let aggregateDescription: [String: Any] = [
-                kAudioAggregateDeviceNameKey: "DogSC系统声音",
+                kAudioAggregateDeviceNameKey: privateDeviceName,
                 kAudioAggregateDeviceUIDKey: aggregateUID,
                 kAudioAggregateDeviceIsPrivateKey: true,
                 kAudioAggregateDeviceSubDeviceListKey: [],

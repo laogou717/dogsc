@@ -7,24 +7,24 @@ import SwiftUI
 struct MotionInspectorScopeHeader: View {
     let title: String
     let detail: String
-    let isTarget: Bool
-    let addTitle: String?
-    let onAdd: (() -> Void)?
+    var statusTitle: String? = nil
+    let addTitle: String
+    let onAdd: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 8) {
-                Label(title, systemImage: isTarget ? "keyframe" : "rectangle.stack")
+                Label(title, systemImage: "rectangle.stack")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(isTarget ? Color.white : Color.secondary)
+                    .foregroundStyle(Color.secondary)
                 Spacer(minLength: 4)
-                Text(isTarget ? "动画目标" : "初始状态")
+                Text(statusTitle ?? "初始状态")
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(isTarget ? Color.white : Color.secondary)
+                    .foregroundStyle(Color.secondary)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 4)
                     .background(
-                        isTarget ? Color.white.opacity(0.14) : Color.white.opacity(0.07),
+                        Color.white.opacity(0.07),
                         in: Capsule()
                     )
             }
@@ -34,25 +34,23 @@ struct MotionInspectorScopeHeader: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            if let addTitle, let onAdd {
-                Button(action: onAdd) {
-                    Label(addTitle, systemImage: "plus.circle.fill")
-                        .font(.caption.weight(.semibold))
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 28)
-                }
-                .buttonStyle(.plain)
-                // 雾白极简的主动作：米白底 + 深字，一个面板只此一处。
-                .foregroundStyle(Color.black.opacity(0.85))
-                .background(Color(white: 0.9), in: RoundedRectangle(cornerRadius: 8))
-                .accessibilityIdentifier("motion.add-at-playhead")
+            Button(action: onAdd) {
+                Label(addTitle, systemImage: "plus.circle.fill")
+                    .font(.caption.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 28)
             }
+            .buttonStyle(.plain)
+            // 雾白极简的主动作：米白底 + 深字，一个面板只此一处。
+            .foregroundStyle(Color.black.opacity(0.85))
+            .background(Color(white: 0.9), in: RoundedRectangle(cornerRadius: 8))
+            .accessibilityIdentifier("motion.add-at-playhead")
         }
         .padding(11)
-        .background(Color.white.opacity(isTarget ? 0.055 : 0.03), in: RoundedRectangle(cornerRadius: 11))
+        .background(Color.white.opacity(0.03), in: RoundedRectangle(cornerRadius: 11))
         .overlay {
             RoundedRectangle(cornerRadius: 11)
-                .stroke(isTarget ? Color.white.opacity(0.22) : Color.white.opacity(0.06), lineWidth: 1)
+                .stroke(Color.white.opacity(0.06), lineWidth: 1)
         }
     }
 }
@@ -71,21 +69,13 @@ struct ScreenMotionTargetInspector: View {
     var body: some View {
         if let clip {
             VStack(alignment: .leading, spacing: 13) {
-                MotionInspectorScopeHeader(
-                    title: "屏幕空间动画",
-                    detail: "这些值只定义这一段动画的空间目标，不会改动初始状态或全片外观。",
-                    isTarget: true,
-                    addTitle: nil,
-                    onAdd: nil
-                )
-
                 MotionPositionPad(
                     title: "目标位置",
                     point: clip.target.position,
                     onChanged: { point in
                         updateDraft { $0.target.position = point }
                     },
-                    onEnded: { commitDraft(actionName: "调整屏幕动画位置") }
+                    onEnded: { commitDraft(actionName: "调整屏幕 3D 位置") }
                 )
 
                 MotionValueSlider(
@@ -94,7 +84,7 @@ struct ScreenMotionTargetInspector: View {
                     range: 0.25...4,
                     valueText: String(format: "%.2f×", clip.target.scale),
                     onChanged: { value in updateDraft { $0.target.scale = value } },
-                    onEditingEnded: { commitDraft(actionName: "调整屏幕动画大小") }
+                    onEditingEnded: { commitDraft(actionName: "调整屏幕 3D 大小") }
                 )
 
                 VStack(alignment: .leading, spacing: 7) {
@@ -106,6 +96,7 @@ struct ScreenMotionTargetInspector: View {
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
+                    .accessibilityHidden(true)
                     TiltPad(
                         rotationX: clip.target.rotationX,
                         rotationY: clip.target.rotationY,
@@ -148,10 +139,9 @@ struct ScreenMotionTargetInspector: View {
                     timing: clip.timing,
                     maximumDuration: maximumDuration,
                     onDurationChanged: { value in updateDraft { $0.timing.duration = value } },
-                    onDurationEnded: { commitDraft(actionName: "调整屏幕动画时长") },
+                    onDurationEnded: { commitDraft(actionName: "调整屏幕 3D 时长") },
                     onLeadInChanged: { value in updateDraft { $0.timing.leadInDuration = value } },
-                    onLeadInEnded: { commitDraft(actionName: "调整屏幕动画过渡") },
-                    onEasingChanged: { easing in replaceImmediately { $0.timing.easing = easing } }
+                    onLeadInEnded: { commitDraft(actionName: "调整屏幕 3D 过渡") }
                 )
 
                 motionFooter(
@@ -164,7 +154,7 @@ struct ScreenMotionTargetInspector: View {
             VStack(spacing: 10) {
                 ContentUnavailableView(
                     "动画已不存在",
-                    systemImage: "keyframe",
+                    systemImage: "diamond.fill",
                     description: Text("可能已在时间线中删除或被撤销。")
                 )
                 Button("返回屏幕初始状态") { editorStore.selection = .screen }
@@ -207,18 +197,6 @@ struct ScreenMotionTargetInspector: View {
         }
     }
 
-    private func replaceImmediately(_ update: (inout ScreenMotionClip) -> Void) {
-        guard var clip = editorStore.project.timeline.screenMotionClips.first(where: { $0.id == clipID }) else {
-            return
-        }
-        update(&clip)
-        do {
-            try editorStore.replaceScreenMotion(clip, actionName: "调整屏幕动画缓动")
-        } catch {
-            onError(error.localizedDescription)
-        }
-    }
-
     private func deleteClip() {
         do {
             try editorStore.removeScreenMotion(id: clipID)
@@ -240,35 +218,30 @@ struct CameraMotionTargetInspector: View {
         editorStore.previewProject.timeline.cameraMotionClips.first { $0.id == clipID }
     }
 
+    private var targetIsVisible: Bool {
+        (clip?.target.opacity ?? 0) > 0.001
+    }
+
     var body: some View {
         if let clip {
             VStack(alignment: .leading, spacing: 13) {
-                MotionInspectorScopeHeader(
-                    title: "摄像头布局动画",
-                    detail: "形状到全屏会使用同一组连续几何值过渡，不会在中途切换布局。",
-                    isTarget: true,
-                    addTitle: nil,
-                    onAdd: nil
-                )
-
                 EditorSegmentedControl(
                     options: CameraTargetLayoutChoice.allCases,
                     title: { $0 == .shape ? "形状" : "全屏" },
                     selection: layoutChoiceBinding
                 )
-                .accessibilityLabel("目标布局")
                 .accessibilityIdentifier("camera-motion.layout")
 
-                Toggle(
-                    "显示摄像头",
+                EditorToggle(
                     isOn: Binding(
-                        get: { clip.target.opacity > 0.5 },
+                        get: { targetIsVisible },
                         set: { visible in
                             replaceImmediately { $0.target.opacity = visible ? 1 : 0 }
                         }
-                    )
+                    ),
+                    title: "显示摄像头"
                 )
-                if clip.target.opacity <= 0.5 {
+                if !targetIsVisible {
                     Text("这一段摄像头完全隐藏，进入和离开时自动淡入淡出")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
@@ -285,7 +258,7 @@ struct CameraMotionTargetInspector: View {
                     title: "目标位置",
                     point: clip.target.position,
                     onChanged: { point in updateDraft { $0.target.position = point } },
-                    onEnded: { commitDraft(actionName: "调整摄像头动画位置") }
+                    onEnded: { commitDraft(actionName: "调整摄像运动位置") }
                 )
 
                 MotionValueSlider(
@@ -294,7 +267,7 @@ struct CameraMotionTargetInspector: View {
                     range: 0.05...1,
                     valueText: String(format: "%.0f%%", clip.target.size * 100),
                     onChanged: { value in updateDraft { $0.target.size = value } },
-                    onEditingEnded: { commitDraft(actionName: "调整摄像头动画大小") }
+                    onEditingEnded: { commitDraft(actionName: "调整摄像运动大小") }
                 )
 
                 if case let .shape(shape) = clip.target.layout, shape != .circle {
@@ -304,7 +277,7 @@ struct CameraMotionTargetInspector: View {
                         range: 0...1,
                         valueText: String(format: "%.0f%%", clip.target.roundness * 100),
                         onChanged: { value in updateDraft { $0.target.roundness = value } },
-                        onEditingEnded: { commitDraft(actionName: "调整摄像头动画圆角") }
+                        onEditingEnded: { commitDraft(actionName: "调整摄像运动圆角") }
                     )
                 }
 
@@ -314,17 +287,16 @@ struct CameraMotionTargetInspector: View {
                     range: 0...1,
                     valueText: String(format: "%.0f%%", clip.target.opacity * 100),
                     onChanged: { value in updateDraft { $0.target.opacity = value } },
-                    onEditingEnded: { commitDraft(actionName: "调整摄像头动画透明度") }
+                    onEditingEnded: { commitDraft(actionName: "调整摄像运动透明度") }
                 )
 
                 MotionTimingControls(
                     timing: clip.timing,
                     maximumDuration: maximumDuration,
                     onDurationChanged: { value in updateDraft { $0.timing.duration = value } },
-                    onDurationEnded: { commitDraft(actionName: "调整摄像头动画时长") },
+                    onDurationEnded: { commitDraft(actionName: "调整摄像运动时长") },
                     onLeadInChanged: { value in updateDraft { $0.timing.leadInDuration = value } },
-                    onLeadInEnded: { commitDraft(actionName: "调整摄像头动画过渡") },
-                    onEasingChanged: { easing in replaceImmediately { $0.timing.easing = easing } }
+                    onLeadInEnded: { commitDraft(actionName: "调整摄像运动过渡") }
                 )
 
                 motionFooter(
@@ -337,7 +309,7 @@ struct CameraMotionTargetInspector: View {
             VStack(spacing: 10) {
                 ContentUnavailableView(
                     "动画已不存在",
-                    systemImage: "keyframe",
+                    systemImage: "diamond.fill",
                     description: Text("可能已在时间线中删除或被撤销。")
                 )
                 Button("返回摄像头初始状态") { editorStore.selection = .camera }
@@ -418,7 +390,7 @@ struct CameraMotionTargetInspector: View {
         }
         update(&clip)
         do {
-            try editorStore.replaceCameraMotion(clip, actionName: "调整摄像头动画")
+            try editorStore.replaceCameraMotion(clip, actionName: "调整摄像运动")
         } catch {
             onError(error.localizedDescription)
         }
@@ -458,8 +430,15 @@ struct MotionValueSlider: View {
                     .font(.system(.caption2, design: .monospaced))
                     .foregroundStyle(.secondary)
             }
+            // The slider below already exposes both the contextual title and
+            // current value. Keep this row visual without creating a second,
+            // non-adjustable stop immediately before the real control.
+            .accessibilityHidden(true)
             EditorSlider(
-                value: Binding(get: { value }, set: onChanged),
+                value: Binding(
+                    get: { value },
+                    set: { newValue in onChanged(newValue) }
+                ),
                 range: range,
                 onEditingChanged: { editing in
                     if !editing { onEditingEnded() }
@@ -472,19 +451,25 @@ struct MotionValueSlider: View {
 }
 
 struct MotionPositionPad: View {
+    @GestureState private var draggedPoint: NormalizedPoint?
+
     let title: String
     let point: NormalizedPoint
     let onChanged: (NormalizedPoint) -> Void
     let onEnded: () -> Void
+    var snapsToGrid = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(title).font(.caption.weight(.semibold))
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .accessibilityHidden(true)
                 Spacer()
                 Text(String(format: "%.0f, %.0f", point.x * 100, point.y * 100))
                     .font(.system(.caption2, design: .monospaced))
                     .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
                 Button {
                     onChanged(NormalizedPoint(x: 0.5, y: 0.5))
                     onEnded()
@@ -501,6 +486,7 @@ struct MotionPositionPad: View {
                 let inset: CGFloat = 10
                 let usableWidth = max(proxy.size.width - inset * 2, 1)
                 let usableHeight = max(proxy.size.height - inset * 2, 1)
+                let displayedPoint = draggedPoint ?? point
                 ZStack {
                     RoundedRectangle(cornerRadius: 10)
                         .fill(Color.black.opacity(0.22))
@@ -537,23 +523,27 @@ struct MotionPositionPad: View {
                         .frame(width: 13, height: 13)
                         .shadow(color: editorAccent.opacity(0.6), radius: 5)
                         .position(
-                            x: inset + CGFloat(MotionInspectorLogic.clamp01(point.x)) * usableWidth,
-                            y: inset + CGFloat(MotionInspectorLogic.clamp01(point.y)) * usableHeight
+                            x: inset + CGFloat(MotionInspectorLogic.clamp01(displayedPoint.x)) * usableWidth,
+                            y: inset + CGFloat(MotionInspectorLogic.clamp01(displayedPoint.y)) * usableHeight
                         )
+                        .transaction { $0.animation = nil }
                 }
                 .contentShape(RoundedRectangle(cornerRadius: 10))
                 .gesture(
                     DragGesture(minimumDistance: 0)
-                        .onChanged { gesture in
-                            onChanged(
-                                MotionInspectorLogic.snappedToGrid(
-                                    MotionInspectorLogic.normalizedPoint(
-                                        location: gesture.location,
-                                        size: proxy.size,
-                                        inset: inset
-                                    )
-                                )
+                        .updating($draggedPoint) { gesture, state, _ in
+                            state = gesturePoint(
+                                location: gesture.location,
+                                size: proxy.size,
+                                inset: inset
                             )
+                        }
+                        .onChanged { gesture in
+                            onChanged(gesturePoint(
+                                location: gesture.location,
+                                size: proxy.size,
+                                inset: inset
+                            ))
                         }
                         .onEnded { _ in onEnded() }
                 )
@@ -563,6 +553,21 @@ struct MotionPositionPad: View {
             .accessibilityLabel(title)
             .accessibilityValue(String(format: "X %.0f，Y %.0f", point.x * 100, point.y * 100))
         }
+    }
+
+    private func gesturePoint(
+        location: CGPoint,
+        size: CGSize,
+        inset: CGFloat
+    ) -> NormalizedPoint {
+        let normalized = MotionInspectorLogic.normalizedPoint(
+            location: location,
+            size: size,
+            inset: inset
+        )
+        return snapsToGrid
+            ? MotionInspectorLogic.snappedToGrid(normalized)
+            : normalized
     }
 }
 
@@ -656,7 +661,6 @@ struct MotionTimingControls: View {
     let onDurationEnded: @MainActor @Sendable () -> Void
     let onLeadInChanged: @MainActor @Sendable (Double) -> Void
     let onLeadInEnded: @MainActor @Sendable () -> Void
-    let onEasingChanged: @MainActor @Sendable (ZoomEasingPreset) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -669,30 +673,8 @@ struct MotionTimingControls: View {
                     .font(.system(.caption2, design: .monospaced))
                     .foregroundStyle(.secondary)
             }
-            // 速度预设：只改进入过渡（leadIn），整段时长决定保持多久
-            HStack(spacing: 6) {
-                ForEach([(title: "慢", duration: 1.2), (title: "标准", duration: 0.7), (title: "快", duration: 0.25)], id: \.title) { preset in
-                    Button {
-                        onLeadInChanged(min(preset.duration, max(timing.duration, 0.08)))
-                        onLeadInEnded()
-                    } label: {
-                        Text(preset.title)
-                            .font(.caption2)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 3)
-                            .background(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .fill(abs(timing.leadInDuration - preset.duration) < 0.001
-                                          ? Color.white.opacity(0.16)
-                                          : Color.white.opacity(0.07))
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("\(preset.title)速过渡")
-                }
-            }
             MotionValueSlider(
-                title: "过渡",
+                title: "过渡时长",
                 value: min(timing.leadInDuration, timing.duration),
                 range: 0.08...max(max(timing.duration, 0.08), 0.08),
                 valueText: String(format: "%.2fs", min(timing.leadInDuration, timing.duration)),
@@ -711,14 +693,6 @@ struct MotionTimingControls: View {
                 Text("过渡完成后保持 \(String(format: "%.2f", timing.duration - min(timing.leadInDuration, timing.duration)))s")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-            }
-            Picker(
-                "缓动",
-                selection: Binding(get: { timing.easing }, set: onEasingChanged)
-            ) {
-                ForEach(ZoomEasingPreset.allCases) { preset in
-                    Text(preset.shortName).tag(preset)
-                }
             }
         }
     }
@@ -915,28 +889,30 @@ struct CameraShapeIconPicker: View {
     var body: some View {
         HStack(spacing: 6) {
             ForEach(CameraShape.allCases) { shape in
+                let isSelected = selection == shape
                 Button {
                     onSelect(shape)
                 } label: {
                     Image(systemName: icon(for: shape))
                         .font(.system(size: 13))
                         .foregroundStyle(
-                            selection == shape ? Color.primary : Color.secondary
+                            isSelected ? Color.primary : Color.secondary
                         )
                         .frame(maxWidth: .infinity)
                         .frame(height: 26)
                         .background(
                             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .fill(selection == shape ? Color.white.opacity(0.14) : Color.white.opacity(0.07))
+                                .fill(isSelected ? Color.white.opacity(0.14) : Color.white.opacity(0.07))
                         )
                         .overlay(
                             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .stroke(selection == shape ? Color.white.opacity(0.75) : .clear, lineWidth: 1)
+                                .stroke(isSelected ? Color.white.opacity(0.75) : .clear, lineWidth: 1)
                         )
                 }
                 .buttonStyle(.plain)
                 .help(shape.rawValue)
                 .accessibilityLabel("形状：\(shape.rawValue)")
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
             }
         }
         .accessibilityElement(children: .contain)

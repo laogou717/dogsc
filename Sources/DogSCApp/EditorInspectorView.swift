@@ -3,6 +3,13 @@ import Foundation
 import RecorderCore
 import SwiftUI
 
+enum EditorMotionInspectorMode: String, CaseIterable, Identifiable {
+    case zoom
+    case screen3D
+
+    var id: String { rawValue }
+}
+
 /// Owns inspector navigation, controls, and interactive undo grouping. The
 /// parent editor coordinates crop completion and provides system-facing work.
 struct EditorInspectorView: View {
@@ -14,6 +21,7 @@ struct EditorInspectorView: View {
     let cursorAssets: [ResolvedCursorAsset]
     @Binding var selectedInspector: InspectorTab
     @Binding var isCameraSyncEditing: Bool
+    @Binding var visibleTimelineTracks: EditorTimelineTrackVisibility
     let isCropping: Bool
     @Binding var cropDraft: NormalizedCrop
     /// 内容面板宽度（不含 66pt 图标轨），由编辑器分栏条实时解析。
@@ -22,25 +30,12 @@ struct EditorInspectorView: View {
     let onChooseDesktopWallpaper: () -> String?
     let onError: (String) -> Void
 
-    @State var selectedBackgroundTab: BackgroundPanelTab = .wallpaper
-    @State var selectedWallpaperCollection = "Photography"
     @State var savedLayoutPresets: [SavedLayoutPreset] = []
     @State var isNamingLayoutPreset = false
     @State var layoutPresetName = ""
-    @State var zoomAuditionTask: Task<Void, Never>?
+    @State var motionInspectorMode = EditorMotionInspectorMode.zoom
     @State var hoveredInspectorTab: InspectorTab?
-    /// 纯色背景的候选色。浏览"颜色"页签不再写项目；只有明确点击
-    /// "使用纯色背景"才把候选色提交为一次可撤销的项目命令。
-    @State var candidateBackgroundHex = HexColor(rgb24: 0xD9_C8_FF)
 
-    /// Keep the grid cache bounded. Full-resolution wallpaper decoding belongs
-    /// to the preview renderer; this cache stores only ImageIO-downsampled tiles.
-    static let wallpaperThumbnailCache: NSCache<NSString, NSImage> = {
-        let cache = NSCache<NSString, NSImage>()
-        cache.countLimit = 24
-        cache.totalCostLimit = 12 * 1_024 * 1_024
-        return cache
-    }()
 
     init(
         editorStore: EditorStore,
@@ -49,6 +44,7 @@ struct EditorInspectorView: View {
         pointerEvents: [PointerEventRecord],
         selectedInspector: Binding<InspectorTab>,
         isCameraSyncEditing: Binding<Bool>,
+        visibleTimelineTracks: Binding<EditorTimelineTrackVisibility>,
         isCropping: Bool,
         cropDraft: Binding<NormalizedCrop>,
         contentWidth: CGFloat = EditorInspectorSizing.defaultContentWidth,
@@ -63,6 +59,7 @@ struct EditorInspectorView: View {
         cursorAssets = CursorAssetLibrary.availableAssets
         _selectedInspector = selectedInspector
         _isCameraSyncEditing = isCameraSyncEditing
+        _visibleTimelineTracks = visibleTimelineTracks
         self.isCropping = isCropping
         _cropDraft = cropDraft
         self.contentWidth = EditorInspectorSizing.clampedContentWidth(contentWidth)
@@ -92,11 +89,6 @@ struct EditorInspectorView: View {
         }
     }
 
-    var isScreenMotionSelected: Bool {
-        if case .screenMotion = editorStore.selection { return true }
-        return false
-    }
-
     var body: some View {
         HStack(spacing: 0) {
             inspectorRail
@@ -105,23 +97,15 @@ struct EditorInspectorView: View {
             Divider().overlay(dividerColor)
             inspector
         }
-        .onAppear {
-            synchronizeBackgroundNavigation(
-                with: editorStore.project.canvas.backgroundSource
-            )
-        }
-        .onChange(of: editorStore.project.canvas.backgroundSource) { _, source in
-            synchronizeBackgroundNavigation(with: source)
-        }
-        .onReceive(
-            NotificationCenter.default.publisher(for: .editorWillTogglePlaybackFromSpace)
-        ) { _ in
-            zoomAuditionTask?.cancel()
-            zoomAuditionTask = nil
-        }
-        .onDisappear {
-            zoomAuditionTask?.cancel()
-            zoomAuditionTask = nil
+        .onChange(of: editorStore.selection) { _, selection in
+            switch selection {
+            case .screenMotionTrack, .screenMotion:
+                motionInspectorMode = .screen3D
+            case .zoom, .zoomTrack:
+                motionInspectorMode = .zoom
+            default:
+                break
+            }
         }
     }
 
@@ -159,6 +143,7 @@ struct EditorInspectorView: View {
                 .foregroundStyle(inspectorRailForeground(for: tab))
                 .disabled(!inspectorTabIsAvailable(tab))
                 .opacity(inspectorTabIsAvailable(tab) ? 1 : 0.32)
+                .accessibilityAddTraits(selectedInspector == tab ? .isSelected : [])
                 .help(inspectorTabHelp(tab))
                 .onHover { isHovering in
                     guard inspectorTabIsAvailable(tab) else { return }
@@ -259,10 +244,12 @@ struct EditorInspectorView: View {
             return "运镜 · 全局设置"
         case .zoom:
             return "运镜 · 缩放片段"
-        case .screenMotion:
+        case .screenMotionTrack:
             return "运镜 · 屏幕 3D"
+        case .screenMotion:
+            return "运镜 · 屏幕 3D 片段"
         case .cursor:
-            return "鼠标 · 全片"
+            return "光标 · 全片"
         case .camera:
             return "摄像头 · 初始状态"
         case .cameraMotion:
@@ -271,6 +258,12 @@ struct EditorInspectorView: View {
             return "音频 · 全片"
         case .crop:
             return "裁切 · 屏幕素材"
+        case .mosaic:
+            return "打码 · 选中区域"
+        case .sticker:
+            return "贴图 · 选中图片"
+        case .progress:
+            return "进度条 · 全片"
         case nil:
             return selectedInspector.rawValue
         }
@@ -280,6 +273,12 @@ struct EditorInspectorView: View {
     var inspectorContent: some View {
         if isCropping {
             cropInspector
+        } else if case .mosaic = editorStore.selection {
+            overlayInspector
+        } else if case .sticker = editorStore.selection {
+            overlayInspector
+        } else if editorStore.selection == .progress {
+            overlayInspector
         } else if case let .primarySegment(id) = editorStore.selection {
             // 选中主片段给真正的片段面板：此前标题写着"当前片段"，内容却是
             // 全片初始状态控件，名实不符。
@@ -305,102 +304,12 @@ struct EditorInspectorView: View {
     /// 两个页签之间猜参数归属。
     var frameInspector: some View {
         VStack(alignment: .leading, spacing: 14) {
-            EditorInspectorSection("背景") {
-                GeometryReader { proxy in
-                    let spacing: CGFloat = 3
-                    let tabs = BackgroundPanelTab.allCases
-                    let count = max(tabs.count, 1)
-                    let itemWidth = max((proxy.size.width - spacing * CGFloat(count - 1)) / CGFloat(count), 0)
-                    HStack(spacing: spacing) {
-                        ForEach(tabs) { tab in
-                            Button {
-                                // 页签切换只是浏览：任何写入都必须来自页内的
-                                // 明确动作（点选壁纸/渐变/图片，或点击"使用纯色背景"）。
-                                selectedBackgroundTab = tab
-                            } label: {
-                                RoundedRectangle(cornerRadius: 7)
-                                    .fill(
-                                        selectedBackgroundTab == tab
-                                            ? Color.white.opacity(0.14) : Color(white: 0.12)
-                                    )
-                                    .frame(width: itemWidth, height: 28)
-                                    .overlay {
-                                        Text(tab.rawValue)
-                                            .font(.caption.weight(.medium))
-                                    }
-                            }
-                            .buttonStyle(.plain)
-                            .frame(width: itemWidth, height: 28)
-                            .contentShape(Rectangle())
-                        }
-                    }
-                    .frame(width: proxy.size.width, alignment: .leading)
-                }
-                .frame(height: 28)
-                .padding(3)
-                .background(Color.black.opacity(0.2), in: RoundedRectangle(cornerRadius: 9))
-
-                switch selectedBackgroundTab {
-                case .wallpaper:
-                    wallpaperLibraryGrid
-                case .gradient:
-                    gradientGrid
-                case .color:
-                    if case let .solidColor(hex) = editorStore.project.canvas.backgroundSource {
-                        EditorHexColorInput(title: "背景颜色", value: hex) { color in
-                            var canvas = editorStore.project.canvas
-                            canvas.backgroundSource = .solidColor(hex: color)
-                            performEditorCommand {
-                                try editorStore.replaceCanvas(
-                                    with: canvas,
-                                    actionName: "调整背景颜色"
-                                )
-                            }
-                        }
-                    } else {
-                        VStack(alignment: .leading, spacing: 10) {
-                            EditorHexColorInput(title: "纯色背景", value: candidateBackgroundHex) { color in
-                                candidateBackgroundHex = color
-                            }
-                            Button {
-                                var canvas = editorStore.project.canvas
-                                canvas.backgroundSource = .solidColor(hex: candidateBackgroundHex)
-                                performEditorCommand {
-                                    try editorStore.replaceCanvas(
-                                        with: canvas,
-                                        actionName: "选择纯色背景"
-                                    )
-                                }
-                            } label: {
-                                Label("使用纯色背景", systemImage: "paintbucket")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(.editorQuiet)
-                            Text("只有点击按钮才会切换背景；浏览页签不会再改动项目。")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                case .image:
-                    VStack(alignment: .leading, spacing: 8) {
-                        Button(action: chooseWallpaper) {
-                            Label("选择自己的图片…", systemImage: "photo.badge.plus")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.editorQuiet)
-                        Button(action: chooseDesktopWallpaper) {
-                            Label("使用当前桌面壁纸", systemImage: "desktopcomputer")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.editorQuiet)
-                        Text("支持你自己设置的桌面图片；macOS 系统默认壁纸不提供可读文件，那时会提示原因。")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            }
+            EditorBackgroundInspector(
+                editorStore: editorStore,
+                onChooseWallpaper: onChooseWallpaper,
+                onChooseDesktopWallpaper: onChooseDesktopWallpaper,
+                onError: onError
+            )
 
             EditorInspectorSection("画布布局") {
                 sliderRow(
@@ -422,7 +331,7 @@ struct EditorInspectorView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("屏幕素材 · 初始状态")
                     .font(.caption.weight(.semibold))
-                Text("以下设置第一个动画开始前全片共用的位置与外观；自动缩放和屏幕 3D 动画在“运镜”中创建。")
+                Text("设置屏幕素材出现时的位置和外观；动画在“运镜”中添加。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -472,12 +381,24 @@ struct EditorInspectorView: View {
 
             EditorInspectorSection("屏幕外观") {
                 EditorScreenFramePicker(editorStore: editorStore, onError: onError)
-                sliderRow(
-                    "圆角",
-                    value: canvasBinding(\.cornerRadius, actionName: "调整屏幕圆角"),
-                    range: 0...160,
-                    format: .points
-                )
+                if editorStore.project.canvas.screenFrame != .none {
+                    sliderRow(
+                        "样式大小",
+                        value: canvasBinding(
+                            \.screenFrameScale,
+                            actionName: "调整屏幕样式大小"
+                        ),
+                        range: 0.6...1.6,
+                        format: .multiplier
+                    )
+                } else {
+                    sliderRow(
+                        "画面圆角",
+                        value: canvasBinding(\.cornerRadius, actionName: "调整画面圆角"),
+                        range: 0...160,
+                        format: .points
+                    )
+                }
                 sliderRow(
                     "外描边",
                     value: canvasBinding(\.borderWidth, actionName: "调整屏幕描边"),
@@ -485,19 +406,17 @@ struct EditorInspectorView: View {
                     format: .points
                 )
                 if editorStore.project.canvas.borderWidth > 0 {
-                    EditorHexColorInput(
+                    EditorTransactionalColorInput(
+                        editorStore: editorStore,
                         title: "描边颜色",
-                        value: editorStore.project.canvas.borderColor
-                    ) { color in
-                        var canvas = editorStore.project.canvas
-                        canvas.borderColor = color
-                        performEditorCommand {
-                            try editorStore.replaceCanvas(
-                                with: canvas,
-                                actionName: "调整描边颜色"
-                            )
-                        }
-                    }
+                        value: canvasBinding(
+                            \.borderColor,
+                            actionName: "调整描边颜色"
+                        ),
+                        commandScope: .canvas,
+                        actionName: "调整描边颜色",
+                        onError: onError
+                    )
                     sliderRow(
                         "描边透明度",
                         value: canvasBinding(\.insetOpacity, actionName: "调整描边透明度"),
@@ -515,173 +434,6 @@ struct EditorInspectorView: View {
         }
     }
 
-    var wallpaperLibraryGrid: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("内置壁纸").font(.caption.weight(.semibold))
-                Spacer()
-                Button {
-                    if let preset = selectedBundledWallpaperCollection?.wallpapers.randomElement() {
-                        selectBundledWallpaper(preset)
-                    }
-                } label: {
-                    Image(systemName: "shuffle")
-                }
-                .buttonStyle(.borderless)
-                .help("随机壁纸")
-            }
-
-            // 集合清理后只剩 3 组且全部容纳在一行：不再需要横向滚动，
-            // 顺带消除滚动手势与胶囊点击的潜在竞争。命中面覆盖整颗胶囊
-            // （contentShape 在 label 内部），文字间隙同样可点。
-            // 分类胶囊不用 Button：macOS 的 AppKit 桥接命中判定在半透明/
-            // overlay 文本结构上反复回归（UX-024），只有当前选中的那颗能点。
-            // 整行不存在任何 Button 后，SwiftUI 手势层（contentShape +
-            // onTapGesture）不再与子按钮竞争，命中面即整颗胶囊。
-            GeometryReader { proxy in
-                let spacing: CGFloat = 6
-                let count = max(BundledWallpaperLibrary.collections.count, 1)
-                let itemWidth = max((proxy.size.width - spacing * CGFloat(count - 1)) / CGFloat(count), 0)
-                HStack(spacing: spacing) {
-                    ForEach(BundledWallpaperLibrary.collections) { collection in
-                        let isSelected = selectedWallpaperCollection == collection.name
-                        Capsule()
-                            .fill(isSelected ? editorAccent : Color(white: 0.16))
-                            .frame(width: itemWidth, height: 26)
-                            .overlay {
-                                Text(collection.displayName)
-                                    .font(.caption.weight(.medium))
-                                    .foregroundStyle(
-                                        isSelected
-                                            ? Color.black.opacity(0.85)
-                                            : Color.primary.opacity(0.9)
-                                    )
-                            }
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                selectedWallpaperCollection = collection.name
-                            }
-                            .help("切换到\(collection.displayName)分类")
-                            .accessibilityLabel(collection.displayName)
-                            .accessibilityAddTraits(.isButton)
-                            .accessibilityAddTraits(isSelected ? .isSelected : [])
-                    }
-                }
-                .frame(width: proxy.size.width, alignment: .leading)
-            }
-            .frame(height: 26)
-
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 7) {
-                ForEach(selectedBundledWallpaperCollection?.wallpapers ?? []) { preset in
-                    Button {
-                        selectBundledWallpaper(preset)
-                    } label: {
-                        // 命中框必须由固定尺寸且**不透明**的占位 label 决定：
-                        // ①图片一旦参与 label 布局（scaledToFill 的竖图可达
-                        //   92×161），AppKit 桥接按钮的命中框随之膨胀，向上
-                        //   盖住整行分类胶囊（UX-024 根因；
-                        //   clipShape/frame/clipped 都约束不了该命中框）；
-                        // ②label 若是 Color.clear（全透明），macOS 命中区
-                        //   塌缩为零像素，壁纸反而点不了。
-                        // 因此 label 用不透明深色占位定命中框，图片放
-                        // overlay 只绘制、不参与命中。
-                        Color(white: 0.12)
-                            .frame(height: 50)
-                            .overlay {
-                                BundledWallpaperThumbnail(preset: preset)
-                                    .frame(height: 50)
-                                    .clipShape(RoundedRectangle(cornerRadius: 7))
-                            }
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 7)
-                                    .stroke(
-                                        selectedBundledWallpaperPath == preset.relativePath
-                                            ? editorAccent : Color.white.opacity(0.1),
-                                        lineWidth: selectedBundledWallpaperPath == preset.relativePath ? 2 : 1
-                                    )
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .help(preset.name)
-                    .accessibilityLabel(preset.name)
-                }
-            }
-
-
-            if BundledWallpaperLibrary.collections.isEmpty {
-                Text("未找到内置壁纸资源")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .task {
-            // 后台预热全部缩略图：首次切换集合的网格立即呈现，不再逐格
-            // 等待大图首次解码（此前让切换看起来"没反应"）。
-            await WallpaperThumbnailLoader.prewarmAll(
-                into: EditorInspectorView.wallpaperThumbnailCache
-            )
-        }
-
-    }
-
-    var selectedBundledWallpaperCollection: BundledWallpaperCollection? {
-        BundledWallpaperLibrary.collections.first { $0.name == selectedWallpaperCollection }
-            ?? BundledWallpaperLibrary.collections.first
-    }
-
-    var selectedBundledWallpaperPath: String? {
-        guard case let .bundledImage(relativePath) = editorStore.project.canvas.backgroundSource else {
-            return nil
-        }
-        return relativePath
-    }
-
-    func selectBundledWallpaper(_ preset: BundledWallpaperPreset) {
-        var canvas = editorStore.project.canvas
-        canvas.backgroundSource = .bundledImage(relativePath: preset.relativePath)
-        performEditorCommand {
-            try editorStore.replaceCanvas(with: canvas, actionName: "选择内置壁纸")
-        }
-    }
-
-    func chooseWallpaper() {
-        guard let relativePath = onChooseWallpaper() else { return }
-        var canvas = editorStore.project.canvas
-        canvas.backgroundSource = .projectImage(relativePath: relativePath)
-        performEditorCommand {
-            try editorStore.replaceCanvas(with: canvas, actionName: "选择自定义壁纸")
-        }
-    }
-
-    func chooseDesktopWallpaper() {
-        guard let relativePath = onChooseDesktopWallpaper() else { return }
-        var canvas = editorStore.project.canvas
-        canvas.backgroundSource = .projectImage(relativePath: relativePath)
-        performEditorCommand {
-            try editorStore.replaceCanvas(with: canvas, actionName: "使用当前桌面壁纸")
-        }
-    }
-
-    func synchronizeBackgroundNavigation(with source: BackgroundSource) {
-        switch source {
-        case let .bundledImage(relativePath):
-            selectedBackgroundTab = .wallpaper
-            if let collection = BundledWallpaperLibrary.collections.first(where: {
-                $0.wallpapers.contains(where: { $0.relativePath == relativePath })
-            }) {
-                selectedWallpaperCollection = collection.name
-            }
-        case .projectImage, .systemImage:
-            selectedBackgroundTab = .image
-        case .gradient:
-            selectedBackgroundTab = .gradient
-        case let .solidColor(hex):
-            selectedBackgroundTab = .color
-            // 记住当前纯色作为候选：切去壁纸再切回"颜色"页时仍可一键还原，
-            // 不再因为页签切换丢掉用户选过的颜色。
-            candidateBackgroundHex = hex
-        }
-    }
 
     var cropInspector: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -704,24 +456,18 @@ struct EditorInspectorView: View {
                 Text(cropSizeText).monospacedDigit()
             }
             .font(.caption)
-            LabeledContent("起始位置") {
-                Text(cropPositionText).monospacedDigit()
-            }
-            .font(.caption)
 
             Button("恢复全部画面") { cropDraft = .full }
                 .buttonStyle(.editorQuiet)
-
-            Text("拖动八个控制点进行四向裁切；按 Esc 放弃修改。")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
         }
     }
 
     func cropEdgeStepper(_ title: String, edge: CropEdge, pixels: CGFloat) -> some View {
-        Stepper(
-            value: cropPixelBinding(edge, pixels: pixels),
-            in: 0...max(Int(pixels.rounded()) - 2, 0),
+        let pixelBinding = cropPixelBinding(edge, pixels: pixels)
+        let maximumPixels = max(Int(pixels.rounded()) - 2, 0)
+        return Stepper(
+            value: pixelBinding,
+            in: 0...maximumPixels,
             step: 1
         ) {
             HStack(spacing: 5) {
@@ -736,6 +482,19 @@ struct EditorInspectorView: View {
         .padding(.horizontal, 8)
         .frame(height: 32)
         .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 7))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(title)侧裁切")
+        .accessibilityValue("\(pixelBinding.wrappedValue) 像素")
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment:
+                pixelBinding.wrappedValue = min(pixelBinding.wrappedValue + 1, maximumPixels)
+            case .decrement:
+                pixelBinding.wrappedValue = max(pixelBinding.wrappedValue - 1, 0)
+            @unknown default:
+                break
+            }
+        }
     }
 
     func cropPixelBinding(_ edge: CropEdge, pixels: CGFloat) -> Binding<Int> {
@@ -777,41 +536,6 @@ struct EditorInspectorView: View {
         return max(Int((value * Double(max(pixels, 1))).rounded()), 0)
     }
 
-    var gradientGrid: some View {
-        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-            ForEach(BackgroundGradientPreset.allCases, id: \.self) { preset in
-                Button {
-                    var canvas = editorStore.project.canvas
-                    canvas.backgroundSource = .gradient(preset)
-                    performEditorCommand {
-                        try editorStore.replaceCanvas(with: canvas, actionName: "选择渐变背景")
-                    }
-                } label: {
-                    LinearGradient(
-                        colors: gradientColors(for: preset),
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                    .frame(height: 64)
-                    .clipShape(RoundedRectangle(cornerRadius: 9))
-                    .overlay(alignment: .bottomLeading) {
-                        Text(gradientName(for: preset))
-                            .font(.caption2.weight(.semibold))
-                            .padding(7)
-                    }
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 9)
-                            .stroke(
-                                editorStore.project.canvas.backgroundSource == .gradient(preset)
-                                    ? .white : .white.opacity(0.1),
-                                lineWidth: editorStore.project.canvas.backgroundSource == .gradient(preset) ? 2 : 1
-                            )
-                    )
-                }
-                .buttonStyle(.plain)
-            }
-        }
-    }
 
     func positionName(for index: Int) -> String {
         let names = [
@@ -865,8 +589,12 @@ struct EditorInspectorView: View {
                     LabeledContent("片段") {
                         Text("第 \(context.index + 1) 段，共 \(context.total) 段")
                     }
-                    LabeledContent("时长") {
-                        Text(segmentTimestamp(context.segment.sourceDuration))
+                    LabeledContent("输出时长") {
+                        Text(segmentTimestamp(context.segment.outputDuration))
+                            .monospacedDigit()
+                    }
+                    LabeledContent("速度") {
+                        Text(playbackRateText(context.segment.playbackRate))
                             .monospacedDigit()
                     }
                     LabeledContent("输出区间") {
@@ -1008,6 +736,13 @@ struct EditorInspectorView: View {
         }
     }
 
+    func playbackRateText(_ rate: Double) -> String {
+        if abs(rate.rounded() - rate) < 0.000_1 {
+            return "\(Int(rate.rounded()))×"
+        }
+        return String(format: "%.1f×", rate)
+    }
+
     func canSplitPrimarySegmentFromInspector(context: PrimarySegmentPanelContext) -> Bool {
         playbackTime - context.segment.outputStart >= context.frameDuration
             && context.segment.outputEnd - playbackTime >= context.frameDuration
@@ -1087,37 +822,59 @@ struct EditorInspectorView: View {
         VStack(alignment: .leading, spacing: 14) {
             EditorInspectorSection("运镜类型") {
                 EditorSegmentedControl(
-                    options: [false, true],
-                    title: { $0 ? "屏幕 3D" : "自动缩放" },
-                    icon: { $0 ? "cube.transparent" : "scope" },
+                    options: EditorMotionInspectorMode.allCases,
+                    title: { $0 == .screen3D ? "屏幕 3D" : "自动缩放" },
+                    icon: { $0 == .screen3D ? "cube.transparent" : "scope" },
                     selection: Binding(
-                        get: { isScreenMotionSelected },
-                        set: { screenMotion in
-                            if screenMotion {
-                                addScreenMotionAtPlayhead()
-                            } else {
-                                editorStore.selection = .zoomTrack
+                        get: { motionInspectorMode },
+                        set: { mode in
+                            motionInspectorMode = mode
+                            switch mode {
+                            case .zoom:
+                                if case .zoom = editorStore.selection { return }
+                                if editorStore.selection != .zoomTrack {
+                                    editorStore.selection = .zoomTrack
+                                }
+                            case .screen3D:
+                                if case .screenMotion = editorStore.selection { return }
+                                if editorStore.selection != .screenMotionTrack {
+                                    editorStore.selection = .screenMotionTrack
+                                }
                             }
                         }
                     )
                 )
-                .accessibilityLabel("运镜类型")
 
-                Text("自动缩放负责镜头裁切与鼠标跟随；屏幕 3D 负责整块屏幕对象的位置、大小和透视运动。屏幕 3D 会选中播放头处已有片段，没有时就在这里创建。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            if case let .screenMotion(id) = editorStore.selection {
+            if motionInspectorMode == .zoom {
+                zoomInspector
+            } else if case let .screenMotion(id) = editorStore.selection {
                 ScreenMotionTargetInspector(
                     editorStore: editorStore,
                     clipID: id,
                     onError: onError
                 )
-                EditorFrameMotionBlurControls(editorStore: editorStore, onError: onError)
             } else {
-                zoomInspector
+                MotionInspectorScopeHeader(
+                    title: "屏幕 3D",
+                    detail: "在播放头创建位置、大小和透视动画；可与缩放重叠。",
+                    statusTitle: "未选中片段",
+                    addTitle: "在播放头添加屏幕 3D",
+                    onAdd: addScreenMotionAtPlayhead
+                )
+
+                if !editorStore.project.timeline.screenMotionClips.isEmpty,
+                   !visibleTimelineTracks.contains(.screenMotion) {
+                    Button {
+                        visibleTimelineTracks.insert(.screenMotion)
+                    } label: {
+                        Label("显示屏幕 3D 轨道", systemImage: "eye")
+                    }
+                    .buttonStyle(.editorQuiet)
+                }
+
+                motionGlobalDefaults
             }
         }
     }
@@ -1139,20 +896,11 @@ struct EditorInspectorView: View {
         VStack(alignment: .leading, spacing: 14) {
             if let index = selectedZoomAnimationIndex {
                 EditorInspectorSection("缩放片段") {
-                    HStack {
-                        Text("动画类型").font(.caption)
-                        Spacer()
-                        Label("自动缩放", systemImage: "scope")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
                     EditorSegmentedControl(
                         options: [ZoomKeyframeOrigin.automatic, .manual],
                         title: { $0 == .automatic ? "自动跟随" : "手动定位" },
                         selection: zoomAnimationOriginBinding(index)
                     )
-                    .accessibilityLabel("缩放模式")
 
                     sliderRow(
                         "缩放级别",
@@ -1186,88 +934,15 @@ struct EditorInspectorView: View {
                 }
 
                 EditorInspectorSection("动画手感") {
-                    Picker(
-                        "动画手感",
-                        selection: zoomMotionFeelPresetBinding(index)
-                    ) {
-                        ForEach(ZoomMotionFeelPreset.allCases) { preset in
-                            Text(preset.rawValue).tag(preset)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    Text(
-                        ZoomMotionFeelPreset(
-                            animation: editorStore.previewProject.zoomAnimations[index]
-                        ).detail
+                    sliderRow(
+                        "过渡时长",
+                        value: zoomAnimationTransitionDurationBinding(index),
+                        range: 0.08...3,
+                        format: .seconds
                     )
+                    Text("进入和退出保持一致；数值越小越干脆，越大越柔和。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-
-                    EditorDisclosure("高级曲线与速度") {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("动画曲线").font(.caption.weight(.semibold))
-                            ZoomCurveEditor(
-                                preset: zoomAnimationEasingBinding(index),
-                                customCurve: zoomAnimationCustomCurveBinding(index),
-                                motion: editorStore.previewProject.motion,
-                                onEditingChanged: {
-                                    updateEditorContinuousInteraction(
-                                        store: editorStore, isEditing: $0,
-                                        commandScope: .selection,
-                                        actionName: "调整缩放曲线",
-                                        onError: onError
-                                    )
-                                }
-                            )
-
-                            sliderRow(
-                                "进入时长",
-                                value: zoomAnimationDoubleBinding(index, keyPath: \.enterDuration),
-                                range: 0.08...3,
-                                format: .seconds
-                            )
-                            sliderRow(
-                                "退出时长",
-                                value: zoomAnimationDoubleBinding(index, keyPath: \.exitDuration),
-                                range: 0.08...3,
-                                format: .seconds
-                            )
-                            Text("紫色片段结束时才开始退出；数值越大，过渡越慢。")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-
-                            Button("将当前曲线与速度应用到全部片段") {
-                                let baseline = editorStore.project
-                                var timeline = baseline.timeline
-                                let easing = timeline.zoomClips[index].easing
-                                let curve = timeline.zoomClips[index].customCurve
-                                let enterDuration = timeline.zoomClips[index].enterDuration
-                                let exitDuration = timeline.zoomClips[index].exitDuration
-                                for animationIndex in timeline.zoomClips.indices {
-                                    timeline.zoomClips[animationIndex].easing = easing
-                                    timeline.zoomClips[animationIndex].customCurve = curve
-                                    timeline.zoomClips[animationIndex].enterDuration = enterDuration
-                                    timeline.zoomClips[animationIndex].exitDuration = exitDuration
-                                }
-                                var motion = baseline.motion
-                                if easing != .custom {
-                                    motion.defaultZoomEasing = easing
-                                }
-                                do {
-                                    try editorStore.performBatch(
-                                        [
-                                            ProjectCommand.replacingTimeline(in: baseline, with: timeline),
-                                            ProjectCommand.replacingMotion(in: baseline, with: motion),
-                                        ],
-                                        actionName: "应用片段运动到全部"
-                                    )
-                                } catch {
-                                    onError(error.localizedDescription)
-                                }
-                            }
-                            .buttonStyle(.editorQuiet)
-                        }
-                    }
 
                     EditorDisclosure("时间与精确数值") {
                         VStack(spacing: 9) {
@@ -1311,123 +986,35 @@ struct EditorInspectorView: View {
             } else {
                 // 片段选择交还时间线：这里只保留创建与选中的引导，
                 // 不再用间接的文字下拉列表代替时间线。
-                VStack(alignment: .leading, spacing: 6) {
-                    Label("在时间线“缩放”轨道上拖动即可创建片段", systemImage: "timeline.selection")
-                        .font(.caption)
-                    Text("拖两端改保持时长；渐变尾部是退出。点选紫色片段后，这里会显示它的倍数、焦点与手感。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(11)
+                Label(
+                    "在“缩放”轨道拖动创建；选中片段后在这里调整",
+                    systemImage: "timeline.selection"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(10)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
-            }
 
-            EditorDisclosure("全局缩放手感") {
-                VStack(alignment: .leading, spacing: 11) {
-                    Picker(
-                        "自动运镜风格",
-                        selection: automaticCameraMotionPresetBinding
-                    ) {
-                        ForEach(AutomaticCameraMotionPreset.allCases) { preset in
-                            Text(preset.rawValue).tag(preset)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    Text(automaticCameraMotionPresetDetail)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    EditorDisclosure("高级默认参数") {
-                        VStack(spacing: 10) {
-                            Picker(
-                                "新动画默认曲线",
-                                selection: motionBinding(\.defaultZoomEasing, actionName: "调整默认缩放曲线")
-                            ) {
-                                ForEach(ZoomEasingPreset.allCases.filter { $0 != .custom }) {
-                                    Text($0.rawValue).tag($0)
-                                }
-                            }
-                            sliderRow(
-                                "新动画过渡时长",
-                                value: motionBinding(
-                                    \.defaultZoomTransitionDuration,
-                                    actionName: "调整默认过渡时长"
-                                ),
-                                range: 0.08...3,
-                                interactionScope: .motion,
-                                format: .seconds
-                            )
-                            sliderRow(
-                                "质量",
-                                value: motionBinding(\.screenSpringMass, actionName: "调整屏幕弹簧质量"),
-                                range: 0.2...8,
-                                interactionScope: .motion,
-                                format: .decimal1
-                            )
-                            sliderRow(
-                                "刚度",
-                                value: motionBinding(\.screenSpringStiffness, actionName: "调整屏幕弹簧刚度"),
-                                range: 40...1_000,
-                                interactionScope: .motion,
-                                format: .points
-                            )
-                            sliderRow(
-                                "阻尼",
-                                value: motionBinding(\.screenSpringDamping, actionName: "调整屏幕弹簧阻尼"),
-                                range: 4...180,
-                                interactionScope: .motion,
-                                format: .points
-                            )
-                        }
-                    }
-                }
+                motionGlobalDefaults
             }
-
-            EditorFrameMotionBlurControls(editorStore: editorStore, onError: onError)
         }
     }
-}
 
-private struct BundledWallpaperThumbnail: View {
-    let preset: BundledWallpaperPreset
-    @State private var image: NSImage?
-
-    var body: some View {
-        // 底色决定 label 的布局尺寸（≈92×50）。图片只能作为 overlay：
-        // 竖幅壁纸 scaledToFill 的布局高度可达 ~161pt，若由 Image 决定
-        // 尺寸，AppKit 桥接的按钮命中框会向上盖住整行分类胶囊
-        // （UX-024 反复回归"切到地平线后无法换分类"的真正根因）。
-        // clipShape 只裁绘制不裁布局，救不了命中框。
-        Color.secondary.opacity(0.2)
-            .overlay {
-                if let image {
-                    // scaledToFill 的 Image 自身布局尺寸是整图等比尺寸
-                    // （竖幅约 92×161），会撑大 AppKit 桥接按钮的命中框并
-                    // 盖住上方分类胶囊。强制其布局尺寸等于格子再 clipped。
-                    GeometryReader { proxy in
-                        Image(nsImage: image)
-                            .resizable()
-                            .scaledToFill()
-                            .frame(width: proxy.size.width, height: proxy.size.height)
-                            .clipped()
-                    }
-                }
-            }
-            .task(id: preset.id) {
-            let key = preset.relativePath as NSString
-            if let cached = EditorInspectorView.wallpaperThumbnailCache.object(forKey: key) {
-                image = cached
-                return
-            }
-            guard let decoded = await WallpaperThumbnailLoader.image(at: preset.url),
-                  !Task.isCancelled else { return }
-            EditorInspectorView.wallpaperThumbnailCache.setObject(
-                decoded,
-                forKey: key,
-                cost: WallpaperThumbnailDecoder.decodedByteCost(of: decoded)
+    @ViewBuilder
+    var motionGlobalDefaults: some View {
+        EditorDisclosure("新动画过渡") {
+            sliderRow(
+                "过渡时长",
+                value: motionBinding(
+                    \.defaultZoomTransitionDuration,
+                    actionName: "调整默认过渡时长"
+                ),
+                range: 0.08...3,
+                interactionScope: .motion,
+                format: .seconds
             )
-            image = decoded
         }
+
     }
 }

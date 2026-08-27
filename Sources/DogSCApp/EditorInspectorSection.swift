@@ -70,6 +70,7 @@ struct EditorSegmentedControl<Option: Hashable>: View {
                 .frame(maxWidth: .infinity)
                 .frame(height: 26)
                 .contentShape(Rectangle())
+                .accessibilityLabel(title(option))
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
             }
         }

@@ -139,6 +139,10 @@ struct EditorTransactionalSliderRow: View {
                     .font(.system(.caption2, design: .monospaced))
                     .foregroundStyle(.secondary)
             }
+            // The adjustable control below already exposes this title and
+            // formatted value. Keep the visual readout without making users
+            // traverse a duplicate, non-interactive text stop first.
+            .accessibilityHidden(true)
             EditorTransactionalSlider(
                 editorStore: editorStore,
                 value: value,
@@ -235,6 +239,36 @@ func editorMotionBinding<Value>(
         set: { $0.motion[keyPath: keyPath] = $1 },
         replace: { try store.replaceMotion(with: $0.motion, actionName: actionName) },
         onError: onError
+    )
+}
+
+@MainActor
+func editorTimelineBinding<Value>(
+    store: EditorStore,
+    selection: EditorSelection,
+    get: @escaping (ProjectTimeline) -> Value,
+    set: @escaping (inout ProjectTimeline, Value) -> Void,
+    actionName: String,
+    onError: @escaping (String) -> Void
+) -> Binding<Value> {
+    Binding(
+        get: { get(store.previewProject.timeline) },
+        set: { value in
+            if store.interaction?.commandScope == .selection,
+               store.interaction?.selection == selection {
+                store.updateInteraction { project in
+                    set(&project.timeline, value)
+                }
+                return
+            }
+            var timeline = store.project.timeline
+            set(&timeline, value)
+            do {
+                try store.replaceTimeline(with: timeline, actionName: actionName)
+            } catch {
+                onError(error.localizedDescription)
+            }
+        }
     )
 }
 

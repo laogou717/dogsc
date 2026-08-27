@@ -170,6 +170,7 @@ private struct DisplaySelectionOverlay: View {
                         selected ? captureSelectionAccent : Color.white.opacity(0.82)
                     )
                     .symbolEffect(.bounce, value: selected)
+                    .accessibilityHidden(true)
                 Text(selected ? "已选择此显示器" : "选择此显示器")
                     .font(.headline)
                     .foregroundStyle(.secondary)

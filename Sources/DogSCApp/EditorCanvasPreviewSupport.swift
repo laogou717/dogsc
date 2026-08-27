@@ -55,21 +55,9 @@ struct CanvasPlaybackEvaluationContext: Equatable {
             activePrimaryRange: primaryRange,
             activeCameraRange: cameraRange
         )
-        // MotionBlurSampler appends the presentation-time sample last. Reuse
-        // that already-evaluated scene as the semantic frame instead of running
+        // Reuse the already-evaluated presentation scene instead of running
         // the complete pointer/zoom/projection evaluator a second time.
-        let semanticScene = plan.samples.last?.scene ?? FrameSceneEvaluator.scene(
-            project: project,
-            time: presentationTime,
-            canvasSize: rasterCanvasSize,
-            sourceAspectRatio: sourceAspectRatio,
-            cameraSourceSize: cameraSourceSize,
-            pointerTrack: pointerTrack,
-            cursorMetrics: cursorMetrics,
-            zoomTrack: zoomTrack,
-            screenMotionTrack: screenMotionTrack,
-            cameraMotionTrack: cameraMotionTrack
-        )
+        let semanticScene = plan.scene
         return SharedPreviewPlaybackFrame(
             renderPlan: plan,
             semanticScene: semanticScene

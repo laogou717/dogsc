@@ -6,7 +6,7 @@ import ScreenCaptureKit
 /// the complete CFArray/CFDictionary pair into new Swift collections on every
 /// captured frame.
 enum ScreenCaptureFrameMetadata {
-    private static let statusKey = SCStreamFrameInfo.status.rawValue as NSString
+    private static let statusKey = SCStreamFrameInfo.status.rawValue
 
     static func status(of sampleBuffer: CMSampleBuffer) -> SCFrameStatus? {
         guard let attachments = CMSampleBufferGetSampleAttachmentsArray(

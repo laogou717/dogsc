@@ -21,7 +21,7 @@
     <key>CFBundleShortVersionString</key>
     <string>0.1.0</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>2</string>
     <key>CFBundleDocumentTypes</key>
     <array>
         <dict>
@@ -40,9 +40,11 @@
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>NSCameraUsageDescription</key>
-    <string>用于录制已连接的 iPhone 或 iPad 屏幕，并在录屏中添加摄像头画面。</string>
+    <string>用于在录屏中添加摄像头画面，并使用已连接的连续互通相机。</string>
     <key>NSCameraReactionEffectGesturesEnabledDefault</key>
     <false/>
+    <key>NSCameraUseContinuityCameraDeviceType</key>
+    <true/>
     <key>NSMicrophoneUsageDescription</key>
     <string>用于在录屏中录制麦克风声音。</string>
     <key>NSHighResolutionCapable</key>
@@ -65,6 +67,7 @@
                 <key>public.filename-extension</key>
                 <array>
                     <string>dogscproject</string>
+                    <string>silkyproject</string>
                 </array>
             </dict>
         </dict>

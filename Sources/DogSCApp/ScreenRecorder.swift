@@ -66,11 +66,6 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
         super.init()
     }
 
-    func requestPermissionIfNeeded() -> Bool {
-        if CGPreflightScreenCaptureAccess() { return true }
-        return CGRequestScreenCaptureAccess()
-    }
-
     func start(
         runID: RecordingRunID,
         configuration: CaptureConfiguration,
@@ -96,9 +91,11 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
         configuration: CaptureConfiguration,
         outputURL: URL
     ) async throws {
-        guard requestPermissionIfNeeded() else { throw ScreenRecorderError.permissionDenied }
         lastSystemAudioDiagnostics = nil
 
+        // Authorization is completed by the setup permission gate before any
+        // selector or recording mask can appear. This path only consumes the
+        // permission; it must never raise a second system prompt mid-flow.
         let content = try await SCShareableContent.excludingDesktopWindows(
             false,
             onScreenWindowsOnly: true

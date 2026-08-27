@@ -1,4 +1,6 @@
 import AppKit
+import AVFoundation
+import CoreGraphics
 import SwiftUI
 
 private enum AppSettingsSection: String, CaseIterable, Identifiable {
@@ -26,9 +28,25 @@ private enum AppSettingsSection: String, CaseIterable, Identifiable {
         case .permissions: "lock.shield.fill"
         }
     }
+
+    var preferredContentHeight: CGFloat {
+        switch self {
+        case .general: 370
+        case .editor: 330
+        case .recording, .permissions: 440
+        }
+    }
 }
 
 struct AppSettingsView: View {
+    private let onPreferredContentHeightChange: (@MainActor (CGFloat) -> Void)?
+
+    init(
+        onPreferredContentHeightChange: (@MainActor (CGFloat) -> Void)? = nil
+    ) {
+        self.onPreferredContentHeightChange = onPreferredContentHeightChange
+    }
+
     @AppStorage(AppPreferences.exportCompletionSoundEnabledKey)
     private var exportCompletionSoundEnabled = true
     @AppStorage(AppPreferences.previewResolutionModeKey)
@@ -48,6 +66,14 @@ struct AppSettingsView: View {
     @State private var projectsFolder = ProjectStore.savedProjectsFolder
     @State private var exportFolder = AppPreferences.exportDirectoryURL
     @State private var fileLocationError: String?
+    @State private var hasScreenRecordingPermission = CGPreflightScreenCaptureAccess()
+    @State private var hasAccessibilityPermission = AXIsProcessTrusted()
+    @State private var cameraPermission = CapturePermissionState(
+        authorizationStatus: AVCaptureDevice.authorizationStatus(for: .video)
+    )
+    @State private var microphonePermission = CapturePermissionState(
+        authorizationStatus: AVCaptureDevice.authorizationStatus(for: .audio)
+    )
 
     var body: some View {
         VStack(spacing: 0) {
@@ -78,7 +104,7 @@ struct AppSettingsView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(width: 620, height: 490)
+        .frame(width: 620, height: selectedSection.preferredContentHeight)
         .background(Color(red: 0.10, green: 0.102, blue: 0.114))
         .preferredColorScheme(.dark)
         .onChange(of: recordingCameraPreviewShape) { _, _ in
@@ -92,6 +118,25 @@ struct AppSettingsView: View {
         }
         .onChange(of: recordsMicrophoneByDefault) { _, enabled in
             WindowCoordinator.setDefaultMicrophoneRecordingEnabled(enabled)
+        }
+        .onAppear {
+            refreshPermissionStates()
+            onPreferredContentHeightChange?(selectedSection.preferredContentHeight)
+        }
+        .onChange(of: selectedSection) { _, section in
+            if section == .permissions {
+                refreshPermissionStates()
+            }
+            onPreferredContentHeightChange?(section.preferredContentHeight)
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: NSApplication.didBecomeActiveNotification
+            )
+        ) { _ in
+            if selectedSection == .permissions {
+                refreshPermissionStates()
+            }
         }
     }
 
@@ -133,7 +178,7 @@ struct AppSettingsView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .focusable(false)
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
             }
             Spacer()
         }
@@ -157,6 +202,7 @@ struct AppSettingsView: View {
                             .font(.caption)
                             .foregroundStyle(Color.white.opacity(0.50))
                     }
+                    .accessibilityHidden(true)
 
                     Spacer()
 
@@ -177,12 +223,15 @@ struct AppSettingsView: View {
                         )
                     }
                     .buttonStyle(.plain)
-                    .focusable(false)
+                    .accessibilityLabel("试听导出完成提示音")
 
                     Toggle("", isOn: $exportCompletionSoundEnabled)
                         .labelsHidden()
                         .toggleStyle(.switch)
                         .controlSize(.small)
+                        .accessibilityLabel("导出完成后播放提示音")
+                        .accessibilityValue(exportCompletionSoundEnabled ? "开启" : "关闭")
+                        .accessibilityHint("导出取消或失败时不会播放提示音")
                 }
             }
         }
@@ -234,7 +283,7 @@ struct AppSettingsView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("默认预览画质")
                             .font(.system(size: 13, weight: .medium))
-                        Text("低画质降低 GPU 压力使回放更流畅；高画质呈现精细细节。可在编辑器内随时切换。")
+                        Text("低分辨率减少播放负担，完整分辨率在播放与暂停时都保留素材细节。")
                             .font(.caption)
                             .foregroundStyle(Color.white.opacity(0.50))
                     }
@@ -277,7 +326,7 @@ struct AppSettingsView: View {
                         .foregroundStyle(didResetWindowState ? Color.green : Color.primary)
                 }
                 .buttonStyle(.plain)
-                .focusable(false)
+                .accessibilityLabel(didResetWindowState ? "编辑窗口布局已重置" : "重置编辑窗口布局")
             }
         }
     }
@@ -307,7 +356,7 @@ struct AppSettingsView: View {
                         )
                 }
                 .buttonStyle(.plain)
-                .focusable(false)
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
             }
         }
         .padding(3)
@@ -333,6 +382,7 @@ struct AppSettingsView: View {
                             .font(.caption)
                             .foregroundStyle(Color.white.opacity(0.50))
                     }
+                    .accessibilityHidden(true)
 
                     Spacer()
 
@@ -340,6 +390,9 @@ struct AppSettingsView: View {
                         .labelsHidden()
                         .toggleStyle(.switch)
                         .controlSize(.small)
+                        .accessibilityLabel("默认录制系统声音")
+                        .accessibilityValue(recordsSystemAudioByDefault ? "开启" : "关闭")
+                        .accessibilityHint("控制新录制是否默认采集系统声音")
                 }
 
                 Divider().overlay(Color.white.opacity(0.06))
@@ -354,6 +407,7 @@ struct AppSettingsView: View {
                             .font(.caption)
                             .foregroundStyle(Color.white.opacity(0.50))
                     }
+                    .accessibilityHidden(true)
 
                     Spacer()
 
@@ -361,19 +415,18 @@ struct AppSettingsView: View {
                         .labelsHidden()
                         .toggleStyle(.switch)
                         .controlSize(.small)
+                        .accessibilityLabel("默认录制麦克风声音")
+                        .accessibilityValue(recordsMicrophoneByDefault ? "开启" : "关闭")
+                        .accessibilityHint(microphonePreferenceDescription)
                 }
             }
         }
 
         settingsCard(title: "悬浮摄像头预览", icon: "camera.fill") {
             VStack(alignment: .leading, spacing: 14) {
-                Text("选择录制时屏幕上摄像头悬浮窗的展示外形：")
-                    .font(.system(size: 12))
-                    .foregroundStyle(Color.white.opacity(0.65))
-
                 cameraShapeSelector
 
-                Text("提示：此设置仅改变录制时屏幕悬浮预览的外形，不会裁切摄像头源文件，编辑器内仍可自由调整。")
+                Text("只影响录制时的悬浮预览，不改变摄像头源文件或编辑器布局。")
                     .font(.caption)
                     .foregroundStyle(Color.white.opacity(0.45))
             }
@@ -390,7 +443,20 @@ struct AppSettingsView: View {
                     title: "屏幕录制权限",
                     description: "用于捕获屏幕画面、指定窗口与系统音频流",
                     icon: "display.2",
-                    color: .blue
+                    color: .blue,
+                    status: hasScreenRecordingPermission ? "已授权" : "未授权",
+                    statusColor: hasScreenRecordingPermission ? .green : .red
+                )
+
+                Divider().overlay(Color.white.opacity(0.06))
+
+                permissionRow(
+                    title: "辅助功能权限",
+                    description: "用于记录鼠标移动与点击，生成可编辑的光标轨道",
+                    icon: "cursorarrow.motionlines",
+                    color: .purple,
+                    status: hasAccessibilityPermission ? "已授权" : "未授权",
+                    statusColor: hasAccessibilityPermission ? .green : .red
                 )
 
                 Divider().overlay(Color.white.opacity(0.06))
@@ -399,7 +465,9 @@ struct AppSettingsView: View {
                     title: "摄像头权限",
                     description: "用于画中画人像出镜与外接相机输入",
                     icon: "camera.fill",
-                    color: .green
+                    color: .green,
+                    status: cameraPermission.label,
+                    statusColor: permissionStatusColor(cameraPermission)
                 )
 
                 Divider().overlay(Color.white.opacity(0.06))
@@ -408,13 +476,15 @@ struct AppSettingsView: View {
                     title: "麦克风权限",
                     description: "用于人声解说录音与音频设备采集",
                     icon: "mic.fill",
-                    color: .pink
+                    color: .pink,
+                    status: microphonePermission.label,
+                    statusColor: permissionStatusColor(microphonePermission)
                 )
 
                 Divider().overlay(Color.white.opacity(0.06))
 
                 HStack {
-                    Text("如遇录屏黑屏或无声音，请在系统设置中确保已勾选“DogSC”。")
+                    Text("如遇录屏黑屏、鼠标无法跟随或无声音，请检查上方未授权项。")
                         .font(.caption)
                         .foregroundStyle(Color.white.opacity(0.50))
 
@@ -424,7 +494,7 @@ struct AppSettingsView: View {
                         openPrivacySettings()
                     } label: {
                         HStack(spacing: 6) {
-                            Text("打开系统隐私设置")
+                            Text(privacySettingsButtonTitle)
                                 .font(.system(size: 12, weight: .medium))
                             Image(systemName: "arrow.up.forward.square.fill")
                                 .font(.system(size: 11))
@@ -438,7 +508,6 @@ struct AppSettingsView: View {
                         .foregroundStyle(Color.white)
                     }
                     .buttonStyle(.plain)
-                    .focusable(false)
                 }
                 .padding(.top, 2)
             }
@@ -498,7 +567,7 @@ struct AppSettingsView: View {
                     )
                 }
                 .buttonStyle(.plain)
-                .focusable(false)
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
             }
         }
     }
@@ -514,10 +583,12 @@ struct AppSettingsView: View {
                 Image(systemName: icon)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Color.white.opacity(0.60))
+                    .accessibilityHidden(true)
 
                 Text(title)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Color.white.opacity(0.85))
+                    .accessibilityAddTraits(.isHeader)
             }
             .padding(.leading, 2)
 
@@ -547,6 +618,7 @@ struct AppSettingsView: View {
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(color)
         }
+        .accessibilityHidden(true)
     }
 
     /// 存储位置行
@@ -587,7 +659,9 @@ struct AppSettingsView: View {
                     )
             }
             .buttonStyle(.plain)
-            .focusable(false)
+            .accessibilityLabel("更改\(title)")
+            .accessibilityValue(url.path(percentEncoded: false))
+            .accessibilityHint(subtitle)
         }
     }
 
@@ -596,7 +670,9 @@ struct AppSettingsView: View {
         title: String,
         description: String,
         icon: String,
-        color: Color
+        color: Color,
+        status: String,
+        statusColor: Color
     ) -> some View {
         HStack(spacing: 12) {
             settingIconBadge(icon, color: color)
@@ -611,7 +687,22 @@ struct AppSettingsView: View {
             }
 
             Spacer()
+
+            Text(status)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(statusColor)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 4)
+                .background(
+                    statusColor.opacity(0.12),
+                    in: Capsule()
+                )
+                .accessibilityLabel("权限状态：\(status)")
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
+        .accessibilityValue(status)
+        .accessibilityHint(description)
     }
 
     // MARK: - 操作方法
@@ -637,9 +728,51 @@ struct AppSettingsView: View {
 
     private func openPrivacySettings() {
         guard let url = URL(
-            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+            string: "x-apple.systempreferences:com.apple.preference.security?\(privacySettingsSection)"
         ) else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    private var privacySettingsSection: String {
+        if !hasScreenRecordingPermission { return "Privacy_ScreenCapture" }
+        if !hasAccessibilityPermission { return "Privacy_Accessibility" }
+        if cameraPermission == .denied || cameraPermission == .restricted {
+            return "Privacy_Camera"
+        }
+        if microphonePermission == .denied || microphonePermission == .restricted {
+            return "Privacy_Microphone"
+        }
+        return "Privacy_ScreenCapture"
+    }
+
+    private var privacySettingsButtonTitle: String {
+        switch privacySettingsSection {
+        case "Privacy_Accessibility": "打开辅助功能设置"
+        case "Privacy_Camera": "打开摄像头设置"
+        case "Privacy_Microphone": "打开麦克风设置"
+        case "Privacy_ScreenCapture": "打开屏幕录制设置"
+        default: "打开系统隐私设置"
+        }
+    }
+
+    private func refreshPermissionStates() {
+        hasScreenRecordingPermission = CGPreflightScreenCaptureAccess()
+        hasAccessibilityPermission = AXIsProcessTrusted()
+        cameraPermission = CapturePermissionState(
+            authorizationStatus: AVCaptureDevice.authorizationStatus(for: .video)
+        )
+        microphonePermission = CapturePermissionState(
+            authorizationStatus: AVCaptureDevice.authorizationStatus(for: .audio)
+        )
+    }
+
+    private func permissionStatusColor(_ state: CapturePermissionState) -> Color {
+        switch state {
+        case .authorized: .green
+        case .notDetermined: .yellow
+        case .restricted: .orange
+        case .denied: .red
+        }
     }
 
     private func chooseProjectsFolder() {

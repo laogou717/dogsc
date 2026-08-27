@@ -6,7 +6,106 @@ import OSLog
 import RecorderCore
 import UniformTypeIdentifiers
 
+private struct CameraPreviewReadinessTimeout: LocalizedError {
+    var errorDescription: String? {
+        "没有收到摄像头画面，已暂时关闭摄像头。请在摄像头菜单中重新选择后再试。"
+    }
+}
+
+/// Resolves the UI-facing startup wait once without forcing it to remain
+/// structured under an AVCaptureSession.startRunning() call that can block its
+/// private queue. Cancelling the losing start task still schedules the
+/// recorder's normal generation-safe teardown.
+private final class CameraPreviewStartGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, any Error>?
+    private var pendingResult: Result<Void, any Error>?
+    private var tasks: [Task<Void, Never>] = []
+    private var isResolved = false
+
+    func wait() async throws {
+        try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<Void, any Error>) in
+            lock.lock()
+            if let pendingResult {
+                self.pendingResult = nil
+                lock.unlock()
+                continuation.resume(with: pendingResult)
+            } else {
+                self.continuation = continuation
+                lock.unlock()
+            }
+        }
+    }
+
+    func register(_ task: Task<Void, Never>) {
+        lock.lock()
+        if isResolved {
+            lock.unlock()
+            task.cancel()
+        } else {
+            tasks.append(task)
+            lock.unlock()
+        }
+    }
+
+    func resolve(_ result: Result<Void, any Error>) {
+        lock.lock()
+        guard !isResolved else {
+            lock.unlock()
+            return
+        }
+        isResolved = true
+        let continuation = self.continuation
+        self.continuation = nil
+        if continuation == nil {
+            pendingResult = result
+        }
+        let tasks = self.tasks
+        self.tasks.removeAll(keepingCapacity: false)
+        lock.unlock()
+
+        tasks.forEach { $0.cancel() }
+        continuation?.resume(with: result)
+    }
+}
+
 extension AppModel {
+    private func startCameraPreviewSession(
+        recorder: CameraRecorder,
+        deviceUniqueID: String,
+        captureResolution: CameraCaptureResolution?,
+        timeout: Duration
+    ) async throws {
+        let gate = CameraPreviewStartGate()
+        try await withTaskCancellationHandler {
+            let startTask = Task {
+                do {
+                    try await recorder.startPreview(
+                        deviceUniqueID: deviceUniqueID,
+                        captureResolution: captureResolution
+                    )
+                    gate.resolve(.success(()))
+                } catch {
+                    gate.resolve(.failure(error))
+                }
+            }
+            gate.register(startTask)
+            let timeoutTask = Task {
+                do {
+                    try await Task.sleep(for: timeout)
+                } catch {
+                    return
+                }
+                gate.resolve(.failure(CameraPreviewReadinessTimeout()))
+            }
+            gate.register(timeoutTask)
+            try await gate.wait()
+        } onCancel: {
+            gate.resolve(.failure(CancellationError()))
+        }
+    }
+
     func startCameraPreview(
         _ device: CaptureDeviceInfo,
         operation: CaptureDeviceOperationToken
@@ -32,9 +131,12 @@ extension AppModel {
         }
         cameraPreviewTask = Task { @MainActor [weak self, recorder = cameraRecorder] in
             do {
-                try await recorder.startPreview(
+                let startupDeadline = ContinuousClock.now.advanced(by: .seconds(12))
+                try await self?.startCameraPreviewSession(
+                    recorder: recorder,
                     deviceUniqueID: device.id,
-                    captureResolution: self?.configuration.cameraCaptureResolution
+                    captureResolution: self?.configuration.cameraCaptureResolution,
+                    timeout: .seconds(12)
                 )
                 guard let self,
                       !Task.isCancelled,
@@ -47,6 +149,27 @@ extension AppModel {
                     await recorder.stopPreview()
                     return
                 }
+                // A running AVCaptureSession is not yet a usable camera. Some
+                // disconnected or externally occupied devices report that the
+                // session started but never deliver a first sample, which used
+                // to leave the recorder bar in "正在检测…" forever and
+                // permanently disable Start. Wait for the same real sample
+                // contract used by recording readiness, then fail back to the
+                // no-camera state instead of creating another UI layer.
+                while self.cameraRuntimeFormat == nil {
+                    guard !Task.isCancelled,
+                          self.captureDeviceLifecycle.isCurrent(operation),
+                          self.configuration.recordsCamera,
+                          self.configuration.cameraDeviceID == device.id,
+                          self.phase == .setup || self.phase == .preparing || self.phase == .recording else {
+                        await recorder.stopPreview()
+                        return
+                    }
+                    guard ContinuousClock.now < startupDeadline else {
+                        throw CameraPreviewReadinessTimeout()
+                    }
+                    try await Task.sleep(for: .milliseconds(100))
+                }
                 self.cameraPreviewController.showPreview()
             } catch {
                 guard let self,
@@ -56,10 +179,22 @@ extension AppModel {
                     await recorder.stopPreview()
                     return
                 }
+                let didTimeOut = error is CameraPreviewReadinessTimeout
+                if didTimeOut {
+                    // startRunning itself may still occupy the recorder queue;
+                    // enqueue teardown without making the UI wait for it.
+                    recorder.requestPreviewStop()
+                } else {
+                    await recorder.stopPreview()
+                }
                 _ = self.captureSetup.clearCamera(ifMatching: device.id)
                 self.cameraRuntimeFormat = nil
                 self.cameraPreviewController.hide()
-                self.errorMessage = error.localizedDescription
+                // The control itself immediately returns to "无摄像头". A
+                // no-frame timeout is deliberately silent so the fallback
+                // remains non-blocking; real permission and device failures
+                // still use the existing recorder alert.
+                self.errorMessage = didTimeOut ? nil : error.localizedDescription
             }
         }
     }
@@ -134,6 +269,9 @@ extension AppModel {
     /// resources first prevents CoreMediaIO/VideoToolbox helpers from carrying
     /// stale work into the next foreground video application.
     func shutdownForApplicationTermination() {
+        if phase == .editor {
+            EditorStylePresetStore.rememberLastUsedStyle(from: project)
+        }
         projectOpenTask?.cancel()
         projectOpenTask = nil
         projectCatalogRefreshGeneration &+= 1
@@ -276,7 +414,7 @@ extension AppModel {
             withIntermediateDirectories: true
         )
         let panel = NSSavePanel()
-        panel.title = "保存 DogSC 项目"
+        panel.title = "保存 \(AppIdentity.displayName) 项目"
         panel.prompt = "保存项目"
         panel.directoryURL = ProjectStore.savedProjectsFolder
         panel.nameFieldStringValue = sanitizedProjectFilename(project.title) + ".dogscproject"

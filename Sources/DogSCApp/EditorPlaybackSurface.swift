@@ -245,8 +245,6 @@ final class NativeTimelineOverviewNSView: NSView {
 
     required init?(coder: NSCoder) { nil }
 
-    deinit { observationTokens.forEach(NotificationCenter.default.removeObserver) }
-
     func invalidate() {
         observationTokens.forEach(NotificationCenter.default.removeObserver)
         observationTokens.removeAll(keepingCapacity: false)

@@ -3,7 +3,6 @@ import AVFoundation
 import CoreGraphics
 import Foundation
 import RecorderCore
-import VideoToolbox
 
 struct CaptureDisplay: Identifiable, Equatable, Sendable {
     let id: UInt32
@@ -53,10 +52,6 @@ struct CaptureReadiness: Equatable, Sendable {
     let displayRefreshRate: Int?
     let targetFrameRate: OutputFrameRate
     let captureCodec: CaptureCodec
-    let hasHardwareVideoEncoder: Bool
-    let selectedDisplayName: String?
-    let cameraPermission: CapturePermissionState
-    let microphonePermission: CapturePermissionState
 
     var hasSufficientDisk: Bool {
         guard let availableDiskBytes else { return true }
@@ -67,25 +62,6 @@ struct CaptureReadiness: Equatable, Sendable {
     var displayCanShowTargetRate: Bool {
         guard let displayRefreshRate else { return true }
         return displayRefreshRate >= targetFrameRate.rawValue
-    }
-
-    var permissionText: String {
-        hasScreenRecordingPermission ? "已授权" : "待授权"
-    }
-
-    var displayText: String {
-        guard let displayRefreshRate else { return "未知" }
-        return "\(displayRefreshRate) Hz"
-    }
-
-    var diskText: String {
-        guard let availableDiskBytes else { return "未知" }
-        return ByteCountFormatter.string(fromByteCount: availableDiskBytes, countStyle: .file)
-    }
-
-    var encoderText: String {
-        guard hasHardwareVideoEncoder else { return "\(captureCodec.rawValue) 硬件不可用" }
-        return "\(captureCodec.rawValue) 硬件"
     }
 
     var frameRateWarningText: String? {
@@ -123,19 +99,7 @@ struct CaptureReadiness: Equatable, Sendable {
             estimatedThirtyMinuteBytes: estimatedBytes,
             displayRefreshRate: display.refreshRate,
             targetFrameRate: targetFrameRate,
-            captureCodec: captureCodec,
-            hasHardwareVideoEncoder: hardwareVideoEncoderAvailable(
-                width: captureDimensions.width,
-                height: captureDimensions.height,
-                codec: captureCodec
-            ),
-            selectedDisplayName: display.id == 0 ? nil : display.name,
-            cameraPermission: CapturePermissionState(
-                authorizationStatus: AVCaptureDevice.authorizationStatus(for: .video)
-            ),
-            microphonePermission: CapturePermissionState(
-                authorizationStatus: AVCaptureDevice.authorizationStatus(for: .audio)
-            )
+            captureCodec: captureCodec
         )
     }
 
@@ -169,54 +133,6 @@ struct CaptureReadiness: Equatable, Sendable {
         return (attributes?[.systemFreeSize] as? NSNumber)?.int64Value
     }
 
-    /// Creating a VideoToolbox compression session costs tens of milliseconds
-    /// (encoder initialization). Readiness refreshes on every selection change,
-    /// so cache the probe result per discrete (width, height) pair.
-    private static func hardwareVideoEncoderAvailable(
-        width: Int,
-        height: Int,
-        codec: CaptureCodec
-    ) -> Bool {
-        if let cached = encoderProbeCache.availability(
-            width: width,
-            height: height,
-            codec: codec
-        ) {
-            return cached
-        }
-        let codecType: CMVideoCodecType
-        switch codec {
-        case .hevc: codecType = kCMVideoCodecType_HEVC
-        case .h264: codecType = kCMVideoCodecType_H264
-        case .proRes422: codecType = kCMVideoCodecType_AppleProRes422
-        }
-        let specification = [
-            kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder as String: true,
-        ] as CFDictionary
-        var session: VTCompressionSession?
-        let status = VTCompressionSessionCreate(
-            allocator: kCFAllocatorDefault,
-            width: Int32(width),
-            height: Int32(height),
-            codecType: codecType,
-            encoderSpecification: specification,
-            imageBufferAttributes: nil,
-            compressedDataAllocator: nil,
-            outputCallback: nil,
-            refcon: nil,
-            compressionSessionOut: &session
-        )
-        if let session {
-            VTCompressionSessionInvalidate(session)
-        }
-        encoderProbeCache.store(
-            width: width,
-            height: height,
-            codec: codec,
-            available: status == noErr
-        )
-        return status == noErr
-    }
 }
 
 enum CapturePermissionState: String, Equatable, Sendable {
@@ -244,45 +160,3 @@ enum CapturePermissionState: String, Equatable, Sendable {
         }
     }
 }
-
-/// Lock-protected bounded LRU for hardware-encoder probes. `static let` keeps
-/// the reference immutable; the lock guards both values and recency order.
-final class EncoderProbeCacheStore: @unchecked Sendable {
-    private let capacity: Int
-    private let lock = NSLock()
-    private var cache: [String: Bool] = [:]
-    private var recency: [String] = []
-
-    init(capacity: Int = 4) {
-        self.capacity = max(capacity, 1)
-    }
-
-    func availability(width: Int, height: Int, codec: CaptureCodec) -> Bool? {
-        let key = "\(codec.rawValue):\(width)x\(height)"
-        lock.lock()
-        defer { lock.unlock() }
-        guard let value = cache[key] else { return nil }
-        markRecentlyUsed(key)
-        return value
-    }
-
-    func store(width: Int, height: Int, codec: CaptureCodec, available: Bool) {
-        let key = "\(codec.rawValue):\(width)x\(height)"
-        lock.lock()
-        defer { lock.unlock() }
-        cache[key] = available
-        markRecentlyUsed(key)
-        while recency.count > capacity {
-            cache.removeValue(forKey: recency.removeFirst())
-        }
-    }
-
-    private func markRecentlyUsed(_ key: String) {
-        if let index = recency.firstIndex(of: key) {
-            recency.remove(at: index)
-        }
-        recency.append(key)
-    }
-}
-
-private let encoderProbeCache = EncoderProbeCacheStore()

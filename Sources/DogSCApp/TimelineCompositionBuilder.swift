@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import OSLog
 import RecorderCore
 
 enum TimelineCompositionError: LocalizedError, Equatable {
@@ -15,12 +16,12 @@ enum TimelineCompositionError: LocalizedError, Equatable {
             return "剪辑后的主录屏时间线为空，无法预览或导出。"
         case let .cannotCreateTrack(role):
             return "无法为\(role)创建剪辑合成轨。"
-        case let .invalidSlice(role, segmentID):
-            return "\(role)片段 \(segmentID) 的成片时间无效。"
-        case let .sliceOutsideSource(role, segmentID):
-            return "\(role)片段 \(segmentID) 超出素材可用范围。"
-        case let .insertionFailed(role, segmentID, reason):
-            return "无法合成\(role)片段 \(segmentID)：\(reason)"
+        case let .invalidSlice(role, _):
+            return "\(role)片段的时间范围无效，无法准备预览。"
+        case let .sliceOutsideSource(role, _):
+            return "\(role)片段超出素材可用范围，请重新调整或还原该片段。"
+        case let .insertionFailed(role, _, _):
+            return "无法合成\(role)片段。请确认项目素材仍然可读，然后重新打开项目。"
         }
     }
 }
@@ -43,6 +44,11 @@ struct TimelineCameraComposition {
 }
 
 enum TimelineCompositionBuilder {
+    private static let logger = Logger(
+        subsystem: "cn.laogou.dogsc",
+        category: "timeline-composition"
+    )
+
     static func build(
         plan: ProjectTimelineMediaPlan,
         primaryVideoTrack sourceVideoTrack: AVAssetTrack,
@@ -177,11 +183,13 @@ enum TimelineCompositionBuilder {
         if let systemTrack {
             let input = AVMutableAudioMixInputParameters(track: systemTrack)
             input.setVolume(systemVolume, at: .zero)
+            input.audioTimePitchAlgorithm = .timeDomain
             parameters.append(input)
         }
         if let microphoneTrack {
             let input = AVMutableAudioMixInputParameters(track: microphoneTrack)
             input.setVolume(microphoneVolume, at: .zero)
+            input.audioTimePitchAlgorithm = .timeDomain
             parameters.append(input)
         }
         guard !parameters.isEmpty else { return nil }
@@ -220,6 +228,9 @@ enum TimelineCompositionBuilder {
                   slice.duration.isFinite,
                   slice.outputStart >= 0,
                   slice.duration > 0 else {
+                logger.error(
+                    "invalid slice role=\(role, privacy: .public) segment=\(slice.segmentID.uuidString, privacy: .public)"
+                )
                 throw TimelineCompositionError.invalidSlice(
                     role: role,
                     segmentID: slice.segmentID
@@ -227,6 +238,9 @@ enum TimelineCompositionBuilder {
             }
             guard actualSourceStart >= sourceAvailableRange.start.seconds - epsilon,
                   actualSourceEnd <= sourceAvailableRange.end.seconds + epsilon else {
+                logger.error(
+                    "slice outside source role=\(role, privacy: .public) segment=\(slice.segmentID.uuidString, privacy: .public) sourceStart=\(actualSourceStart, privacy: .public) sourceEnd=\(actualSourceEnd, privacy: .public)"
+                )
                 throw TimelineCompositionError.sliceOutsideSource(
                     role: role,
                     segmentID: slice.segmentID
@@ -257,6 +271,9 @@ enum TimelineCompositionBuilder {
                     )
                 }
             } catch {
+                logger.error(
+                    "composition insertion failed role=\(role, privacy: .public) segment=\(slice.segmentID.uuidString, privacy: .public) reason=\(error.localizedDescription, privacy: .public)"
+                )
                 throw TimelineCompositionError.insertionFailed(
                     role: role,
                     segmentID: slice.segmentID,
@@ -289,6 +306,9 @@ enum TimelinePreviewMediaError: LocalizedError {
 }
 
 private struct LoadedTimelineTrack {
+    /// Keep the source alive for as long as its track is used. Returning only
+    /// the track from an async loader can make later composition insertion
+    /// fail with AVFoundation -11800 / OSStatus -12780.
     let asset: AVURLAsset
     let track: AVAssetTrack
     let timeRange: CMTimeRange
@@ -355,7 +375,7 @@ enum TimelinePreviewCompositionLoader {
         // another. Structured child tasks preserve cancellation while making
         // project-open latency equal to the slowest branch instead of their sum.
         async let sourceAudioTask = loadOptionalTrack(
-            from: source.asset,
+            at: sourceURL,
             mediaType: .audio,
             role: "系统声音"
         )
@@ -404,25 +424,28 @@ enum TimelinePreviewCompositionLoader {
             microphoneTrack: microphone?.track,
             microphoneRange: microphone?.timeRange
         )
-        async let sourceInventoryTask = inventory(
-            asset: source.asset,
+        async let sourceDurationTask = assetDuration(at: sourceURL)
+        async let cameraDurationTask = assetDurationIfPresent(at: declaredCameraURL)
+        async let microphoneDurationTask = assetDurationIfPresent(at: declaredMicrophoneURL)
+        let (sourceDuration, cameraDuration, microphoneDuration) = await (
+            sourceDurationTask,
+            cameraDurationTask,
+            microphoneDurationTask
+        )
+        let sourceInventory = inventory(
+            assetDuration: sourceDuration,
             video: source,
             audio: sourceAudio
         )
-        async let cameraInventoryTask = if let camera {
-            await inventory(asset: camera.asset, video: camera, audio: nil)
-        } else {
-            MediaAssetInventory.empty
-        }
-        async let microphoneInventoryTask = if let microphone {
-            await inventory(asset: microphone.asset, video: nil, audio: microphone)
-        } else {
-            MediaAssetInventory.empty
-        }
-        let (sourceInventory, cameraInventory, microphoneInventory) = await (
-            sourceInventoryTask,
-            cameraInventoryTask,
-            microphoneInventoryTask
+        let cameraInventory = inventory(
+            assetDuration: cameraDuration,
+            video: camera,
+            audio: nil
+        )
+        let microphoneInventory = inventory(
+            assetDuration: microphoneDuration,
+            video: nil,
+            audio: microphone
         )
         return EditorPreparedMediaPayload(
             composition: composition,
@@ -439,6 +462,7 @@ enum TimelinePreviewCompositionLoader {
             cameraContentCrop: cameraContentCrop,
             cameraSource: camera.map {
                 EditorPreparedCameraSource(
+                    asset: $0.asset,
                     track: $0.track,
                     timeRange: $0.timeRange,
                     preferredTransform: $0.preferredTransform
@@ -496,10 +520,11 @@ enum TimelinePreviewCompositionLoader {
     }
 
     private static func loadOptionalTrack(
-        from asset: AVURLAsset,
+        at url: URL,
         mediaType: AVMediaType,
         role: String
     ) async throws -> LoadedTimelineTrack? {
+        let asset = AVURLAsset(url: url)
         guard let track = try await asset.loadTracks(withMediaType: mediaType).first else {
             return nil
         }
@@ -524,14 +549,23 @@ enum TimelinePreviewCompositionLoader {
         )
     }
 
-    private static func inventory(
-        asset: AVURLAsset,
-        video: LoadedTimelineTrack?,
-        audio: LoadedTimelineTrack?
-    ) async -> MediaAssetInventory {
-        let assetDuration = (try? await asset.load(.duration).seconds).flatMap {
+    private static func assetDuration(at url: URL) async -> TimeInterval {
+        let asset = AVURLAsset(url: url)
+        return (try? await asset.load(.duration).seconds).flatMap {
             $0.isFinite && $0 > 0 ? $0 : nil
         } ?? 0
+    }
+
+    private static func assetDurationIfPresent(at url: URL?) async -> TimeInterval {
+        guard let url else { return 0 }
+        return await assetDuration(at: url)
+    }
+
+    private static func inventory(
+        assetDuration: TimeInterval,
+        video: LoadedTimelineTrack?,
+        audio: LoadedTimelineTrack?
+    ) -> MediaAssetInventory {
         let videoRange = video.flatMap { mediaRange($0.timeRange) }
         let audioRange = audio.flatMap { mediaRange($0.timeRange) }
         let duration = [

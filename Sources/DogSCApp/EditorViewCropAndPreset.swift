@@ -4,6 +4,80 @@ import RecorderCore
 import SwiftUI
 
 extension EditorView {
+    @ViewBuilder
+    var stylePresetControl: some View {
+        if savedStylePresets.isEmpty {
+            Button {
+                stylePresetName = "我的样式 1"
+                isNamingStylePreset = true
+            } label: {
+                stylePresetToolbarLabel(
+                    title: "保存样式",
+                    systemImage: "square.and.arrow.down",
+                    showsMenuIndicator: false
+                )
+            }
+            .buttonStyle(.plain)
+        } else {
+            Menu {
+                Section("我的样式") {
+                    ForEach(savedStylePresets) { preset in
+                        Button {
+                            applyStylePreset(preset)
+                        } label: {
+                            Label(preset.name, systemImage: "paintbrush")
+                        }
+                    }
+                }
+
+                Divider()
+                Button {
+                    stylePresetName = nextStylePresetName
+                    isNamingStylePreset = true
+                } label: {
+                    Label("保存当前样式…", systemImage: "square.and.arrow.down")
+                }
+
+                Menu("删除样式", systemImage: "trash") {
+                    ForEach(savedStylePresets) { preset in
+                        Button("删除“\(preset.name)”", role: .destructive) {
+                            deleteStylePreset(preset)
+                        }
+                    }
+                }
+            } label: {
+                stylePresetToolbarLabel(
+                    title: "样式",
+                    systemImage: "paintpalette",
+                    showsMenuIndicator: true
+                )
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+        }
+    }
+
+    private func stylePresetToolbarLabel(
+        title: String,
+        systemImage: String,
+        showsMenuIndicator: Bool
+    ) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: systemImage)
+            Text(title)
+            if showsMenuIndicator {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(Color.primary.opacity(0.88))
+        .padding(.horizontal, 8)
+        .frame(height: 26)
+        .contentShape(Rectangle())
+    }
+
     func canvasBinding<Value>(
         _ keyPath: WritableKeyPath<CanvasStyle, Value>,
         actionName: String
@@ -90,29 +164,49 @@ extension EditorView {
         }
     }
 
-    func applyDogSCFlowPreset() {
-        let baseline = editorStore.project
-        var canvas = baseline.canvas
-        canvas.padding = 100
-        canvas.cornerRadius = 45
-        canvas.borderWidth = 3
-        canvas.borderColor = HexColor.white
-        canvas.insetOpacity = 0.125
-        canvas.shadowStrength = 0.75
-        var camera = baseline.camera
-        camera.size = 0.35
-        camera.roundness = 0.5
-        camera.scaleDuringZoom = 0.7
-        let motion = MotionStyle()
+    var nextStylePresetName: String {
+        var index = 1
+        while savedStylePresets.contains(where: {
+            $0.name.localizedCaseInsensitiveCompare("我的样式 \(index)") == .orderedSame
+        }) {
+            index += 1
+        }
+        return "我的样式 \(index)"
+    }
+
+    func saveCurrentStylePreset() {
+        let name = stylePresetName.trimmingCharacters(
+            in: CharacterSet.whitespacesAndNewlines
+        )
+        guard !name.isEmpty else { return }
+
+        let existingID = savedStylePresets.first(where: {
+            $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame
+        })?.id
+        let preset = EditorStylePreset(
+            id: existingID ?? UUID(),
+            name: name,
+            project: editorStore.project
+        )
+        var updated = savedStylePresets.filter { $0.id != preset.id }
+        updated.append(preset)
+        savedStylePresets = updated
+        EditorStylePresetStore.save(updated)
+    }
+
+    func applyStylePreset(_ preset: EditorStylePreset) {
+        let replacement = preset.applying(to: editorStore.project)
         performEditorCommand {
-            try editorStore.performBatch(
-                [
-                    ProjectCommand.replacingCanvas(in: baseline, with: canvas),
-                    ProjectCommand.replacingCamera(in: baseline, with: camera),
-                    ProjectCommand.replacingMotion(in: baseline, with: motion),
-                ],
-                actionName: "应用丝滑流光预设"
+            try editorStore.replaceProject(
+                with: replacement,
+                actionName: "应用工作样式“\(preset.name)”"
             )
         }
+    }
+
+    func deleteStylePreset(_ preset: EditorStylePreset) {
+        let updated = savedStylePresets.filter { $0.id != preset.id }
+        savedStylePresets = updated
+        EditorStylePresetStore.save(updated)
     }
 }

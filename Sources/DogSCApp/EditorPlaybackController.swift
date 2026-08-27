@@ -179,77 +179,6 @@ extension AVPlayer: EditorPlaybackTransport {
     }
 }
 
-/// One-shot bridge for AVPlayerItemVideoOutput's pull notification.
-///
-/// `requestNotificationOfMediaDataChange` has no effect unless the output has
-/// a pull delegate. Keeping the bridge on MainActor gives cancellation,
-/// timeout and delegate cleanup one serial owner without waking the editor on
-/// an 8 ms polling timer while AVFoundation prepares the first frame.
-@MainActor
-final class InitialFrameMediaDataWaiter: NSObject,
-    AVPlayerItemOutputPullDelegate,
-    @unchecked Sendable
-{
-    private let output: AVPlayerItemVideoOutput
-    private var continuation: CheckedContinuation<Bool, Never>?
-    private var timeoutTask: Task<Void, Never>?
-    private var resolvedValue: Bool?
-
-    init(output: AVPlayerItemVideoOutput) {
-        self.output = output
-        super.init()
-    }
-
-    func wait(
-        timeout: Duration,
-        advanceInterval: TimeInterval = 0.005
-    ) async -> Bool {
-        if let resolvedValue { return resolvedValue }
-        return await withTaskCancellationHandler {
-            await withCheckedContinuation { continuation in
-                if let resolvedValue {
-                    continuation.resume(returning: resolvedValue)
-                    return
-                }
-                self.continuation = continuation
-                output.setDelegate(self, queue: .main)
-                output.requestNotificationOfMediaDataChange(
-                    withAdvanceInterval: max(advanceInterval, 0)
-                )
-                timeoutTask = Task { @MainActor [weak self] in
-                    do {
-                        try await Task.sleep(for: timeout)
-                    } catch {
-                        return
-                    }
-                    self?.finish(false)
-                }
-            }
-        } onCancel: {
-            Task { @MainActor [weak self] in
-                self?.finish(false)
-            }
-        }
-    }
-
-    nonisolated func outputMediaDataWillChange(_ sender: AVPlayerItemOutput) {
-        Task { @MainActor [weak self] in
-            self?.finish(true)
-        }
-    }
-
-    private func finish(_ value: Bool) {
-        guard resolvedValue == nil else { return }
-        resolvedValue = value
-        timeoutTask?.cancel()
-        timeoutTask = nil
-        output.setDelegate(nil, queue: nil)
-        let continuation = continuation
-        self.continuation = nil
-        continuation?.resume(returning: value)
-    }
-}
-
 /// The editor's sole AVPlayer transport owner. Media analysis/composition stay
 /// in EditorMediaSession; project evaluation and pixel composition stay in the
 /// scene/renderer layers.
@@ -478,6 +407,7 @@ final class EditorPlaybackController: ObservableObject {
             kCVPixelBufferMetalCompatibilityKey as String: true,
         ]
         let item = AVPlayerItem(asset: bundle.primaryComposition)
+        item.audioTimePitchAlgorithm = .timeDomain
         item.audioMix = Self.previewAudioMix(for: audio, bundle: bundle)
         let screenOutput = AVPlayerItemVideoOutput(
             pixelBufferAttributes: pixelBufferAttributes
@@ -520,10 +450,12 @@ final class EditorPlaybackController: ObservableObject {
             seconds: safeTime,
             preferredTimescale: 60_000
         )
+        let screenPreferredTransform = bundle.primaryVideoTrack.preferredTransform
+        let cameraPreferredTransform = bundle.cameraVideoTrack?.preferredTransform ?? .identity
         async let decodedFirstScreen = loadInitialFrame(
             screenOutput,
             initialFrameTime,
-            bundle.primaryVideoTrack.preferredTransform
+            screenPreferredTransform
         )
         let firstCameraImage: NSImage?
         if let cameraOutput,
@@ -531,7 +463,7 @@ final class EditorPlaybackController: ObservableObject {
             firstCameraImage = await loadInitialFrame(
                 cameraOutput,
                 initialFrameTime,
-                bundle.cameraVideoTrack?.preferredTransform ?? .identity
+                cameraPreferredTransform
             )
         } else {
             firstCameraImage = nil
@@ -560,9 +492,9 @@ final class EditorPlaybackController: ObservableObject {
         endpoints = EditorPlaybackMediaEndpoints(
             generation: prepared.generation,
             screenOutput: screenOutput,
-            screenPreferredTransform: bundle.primaryVideoTrack.preferredTransform,
+            screenPreferredTransform: screenPreferredTransform,
             cameraOutput: cameraOutput,
-            cameraPreferredTransform: bundle.cameraVideoTrack?.preferredTransform ?? .identity
+            cameraPreferredTransform: cameraPreferredTransform
         )
         lifecycle = .ready(generation: prepared.generation)
         self.cameraTimingRevision = cameraTimingRevision
@@ -869,21 +801,37 @@ final class EditorPlaybackController: ObservableObject {
     }
 
 
-    /// Called by the canvas display link. This is the only per-refresh read of
-    /// the primary player's currentTime. The returned itemTime is then reused by
-    /// scene evaluation and AVPlayerItemVideoOutput.
-    func renderTick(uptime: TimeInterval = CACurrentMediaTime()) -> EditorPlaybackRenderTick? {
+    /// Called by the canvas display link. When the video output can translate
+    /// the display's target host time into its item time, that value is the
+    /// canonical clock for both scene evaluation and pixel-buffer lookup.
+    /// Falling back to `AVPlayer.currentTime()` is reserved for the short
+    /// hand-off where the output timebase is not yet numeric.
+    func renderTick(
+        itemTimeForDisplay: CMTime? = nil,
+        uptime: TimeInterval = CACurrentMediaTime()
+    ) -> EditorPlaybackRenderTick? {
         guard let primaryPlayer, let endpoints else { return nil }
         let sampledPlayerTime = primaryPlayer.currentTimeSeconds
-        let time = EditorPlaybackClockPolicy.resolvedTime(
-            playerTime: sampledPlayerTime,
-            anchorTime: playbackAnchorTime,
-            anchorUptime: playbackAnchorUptime,
-            uptime: uptime,
-            rate: primaryPlayer.playbackRate,
-            transportIsAdvancing: primaryPlayer.playbackClockIsAdvancing,
-            duration: duration
-        )
+        let displayItemSeconds = itemTimeForDisplay?.seconds
+        let time: TimeInterval
+        if let displayItemSeconds,
+           displayItemSeconds.isFinite,
+           displayItemSeconds >= 0 {
+            time = EditorPlaybackClockPolicy.clampedTime(
+                displayItemSeconds,
+                duration: duration
+            )
+        } else {
+            time = EditorPlaybackClockPolicy.resolvedTime(
+                playerTime: sampledPlayerTime,
+                anchorTime: playbackAnchorTime,
+                anchorUptime: playbackAnchorUptime,
+                uptime: uptime,
+                rate: primaryPlayer.playbackRate,
+                transportIsAdvancing: primaryPlayer.playbackClockIsAdvancing,
+                duration: duration
+            )
+        }
         if sampledPlayerTime.isFinite, sampledPlayerTime >= 0 {
             resetPlaybackAnchor(to: time, uptime: uptime)
         }
@@ -926,6 +874,12 @@ final class EditorPlaybackController: ObservableObject {
         scrubIsActive = false
         primarySeekIsPending = false
         teardownTransport(resetTime: true)
+        // `cacheIntermediates: false` prevents graph caching, but Core Image
+        // can still retain render-target IOSurfaces used to turn the first
+        // player pixel buffer into an NSImage. The controller may outlive the
+        // visible SwiftUI tree briefly during AppKit window teardown, so clear
+        // that private pool at the explicit editor lifecycle boundary.
+        initialFrameContext.clearCaches()
         lifecycle = .empty
         cameraTimingRevision = 0
         errorMessage = nil

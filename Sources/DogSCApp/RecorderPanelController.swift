@@ -14,6 +14,9 @@ final class DogSCApplicationDelegate: NSObject,
     /// open even though the user explicitly double-clicked a project.
     private var pendingProjectURL: URL?
     private var didFinishLaunching = false
+    private let settingsWindowController = AppSettingsWindowController()
+    private var settingsShortcutMonitor: Any?
+    private var keyWindowObservation: NSObjectProtocol?
 
     /// Pure launch-order policy kept separate from AppKit callbacks so a cold
     /// open always consumes the pending project exactly once.
@@ -32,6 +35,15 @@ final class DogSCApplicationDelegate: NSObject,
     private var statusItem: NSStatusItem?
     private let projectMediaMenuIdentifier = NSUserInterfaceItemIdentifier(
         "cn.laogou.dogsc.project-media-menu"
+    )
+    private let projectMediaSeparatorIdentifier = NSUserInterfaceItemIdentifier(
+        "cn.laogou.dogsc.file-menu.project-media-separator"
+    )
+    private let exportProjectMediaItemIdentifier = NSUserInterfaceItemIdentifier(
+        "cn.laogou.dogsc.file-menu.export-project-media"
+    )
+    private let replaceCameraMediaItemIdentifier = NSUserInterfaceItemIdentifier(
+        "cn.laogou.dogsc.file-menu.replace-camera-media"
     )
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -53,9 +65,10 @@ final class DogSCApplicationDelegate: NSObject,
             model.requestOpenProject(at: url)
         }
         installStatusItem()
+        installSettingsShortcutMonitor()
+        installKeyWindowMenuRefresh()
         DispatchQueue.main.async { [weak self] in
-            self?.installProjectMediaMenu()
-            EditorMenuBridge.shared.installMainMenuItems()
+            self?.refreshMainMenuBindings()
         }
     }
 
@@ -73,8 +86,8 @@ final class DogSCApplicationDelegate: NSObject,
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
-        installProjectMediaMenu()
-        EditorMenuBridge.shared.installMainMenuItems()
+        model?.resumeRequiredPermissionOnboardingAfterActivation()
+        refreshMainMenuBindings()
     }
 
     func applicationShouldHandleReopen(
@@ -92,6 +105,14 @@ final class DogSCApplicationDelegate: NSObject,
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        if let settingsShortcutMonitor {
+            NSEvent.removeMonitor(settingsShortcutMonitor)
+            self.settingsShortcutMonitor = nil
+        }
+        if let keyWindowObservation {
+            NotificationCenter.default.removeObserver(keyWindowObservation)
+            self.keyWindowObservation = nil
+        }
         // Tear down UI first so editor display links/players receive
         // onDisappear, then synchronously release idle capture device graphs.
         WindowCoordinator.shutdown()
@@ -135,6 +156,7 @@ final class DogSCApplicationDelegate: NSObject,
 
     private func installStatusItem() {
         guard statusItem == nil else { return }
+        let applicationName = AppIdentity.displayName
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = item.button {
             // A full-colour Dock icon becomes a pale square at 18pt and is
@@ -143,17 +165,17 @@ final class DogSCApplicationDelegate: NSObject,
             // for Dock, app switcher and the editor toolbar.
             let statusImage = NSImage(
                 systemSymbolName: "record.circle",
-                accessibilityDescription: "DogSC"
+                accessibilityDescription: applicationName
             ) ?? NSImage()
             statusImage.isTemplate = true
             button.image = statusImage
             button.imageScaling = .scaleProportionallyDown
             button.imagePosition = .imageOnly
-            button.toolTip = "DogSC"
-            button.setAccessibilityLabel("DogSC菜单")
+            button.toolTip = applicationName
+            button.setAccessibilityLabel("\(applicationName)菜单")
         }
 
-        let menu = NSMenu(title: "DogSC")
+        let menu = NSMenu(title: applicationName)
         menu.delegate = self
         item.menu = menu
         statusItem = item
@@ -167,9 +189,10 @@ final class DogSCApplicationDelegate: NSObject,
 
     private func rebuildStatusMenu(_ menu: NSMenu) {
         menu.removeAllItems()
+        let applicationName = AppIdentity.displayName
 
         let showApp = NSMenuItem(
-            title: "显示DogSC",
+            title: "显示\(applicationName)",
             action: #selector(showCurrentWindowFromStatusItem(_:)),
             keyEquivalent: ""
         )
@@ -248,7 +271,7 @@ final class DogSCApplicationDelegate: NSObject,
         menu.addItem(.separator())
 
         let quit = NSMenuItem(
-            title: "退出DogSC",
+            title: "退出\(applicationName)",
             action: #selector(quitFromStatusItem(_:)),
             keyEquivalent: "q"
         )
@@ -289,24 +312,129 @@ final class DogSCApplicationDelegate: NSObject,
     }
 
     @objc private func openSettingsFromStatusItem(_ sender: NSMenuItem) {
+        settingsWindowController.show()
+    }
+
+    private func installSettingsShortcutMonitor() {
+        guard settingsShortcutMonitor == nil else { return }
+        settingsShortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
+            [weak self] event in
+            let modifiers = event.modifierFlags.intersection([
+                .command, .shift, .option, .control,
+            ])
+            guard modifiers == [.command],
+                  event.charactersIgnoringModifiers == "," else { return event }
+            self?.settingsWindowController.show()
+            return nil
+        }
+    }
+
+    @objc private func openAboutFromApplicationMenu(_ sender: NSMenuItem) {
         NSApplication.shared.activate(ignoringOtherApps: true)
-        NSApplication.shared.sendAction(
-            Selector(("showSettingsWindow:")),
-            to: nil,
-            from: sender
-        )
+        NSApplication.shared.orderFrontStandardAboutPanel(sender)
+    }
+
+    /// SwiftUI contributes the standard application submenu, but this app's
+    /// key windows are AppKit-owned. Retarget the two app-level actions so they
+    /// remain available from the recorder, editor, and menu-bar extra alike.
+    private func installApplicationMenuActions() {
+        guard let applicationMenu = NSApplication.shared.mainMenu?.items.first?.submenu
+        else { return }
+
+        if let about = applicationMenu.items.first(where: {
+            $0.action == #selector(NSApplication.orderFrontStandardAboutPanel(_:))
+                || $0.title.hasPrefix("关于")
+        }) {
+            about.target = self
+            about.action = #selector(openAboutFromApplicationMenu(_:))
+            about.isEnabled = true
+        }
+
+        if let settings = applicationMenu.items.first(where: {
+            $0.keyEquivalent == "," || $0.title.hasPrefix("设置")
+        }) {
+            settings.target = self
+            settings.action = #selector(openSettingsFromStatusItem(_:))
+            settings.keyEquivalent = ","
+            settings.keyEquivalentModifierMask = [.command]
+            settings.isEnabled = true
+        }
+
+        if let quit = applicationMenu.items.first(where: {
+            $0.action == #selector(NSApplication.terminate(_:))
+                || $0.title.hasPrefix("退出")
+        }) {
+            quit.target = self
+            quit.action = #selector(quitFromStatusItem(_:))
+            quit.keyEquivalent = "q"
+            quit.keyEquivalentModifierMask = [.command]
+            quit.isEnabled = true
+        }
+    }
+
+    /// SwiftUI can replace scene-contributed menu items when a sheet becomes
+    /// key or hands focus back to its parent window. Reapply the small AppKit
+    /// menu contract after that transition settles so File does not disappear
+    /// and the unavailable generated Help menu cannot return.
+    private func installKeyWindowMenuRefresh() {
+        guard keyWindowObservation == nil else { return }
+        keyWindowObservation = NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.refreshMainMenuBindings()
+            }
+        }
+    }
+
+    func refreshMainMenuBindings() {
+        installApplicationMenuActions()
+        EditorMenuBridge.shared.installMainMenuItems()
+        installProjectMediaMenu()
+        setMainMenuEditorMode(model?.phase == .editor)
+    }
+
+    func setMainMenuEditorMode(_ isEditor: Bool) {
+        EditorMenuBridge.shared.setEditorMenuItemsVisible(isEditor)
     }
 
     @objc private func quitFromStatusItem(_ sender: NSMenuItem) {
-        NSApplication.shared.terminate(sender)
+        if EditorMenuBridge.shared.isEditorActive {
+            EditorMenuBridge.shared.quitRequest.send()
+        } else {
+            NSApplication.shared.terminate(sender)
+        }
     }
 
     private func installProjectMediaMenu() {
-        guard let mainMenu = NSApplication.shared.mainMenu,
-              !mainMenu.items.contains(where: {
-                  $0.identifier == projectMediaMenuIdentifier
-              }) else { return }
-        let submenu = NSMenu(title: "项目素材")
+        guard let mainMenu = NSApplication.shared.mainMenu else { return }
+
+        // Remove the former two-item top-level menu if this method is invoked
+        // again in a process that installed the legacy layout.
+        if let legacyRoot = mainMenu.items.first(where: {
+            $0.identifier == projectMediaMenuIdentifier
+        }) {
+            mainMenu.removeItem(legacyRoot)
+        }
+
+        let fileMenuIdentifier = NSUserInterfaceItemIdentifier(
+            "cn.laogou.dogsc.file-menu"
+        )
+        guard let fileMenu = mainMenu.items.first(where: {
+            $0.identifier == fileMenuIdentifier
+        })?.submenu else { return }
+        guard !fileMenu.items.contains(where: {
+            $0.action == #selector(exportProjectSourceMedia(_:))
+                || $0.action == #selector(importCameraReplacement(_:))
+        }) else { return }
+
+        if !fileMenu.items.isEmpty {
+            let separator = NSMenuItem.separator()
+            separator.identifier = projectMediaSeparatorIdentifier
+            fileMenu.addItem(separator)
+        }
 
         let exportSources = NSMenuItem(
             title: "导出项目源文件…",
@@ -314,7 +442,8 @@ final class DogSCApplicationDelegate: NSObject,
             keyEquivalent: ""
         )
         exportSources.target = self
-        submenu.addItem(exportSources)
+        exportSources.identifier = exportProjectMediaItemIdentifier
+        fileMenu.addItem(exportSources)
 
         let importAligned = NSMenuItem(
             title: "替换当前项目摄像头…",
@@ -322,12 +451,8 @@ final class DogSCApplicationDelegate: NSObject,
             keyEquivalent: ""
         )
         importAligned.target = self
-        submenu.addItem(importAligned)
-
-        let root = NSMenuItem(title: "项目素材", action: nil, keyEquivalent: "")
-        root.identifier = projectMediaMenuIdentifier
-        root.submenu = submenu
-        mainMenu.insertItem(root, at: max(mainMenu.numberOfItems - 2, 1))
+        importAligned.identifier = replaceCameraMediaItemIdentifier
+        fileMenu.addItem(importAligned)
     }
 
     @objc private func exportProjectSourceMedia(_ sender: NSMenuItem) {
@@ -346,7 +471,8 @@ final class DogSCApplicationDelegate: NSObject,
               model.phase == .editor,
               !model.isMediaExchangeRunning else { return false }
         if menuItem.action == #selector(importCameraReplacement(_:)) {
-            return !model.exporter.isExporting
+            return model.project.media?.camera != nil
+                && !model.exporter.isExporting
         }
         return model.recordingURL != nil
     }
@@ -359,16 +485,21 @@ enum RecorderPanelPolicy {
     static let styleMask: NSWindow.StyleMask = [.borderless]
     static let setupSize = NSSize(width: setupWindowWidth(), height: 64)
     static let progressSize = NSSize(width: 320, height: 46)
-    static let recordingSize = NSSize(width: recordingWindowWidth(), height: 46)
 
-    static func contentSize(for phase: AppPhase) -> NSSize? {
+    static func contentSize(
+        for phase: AppPhase,
+        recordsMicrophone: Bool
+    ) -> NSSize? {
         switch phase {
         case .setup:
             setupSize
         case .preparing, .finishing:
             progressSize
         case .recording:
-            recordingSize
+            NSSize(
+                width: recordingWindowWidth(recordsMicrophone: recordsMicrophone),
+                height: 46
+            )
         case .editor:
             nil
         }
@@ -403,7 +534,7 @@ enum RecorderPanelPolicy {
 }
 
 @MainActor
-final class RecorderPanelController {
+final class RecorderPanelController: NSObject {
     private let model: AppModel
     private let panel: RecorderPanel
     private let hostingController: NSHostingController<RecorderMainWindowRoot>
@@ -419,17 +550,21 @@ final class RecorderPanelController {
     init(model: AppModel) {
         self.model = model
         currentPhase = model.phase
-        let initialSize = RecorderPanelPolicy.contentSize(for: model.phase)
+        let initialSize = RecorderPanelPolicy.contentSize(
+            for: model.phase,
+            recordsMicrophone: model.configuration.recordsMicrophone
+        )
             ?? RecorderPanelPolicy.setupSize
         hostingController = NSHostingController(
             rootView: RecorderMainWindowRoot(model: model, phase: model.phase)
         )
         panel = RecorderPanel(
             contentRect: NSRect(origin: .zero, size: initialSize),
-            styleMask: RecorderPanelPolicy.styleMask,
+            styleMask: [RecorderPanelPolicy.styleMask, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
+        super.init()
         configurePanel(initialSize: initialSize)
     }
 
@@ -438,7 +573,18 @@ final class RecorderPanelController {
     func present(phase: AppPhase) {
         currentPhase = phase
         panel.presentedPhase = phase
-        guard let contentSize = RecorderPanelPolicy.contentSize(for: phase) else {
+        // SwiftUI may rebuild its scene-contributed menu when the editor
+        // window closes. Reinstall our AppKit-owned File/Edit commands after
+        // the phase transition settles, otherwise returning to the recorder
+        // can lose the entire File menu and ⌘O stops working.
+        DispatchQueue.main.async {
+            (NSApplication.shared.delegate as? DogSCApplicationDelegate)?
+                .refreshMainMenuBindings()
+        }
+        guard let contentSize = RecorderPanelPolicy.contentSize(
+            for: phase,
+            recordsMicrophone: model.configuration.recordsMicrophone
+        ) else {
             panel.orderOut(nil)
             return
         }
@@ -447,7 +593,11 @@ final class RecorderPanelController {
             phase: phase,
             selectionActive: selectionIsActive
         ))
-        panel.sharingType = isDesignReview || phase == .setup ? .readOnly : .none
+        // Recorder controls are UI, not source material. A shareable setup
+        // panel unnecessarily asks WindowServer to keep this transparent HUD
+        // eligible as a capture surface. Design review opts in explicitly;
+        // real capture keeps one private window surface.
+        panel.sharingType = isDesignReview ? .readOnly : .none
         panel.contentMinSize = contentSize
         panel.contentMaxSize = contentSize
 
@@ -526,13 +676,26 @@ final class RecorderPanelController {
         panel.animationBehavior = .none
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
-        panel.isMovableByWindowBackground = false
+        // Keep the context current after a real move changes ColorSync profile.
+        // No display-link, frame correction or drag-session patch participates.
+        panel.displaysWhenScreenProfileChanges = true
+        // macOS 15+ uses exactly one official SwiftUI WindowDragGesture. Older
+        // systems retain AppKit's background movement as the compatibility
+        // path; the two owners are never active together.
+        if #available(macOS 15.0, *) {
+            panel.isMovableByWindowBackground = false
+        } else {
+            panel.isMovableByWindowBackground = true
+        }
         panel.acceptsMouseMovedEvents = true
         panel.tabbingMode = .disallowed
         panel.level = CaptureWindowLevelPolicy.level(for: .recorderPanel(
             phase: currentPhase,
             selectionActive: selectionIsActive
         ))
+        // A recorder HUD must keep one stable overlay identity while moving
+        // between displays with separate Spaces. This mirrors the camera HUD:
+        // the behavior is fixed at construction and never toggled while held.
         panel.collectionBehavior = [
             .canJoinAllSpaces,
             .fullScreenAuxiliary,

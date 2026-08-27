@@ -164,12 +164,6 @@ final class CameraPreviewWindowController {
         }
     }
 
-    deinit {
-        if let shapeObserver {
-            NotificationCenter.default.removeObserver(shapeObserver)
-        }
-    }
-
     func showConnecting(deviceName: String) {
         presentationGeneration += 1
         let panel = preparedPanel()
@@ -356,7 +350,6 @@ private final class CameraPreviewSurface: NSView {
     private let statusSpinner = NSProgressIndicator()
     private let statusTitle = NSTextField(labelWithString: "")
     private let statusDeviceName = NSTextField(labelWithString: "")
-    private let dragRestorer = CrossDisplayWindowDragRestorer()
     private var previewShape = AppPreferences.recordingCameraPreviewShape
     private var sourceSize: CGSize?
     private let apertureMaskLayer = CAShapeLayer()
@@ -422,15 +415,6 @@ private final class CameraPreviewSurface: NSView {
     }
 
     override var mouseDownCanMoveWindow: Bool { true }
-
-    override func mouseDown(with event: NSEvent) {
-        guard let window else { return }
-        dragRestorer.performDrag(
-            window: window,
-            event: event,
-            purpose: .cameraPreview
-        )
-    }
 
     func showConnecting(deviceName: String) {
         previewLayer.flushAndRemoveImage()
