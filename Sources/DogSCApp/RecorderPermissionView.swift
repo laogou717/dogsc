@@ -60,6 +60,8 @@ enum RequiredRecordingPermissionKind: String, CaseIterable, Identifiable, Sendab
 struct RequiredRecordingPermissionView: View {
     @ObservedObject var model: AppModel
     @State private var waitsForExplicitStart = false
+    @FocusState private var focusedPermission: RequiredRecordingPermissionKind?
+    @FocusState private var isEntryButtonFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -100,6 +102,10 @@ struct RequiredRecordingPermissionView: View {
                 endPoint: .bottomTrailing
             )
         )
+        // Keep semantic primary/secondary text readable while System Settings
+        // is the active app. Relying on the NSWindow appearance alone lets
+        // SwiftUI resolve inactive content with light-mode text colors.
+        .preferredColorScheme(.dark)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(RecorderAccessibilityID.permissionGate)
         .task {
@@ -175,13 +181,40 @@ struct RequiredRecordingPermissionView: View {
                     .background(Color.green.opacity(0.10), in: Capsule())
                     .accessibilityLabel("\(permission.title)已授权")
             } else {
-                Button("打开系统设置") {
+                Button {
+                    // Do not leave the clicked control as first responder while
+                    // System Settings is active. SwiftUI otherwise paints its
+                    // focus effect against the full-size titlebar coordinates,
+                    // producing the stray blue strip at the window's top edge.
+                    focusedPermission = nil
+                    NSApplication.shared.keyWindow?.makeFirstResponder(nil)
                     model.openRequiredPermissionSettings(permission)
+                } label: {
+                    Text("打开系统设置")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.black)
+                        .padding(.horizontal, 14)
+                        .frame(height: 32)
+                        .background(
+                            Color(white: 0.90),
+                            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        )
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .strokeBorder(
+                                    focusedPermission == permission
+                                        ? Color.white.opacity(0.90)
+                                        : Color.clear,
+                                    lineWidth: 2
+                                )
+                        }
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(Color(white: 0.88))
-                .foregroundStyle(Color.black)
-                .controlSize(.regular)
+                // The system prominent style removes its light fill when the
+                // window deactivates but retains our dark label. Own the whole
+                // surface so the action stays readable beside System Settings.
+                .buttonStyle(.plain)
+                .focused($focusedPermission, equals: permission)
+                .focusEffectDisabled()
                 .accessibilityLabel("打开\(permission.title)设置")
             }
         }
@@ -200,16 +233,31 @@ struct RequiredRecordingPermissionView: View {
     private var footer: some View {
         if model.hasRequiredRecordingPermissions {
             Button {
+                isEntryButtonFocused = false
                 model.finishRequiredPermissionOnboarding()
             } label: {
                 Label("进入 \(AppIdentity.displayName)", systemImage: "arrow.right")
                     .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.black)
                     .frame(maxWidth: .infinity)
                     .frame(height: 42)
+                    .background(
+                        Color.white,
+                        in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    )
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .strokeBorder(
+                                isEntryButtonFocused
+                                    ? Color.black.opacity(0.32)
+                                    : Color.clear,
+                                lineWidth: 2
+                            )
+                    }
             }
-            .buttonStyle(.borderedProminent)
-            .tint(Color.white)
-            .foregroundStyle(Color.black)
+            .buttonStyle(.plain)
+            .focused($isEntryButtonFocused)
+            .focusEffectDisabled()
             .accessibilityHint("关闭首次使用页并显示录制工具")
         } else {
             HStack(spacing: 9) {
@@ -232,10 +280,14 @@ struct RequiredRecordingPermissionView: View {
 struct PermissionDragAssistantView: View {
     let permission: RequiredRecordingPermissionKind
     let applicationURL: URL
+    let onApplicationDragEnded: (Bool) -> Void
 
     var body: some View {
         HStack(spacing: 16) {
-            DraggableApplicationIcon(applicationURL: applicationURL)
+            DraggableApplicationIcon(
+                applicationURL: applicationURL,
+                onDragEnded: onApplicationDragEnded
+            )
                 .frame(width: 72, height: 72)
                 .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 15))
                 .overlay {
@@ -254,19 +306,32 @@ struct PermissionDragAssistantView: View {
         }
         .padding(.horizontal, 18)
         .frame(width: 360, height: 116)
-        .background(Color(red: 0.07, green: 0.073, blue: 0.085))
+        .background {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color(red: 0.07, green: 0.073, blue: 0.085))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.75)
+                }
+        }
+        .preferredColorScheme(.dark)
     }
 }
 
 private struct DraggableApplicationIcon: NSViewRepresentable {
     let applicationURL: URL
+    let onDragEnded: (Bool) -> Void
 
     func makeNSView(context: Context) -> ApplicationBundleDragView {
-        ApplicationBundleDragView(applicationURL: applicationURL)
+        ApplicationBundleDragView(
+            applicationURL: applicationURL,
+            onDragEnded: onDragEnded
+        )
     }
 
     func updateNSView(_ nsView: ApplicationBundleDragView, context: Context) {
         nsView.applicationURL = applicationURL
+        nsView.onDragEnded = onDragEnded
     }
 }
 
@@ -278,11 +343,16 @@ private final class ApplicationBundleDragView: NSView, NSDraggingSource {
             needsDisplay = true
         }
     }
+    var onDragEnded: (Bool) -> Void
     private var icon: NSImage
     private var isDraggingApplication = false
 
-    init(applicationURL: URL) {
+    init(
+        applicationURL: URL,
+        onDragEnded: @escaping (Bool) -> Void
+    ) {
         self.applicationURL = applicationURL
+        self.onDragEnded = onDragEnded
         icon = NSWorkspace.shared.icon(forFile: applicationURL.path)
         super.init(frame: .zero)
         setAccessibilityRole(.button)
@@ -332,6 +402,7 @@ private final class ApplicationBundleDragView: NSView, NSDraggingSource {
         operation: NSDragOperation
     ) {
         isDraggingApplication = false
+        onDragEnded(operation != [])
     }
 }
 
@@ -340,7 +411,11 @@ final class RequiredPermissionWindowController: NSObject, NSWindowDelegate {
     private let model: AppModel
     private let hostingController: NSHostingController<RequiredRecordingPermissionView>
     private let windowController: NSWindowController
-    private let dragAssistant = PermissionDragAssistantWindowController()
+    private lazy var dragAssistant = PermissionDragAssistantWindowController(
+        onAcceptedApplicationDrop: { [weak self] in
+            self?.yieldToSystemSettingsAuthorization()
+        }
+    )
     private var hasPositionedWindow = false
 
     init(model: AppModel) {
@@ -381,6 +456,7 @@ final class RequiredPermissionWindowController: NSObject, NSWindowDelegate {
         }
         NSApplication.shared.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+        clearAutomaticControlFocus(in: window)
     }
 
     func hide() {
@@ -396,6 +472,7 @@ final class RequiredPermissionWindowController: NSObject, NSWindowDelegate {
         }
         NSApplication.shared.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+        clearAutomaticControlFocus(in: window)
     }
 
     func showDragAssistant(for permission: RequiredRecordingPermissionKind) {
@@ -405,6 +482,18 @@ final class RequiredPermissionWindowController: NSObject, NSWindowDelegate {
             referenceWindowFrame: windowController.window?.frame,
             referenceScreen: windowController.window?.screen
         )
+    }
+
+    /// Once System Settings accepts the dragged app, it may immediately show
+    /// an administrator-password sheet. Leaving DogSC's onboarding window at
+    /// the front makes that secure field reject typing with the system alert
+    /// sound. Put the onboarding window behind the active settings window and
+    /// explicitly hand activation back to System Settings. The permission
+    /// poll keeps running and will either advance automatically or leave this
+    /// window ready when the user returns to DogSC.
+    private func yieldToSystemSettingsAuthorization() {
+        windowController.window?.orderBack(nil)
+        PermissionDragAssistantWindowController.activateSystemSettings()
     }
 
     private func positionAtVisualCenter(_ window: NSWindow) {
@@ -422,6 +511,17 @@ final class RequiredPermissionWindowController: NSObject, NSWindowDelegate {
             y: visibleFrame.midY - frame.height / 2
         )
         window.setFrame(frame.integral, display: false)
+    }
+
+    private func clearAutomaticControlFocus(in window: NSWindow) {
+        window.makeFirstResponder(nil)
+        // SwiftUI may propose its first button once more after the hosting view
+        // completes the first layout pass. Clear that automatic proposal only;
+        // a later Tab press can still focus controls normally.
+        DispatchQueue.main.async { [weak window] in
+            guard let window, window.isKeyWindow else { return }
+            window.makeFirstResponder(nil)
+        }
     }
 
     func refreshDragAssistantState() {
@@ -447,7 +547,14 @@ private final class PermissionDragAssistantWindowController {
     private var panel: NSPanel?
     private var hostingController: NSHostingController<PermissionDragAssistantView>?
     private var settingsFollowTask: Task<Void, Never>?
+    private var hasSeenSystemSettingsWindow = false
+    private var missingSystemSettingsSamples = 0
     private(set) var permission: RequiredRecordingPermissionKind?
+    private let onAcceptedApplicationDrop: () -> Void
+
+    init(onAcceptedApplicationDrop: @escaping () -> Void) {
+        self.onAcceptedApplicationDrop = onAcceptedApplicationDrop
+    }
 
     func show(
         permission: RequiredRecordingPermissionKind,
@@ -458,7 +565,10 @@ private final class PermissionDragAssistantWindowController {
         self.permission = permission
         let root = PermissionDragAssistantView(
             permission: permission,
-            applicationURL: applicationURL
+            applicationURL: applicationURL,
+            onApplicationDragEnded: { [weak self] accepted in
+                self?.applicationDragEnded(accepted: accepted)
+            }
         )
         let host: NSHostingController<PermissionDragAssistantView>
         if let hostingController {
@@ -475,18 +585,26 @@ private final class PermissionDragAssistantWindowController {
         } else {
             panel = NSPanel(
                 contentRect: NSRect(origin: .zero, size: Self.panelSize),
-                styleMask: [.titled, .closable, .utilityWindow, .nonactivatingPanel],
+                styleMask: [.borderless, .nonactivatingPanel],
                 backing: .buffered,
                 defer: false
             )
-            panel.title = "添加 \(AppIdentity.displayName)"
             panel.isFloatingPanel = true
             panel.hidesOnDeactivate = false
             panel.isReleasedWhenClosed = false
+            // The helper must remain visible beside the active System
+            // Settings window while the user is still dragging. It stops
+            // floating and orders out as soon as that drag is accepted, before
+            // the secure authorization sheet appears.
             panel.level = .floating
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             panel.tabbingMode = .disallowed
             panel.appearance = NSAppearance(named: .darkAqua)
+            panel.isOpaque = false
+            panel.backgroundColor = .clear
+            panel.hasShadow = true
+            panel.contentMinSize = Self.panelSize
+            panel.contentMaxSize = Self.panelSize
             self.panel = panel
         }
         panel.contentViewController = host
@@ -506,9 +624,20 @@ private final class PermissionDragAssistantWindowController {
         beginFollowingSystemSettings()
     }
 
+    private func applicationDragEnded(accepted: Bool) {
+        guard accepted else { return }
+        // The helper has completed its only job. Remove it before System
+        // Settings asks for a password, then let the parent onboarding window
+        // yield its ordering and activation as well.
+        hide()
+        onAcceptedApplicationDrop()
+    }
+
     func hide() {
         settingsFollowTask?.cancel()
         settingsFollowTask = nil
+        hasSeenSystemSettingsWindow = false
+        missingSystemSettingsSamples = 0
         permission = nil
         panel?.orderOut(nil)
     }
@@ -526,6 +655,8 @@ private final class PermissionDragAssistantWindowController {
 
     private func beginFollowingSystemSettings() {
         settingsFollowTask?.cancel()
+        hasSeenSystemSettingsWindow = false
+        missingSystemSettingsSamples = 0
         settingsFollowTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 self?.followSystemSettingsWindow()
@@ -535,10 +666,30 @@ private final class PermissionDragAssistantWindowController {
     }
 
     private func followSystemSettingsWindow() {
-        guard let panel,
-              panel.isVisible,
-              let settingsFrame = Self.systemSettingsWindowFrame(),
-              let screen = Self.screen(containingMostOf: settingsFrame) else { return }
+        guard let panel, panel.isVisible else { return }
+
+        if hasSeenSystemSettingsWindow,
+           let frontmostIdentifier = NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+           frontmostIdentifier != "com.apple.systempreferences",
+           frontmostIdentifier != Bundle.main.bundleIdentifier {
+            hide()
+            return
+        }
+
+        guard let settingsFrame = Self.systemSettingsWindowFrame(),
+              let screen = Self.screen(containingMostOf: settingsFrame) else {
+            missingSystemSettingsSamples += 1
+            // Allow System Settings several seconds to launch on a cold Mac.
+            // Once its window has existed, closing it removes the helper in
+            // under half a second instead of leaving a permanent overlay.
+            let limit = hasSeenSystemSettingsWindow ? 4 : 40
+            if missingSystemSettingsSamples >= limit {
+                hide()
+            }
+            return
+        }
+        hasSeenSystemSettingsWindow = true
+        missingSystemSettingsSamples = 0
         let target = attachedFrame(
             to: settingsFrame,
             panelSize: panel.frame.size,
@@ -574,10 +725,19 @@ private final class PermissionDragAssistantWindowController {
         return NSRect(origin: NSPoint(x: x, y: y), size: panelSize).integral
     }
 
-    private static func systemSettingsWindowFrame() -> NSRect? {
-        guard let application = NSWorkspace.shared.runningApplications.first(where: {
+    static func activateSystemSettings() {
+        guard let application = systemSettingsApplication() else { return }
+        application.activate(options: [.activateAllWindows])
+    }
+
+    private static func systemSettingsApplication() -> NSRunningApplication? {
+        NSWorkspace.shared.runningApplications.first(where: {
             $0.bundleIdentifier == "com.apple.systempreferences"
-        }),
+        })
+    }
+
+    private static func systemSettingsWindowFrame() -> NSRect? {
+        guard let application = systemSettingsApplication(),
         let windowInfo = CGWindowListCopyWindowInfo(
             [.optionOnScreenOnly, .excludeDesktopElements],
             kCGNullWindowID

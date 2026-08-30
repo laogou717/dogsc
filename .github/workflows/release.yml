@@ -15,27 +15,147 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Import stable signing identity
+        env:
+          SIGNING_CERTIFICATE_P12: ${{ secrets.DOGSC_SIGNING_CERTIFICATE_P12 }}
+          SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.DOGSC_SIGNING_CERTIFICATE_PASSWORD }}
+          SIGNING_IDENTITY: ${{ secrets.DOGSC_SIGNING_IDENTITY_SHA1 }}
+        run: |
+          set -euo pipefail
+
+          [[ -n "${SIGNING_CERTIFICATE_P12:-}" ]] || {
+            echo "::error::DOGSC_SIGNING_CERTIFICATE_P12 is required"
+            exit 1
+          }
+          [[ -n "${SIGNING_CERTIFICATE_PASSWORD:-}" ]] || {
+            echo "::error::DOGSC_SIGNING_CERTIFICATE_PASSWORD is required"
+            exit 1
+          }
+          [[ -n "${SIGNING_IDENTITY:-}" ]] || {
+            echo "::error::DOGSC_SIGNING_IDENTITY_SHA1 is required"
+            exit 1
+          }
+
+          certificate_path="$RUNNER_TEMP/dogsc-signing.p12"
+          keychain_path="$RUNNER_TEMP/dogsc-signing.keychain-db"
+          keychain_password="$(uuidgen)$(uuidgen)"
+
+          printf '%s' "$SIGNING_CERTIFICATE_P12" | base64 -D > "$certificate_path"
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$certificate_path" \
+            -k "$keychain_path" \
+            -P "$SIGNING_CERTIFICATE_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$keychain_password" \
+            "$keychain_path"
+          security list-keychains -d user -s "$keychain_path"
+
+          security find-identity -v -p codesigning "$keychain_path" \
+            | grep -F "$SIGNING_IDENTITY"
+          echo "DOGSC_SIGNING_KEYCHAIN=$keychain_path" >> "$GITHUB_ENV"
+
       - name: Build app
         env:
           DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+          SIGNING_IDENTITY: ${{ secrets.DOGSC_SIGNING_IDENTITY_SHA1 }}
         run: |
           set -euo pipefail
           swift build -c release --product DogSC
 
           app="$RUNNER_TEMP/DogSC.app"
-          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/Wallpapers"
+          mkdir -p \
+            "$app/Contents/MacOS" \
+            "$app/Contents/Frameworks" \
+            "$app/Contents/Resources/Wallpapers"
           cp ".build/release/DogSC" "$app/Contents/MacOS/DogSC"
           cp "Resources/Info.plist" "$app/Contents/Info.plist"
           cp "Resources/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
           ditto "Resources/Wallpapers" "$app/Contents/Resources/Wallpapers"
 
+          sparkle_framework="$(
+            find .build/artifacts \
+              -type d \
+              -name Sparkle.framework \
+              -path '*macos-arm64_x86_64*' \
+              -print \
+              -quit
+          )"
+          [[ -n "$sparkle_framework" ]]
+          ditto "$sparkle_framework" "$app/Contents/Frameworks/Sparkle.framework"
+
+          embedded_sparkle="$app/Contents/Frameworks/Sparkle.framework"
+          sparkle_version="$embedded_sparkle/Versions/B"
           codesign \
             --force \
-            --deep \
+            --options runtime \
+            --timestamp=none \
+            --keychain "$DOGSC_SIGNING_KEYCHAIN" \
+            --sign "$SIGNING_IDENTITY" \
+            "$sparkle_version/XPCServices/Installer.xpc"
+          codesign \
+            --force \
+            --options runtime \
+            --timestamp=none \
+            --preserve-metadata=entitlements \
+            --keychain "$DOGSC_SIGNING_KEYCHAIN" \
+            --sign "$SIGNING_IDENTITY" \
+            "$sparkle_version/XPCServices/Downloader.xpc"
+          codesign \
+            --force \
+            --options runtime \
+            --timestamp=none \
+            --keychain "$DOGSC_SIGNING_KEYCHAIN" \
+            --sign "$SIGNING_IDENTITY" \
+            "$sparkle_version/Autoupdate"
+          codesign \
+            --force \
+            --options runtime \
+            --timestamp=none \
+            --keychain "$DOGSC_SIGNING_KEYCHAIN" \
+            --sign "$SIGNING_IDENTITY" \
+            "$sparkle_version/Updater.app"
+          codesign \
+            --force \
+            --options runtime \
+            --timestamp=none \
+            --keychain "$DOGSC_SIGNING_KEYCHAIN" \
+            --sign "$SIGNING_IDENTITY" \
+            "$embedded_sparkle"
+          codesign --verify --deep --strict "$embedded_sparkle"
+
+          release_tag="${GITHUB_REF_NAME#v}"
+          short_version="${release_tag%%-*}"
+          /usr/libexec/PlistBuddy \
+            -c "Set :CFBundleShortVersionString $short_version" \
+            "$app/Contents/Info.plist"
+          /usr/libexec/PlistBuddy \
+            -c "Set :CFBundleVersion $GITHUB_RUN_NUMBER" \
+            "$app/Contents/Info.plist"
+
+          codesign \
+            --force \
+            --options runtime \
+            --timestamp=none \
             --entitlements "Resources/DogSC.entitlements" \
-            --sign - \
+            --keychain "$DOGSC_SIGNING_KEYCHAIN" \
+            --sign "$SIGNING_IDENTITY" \
             "$app"
           codesign --verify --deep --strict "$app"
+
+          signature_details="$(codesign -dvvv "$app" 2>&1)"
+          requirements="$(codesign -dr - "$app" 2>&1)"
+          grep -F 'Authority=Apple Development:' <<< "$signature_details"
+          ! grep -F 'Signature=adhoc' <<< "$signature_details"
+          ! grep -F 'TeamIdentifier=not set' <<< "$signature_details"
+          grep -F 'identifier "cn.laogou.dogsc"' <<< "$requirements"
+          grep -F 'anchor apple generic' <<< "$requirements"
 
       - name: Create disk image
         run: |
@@ -104,12 +224,50 @@ jobs:
           diskutil eject "$mounted_image"
           trap - EXIT
 
+      - name: Generate signed update feed
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.DOGSC_SPARKLE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [[ -n "${SPARKLE_PRIVATE_KEY:-}" ]] || {
+            echo "::error::DOGSC_SPARKLE_PRIVATE_KEY is required"
+            exit 1
+          }
+
+          updates_dir="$RUNNER_TEMP/sparkle-updates"
+          disk_image="$RUNNER_TEMP/DogSC-${GITHUB_REF_NAME}-macOS.dmg"
+          appcast="$RUNNER_TEMP/appcast.xml"
+          mkdir -p "$updates_dir"
+          cp "$disk_image" "$updates_dir/"
+
+          generate_appcast="$(
+            find .build/artifacts \
+              -type f \
+              -name generate_appcast \
+              -print \
+              -quit
+          )"
+          [[ -x "$generate_appcast" ]]
+          printf '%s' "$SPARKLE_PRIVATE_KEY" \
+            | "$generate_appcast" \
+                --ed-key-file - \
+                --download-url-prefix \
+                "https://github.com/laogou717/dogsc/releases/download/${GITHUB_REF_NAME}/" \
+                --link "https://github.com/laogou717/dogsc" \
+                -o "$appcast" \
+                "$updates_dir"
+
+          xmllint --noout "$appcast"
+          grep -F "DogSC-${GITHUB_REF_NAME}-macOS.dmg" "$appcast"
+          grep -F 'sparkle:edSignature=' "$appcast"
+
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
             "$RUNNER_TEMP/DogSC-${GITHUB_REF_NAME}-macOS.dmg" \
+            "$RUNNER_TEMP/appcast.xml" \
             --latest \
             --notes "" \
             --title "DogSC $GITHUB_REF_NAME" \

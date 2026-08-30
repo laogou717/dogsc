@@ -561,6 +561,14 @@ struct EditorView: View {
         GeometryReader { proxy in
             let usesCompactPresentation = proxy.size.width < 1_320
             ZStack {
+                // `.fullSizeContentView` places this custom toolbar inside the
+                // transparent title bar. On compact MacBook layouts the SwiftUI
+                // layer otherwise owns every pixel, so AppKit never receives
+                // the system title-bar double click. This backmost native view
+                // handles only empty chrome; controls above retain their hits.
+                EditorWindowChromeInteraction()
+                    .accessibilityHidden(true)
+
                 titleEditor
                     .frame(maxWidth: usesCompactPresentation ? 260 : 340)
 

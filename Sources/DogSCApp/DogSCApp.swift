@@ -424,8 +424,47 @@ private final class EditorWindowController: NSObject, NSWindowDelegate {
                 NSApplication.shared.activate(ignoringOtherApps: true)
                 editorWindow.makeKey()
             }
+
+            // `.fullSizeContentView` leaves a thin native title-bar band above
+            // the custom SwiftUI toolbar on some MacBook layouts. The toolbar's
+            // backmost interaction view cannot cover that separate AppKit
+            // region, so handle its blank area at the owning window boundary.
+            // Standard traffic-light buttons are explicitly excluded.
+            if event.type == .leftMouseDown,
+               event.clickCount == 2,
+               self?.isBlankNativeTitlebarHit(
+                   event.locationInWindow,
+                   in: editorWindow
+               ) == true {
+                EditorWindowTitlebarDoubleClickAction.perform(on: editorWindow)
+                return nil
+            }
             return event
         }
+    }
+
+    private func isBlankNativeTitlebarHit(
+        _ location: NSPoint,
+        in window: NSWindow
+    ) -> Bool {
+        // contentLayoutRect excludes AppKit's native title-bar safe area even
+        // when the content view itself extends beneath that area.
+        guard location.y >= window.contentLayoutRect.maxY else { return false }
+
+        let trafficLights: [NSWindow.ButtonType] = [
+            .closeButton,
+            .miniaturizeButton,
+            .zoomButton,
+        ]
+        for buttonType in trafficLights {
+            guard let button = window.standardWindowButton(buttonType),
+                  let container = button.superview else { continue }
+            let buttonFrameInWindow = container.convert(button.frame, to: nil)
+            if buttonFrameInWindow.insetBy(dx: -4, dy: -4).contains(location) {
+                return false
+            }
+        }
+        return true
     }
 
     private func removeFirstMouseActivationMonitor() {

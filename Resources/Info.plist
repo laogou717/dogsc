@@ -22,6 +22,18 @@
     <string>0.1.0</string>
     <key>CFBundleVersion</key>
     <string>4</string>
+    <key>SUFeedURL</key>
+    <string>https://github.com/laogou717/dogsc/releases/latest/download/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>LqNJ1F91KtaIFru6eJ62fL9QnGrXt0gOCUEe1bAd9OQ=</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUAllowsAutomaticUpdates</key>
+    <true/>
+    <key>SUAutomaticallyUpdate</key>
+    <false/>
+    <key>SUScheduledCheckInterval</key>
+    <integer>86400</integer>
     <key>CFBundleDocumentTypes</key>
     <array>
         <dict>

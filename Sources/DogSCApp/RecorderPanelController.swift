@@ -68,6 +68,7 @@ final class DogSCApplicationDelegate: NSObject,
         installStatusItem()
         installSettingsShortcutMonitor()
         installKeyWindowMenuRefresh()
+        AppUpdateController.shared.startIfEligible()
         DispatchQueue.main.async { [weak self] in
             self?.refreshMainMenuBindings()
         }

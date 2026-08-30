@@ -31,7 +31,7 @@ private enum AppSettingsSection: String, CaseIterable, Identifiable {
 
     var preferredContentHeight: CGFloat {
         switch self {
-        case .general: 370
+        case .general: 440
         case .editor: 330
         case .recording, .permissions: 440
         }
@@ -40,6 +40,7 @@ private enum AppSettingsSection: String, CaseIterable, Identifiable {
 
 struct AppSettingsView: View {
     private let onPreferredContentHeightChange: (@MainActor (CGFloat) -> Void)?
+    @ObservedObject private var updateController = AppUpdateController.shared
 
     init(
         onPreferredContentHeightChange: (@MainActor (CGFloat) -> Void)? = nil
@@ -131,6 +132,7 @@ struct AppSettingsView: View {
         }
         .onAppear {
             refreshPermissionStates()
+            updateController.startIfEligible()
             onPreferredContentHeightChange?(selectedSection.preferredContentHeight)
         }
         .onChange(of: selectedSection) { _, section in
@@ -287,6 +289,69 @@ struct AppSettingsView: View {
                         .font(.caption)
                         .foregroundStyle(Color.red)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+
+        settingsCard(title: "软件更新", icon: "arrow.triangle.2.circlepath") {
+            VStack(spacing: 14) {
+                HStack(spacing: 12) {
+                    settingIconBadge(
+                        "arrow.down.app.fill",
+                        color: EditorTheme.platinumAccent
+                    )
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("DogSC \(updateController.currentVersionDescription)")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(Color.primary)
+                        Text(updateController.availabilityDescription)
+                            .font(.caption)
+                            .foregroundStyle(Color.white.opacity(0.50))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Spacer(minLength: 12)
+
+                    Button("检查更新") {
+                        updateController.checkForUpdates()
+                    }
+                    .buttonStyle(.editorQuiet)
+                    .disabled(
+                        !updateController.isFormalRelease
+                            || !updateController.isReady
+                    )
+                    .accessibilityHint("从 GitHub Release 检查并安装 DogSC 新版本")
+                }
+
+                Divider().overlay(Color.white.opacity(0.06))
+
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("自动检查更新")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(Color.primary)
+                        Text("每天检查一次；下载与安装前仍会显示确认界面。")
+                            .font(.caption)
+                            .foregroundStyle(Color.white.opacity(0.50))
+                    }
+
+                    Spacer()
+
+                    EditorToggle(
+                        isOn: Binding(
+                            get: {
+                                updateController.automaticallyChecksForUpdates
+                            },
+                            set: { enabled in
+                                updateController.setAutomaticallyChecksForUpdates(
+                                    enabled
+                                )
+                            }
+                        )
+                    )
+                    .disabled(!updateController.isFormalRelease)
+                    .accessibilityLabel("自动检查更新")
                 }
             }
         }
