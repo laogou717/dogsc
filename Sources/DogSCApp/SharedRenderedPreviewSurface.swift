@@ -24,6 +24,7 @@ struct SharedRenderedPreviewView: NSViewRepresentable {
     let pausedScreenImage: NSImage?
     let pausedCameraImage: NSImage?
     let wallpaperImage: NSImage?
+    let wallpaperVideoURL: URL?
     let stickerImages: [String: NSImage]
     /// 拖动摄像头期间由 SwiftUI 覆盖层直接绘制摄像头内容（与选择框同坐标、零滞后），
     /// 合成帧里暂时不含摄像头层，避免滞后残影（拖得越远越明显的“闪烁/两个影”）。
@@ -63,6 +64,7 @@ struct SharedRenderedPreviewView: NSViewRepresentable {
             pausedScreenImage: pausedScreenImage,
             pausedCameraImage: pausedCameraImage,
             wallpaperImage: wallpaperImage,
+            wallpaperVideoURL: wallpaperVideoURL,
             stickerImages: stickerImages,
             suppressCameraContent: suppressCameraContent,
             suppressScreenContent: suppressScreenContent
@@ -140,6 +142,9 @@ final class SharedRenderedPreviewNSView: NSView {
     private var pausedCameraFrame: CIImage?
     private var wallpaperImage: NSImage?
     private var wallpaperFrame: CIImage?
+    private var wallpaperVideoURL: URL?
+    private var wallpaperVideoHasLiveFrame = false
+    private let wallpaperVideoPlayback = PreviewWallpaperVideoPlayback()
     private var stickerImages: [String: NSImage] = [:]
     private var stickerFrames: [String: CIImage] = [:]
     private var wallpaperRevision: UInt64 = 0
@@ -236,6 +241,9 @@ final class SharedRenderedPreviewNSView: NSView {
         cameraFrame = nil
         wallpaperImage = nil
         wallpaperFrame = nil
+        wallpaperVideoURL = nil
+        wallpaperVideoHasLiveFrame = false
+        wallpaperVideoPlayback.invalidate()
         stickerImages = [:]
         stickerFrames = [:]
         wallpaperRevision &+= 1
@@ -358,6 +366,7 @@ final class SharedRenderedPreviewNSView: NSView {
         pausedScreenImage: NSImage?,
         pausedCameraImage: NSImage?,
         wallpaperImage: NSImage?,
+        wallpaperVideoURL: URL?,
         stickerImages: [String: NSImage],
         suppressCameraContent: Bool,
         suppressScreenContent: Bool
@@ -390,10 +399,27 @@ final class SharedRenderedPreviewNSView: NSView {
         }
         if self.wallpaperImage !== wallpaperImage {
             self.wallpaperImage = wallpaperImage
+            if wallpaperVideoURL == nil || !wallpaperVideoHasLiveFrame {
+                wallpaperFrame = Self.ciImage(from: wallpaperImage)
+            }
+            wallpaperRevision &+= 1
+            preparedBackgroundCache.reset()
+            contentRevision &+= 1
+        }
+        if self.wallpaperVideoURL != wallpaperVideoURL {
+            self.wallpaperVideoURL = wallpaperVideoURL
+            wallpaperVideoHasLiveFrame = false
+            wallpaperVideoPlayback.configure(url: wallpaperVideoURL)
+            // Keep the selected movie's cached first frame visible while its
+            // hardware decoder is preparing. The first live pixel atomically
+            // supersedes this poster below.
             wallpaperFrame = Self.ciImage(from: wallpaperImage)
             wallpaperRevision &+= 1
             preparedBackgroundCache.reset()
             contentRevision &+= 1
+        }
+        wallpaperVideoPlayback.onFrameAvailable = { [weak self] in
+            self?.renderCurrentFrame()
         }
         let stickerImagesChanged = self.stickerImages.count != stickerImages.count
             || stickerImages.contains { key, image in
@@ -468,6 +494,7 @@ final class SharedRenderedPreviewNSView: NSView {
             contentRevision &+= 1
         }
         self.renderTick = renderTick
+        wallpaperVideoPlayback.synchronize(to: renderTick)
         self.usesPausedFrame = usesPausedFrame
         let nextPresentationEpoch = PreviewPresentationEpoch(
             mediaGeneration: renderTick?.mediaGeneration,
@@ -530,6 +557,16 @@ final class SharedRenderedPreviewNSView: NSView {
             cameraFrame = decoded
             contentRevision &+= 1
         }
+        if let renderTick,
+           let videoWallpaperFrame = wallpaperVideoPlayback.copyFrame(
+               at: renderTick.outputTime
+           ) {
+            wallpaperFrame = videoWallpaperFrame
+            wallpaperVideoHasLiveFrame = true
+            wallpaperRevision &+= 1
+            preparedBackgroundCache.reset()
+            contentRevision &+= 1
+        }
 
         // Preserve an exact paused decode as the live-output fallback. The
         // controller intentionally releases its NSImage when playback starts;
@@ -583,10 +620,11 @@ final class SharedRenderedPreviewNSView: NSView {
         )
 
         // PRE-007: `semanticScene` is already evaluated at the selected raster
-        // size. Low mode therefore uses the view's Retina backing pixels,
-        // while full mode owns a source-native drawable that CAMetalLayer
-        // scales into the same view bounds. Rendering a full scene straight
-        // into a low-resolution drawable would only rename the old low mode.
+        // size. Flow mode therefore owns a deliberate 1× view raster, while
+        // full mode owns a source-native drawable; CAMetalLayer scales either
+        // into the same view bounds. Rendering a full scene straight into a
+        // smaller drawable would only rename the old low mode without reducing
+        // the expensive composition work.
         let backingScale = window?.backingScaleFactor
             ?? NSScreen.main?.backingScaleFactor
             ?? 2

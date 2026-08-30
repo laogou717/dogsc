@@ -58,10 +58,10 @@ struct EditorShortcutCheatsheet: View {
                 Button {
                     dismiss()
                 } label: {
-                    Image(systemName: "xmark.circle.fill")
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .bold))
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
+                .buttonStyle(.editorDismissIcon)
                 .help("关闭")
                 .accessibilityLabel("关闭快捷键速查")
             }
@@ -78,20 +78,32 @@ struct EditorShortcutCheatsheet: View {
                                 HStack(spacing: 10) {
                                     Text(entry.keys)
                                         .font(.system(.caption, design: .monospaced).weight(.medium))
-                                        .padding(.horizontal, 7)
-                                        .padding(.vertical, 3)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
                                         .background(
-                                            Color.white.opacity(0.08),
+                                            LinearGradient(
+                                                colors: [Color.white.opacity(0.12), Color.white.opacity(0.06)],
+                                                startPoint: .top,
+                                                endPoint: .bottom
+                                            ),
                                             in: RoundedRectangle(cornerRadius: 6, style: .continuous)
                                         )
                                         .overlay {
                                             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                                .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                                                .stroke(
+                                                    LinearGradient(
+                                                        colors: [Color.white.opacity(0.24), Color.white.opacity(0.08)],
+                                                        startPoint: .top,
+                                                        endPoint: .bottom
+                                                    ),
+                                                    lineWidth: 0.75
+                                                )
                                         }
-                                        .frame(minWidth: 92, alignment: .leading)
+                                        .shadow(color: Color.black.opacity(0.3), radius: 2, y: 1)
+                                        .frame(minWidth: 96, alignment: .leading)
                                     Text(entry.action)
                                         .font(.caption)
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(Color.primary.opacity(0.85))
                                     Spacer(minLength: 0)
                                 }
                             }
@@ -101,7 +113,7 @@ struct EditorShortcutCheatsheet: View {
                 .padding(18)
             }
         }
-        .frame(width: 420, height: 460)
-        .background(panelBackground)
+        .frame(width: 440, height: 480)
+        .background(EditorTheme.panelSurface)
     }
 }

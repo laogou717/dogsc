@@ -54,6 +54,7 @@ final class DogSCApplicationDelegate: NSObject,
         let model = AppModel()
         self.model = model
         WindowCoordinator.install(model: model)
+        ProjectStore.synchronizeSystemRecentProjects()
         didFinishLaunching = true
         let launchOpen = Self.projectURLToOpen(
             modelIsReady: true,
@@ -86,6 +87,9 @@ final class DogSCApplicationDelegate: NSObject,
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        // Files can be renamed or removed in Finder while DogSC is inactive.
+        // Keep the system-owned Dock recents honest when the app returns.
+        ProjectStore.synchronizeSystemRecentProjects()
         model?.resumeRequiredPermissionOnboardingAfterActivation()
         refreshMainMenuBindings()
     }
@@ -124,28 +128,49 @@ final class DogSCApplicationDelegate: NSObject,
         }
     }
 
-    /// Running-app Dock menu. ProjectStore also registers every opened package
-    /// with NSDocumentController so macOS can retain Recent Documents for the
-    /// Dock menu while the process is not running.
+    /// macOS already places NSDocumentController's recent files above this
+    /// custom section and current windows below it. Keep this menu limited to
+    /// app actions; repeating the project list here produced two competing
+    /// recent-project sections in the same Dock menu.
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
-        let menu = NSMenu(title: "最近项目")
-        let summaries = ProjectStore.recentProjectSummaries(limit: 8)
-        guard !summaries.isEmpty else {
-            menu.addItem(NSMenuItem(title: "暂无最近项目", action: nil, keyEquivalent: ""))
-            return menu
-        }
-        for summary in summaries {
-            let item = NSMenuItem(
-                title: summary.menuTitle,
-                action: #selector(openRecentProject(_:)),
-                keyEquivalent: ""
-            )
-            item.target = self
-            item.representedObject = summary.url.path
-            item.toolTip = summary.url.path
-            menu.addItem(item)
-        }
+        ProjectStore.synchronizeSystemRecentProjects()
+        let menu = NSMenu(title: AppIdentity.displayName)
+        menu.addItem(dockActionItem(
+            title: "显示\(AppIdentity.displayName)",
+            symbol: "macwindow",
+            action: #selector(showCurrentWindowFromStatusItem(_:))
+        ))
+        menu.addItem(dockActionItem(
+            title: "打开项目…",
+            symbol: "folder",
+            action: #selector(openProjectFromDock(_:))
+        ))
+        menu.addItem(.separator())
+        menu.addItem(dockActionItem(
+            title: "设置…",
+            symbol: "gearshape",
+            action: #selector(openSettingsFromStatusItem(_:))
+        ))
         return menu
+    }
+
+    private func dockActionItem(
+        title: String,
+        symbol: String,
+        action: Selector
+    ) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        item.image = NSImage(
+            systemSymbolName: symbol,
+            accessibilityDescription: title
+        )
+        return item
+    }
+
+    @objc private func openProjectFromDock(_ sender: NSMenuItem) {
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        model?.openProjectPicker()
     }
 
     @objc private func openRecentProject(_ sender: NSMenuItem) {
@@ -485,6 +510,7 @@ enum RecorderPanelPolicy {
     static let styleMask: NSWindow.StyleMask = [.borderless]
     static let setupSize = NSSize(width: setupWindowWidth(), height: 64)
     static let progressSize = NSSize(width: 320, height: 46)
+    static let savedFrameKey = "recorder.panel.last-frame"
 
     static func contentSize(
         for phase: AppPhase,
@@ -498,7 +524,7 @@ enum RecorderPanelPolicy {
         case .recording:
             NSSize(
                 width: recordingWindowWidth(recordsMicrophone: recordsMicrophone),
-                height: 46
+                height: 52
             )
         case .editor:
             nil
@@ -531,10 +557,22 @@ enum RecorderPanelPolicy {
         )
         return frame.integral
     }
+
+    static func initialFrame(
+        contentSize: NSSize,
+        visibleFrame: NSRect
+    ) -> NSRect {
+        NSRect(
+            x: visibleFrame.midX - contentSize.width / 2,
+            y: visibleFrame.midY - contentSize.height / 2,
+            width: contentSize.width,
+            height: contentSize.height
+        ).integral
+    }
 }
 
 @MainActor
-final class RecorderPanelController: NSObject {
+final class RecorderPanelController: NSObject, NSWindowDelegate {
     private let model: AppModel
     private let panel: RecorderPanel
     private let hostingController: NSHostingController<RecorderMainWindowRoot>
@@ -603,7 +641,36 @@ final class RecorderPanelController: NSObject {
 
         if !hasPositionedPanel {
             panel.setContentSize(contentSize)
-            panel.center()
+            let savedFrame = UserDefaults.standard.string(
+                forKey: RecorderPanelPolicy.savedFrameKey
+            ).map(NSRectFromString)
+            let pointer = NSEvent.mouseLocation
+            let pointerScreen = NSScreen.screens.first { $0.frame.contains(pointer) }
+                ?? NSScreen.main
+            let savedScreen = savedFrame.flatMap { saved in
+                NSScreen.screens.first { !$0.frame.intersection(saved).isEmpty }
+            }
+            let destinationScreen = savedScreen ?? pointerScreen
+            if let savedFrame, let destinationScreen {
+                panel.setFrame(
+                    RecorderPanelPolicy.frame(
+                        centeredOn: savedFrame,
+                        contentSize: contentSize,
+                        visibleFrame: destinationScreen.visibleFrame
+                    ),
+                    display: false
+                )
+            } else if let destinationScreen {
+                panel.setFrame(
+                    RecorderPanelPolicy.initialFrame(
+                        contentSize: contentSize,
+                        visibleFrame: destinationScreen.visibleFrame
+                    ),
+                    display: false
+                )
+            } else {
+                panel.center()
+            }
             hasPositionedPanel = true
         }
 
@@ -648,6 +715,10 @@ final class RecorderPanelController: NSObject {
         if panel.isVisible {
             panel.orderFrontRegardless()
         }
+    }
+
+    func hide() {
+        panel.orderOut(nil)
     }
 
     func bringToFront() {
@@ -703,6 +774,15 @@ final class RecorderPanelController: NSObject {
         ]
         panel.contentMinSize = initialSize
         panel.contentMaxSize = initialSize
+        panel.delegate = self
+    }
+
+    func windowDidMove(_ notification: Notification) {
+        guard hasPositionedPanel, notification.object as? NSWindow === panel else { return }
+        UserDefaults.standard.set(
+            NSStringFromRect(panel.frame),
+            forKey: RecorderPanelPolicy.savedFrameKey
+        )
     }
 }
 

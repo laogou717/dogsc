@@ -406,6 +406,22 @@ extension AppModel {
         }
     }
 
+    func displayedVideoSize(at url: URL) async -> CGSize? {
+        let asset = AVURLAsset(url: url)
+        guard let tracks = try? await asset.loadTracks(withMediaType: .video),
+              let track = tracks.first,
+              let naturalSize = try? await track.load(.naturalSize),
+              let preferredTransform = try? await track.load(.preferredTransform)
+        else { return nil }
+        let size = VideoExporter.displayedVideoSize(
+            naturalSize: naturalSize,
+            preferredTransform: preferredTransform
+        )
+        guard size.width.isFinite, size.height.isFinite,
+              size.width > 0, size.height > 0 else { return nil }
+        return size
+    }
+
 
     func chooseProjectSaveDestination() -> URL? {
         guard currentSession != nil else { return nil }
@@ -448,19 +464,10 @@ extension AppModel {
 
                 let moved = result.session
                 if !closeAfterSave {
-                    recordingURL = ProjectStore.resolve(
-                        relativePath: projectSnapshot.media?.screen.relativePath,
-                        session: moved
+                    relocateEditorMedia(
+                        for: projectSnapshot,
+                        to: moved
                     )
-                    cameraRecordingURL = ProjectStore.resolve(
-                        relativePath: projectSnapshot.media?.camera?.relativePath,
-                        session: moved
-                    )
-                    microphoneRecordingURL = ProjectStore.resolve(
-                        relativePath: projectSnapshot.media?.microphone?.relativePath,
-                        session: moved
-                    )
-                    editorContextRevision &+= 1
                 }
                 ProjectStore.registerRecentProject(moved.packageURL)
                 try? ProjectStore.setSavedProjectsFolder(
@@ -527,6 +534,7 @@ extension AppModel {
             }
             do {
                 try await ProjectPackageDisposal.moveToTrash(session.packageURL)
+                ProjectStore.forgetRecentProject(session.packageURL)
                 closeProject()
             } catch {
                 workspace.activate(session: session, isSaved: wasSaved)

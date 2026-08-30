@@ -20,10 +20,11 @@ extension CanvasPreview {
             )
         )
         // The selected preview quality is a real rendering contract, not a
-        // paused-frame-only inspection hint. Low mode uses the editor view's
-        // Retina backing pixels; full mode keeps the source-native raster for
-        // both playback and pause. Silently forcing playback back to low made
-        // this control appear broken and made authored edges change at Play.
+        // paused-frame-only inspection hint. Flow mode uses a deliberate 1×
+        // view raster so it materially reduces work even on Retina screens;
+        // full mode keeps the source-native raster for both playback and
+        // pause. Silently forcing playback back to low made this control
+        // appear broken and made authored edges change at Play.
         let previewRasterCanvasSize = CanvasPreviewRasterPolicy.pixelSize(
             points: canvasSize,
             displayScale: displayScale,
@@ -84,6 +85,11 @@ extension CanvasPreview {
         let frameScene = FrameSceneEvaluator.scene(
             project: evaluatedProject,
             time: playbackTime,
+            // The point-space scene owns canvas hit targets. Progress scene
+            // evaluation needs the same authored duration as the raster
+            // render plan; without it the visible band is rendered while its
+            // interaction target is omitted and clicks fall through to screen.
+            outputDuration: mediaSession.outputDuration,
             canvasSize: CompositionSize(
                 width: Double(canvasSize.width),
                 height: Double(canvasSize.height)
@@ -100,6 +106,7 @@ extension CanvasPreview {
             pointerTrack: mediaPlan?.pointer,
             pointerEvaluation: pointerEvaluation,
             cursorMetrics: cursorMetrics,
+            cursorMetricsByAssetID: CursorAssetLibrary.metricsByAssetID,
             zoomTrack: tracks.zoom,
             screenMotionTrack: tracks.screenMotion,
             cameraMotionTrack: tracks.cameraMotion
@@ -123,6 +130,7 @@ extension CanvasPreview {
                 cameraPlan: mediaPlan?.camera,
                 pointerTrack: mediaPlan?.pointer,
                 cursorMetrics: cursorMetrics,
+                cursorMetricsByAssetID: CursorAssetLibrary.metricsByAssetID,
                 zoomTrack: tracks.zoom,
                 screenMotionTrack: tracks.screenMotion,
                 cameraMotionTrack: tracks.cameraMotion
@@ -150,15 +158,24 @@ extension CanvasPreview {
         let frameDuration = 1 / Double(max(project.exportSettings.frameRate.rawValue, 1))
         switch editorStore.selection {
         case let .sticker(id):
-            guard let index = project.timeline.stickerClips.firstIndex(where: {
+            guard let clip = project.timeline.stickerClips.first(where: {
                 $0.id == id
             }) else { return project }
-            let clip = project.timeline.stickerClips[index]
             guard clip.timing.contains(playbackTime),
                   playbackTime - clip.timing.startTime <= frameDuration + 0.000_1
             else { return project }
             var authored = project
-            authored.timeline.stickerClips[index].enterDuration = 0
+            // Every sticker whose own first frame is under the paused playhead
+            // must be composable, not only the most recently selected one.
+            // Otherwise two images pasted together leave the earlier layer at
+            // opacity zero until playback starts.
+            for index in authored.timeline.stickerClips.indices {
+                let candidate = authored.timeline.stickerClips[index]
+                guard candidate.timing.contains(playbackTime),
+                      playbackTime - candidate.timing.startTime
+                        <= frameDuration + 0.000_1 else { continue }
+                authored.timeline.stickerClips[index].enterDuration = 0
+            }
             return authored
         case let .mosaic(id):
             guard let index = project.timeline.mosaicClips.firstIndex(where: {

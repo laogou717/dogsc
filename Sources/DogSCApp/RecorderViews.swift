@@ -2,24 +2,26 @@ import AppKit
 import RecorderCore
 import SwiftUI
 
-// 设计 token（2026-08-15 视觉语言重做，雾白极简方向）：
-// 界面本身是近乎单色的石墨分层，强调色只用米白；颜色全部留给内容
-// （片段、波形、壁纸、同步曲线）。旧的亮紫 accent 已废弃。
-let appBackground = Color(red: 0.078, green: 0.078, blue: 0.086)
-let panelBackground = Color(red: 0.105, green: 0.105, blue: 0.114)
-let dividerColor = Color.white.opacity(0.08)
+// 全局视觉基线收口到同一套暖石墨硬件语言。不用蓝紫做界面强调，
+// 颜色优先表达录制、警告与时间线内容身份。
+let appBackground = EditorTheme.backgroundDeep
+let panelBackground = EditorTheme.panelSurface
+let dividerColor = EditorTheme.hairline
 /// 全编辑器唯一交互强调色：米白。滑块、开关、选中态、主动作按钮共用。
-let editorAccent = Color(white: 0.92)
+let editorAccent = EditorTheme.platinumAccent
 /// 内容色：缩放/运镜片段的板岩蓝（不是界面强调色，只是该轨道的身份色）。
-let editorZoomClip = Color(red: 0.42, green: 0.52, blue: 0.70)
-/// 内容色：主片段的温润琥珀，比旧版高饱和橙更安静。
-let editorClipAmberTop = Color(red: 0.80, green: 0.56, blue: 0.24)
-let editorClipAmberBottom = Color(red: 0.64, green: 0.43, blue: 0.14)
-let setupBarBackground = Color(red: 0.075, green: 0.078, blue: 0.09)
+let editorZoomClip = Color(red: 0.58, green: 0.48, blue: 0.34)
+let editorCameraSyncClip = Color(red: 0.34, green: 0.56, blue: 0.47)
+let editorOverlayClip = Color(red: 0.58, green: 0.37, blue: 0.31)
+let editorProgressClip = Color(red: 0.34, green: 0.52, blue: 0.39)
+/// 内容色：主片段的经典暖琥珀橙（Orange + White 标志性主片段风格）。
+let editorClipAmberTop = Color(red: 0.82, green: 0.56, blue: 0.22)
+let editorClipAmberBottom = Color(red: 0.65, green: 0.42, blue: 0.14)
+let setupBarBackground = EditorTheme.recorderSurface
 
 func setupWindowWidth() -> CGFloat { 856 }
 func recordingWindowWidth(recordsMicrophone: Bool) -> CGFloat {
-    recordsMicrophone ? 360 : 288
+    recordsMicrophone ? 344 : 270
 }
 
 private struct RecorderHoverEffect: ViewModifier {
@@ -40,14 +42,27 @@ private struct RecorderHoverEffect: ViewModifier {
                         )
                     )
             }
-            // 不能用 scaleEffect 表达 hover：它只放大渲染、不放大命中区域，
-            // 按钮“看起来变大了”但可点击区域仍是原尺寸——点击放大后的边缘
-            // 无效，用户会误以为按钮失效。hover 反馈用高亮 + 亮度即可。
-            .brightness(isHovering && enabled ? 0.045 : 0)
-            .animation(.easeOut(duration: 0.14), value: isHovering)
+            .brightness(isHovering && enabled ? 0.05 : 0)
+            .scaleEffect(isHovering && enabled ? 1.018 : 1)
+            .animation(SpringMotion.interactive, value: isHovering)
             .onHover { hovering in
-                isHovering = hovering && enabled
+                withAnimation(SpringMotion.interactive) {
+                    isHovering = hovering && enabled
+                }
             }
+    }
+}
+
+/// 悬浮录制条保留现有 hover 层，按下反馈只负责让实体按钮短促下沉。
+/// 这避免主录制与退出按钮使用 plain style 后，点击时看起来完全静止。
+private struct RecorderPressButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed && isEnabled ? 0.965 : 1)
+            .brightness(configuration.isPressed && isEnabled ? -0.035 : 0)
+            .animation(SpringMotion.snappy, value: configuration.isPressed)
     }
 }
 
@@ -55,7 +70,7 @@ private extension View {
     func recorderHover(
         cornerRadius: CGFloat = 10,
         enabled: Bool = true,
-        highlightOpacity: Double = 0.065
+        highlightOpacity: Double = 0.075
     ) -> some View {
         modifier(
             RecorderHoverEffect(
@@ -79,24 +94,33 @@ private struct LiveMicrophoneLevelView: View {
 
         ZStack(alignment: .leading) {
             Capsule()
-                .fill(Color.white.opacity(0.22))
+                .fill(Color.black.opacity(0.35))
             Capsule()
-                .fill(meterColor)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.2, green: 0.82, blue: 0.45),
+                            meterColor
+                        ],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                )
                 .frame(width: width * CGFloat(displayedLevel))
                 .opacity(displayedLevel > 0 ? 1 : 0)
         }
         .frame(width: width, height: height)
         .overlay {
-            Capsule().stroke(Color.white.opacity(0.1), lineWidth: 0.5)
+            Capsule().stroke(Color.white.opacity(0.12), lineWidth: 0.5)
         }
-        .animation(.linear(duration: 0.08), value: level)
+        .animation(SpringMotion.interactive, value: level)
     }
 
     private var meterColor: Color {
         switch levelState.value {
-        case 0.86...: .red
-        case 0.68...: .orange
-        default: .green
+        case 0.86...: Color(red: 1.0, green: 0.28, blue: 0.28)
+        case 0.68...: Color(red: 1.0, green: 0.65, blue: 0.15)
+        default: Color(red: 0.25, green: 0.85, blue: 0.45)
         }
     }
 }
@@ -106,71 +130,80 @@ struct SetupView: View {
 
     var body: some View {
         HStack(spacing: 0) {
+            // 1. 录制对象是一个单选任务，用共享底座表达为一组，
+            // 避免四个散落按钮和设备状态混成同一层。
             HStack(spacing: 2) {
                 captureModeButton("显示器", icon: "display", source: .display)
                 captureModeButton("窗口", icon: "macwindow", source: .window)
                 captureModeButton("区域", icon: "viewfinder", source: .area)
                 captureModeButton("设备", icon: "iphone", source: .device)
             }
+            .padding(3)
+            .background(controlDeck(cornerRadius: 13))
+            .padding(.leading, 7)
 
-            Divider()
-                .frame(height: 32)
-                .overlay(dividerColor)
-                .padding(.horizontal, 6)
+            // 极细晶体微光垂线
+            crystalDivider
 
-            HStack(spacing: 4) {
+            // 2. 多媒体输入源底座
+            HStack(spacing: 2) {
                 cameraSelector
                 microphoneSelector
                 systemAudioSelector
             }
             .frame(width: 372)
+            .background(controlDeck(cornerRadius: 13))
 
-            Divider()
-                .frame(height: 32)
-                .overlay(dividerColor)
-                .padding(.horizontal, 6)
+            // 极细晶体微光垂线
+            crystalDivider
 
+            // 3. 参数、抽屉、退出与 Hero 录制主按键
             HStack(spacing: 4) {
                 RecorderPopupMenuButton(
-                    width: 44,
+                    width: 38,
                     items: recordingFormatMenuItems,
                     accessibilityLabel: "录制格式，当前\(recordingFormatSummary)",
                     accessibilityIdentifier: RecorderAccessibilityID.setupSettings,
-                    cornerRadius: 12,
-                    highlightOpacity: 0.11
+                    cornerRadius: 9,
+                    highlightOpacity: 0.12
                 ) {
-                    HStack(spacing: 3) {
+                    HStack(spacing: 2) {
                         Image(systemName: "slider.horizontal.3")
+                            .font(.system(size: 12, weight: .medium))
                         Image(systemName: "chevron.down")
-                            .font(.system(size: 8, weight: .bold))
+                            .font(.system(size: 7, weight: .bold))
+                            .foregroundStyle(.secondary)
                     }
-                    .frame(width: 44, height: 44)
+                    .frame(width: 38, height: 38)
                     .foregroundStyle(
                         model.captureReadiness.displayCanShowTargetRate
-                            ? Color.primary : Color.orange
+                            ? Color.primary.opacity(0.9) : Color.orange
                     )
                 }
-                .frame(width: 44, height: 44)
+                .frame(width: 38, height: 38)
                 .help(
                     model.captureReadiness.frameRateWarningText
                         ?? "录制格式：\(recordingFormatSummary)"
                 )
 
                 RecorderPopupMenuButton(
-                    width: 44,
+                    width: 38,
                     items: projectMenuItems,
                     accessibilityLabel: "项目与恢复",
-                    cornerRadius: 12,
-                    highlightOpacity: 0.11
+                    cornerRadius: 9,
+                    highlightOpacity: 0.12
                 ) {
-                    HStack(spacing: 3) {
+                    HStack(spacing: 2) {
                         Image(systemName: "folder")
+                            .font(.system(size: 12, weight: .medium))
                         Image(systemName: "chevron.down")
-                            .font(.system(size: 8, weight: .bold))
+                            .font(.system(size: 7, weight: .bold))
+                            .foregroundStyle(.secondary)
                     }
-                    .frame(width: 44, height: 44)
+                    .frame(width: 38, height: 38)
+                    .foregroundStyle(Color.primary.opacity(0.85))
                 }
-                .frame(width: 44, height: 44)
+                .frame(width: 38, height: 38)
                 .help("打开项目、恢复录制与设置保存位置")
 
                 Button {
@@ -178,61 +211,43 @@ struct SetupView: View {
                 } label: {
                     Image(systemName: "power")
                         .font(.system(size: 12, weight: .semibold))
-                        .frame(width: 44, height: 44)
+                        .frame(width: 38, height: 38)
+                        .foregroundStyle(Color.secondary)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(RecorderPressButtonStyle())
                 .help("退出\(AppIdentity.displayName)")
                 .accessibilityLabel("退出\(AppIdentity.displayName)")
                 .recorderHover(
-                    cornerRadius: 12,
-                    highlightOpacity: 0.11
+                    cornerRadius: 9,
+                    highlightOpacity: 0.12
                 )
 
-                Button(action: model.startRecording) {
-                    HStack(spacing: 7) {
-                        switch model.recorderStartAvailability {
-                        case .ready:
-                            Circle().fill(.white).frame(width: 8, height: 8)
-                        case .needsCaptureTarget:
-                            Circle()
-                                .stroke(Color.secondary, lineWidth: 1.5)
-                                .frame(width: 8, height: 8)
-                        case .preparingCamera:
-                            ProgressView()
-                                .controlSize(.mini)
-                                .frame(width: 10, height: 10)
-                        }
-                        Text(startButtonTitle).fontWeight(.semibold)
-                    }
-                    .frame(width: 116, height: 36)
-                    .background(startButtonBackground, in: Capsule())
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(
-                    model.canStartRecording
-                        ? Color.white
-                        : Color.secondary
-                )
-                .disabled(!model.canStartRecording)
-                .help(startButtonHelp)
-                .accessibilityLabel(startButtonHelp)
-                .accessibilityIdentifier(RecorderAccessibilityID.setupStart)
-                .recorderHover(
-                    cornerRadius: 18,
-                    enabled: model.canStartRecording,
-                    highlightOpacity: 0.08
-                )
+                heroStartButton
             }
+            .padding(.trailing, 6)
         }
-        .padding(.horizontal, 8)
+        .padding(.horizontal, 4)
         .frame(width: setupWindowWidth(), height: 64)
         .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(setupBarBackground)
+            RoundedRectangle(cornerRadius: 19, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [EditorTheme.panelRaised, setupBarBackground],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
         )
         .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.75)
+            RoundedRectangle(cornerRadius: 19, style: .continuous)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [EditorTheme.topHighlight, Color.white.opacity(0.035)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 0.75
+                )
                 .allowsHitTesting(false)
         }
         .accessibilityElement(children: .contain)
@@ -249,7 +264,17 @@ struct SetupView: View {
                 set: { if !$0 { model.errorMessage = nil } }
             )
         ) {
-            if model.errorMessage?.hasPrefix("没有摄像头采集权限") == true {
+            if model.errorMessage?.hasPrefix("保存目录不可用") == true {
+                Button("重新选择文件夹…") {
+                    model.errorMessage = nil
+                    model.chooseProjectsFolder()
+                }
+                Button("使用默认位置") {
+                    UserDefaults.standard.removeObject(forKey: ProjectStore.projectsFolderDefaultsKey)
+                    model.refreshRecentProjects()
+                    model.errorMessage = nil
+                }
+            } else if model.errorMessage?.hasPrefix("没有摄像头采集权限") == true {
                 Button("打开系统设置") {
                     model.errorMessage = nil
                     model.openCameraPrivacySettings()
@@ -275,6 +300,45 @@ struct SetupView: View {
         }
     }
 
+    private func controlDeck(cornerRadius: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .fill(
+                LinearGradient(
+                    colors: [Color.black.opacity(0.34), Color.black.opacity(0.18)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [Color.black.opacity(0.50), Color.white.opacity(0.065)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 0.75
+                    )
+            }
+    }
+
+    private var crystalDivider: some View {
+        Rectangle()
+            .fill(
+                LinearGradient(
+                    colors: [
+                        Color.white.opacity(0.02),
+                        Color.white.opacity(0.12),
+                        Color.white.opacity(0.02)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+            .frame(width: 1, height: 22)
+            .padding(.horizontal, 8)
+    }
+
     private var startButtonTitle: String {
         switch model.recorderStartAvailability {
         case .needsCaptureTarget: "开始录制"
@@ -283,8 +347,90 @@ struct SetupView: View {
         }
     }
 
-    private var startButtonBackground: Color {
-        model.canStartRecording ? captureSelectionAccent : Color.white.opacity(0.07)
+    private var heroStartButton: some View {
+        Button(action: model.startRecording) {
+            HStack(spacing: 7) {
+                switch model.recorderStartAvailability {
+                case .ready:
+                    ZStack {
+                        Circle()
+                            .fill(EditorTheme.recording)
+                            .frame(width: 8, height: 8)
+                            .shadow(color: EditorTheme.recording.opacity(0.82), radius: 4)
+                    }
+                case .needsCaptureTarget:
+                    Circle()
+                        .stroke(Color.secondary, lineWidth: 1.5)
+                        .frame(width: 8, height: 8)
+                case .preparingCamera:
+                    ProgressView()
+                        .controlSize(.mini)
+                        .frame(width: 10, height: 10)
+                }
+                Text(startButtonTitle)
+                    .font(.system(size: 13, weight: .semibold))
+            }
+            .frame(width: 112, height: 40)
+            .background(
+                model.canStartRecording
+                    ? LinearGradient(
+                        colors: [Color(red: 1.0, green: 0.99, blue: 0.96), EditorTheme.platinumAccent],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    : LinearGradient(
+                        colors: [Color.white.opacity(0.08), Color.white.opacity(0.04)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                in: RoundedRectangle(cornerRadius: 13, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .stroke(
+                        model.canStartRecording
+                            ? LinearGradient(
+                                colors: [Color.white, Color.white.opacity(0.4)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                            : LinearGradient(
+                                colors: [Color.white.opacity(0.1), Color.clear],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            ),
+                        lineWidth: 0.75
+                    )
+            )
+            .overlay {
+                if model.canStartRecording {
+                    RecorderReadyHalo()
+                        .allowsHitTesting(false)
+                }
+            }
+            .shadow(
+                color: model.canStartRecording ? Color.black.opacity(0.38) : Color.clear,
+                radius: 6,
+                y: 3
+            )
+        }
+        .buttonStyle(RecorderPressButtonStyle())
+        .foregroundStyle(
+            model.canStartRecording
+                ? Color.black.opacity(0.9)
+                : Color.secondary
+        )
+        .disabled(!model.canStartRecording)
+        .scaleEffect(model.canStartRecording ? 1.0 : 0.98)
+        .animation(SpringMotion.interactive, value: model.canStartRecording)
+        .help(startButtonHelp)
+        .accessibilityLabel(startButtonHelp)
+        .accessibilityIdentifier(RecorderAccessibilityID.setupStart)
+        .recorderHover(
+            cornerRadius: 13,
+            enabled: model.canStartRecording,
+            highlightOpacity: 0.08
+        )
     }
 
     private var startButtonHelp: String {
@@ -392,40 +538,70 @@ struct SetupView: View {
         let selected = source == model.confirmedCaptureSource
         let isChoosing = !selected && source == model.selectedCaptureSource
         return ZStack {
+            if selected {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [Color(red: 1.0, green: 0.99, blue: 0.96), EditorTheme.platinumAccent],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(
+                                LinearGradient(
+                                    colors: [Color.white, Color.white.opacity(0.28)],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                ),
+                                lineWidth: 0.75
+                            )
+                    )
+                    .shadow(color: Color.black.opacity(0.38), radius: 4, y: 2)
+            } else if isChoosing {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.orange.opacity(0.12))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(Color.orange.opacity(0.4), lineWidth: 0.75)
+                    )
+            }
+
             VStack(spacing: 3) {
-                Image(systemName: icon).font(.system(size: 13, weight: .medium))
-                Text(title).font(.caption2.weight(.medium))
+                Image(systemName: icon)
+                    .font(.system(size: 13, weight: selected ? .semibold : .medium))
+                Text(title)
+                    .font(.caption2.weight(selected ? .semibold : .medium))
             }
             .accessibilityHidden(true)
-            .frame(width: 44, height: 44)
-            .background(
+            .foregroundStyle(
                 selected
-                    ? captureSelectionAccent.opacity(0.22)
-                    : (isChoosing ? Color.white.opacity(0.055) : .clear),
-                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(
-                        selected
-                            ? captureSelectionAccent.opacity(0.95)
-                            : (isChoosing ? captureSelectionAccent.opacity(0.45) : .clear),
-                        lineWidth: 1
-                    )
+                    ? Color.black.opacity(0.86)
+                    : (isChoosing ? Color.orange : Color.secondary)
             )
 
             RecorderActionTrigger(
-                action: { model.selectCaptureSource(source) },
+                action: {
+                    withAnimation(SpringMotion.interactive) {
+                        model.selectCaptureSource(source)
+                    }
+                },
                 accessibilityLabel: selected
                     ? "\(title)，已选择"
                     : (isChoosing
                         ? "正在选择\(title)录制范围"
-                        : "选择\(title)录制范围")
+                        : "选择\(title)录制范围"),
+                accessibilityIdentifier: RecorderCaptureSourceAccessibilityID.value(
+                    for: source
+                )
             )
             .frame(width: 44, height: 44)
         }
         .frame(width: 44, height: 44)
-        .foregroundStyle(selected ? Color.white : Color.secondary)
+        .scaleEffect(selected ? 1.018 : 1.0)
+        .animation(SpringMotion.interactive, value: selected)
+        .animation(SpringMotion.interactive, value: isChoosing)
         .help(isChoosing ? "正在选择\(title)录制范围" : title)
     }
 
@@ -773,12 +949,90 @@ struct SetupView: View {
     }
 }
 
+/// The ready state should feel alive without adding another label, badge or
+/// persistent colour. A single outward light pass makes the primary action
+/// discoverable, while Reduce Motion keeps only the static outline.
+private struct RecorderReadyHalo: View {
+    @Environment(\.accessibilityReduceMotion) private var reducesMotion
+    @State private var expands = false
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 13, style: .continuous)
+            .stroke(EditorTheme.platinumAccent.opacity(reducesMotion ? 0.18 : 0.34), lineWidth: 1)
+            .scaleEffect(reducesMotion ? 1 : (expands ? 1.055 : 0.985))
+            .opacity(reducesMotion ? 1 : (expands ? 0 : 0.78))
+            .onAppear {
+                guard !reducesMotion else { return }
+                withAnimation(.easeOut(duration: 1.4).repeatForever(autoreverses: false)) {
+                    expands = true
+                }
+            }
+            .onChange(of: reducesMotion) { _, shouldReduce in
+                if shouldReduce {
+                    expands = false
+                } else {
+                    expands = false
+                    withAnimation(.easeOut(duration: 1.4).repeatForever(autoreverses: false)) {
+                        expands = true
+                    }
+                }
+            }
+    }
+}
+
+private struct RecordingPulseDot: View {
+    @Environment(\.accessibilityReduceMotion) private var reducesMotion
+    let isPaused: Bool
+    @State private var isPulsing = false
+
+    var body: some View {
+        ZStack {
+            if !isPaused && !reducesMotion {
+                Circle()
+                    .stroke(Color.red.opacity(isPulsing ? 0 : 0.6), lineWidth: 1.5)
+                    .scaleEffect(isPulsing ? 2.2 : 1.0)
+                    .opacity(isPulsing ? 0 : 0.8)
+                    .frame(width: 8, height: 8)
+            }
+            Circle()
+                .fill(
+                    isPaused
+                        ? LinearGradient(
+                            colors: [Color.orange, Color(red: 0.9, green: 0.5, blue: 0.1)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        : LinearGradient(
+                            colors: [Color(red: 1.0, green: 0.35, blue: 0.35), Color(red: 0.95, green: 0.15, blue: 0.15)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                )
+                .frame(width: 8, height: 8)
+                .shadow(
+                    color: (isPaused ? Color.orange : Color.red).opacity(0.85),
+                    radius: isPulsing && !isPaused ? 5 : 3
+                )
+        }
+        .onAppear {
+            guard !reducesMotion else { return }
+            withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: false)) {
+                isPulsing = true
+            }
+        }
+        .onChange(of: reducesMotion) { _, shouldReduce in
+            isPulsing = !shouldReduce
+        }
+        .animation(SpringMotion.interactive, value: isPaused)
+    }
+}
+
 struct RecordingBar: View {
     @ObservedObject var model: AppModel
     @State private var pendingAction: RecordingBarAction?
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
             recordingStatus
 
             Spacer(minLength: 4)
@@ -787,19 +1041,33 @@ struct RecordingBar: View {
                 .fixedSize(horizontal: true, vertical: false)
                 .layoutPriority(2)
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 10)
         .frame(
             width: recordingWindowWidth(
                 recordsMicrophone: model.configuration.recordsMicrophone
             ),
-            height: 46
+            height: 52
         )
         .background(
-            Capsule().fill(Color(red: 0.055, green: 0.058, blue: 0.067))
+            RoundedRectangle(cornerRadius: 17, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [EditorTheme.panelRaised, EditorTheme.recorderSurface],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
         )
         .overlay {
-            Capsule()
-                .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.75)
+            RoundedRectangle(cornerRadius: 17, style: .continuous)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [EditorTheme.topHighlight, Color.white.opacity(0.035)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 0.75
+                )
                 .allowsHitTesting(false)
         }
         .accessibilityElement(children: .contain)
@@ -839,34 +1107,46 @@ struct RecordingBar: View {
     }
 
     private var recordingStatus: some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(model.isRecordingPaused ? Color.orange : Color.red)
-                .frame(width: 8, height: 8)
-                .shadow(
-                    color: (model.isRecordingPaused ? Color.orange : Color.red).opacity(0.75),
-                    radius: 4
-                )
+        HStack(spacing: 9) {
+            HStack(spacing: 6) {
+                RecordingPulseDot(isPaused: model.isRecordingPaused)
+                Text(model.isRecordingPaused ? "已暂停" : "录制中")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(
+                        model.isRecordingPaused
+                            ? EditorTheme.amberAccent
+                            : Color.primary.opacity(0.88)
+                    )
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 28)
+            .background(
+                Color.black.opacity(0.26),
+                in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .stroke(Color.white.opacity(0.07), lineWidth: 0.75)
+            }
 
             TimelineView(.periodic(from: .now, by: 0.5)) { context in
                 Text(elapsedText(at: context.date))
-                    .font(.system(.callout, design: .monospaced).weight(.semibold))
+                    .font(.system(size: 14, weight: .semibold, design: .monospaced))
                     .frame(width: 54, alignment: .leading)
+                    .contentTransition(.numericText())
             }
 
-            recordingRateLabel
-                .font(.caption2.weight(.medium))
-                .frame(width: 48, alignment: .leading)
+            recordingQualityWarning
 
             if model.configuration.recordsMicrophone {
-                HStack(spacing: 5) {
+                HStack(spacing: 6) {
                     Image(systemName: "mic.fill")
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(.secondary)
                     LiveMicrophoneLevelView(
                         levelState: model.microphoneInputLevel,
-                        width: 48,
-                        height: 4
+                        width: 42,
+                        height: 5
                     )
                 }
                 .help("麦克风实时音量")
@@ -877,40 +1157,24 @@ struct RecordingBar: View {
     }
 
     @ViewBuilder
-    private var recordingRateLabel: some View {
-        if let measurement = model.recorder.liveMeasurement {
-            if model.isRecordingPaused {
-                Text("已暂停").foregroundStyle(.secondary)
-            } else if measurement.isMostlyIdle {
-                // 画面静止：SCK 只交付 idle 状态帧（不计入写入），
-                // 低 fps 是预期行为而不是性能问题。
-                Text("画面静止")
-                    .foregroundStyle(.secondary)
-                    .help(
-                        String(
-                            format: "画面静止：SCK 交付 %.0f fps（含静止帧）",
-                            measurement.sckDeliveryFramesPerSecond
-                        )
+    private var recordingQualityWarning: some View {
+        if let measurement = model.recorder.liveMeasurement,
+           !model.isRecordingPaused,
+           !measurement.isMostlyIdle,
+           (measurement.deliveryRatio < 0.92 || measurement.writerDroppedFrames > 0) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(EditorTheme.amberAccent)
+                .help(
+                    String(
+                        format: "写入 %.0f fps · 屏幕交付 %.0f fps"
+                            + (measurement.writerDroppedFrames > 0
+                                ? " · 编码丢弃 %d 帧" : ""),
+                        measurement.actualFramesPerSecond,
+                        measurement.sckDeliveryFramesPerSecond,
+                        measurement.writerDroppedFrames
                     )
-            } else {
-                Text(String(format: "%.0f fps", measurement.actualFramesPerSecond))
-                    .foregroundStyle(
-                        measurement.deliveryRatio >= 0.92 ? Color.secondary : Color.orange
-                    )
-                    .help(
-                        String(
-                            format: "写入 %.0f fps · SCK 交付 %.0f fps"
-                                + (measurement.writerDroppedFrames > 0
-                                    ? " · 编码丢弃 %d 帧" : ""),
-                            measurement.actualFramesPerSecond,
-                            measurement.sckDeliveryFramesPerSecond,
-                            measurement.writerDroppedFrames
-                        )
-                    )
-            }
-        } else {
-            Text(model.isRecordingPaused ? "已暂停" : "录制中")
-            .foregroundStyle(.secondary)
+                )
         }
     }
 
@@ -949,6 +1213,15 @@ struct RecordingBar: View {
             .frame(width: 34, height: 32)
             .help("更多录制操作")
         }
+        .padding(3)
+        .background(
+            Color.black.opacity(0.25),
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.white.opacity(0.065), lineWidth: 0.75)
+        }
     }
 
     private func recordingActionButton(
@@ -964,7 +1237,7 @@ struct RecordingBar: View {
                 .font(.system(size: 10, weight: .bold))
                 .frame(width: 28, height: 28)
                 .background(
-                    emphasized ? Color.white : Color.white.opacity(0.08),
+                    emphasized ? EditorTheme.platinumAccent : Color.white.opacity(0.07),
                     in: Circle()
                 )
                 .foregroundStyle(emphasized ? Color.black : Color.primary)
@@ -1035,20 +1308,21 @@ private enum RecordingBarAction {
 }
 
 enum InspectorTab: String, CaseIterable, Identifiable {
-    // 画布与屏幕曾分为两页，但两者写的是同一个 CanvasStyle：背景/边距/
-    // 屏幕位置/圆角描边都是"美化画面"这一项任务。合并为一个"画面"页，
-    // 页签数量与"这个参数到底在哪页"的猜测同步减少。
     case frame = "画面"
+    case opening = "开场"
     case zoom = "运镜"
     case cursor = "光标"
     case camera = "摄像头"
     case audio = "声音"
+    case mockup = "样机"
 
     var id: String { rawValue }
 
     var icon: String {
         switch self {
         case .frame: return "photo.on.rectangle.angled"
+        case .opening: return "sparkles.rectangle.stack"
+        case .mockup: return "iphone.gen3"
         case .zoom: return "viewfinder"
         case .cursor: return "cursorarrow.motionlines"
         case .camera: return "video.fill"
@@ -1059,11 +1333,24 @@ enum InspectorTab: String, CaseIterable, Identifiable {
 
 enum BackgroundPanelTab: String, CaseIterable, Identifiable {
     case wallpaper = "壁纸"
+    case pattern = "网格"
+    case dynamic = "动效"
     case gradient = "渐变"
-    case color = "颜色"
-    case image = "图片"
+    case color = "纯色"
+    case image = "自定"
 
     var id: String { rawValue }
+
+    var icon: String {
+        switch self {
+        case .wallpaper: return "photo.on.rectangle"
+        case .pattern: return "grid"
+        case .dynamic: return "waveform.path.ecg.rectangle"
+        case .gradient: return "circle.lefthalf.filled"
+        case .color: return "paintpalette.fill"
+        case .image: return "photo.badge.plus"
+        }
+    }
 }
 
 enum CropEdge {

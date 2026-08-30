@@ -16,7 +16,7 @@ enum ExportAssetRole: String, Equatable, Sendable {
         case .screenRecording: return "主录屏"
         case .cameraRecording: return "摄像头"
         case .microphoneRecording: return "麦克风"
-        case .wallpaper: return "背景图片"
+        case .wallpaper: return "背景素材"
         case .sticker: return "贴图"
         }
     }
@@ -72,7 +72,7 @@ enum VideoExporterError: LocalizedError, Equatable, Sendable {
     }
 }
 
-private struct LoadedVideoAsset {
+struct LoadedVideoAsset {
     let asset: AVURLAsset
     let track: AVAssetTrack
     let timeRange: CMTimeRange
@@ -100,9 +100,13 @@ final class VideoExporter: ObservableObject {
         exportProgress = 0
         lastExportURL = nil
         errorMessage = nil
-        let cursorSource = CursorAssetLibrary.resolvedAsset(
-            for: request.project.cursorStyle.assetID
-        )?.renderSource()
+        let cursorSources: [CursorAssetID: CursorRenderSource] = Dictionary(
+            uniqueKeysWithValues: CursorAssetLibrary.renderAssets.compactMap { asset in
+                guard asset.id != .automatic,
+                      let source = asset.renderSource() else { return nil }
+                return (asset.id, source)
+            }
+        )
         let progressRelay = ExportProgressRelay { [weak self] progress in
             self?.exportProgress = progress
         }
@@ -115,7 +119,7 @@ final class VideoExporter: ObservableObject {
             do {
                 try await Self.performExport(
                     request: request,
-                    cursorSource: cursorSource,
+                    cursorSources: cursorSources,
                     progressHandler: { progress in
                         progressRelay.submit(progress)
                     }
@@ -148,7 +152,7 @@ final class VideoExporter: ObservableObject {
 
     nonisolated private static func performExport(
         request: EditorExportRequest,
-        cursorSource: CursorRenderSource?,
+        cursorSources: [CursorAssetID: CursorRenderSource],
         progressHandler: (@Sendable (Double) -> Void)?
     ) async throws {
         // The request builder checked these versions on the main thread. Check
@@ -249,6 +253,18 @@ final class VideoExporter: ObservableObject {
         } else {
             wallpaperImage = nil
         }
+        let wallpaperVideo: LoadedVideoAsset?
+        if requiredMedia.backgroundVideo {
+            guard let wallpaperURL else {
+                throw VideoExporterError.missingAssetReference(.wallpaper)
+            }
+            wallpaperVideo = try await loadRequiredVideo(
+                at: wallpaperURL,
+                role: .wallpaper
+            )
+        } else {
+            wallpaperVideo = nil
+        }
         var stickerImages: [String: CIImage] = [:]
         stickerImages.reserveCapacity(request.assets.stickers.count)
         for (relativePath, asset) in request.assets.stickers {
@@ -305,11 +321,12 @@ final class VideoExporter: ObservableObject {
         let pipeline = try DirectExportPipeline(
             media: compositionBundle,
             wallpaperImage: wallpaperImage,
+            wallpaperVideo: wallpaperVideo,
             stickerImages: stickerImages,
             outputURL: temporaryOutputURL,
             canvasSize: canvasSize,
             project: project,
-            cursorSource: cursorSource,
+            cursorSources: cursorSources,
             frameRate: project.exportSettings.frameRate,
             cameraContentCrop: cameraContentCrop,
             progressHandler: progressHandler
@@ -497,6 +514,7 @@ final class VideoExporter: ObservableObject {
         cameraSource: CIImage? = nil,
         wallpaperSource: CIImage? = nil,
         cursorSource: CursorRenderSource? = nil,
+        cursorSources: [CursorAssetID: CursorRenderSource] = [:],
         pointerEvents: [PointerEventRecord] = [],
         pointerTrack: PointerTrack? = nil,
         projectPointerTrack: ProjectPointerTrack? = nil,
@@ -518,6 +536,11 @@ final class VideoExporter: ObservableObject {
             style: project.cursorStyle
         )
         let activeCameraSource = project.media?.camera == nil ? nil : cameraSource
+        let recordedAssetID = pointerEvaluation.cursor?.recordedCursorAssetID
+        let effectiveAssetID = project.cursorStyle.assetID == .automatic
+            ? (recordedAssetID ?? .systemArrow)
+            : project.cursorStyle.assetID
+        let effectiveCursorSource = cursorSources[effectiveAssetID] ?? cursorSource
         let frameScene = FrameSceneEvaluator.scene(
             project: project,
             time: time,
@@ -531,7 +554,8 @@ final class VideoExporter: ObservableObject {
             },
             pointerTrack: projectPointerTrack,
             pointerEvaluation: pointerEvaluation,
-            cursorMetrics: cursorSource?.metrics,
+            cursorMetrics: effectiveCursorSource?.metrics,
+            cursorMetricsByAssetID: cursorSources.mapValues(\.metrics),
             zoomTrack: zoomTrack
         )
         return SharedFrameRenderer.render(
@@ -540,7 +564,7 @@ final class VideoExporter: ObservableObject {
                 screen: source,
                 camera: activeCameraSource,
                 wallpaper: wallpaperSource,
-                cursor: cursorSource?.image
+                cursor: effectiveCursorSource?.image
             )
         )
     }

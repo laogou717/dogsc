@@ -72,7 +72,16 @@ struct EditorWallpaperResolver: Sendable {
         case let .systemImage(absolutePath):
             guard FileManager.default.fileExists(atPath: absolutePath) else { return nil }
             return URL(fileURLWithPath: absolutePath)
-        case .gradient, .solidColor:
+        case let .projectVideo(relativePath):
+            guard let projectSession else { return nil }
+            return ProjectStore.resolve(
+                relativePath: relativePath,
+                session: projectSession
+            )
+        case let .systemVideo(absolutePath):
+            guard FileManager.default.fileExists(atPath: absolutePath) else { return nil }
+            return URL(fileURLWithPath: absolutePath)
+        case .gradient, .solidColor, .pattern, .dynamicFlow:
             return nil
         }
     }
@@ -95,7 +104,7 @@ final class EditorHostActions: ObservableObject {
 
     private let openProjectAction: () -> Void
     private let deleteProjectAction: () -> Void
-    private let chooseWallpaperAction: () -> String?
+    private let chooseWallpaperAction: () -> BackgroundSource?
     private let importOverlayImageAction: () -> String?
     private let pasteOverlayImageAction: () -> String?
     private let setErrorAction: (String?) -> Void
@@ -103,7 +112,7 @@ final class EditorHostActions: ObservableObject {
     private let revealProjectAction: () -> Void
     private let exportSourceMediaAction: () -> Void
     private let importCameraAction: () -> Void
-    private let importDesktopWallpaperAction: () -> String?
+    private let importDesktopWallpaperAction: () -> BackgroundSource?
     private let renameProjectAction: (String) -> URL?
     private var subscriptions = Set<AnyCancellable>()
 
@@ -114,7 +123,7 @@ final class EditorHostActions: ObservableObject {
         errorMessageUpdates: AnyPublisher<String?, Never>,
         openProject: @escaping () -> Void,
         deleteProject: @escaping () -> Void,
-        chooseWallpaper: @escaping () -> String?,
+        chooseWallpaper: @escaping () -> BackgroundSource?,
         importOverlayImage: @escaping () -> String? = { nil },
         pasteOverlayImage: @escaping () -> String? = { nil },
         setError: @escaping (String?) -> Void,
@@ -122,7 +131,7 @@ final class EditorHostActions: ObservableObject {
         revealProject: @escaping () -> Void = {},
         exportSourceMedia: @escaping () -> Void = {},
         importCamera: @escaping () -> Void = {},
-        importDesktopWallpaper: @escaping () -> String? = { nil },
+        importDesktopWallpaper: @escaping () -> BackgroundSource? = { nil },
         renameProject: @escaping (String) -> URL? = { _ in nil }
     ) {
         self.persistenceStatus = persistenceStatus
@@ -164,7 +173,7 @@ final class EditorHostActions: ObservableObject {
         deleteProjectAction()
     }
 
-    func chooseWallpaper() -> String? {
+    func chooseWallpaper() -> BackgroundSource? {
         chooseWallpaperAction()
     }
 
@@ -200,7 +209,7 @@ final class EditorHostActions: ObservableObject {
         importCameraAction()
     }
 
-    func importDesktopWallpaper() -> String? {
+    func importDesktopWallpaper() -> BackgroundSource? {
         importDesktopWallpaperAction()
     }
 
@@ -338,7 +347,7 @@ extension EditorSessionContext {
             },
             chooseWallpaper: { [weak model] in
                 guard model?.editorSessionID == id.rawValue else { return nil }
-                return model?.chooseWallpaperAsset()?.relativePath
+                return model?.chooseWallpaperAsset()
             },
             importOverlayImage: { [weak model] in
                 guard model?.editorSessionID == id.rawValue else { return nil }
@@ -371,7 +380,7 @@ extension EditorSessionContext {
             },
             importDesktopWallpaper: { [weak model] in
                 guard model?.editorSessionID == id.rawValue else { return nil }
-                return model?.importCurrentDesktopWallpaper()?.relativePath
+                return model?.importCurrentDesktopWallpaper()
             },
             renameProject: { [weak model] newTitle in
                 guard model?.editorSessionID == id.rawValue,

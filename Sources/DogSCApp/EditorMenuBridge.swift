@@ -36,6 +36,9 @@ final class EditorMenuBridge: NSObject, NSMenuItemValidation {
     /// EditorView subscribes and presents its export sheet; the menu must not
     /// reach into SwiftUI state directly.
     let exportRequest = PassthroughSubject<Void, Never>()
+    /// The project toolbar only contains project-scoped actions. The system
+    /// Display menu routes this reference panel into the live editor sheet.
+    let shortcutCheatsheetRequest = PassthroughSubject<Void, Never>()
     /// AppKit cannot close the editor window while a SwiftUI sheet is still
     /// attached. Route Quit through the live editor once so it can dismiss
     /// transient panels before the normal save/termination path continues.
@@ -105,7 +108,6 @@ final class EditorMenuBridge: NSObject, NSMenuItemValidation {
                 })?.isHidden = !isVisible
             }
         }
-
         let fullScreenAction = #selector(NSWindow.toggleFullScreen(_:))
         mainMenu.items.first(where: { root in
             root.submenu !== NSApplication.shared.windowsMenu
@@ -121,6 +123,7 @@ final class EditorMenuBridge: NSObject, NSMenuItemValidation {
                 $0.submenu === windowsMenu
             })?.isHidden = !isVisible
         }
+
     }
 
     /// The app does not ship an Apple Help Book. Leaving SwiftUI's generated

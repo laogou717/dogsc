@@ -11,6 +11,7 @@ public enum ProjectValidationError: Error, Equatable, Sendable {
     case invalidAudio(reason: String)
     case invalidCursor(reason: String)
     case invalidMotion(reason: String)
+    case invalidOpening(reason: String)
     case invalidZoom(UUID, reason: String)
     case duplicateZoomID(UUID)
     case overlappingZoom(UUID, UUID)
@@ -30,6 +31,8 @@ extension ProjectValidationError: LocalizedError {
             return "光标参数无效：\(reason)"
         case let .invalidMotion(reason):
             return "动画参数无效：\(reason)"
+        case let .invalidOpening(reason):
+            return "开场编排参数无效：\(reason)"
         case let .invalidZoom(_, reason):
             return "缩放片段无效：\(reason)"
         case .duplicateZoomID:
@@ -166,6 +169,22 @@ public enum ProjectValidator {
         try validate(project.audio)
         try validate(project.cursorStyle)
         try validate(project.motion)
+        guard finite(project.openingSequence.duration, in: 0.4...8),
+              finite(project.openingSequence.stagger, in: 0...1.2),
+              project.openingSequence.stagger
+                <= project.openingSequence.maximumStagger(
+                    for: project.openingSequence.includedElements.count
+                ) + 0.000_001,
+              Set(project.openingSequence.includedElements).count
+                == project.openingSequence.includedElements.count,
+              Set(project.openingSequence.elementOrder)
+                == Set(OpeningSequenceElement.allCases),
+              project.openingSequence.elementOrder.count
+                == OpeningSequenceElement.allCases.count else {
+            throw ProjectValidationError.invalidOpening(
+                reason: "时长、间隔或元素顺序无效。"
+            )
+        }
         try validate(project.timeline)
     }
 

@@ -56,6 +56,7 @@ enum EditorTool: String, CaseIterable, Codable, Sendable {
 /// value differ (for example global motion settings inside the Zoom tab).
 enum EditorInteractionCommandScope: Equatable, Hashable, Sendable {
     case selection
+    case project
     case canvas
     case camera
     case audio
@@ -64,13 +65,22 @@ enum EditorInteractionCommandScope: Equatable, Hashable, Sendable {
 
     var fallbackSelection: EditorSelection {
         switch self {
-        case .selection, .canvas: return .canvas
+        case .selection, .project, .canvas: return .canvas
         case .camera: return .camera
         case .audio: return .audio(.system)
         case .cursor: return .cursor
         case .motion: return .zoomTrack
         }
     }
+}
+
+/// Determines what happens when another selection or gesture replaces an
+/// unfinished interaction. Direct-manipulation gestures remain cancellable;
+/// controls such as the color picker can explicitly preserve their last live
+/// preview as one undoable command.
+enum EditorInteractionReplacementPolicy: Equatable, Sendable {
+    case cancel
+    case commit(actionName: String)
 }
 
 /// Exact domain edited by direct manipulation on the preview canvas.
@@ -97,7 +107,7 @@ enum EditorCanvasEditScope: Equatable, Hashable, Sendable {
 
     init(selection: EditorSelection?) {
         switch selection {
-        case .screen, .primarySegment:
+        case .screen:
             self = .screen(.base)
         case let .screenMotion(id):
             self = .screen(.motion(id))
@@ -217,6 +227,7 @@ struct EditorInteractionDraft: Equatable, Sendable {
     let tool: EditorTool
     let selection: EditorSelection
     let commandScope: EditorInteractionCommandScope
+    var replacementPolicy: EditorInteractionReplacementPolicy
     let baselineProject: RecorderProject
     var previewProject: RecorderProject
 
@@ -225,12 +236,14 @@ struct EditorInteractionDraft: Equatable, Sendable {
         tool: EditorTool,
         selection: EditorSelection,
         commandScope: EditorInteractionCommandScope = .selection,
+        replacementPolicy: EditorInteractionReplacementPolicy = .cancel,
         project: RecorderProject
     ) {
         self.id = id
         self.tool = tool
         self.selection = selection
         self.commandScope = commandScope
+        self.replacementPolicy = replacementPolicy
         self.baselineProject = project
         self.previewProject = project
     }
@@ -441,6 +454,8 @@ enum ProjectCommand: Equatable, Sendable {
         let after = draft.previewProject
 
         switch draft.commandScope {
+        case .project:
+            return replacingProject(before, with: after)
         case .canvas:
             return replacingCanvas(in: before, with: after.canvas)
         case .camera:
@@ -456,7 +471,7 @@ enum ProjectCommand: Equatable, Sendable {
         }
 
         switch draft.selection {
-        case .canvas, .screen, .primarySegment, .crop:
+        case .canvas, .screen, .crop:
             return replacingCanvas(in: before, with: after.canvas)
         case .camera:
             return replacingCamera(in: before, with: after.camera)
@@ -464,7 +479,7 @@ enum ProjectCommand: Equatable, Sendable {
             return replacingAudio(in: before, with: after.audio)
         case .cursor:
             return replacingCursor(in: before, with: after.cursorStyle)
-        case .zoomTrack, .screenMotionTrack:
+        case .primarySegment, .zoomTrack, .screenMotionTrack:
             return nil
         case .mosaic, .sticker, .progress:
             return replacingTimeline(in: before, with: after.timeline)
@@ -670,6 +685,8 @@ enum ProjectReducer {
             return .invalidProjectDomain("光标", reason: reason)
         case let .invalidMotion(reason):
             return .invalidProjectDomain("动画", reason: reason)
+        case let .invalidOpening(reason):
+            return .invalidProjectDomain("开场编排", reason: reason)
         case let .invalidZoom(id, reason):
             return .invalidZoom(id, reason: reason)
         case let .duplicateZoomID(id):
@@ -694,7 +711,7 @@ final class EditorStore: ObservableObject {
     @Published var selection: EditorSelection? {
         willSet {
             guard newValue != selection, interaction != nil else { return }
-            endInteraction()
+            resolveInteractionBeforeReplacement()
         }
     }
     @Published private(set) var interaction: EditorInteractionDraft?
@@ -766,17 +783,19 @@ final class EditorStore: ObservableObject {
     func beginInteraction(
         tool: EditorTool,
         selection: EditorSelection,
-        commandScope: EditorInteractionCommandScope = .selection
+        commandScope: EditorInteractionCommandScope = .selection,
+        replacementPolicy: EditorInteractionReplacementPolicy = .cancel
     ) {
         // Beginning a second gesture is an explicit replacement, even when it
         // targets the same selection. A stale preview must never become the
         // baseline of a newer gesture.
-        endInteraction()
+        resolveInteractionBeforeReplacement()
         self.selection = selection
         interaction = EditorInteractionDraft(
             tool: tool,
             selection: selection,
             commandScope: commandScope,
+            replacementPolicy: replacementPolicy,
             project: project
         )
     }
@@ -786,18 +805,29 @@ final class EditorStore: ObservableObject {
     @discardableResult
     func beginContinuousInteraction(
         commandScope: EditorInteractionCommandScope,
-        selection requestedSelection: EditorSelection? = nil
+        selection requestedSelection: EditorSelection? = nil,
+        commitsWhenReplacedAs actionName: String? = nil
     ) -> Bool {
         let resolvedSelection = requestedSelection ?? selection ?? commandScope.fallbackSelection
-        if let interaction,
+        let replacementPolicy = actionName.map(EditorInteractionReplacementPolicy.commit(actionName:)) ?? .cancel
+        if var interaction,
            interaction.commandScope == commandScope,
            interaction.selection == resolvedSelection {
+            // A setter may create the same continuous interaction immediately
+            // before SwiftUI delivers its editing callback. Upgrade the shared
+            // draft instead of cancelling its first preview value.
+            if case .commit = replacementPolicy,
+               interaction.replacementPolicy != replacementPolicy {
+                interaction.replacementPolicy = replacementPolicy
+                self.interaction = interaction
+            }
             return true
         }
         beginInteraction(
             tool: .select,
             selection: resolvedSelection,
-            commandScope: commandScope
+            commandScope: commandScope,
+            replacementPolicy: replacementPolicy
         )
         return true
     }
@@ -1024,7 +1054,7 @@ final class EditorStore: ObservableObject {
             }
             return clearance(lhs) < clearance(rhs)
         } ?? candidatePositions[0]
-        let clip = StickerClip(
+        var clip = StickerClip(
             timing: OverlayTiming(
                 startTime: safeStart,
                 duration: max(
@@ -1037,6 +1067,7 @@ final class EditorStore: ObservableObject {
             width: activeStickers.isEmpty ? 0.38 : 0.28,
             layerIndex: (project.timeline.stickerClips.map(\.layerIndex).max() ?? -1) + 1
         )
+        AppPreferences.applyRememberedStickerCreationDefaults(to: &clip)
         var timeline = project.timeline
         timeline.stickerClips.append(clip)
         try replaceTimeline(with: timeline, actionName: actionName)
@@ -1250,6 +1281,19 @@ final class EditorStore: ObservableObject {
         var nextProject = project
         try ProjectReducer.apply(command, to: &nextProject)
 
+        if case let .sticker(id) = selectionBeforeApply,
+           let previousSticker = project.timeline.stickerClips.first(
+               where: { $0.id == id }
+           ),
+           let updatedSticker = nextProject.timeline.stickerClips.first(
+               where: { $0.id == id }
+           ) {
+            AppPreferences.rememberStickerCreationDefaultsIfChanged(
+                before: previousSticker,
+                after: updatedSticker
+            )
+        }
+
         // End the preview transaction before publishing the persisted snapshot,
         // so observers can never render a new project through an old draft.
         endInteraction()
@@ -1292,5 +1336,23 @@ final class EditorStore: ObservableObject {
 
     private func endInteraction() {
         interaction = nil
+    }
+
+    /// Selection changes and new gestures must not silently discard controls
+    /// whose UI promises automatic saving. Other transient canvas gestures
+    /// retain the existing cancellation behavior.
+    private func resolveInteractionBeforeReplacement() {
+        guard let interaction else { return }
+        switch interaction.replacementPolicy {
+        case .cancel:
+            endInteraction()
+        case let .commit(actionName):
+            do {
+                _ = try commitInteraction(actionName: actionName)
+            } catch {
+                endInteraction()
+                assertionFailure("Failed to preserve interaction before replacement: \(error)")
+            }
+        }
     }
 }

@@ -1,6 +1,79 @@
 import RecorderCore
 import SwiftUI
 
+private struct CanvasQuickEditorPlacement {
+    let point: CGPoint
+    let transitionAnchor: UnitPoint
+}
+
+private struct CanvasQuickMenuLabel: View {
+    let title: String
+    let systemImage: String
+    @State private var isHovered = false
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Label(title, systemImage: systemImage)
+            Image(systemName: "chevron.down")
+                .font(.system(size: 8, weight: .bold))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 7)
+        .frame(height: 30)
+        .background(
+            Color.white.opacity(isHovered ? 0.10 : 0.055),
+            in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .stroke(
+                    Color.white.opacity(isHovered ? 0.18 : 0.09),
+                    lineWidth: 0.75
+                )
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .scaleEffect(isHovered ? 1.018 : 1)
+        .onHover { hovering in
+            withAnimation(SpringMotion.interactive) {
+                isHovered = hovering
+            }
+        }
+    }
+}
+
+private struct CanvasQuickTextField: View {
+    let placeholder: String
+    @Binding var text: String
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        TextField(placeholder, text: $text)
+            .textFieldStyle(.plain)
+            .focused($isFocused)
+            .frame(width: 118)
+            .padding(.horizontal, 8)
+            .frame(height: 30)
+            .background(
+                Color.black.opacity(isFocused ? 0.34 : 0.24),
+                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(
+                        isFocused
+                            ? EditorTheme.platinumAccent.opacity(0.46)
+                            : Color.white.opacity(0.10),
+                        lineWidth: isFocused ? 1 : 0.75
+                    )
+            }
+            .shadow(
+                color: EditorTheme.platinumAccent.opacity(isFocused ? 0.12 : 0),
+                radius: 5
+            )
+            .animation(SpringMotion.interactive, value: isFocused)
+    }
+}
+
 extension CanvasPreview {
     @ViewBuilder
     func overlayQuickEditor(
@@ -8,13 +81,13 @@ extension CanvasPreview {
         canvasSize: CGSize,
         time: TimeInterval
     ) -> some View {
-        switch editorStore.selection {
-        case let .mosaic(id):
-            if let clip = editorStore.previewProject.timeline.mosaicClips.first(
-                where: { $0.id == id && $0.timing.contains(time) }
-            ), let quad = mosaicSelectionQuad(clip: clip, screen: scene.screen) {
-                mosaicQuickEditor(clip)
-                    .position(quickEditorPosition(
+        Group {
+            switch editorStore.selection {
+            case let .mosaic(id):
+                if let clip = editorStore.previewProject.timeline.mosaicClips.first(
+                    where: { $0.id == id && $0.timing.contains(time) }
+                ), let quad = mosaicSelectionQuad(clip: clip, screen: scene.screen) {
+                    let placement = quickEditorPlacement(
                         bounds: CGRect(
                             x: quad.bounds.x,
                             y: quad.bounds.y,
@@ -22,65 +95,120 @@ extension CanvasPreview {
                             height: quad.bounds.height
                         ),
                         canvasSize: canvasSize,
-                        width: 330
+                        width: 420
+                    )
+                    mosaicQuickEditor(clip)
+                        .position(placement.point)
+                        .transition(
+                            quickEditorTransition(anchor: placement.transitionAnchor)
+                        )
+                }
+            case let .sticker(id):
+                if let clip = editorStore.previewProject.timeline.stickerClips.first(
+                    where: { $0.id == id }
+                ), let sticker = scene.stickers.first(where: { $0.id == id }) {
+                    let width = canvasSize.width * sticker.width * sticker.scale
+                    let sourceSize = resolvedStickerImages[sticker.relativePath]?.size
+                        ?? CGSize(width: 1, height: 1)
+                    let height = width * max(sourceSize.height, 1) / max(sourceSize.width, 1)
+                    let center = CGPoint(
+                        x: canvasSize.width * (sticker.position.x + sticker.offset.x),
+                        y: canvasSize.height * (sticker.position.y + sticker.offset.y)
+                    )
+                    let bounds = rotatedStickerBounds(
+                        center: center,
+                        size: CGSize(width: width, height: height),
+                        rotation: sticker.rotationRadians
+                    )
+                    let rotationHandle = stickerRotationHandleGeometry(
+                        center: center,
+                        size: CGSize(width: width, height: height),
+                        rotation: sticker.rotationRadians,
+                        canvasSize: canvasSize
+                    )
+                    let interactionBounds = bounds.union(CGRect(
+                        x: rotationHandle.handle.x - 9,
+                        y: rotationHandle.handle.y - 9,
+                        width: 18,
+                        height: 18
                     ))
-            }
-        case let .sticker(id):
-            if let clip = editorStore.previewProject.timeline.stickerClips.first(
-                where: { $0.id == id }
-            ), let sticker = scene.stickers.first(where: { $0.id == id }) {
-                let width = canvasSize.width * sticker.width * sticker.scale
-                let sourceSize = resolvedStickerImages[sticker.relativePath]?.size
-                    ?? CGSize(width: 1, height: 1)
-                let height = width * max(sourceSize.height, 1) / max(sourceSize.width, 1)
-                let center = CGPoint(
-                    x: canvasSize.width * (sticker.position.x + sticker.offset.x),
-                    y: canvasSize.height * (sticker.position.y + sticker.offset.y)
-                )
-                stickerQuickEditor(clip)
-                    .position(quickEditorPosition(
-                        bounds: CGRect(
-                            x: center.x - width / 2,
-                            y: center.y - height / 2,
-                            width: width,
-                            height: height
-                        ),
+                    let placement = quickEditorPlacement(
+                        bounds: interactionBounds,
                         canvasSize: canvasSize,
-                        width: 310
-                    ))
-            }
-        case .progress:
-            if let overlay = editorStore.previewProject.timeline.progressOverlay,
-               let progress = scene.progress {
-                let bandHeight = max(
-                    CGFloat(progress.bandHeight) * canvasSize.width / 1_920,
-                    24
-                )
-                let centerY = progressCenterY(
-                    progress,
-                    canvasHeight: canvasSize.height,
-                    bandHeight: bandHeight
-                )
-                progressQuickEditor(overlay, time: time)
-                    .position(quickEditorPosition(
-                        bounds: CGRect(
-                            x: 0,
-                            y: centerY - bandHeight / 2,
-                            width: canvasSize.width,
-                            height: bandHeight
+                        width: 324
+                    )
+                    stickerQuickEditor(clip)
+                        .position(placement.point)
+                        .transition(
+                            quickEditorTransition(anchor: placement.transitionAnchor)
+                        )
+                }
+            case .progress:
+                if let overlay = editorStore.previewProject.timeline.progressOverlay,
+                   let progress = scene.progress {
+                    let bandHeight = max(
+                        CGFloat(progress.bandHeight) * canvasSize.width / 1_920,
+                        24
+                    )
+                    let centerY = progressCenterY(
+                        progress,
+                        canvasHeight: canvasSize.height,
+                        bandHeight: bandHeight
+                    )
+                    let width = canvasSize.width * CGFloat(
+                        min(max(progress.width, 0.05), 1)
+                    )
+                    let centerX = min(
+                        max(
+                            canvasSize.width * CGFloat(progress.position.x),
+                            width / 2
                         ),
-                        canvasSize: canvasSize,
-                        width: 390
+                        canvasSize.width - width / 2
+                    )
+                    let heightEdge = progressHeightResizeEdge(
+                        for: progress.placement
+                    )
+                    let heightHandleY = progressHeightHandleY(
+                        edge: heightEdge,
+                        centerY: centerY,
+                        bandHeight: bandHeight
+                    )
+                    let objectBounds = CGRect(
+                        x: centerX - width / 2,
+                        y: centerY - bandHeight / 2,
+                        width: width,
+                        height: bandHeight
+                    ).union(CGRect(
+                        x: centerX - 14,
+                        y: heightHandleY - 14,
+                        width: 28,
+                        height: 28
                     ))
+                    let placement = quickEditorPlacement(
+                        bounds: objectBounds,
+                        canvasSize: canvasSize,
+                        width: 324
+                    )
+                    progressQuickEditor(overlay, time: time)
+                        .position(placement.point)
+                        .transition(
+                            quickEditorTransition(anchor: placement.transitionAnchor)
+                        )
+                }
+            default:
+                EmptyView()
             }
-        default:
-            EmptyView()
         }
+        .animation(SpringMotion.fluid, value: editorStore.selection)
+    }
+
+    func quickEditorTransition(anchor: UnitPoint) -> AnyTransition {
+        .scale(scale: 0.94, anchor: anchor).combined(with: .opacity)
     }
 
     func mosaicQuickEditor(_ clip: MosaicClip) -> some View {
         quickEditorCard {
-            HStack(spacing: 9) {
+            HStack(spacing: 8) {
                 quickToggle(
                     title: "柔化",
                     symbol: "drop.halffull",
@@ -100,47 +228,68 @@ extension CanvasPreview {
                     }
                 }
                 Divider().frame(height: 22)
-                Image(systemName: "circle.lefthalf.filled")
-                    .foregroundStyle(.secondary)
-                Slider(
+                let editsSpotlight = clip.style == .spotlight
+                Label(
+                    editsSpotlight ? "暗度" : "强度",
+                    systemImage: "circle.lefthalf.filled"
+                )
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Color.white.opacity(0.68))
+                EditorSlider(
                     value: quickMosaicBinding(
                         id: clip.id,
-                        keyPath: \.intensity,
-                        fallback: clip.intensity
+                        keyPath: editsSpotlight
+                            ? \.spotlightDimming
+                            : \.intensity,
+                        fallback: editsSpotlight
+                            ? clip.spotlightDimming
+                            : clip.intensity
                     ),
-                    in: 0...1,
+                    range: editsSpotlight ? 0...0.75 : 0...1,
+                    formatValue: { "\(Int(($0 * 100).rounded()))%" },
                     onEditingChanged: { editing in
                         finishQuickOverlayInteraction(
                             editing: editing,
-                            actionName: "调整打码强度"
+                            actionName: editsSpotlight
+                                ? "调整突出暗度"
+                                : "调整柔化强度"
                         )
                     }
                 )
-                .frame(width: 62)
-                Image(systemName: "rectangle.roundedtop")
-                    .foregroundStyle(.secondary)
-                Slider(
+                .frame(width: 70)
+                .accessibilityLabel(editsSpotlight ? "突出暗度" : "柔化强度")
+                .accessibilityValue(
+                    "\(Int(((editsSpotlight ? clip.spotlightDimming : clip.intensity) * 100).rounded()))%"
+                )
+                Divider().frame(height: 22)
+                Label("圆角", systemImage: "square")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Color.white.opacity(0.68))
+                EditorSlider(
                     value: quickMosaicBinding(
                         id: clip.id,
                         keyPath: \.cornerRadius,
                         fallback: clip.cornerRadius
                     ),
-                    in: 0...0.5,
+                    range: 0...0.5,
+                    formatValue: { "\(Int(($0 * 100).rounded()))%" },
                     onEditingChanged: { editing in
                         finishQuickOverlayInteraction(
                             editing: editing,
-                            actionName: "调整打码圆角"
+                            actionName: "调整柔化圆角"
                         )
                     }
                 )
-                .frame(width: 62)
+                .frame(width: 70)
+                .accessibilityLabel("柔化区域圆角")
+                .accessibilityValue("\(Int((clip.cornerRadius * 100).rounded()))%")
             }
         }
     }
 
     func stickerQuickEditor(_ clip: StickerClip) -> some View {
         quickEditorCard {
-            HStack(spacing: 10) {
+            HStack(spacing: 9) {
                 Menu {
                     ForEach(StickerAnimationPreset.allCases, id: \.self) { preset in
                         Button(stickerAnimationTitle(preset)) {
@@ -150,46 +299,64 @@ extension CanvasPreview {
                         }
                     }
                 } label: {
-                    Label(stickerAnimationTitle(clip.animation), systemImage: "sparkles")
+                    CanvasQuickMenuLabel(
+                        title: stickerAnimationTitle(clip.animation),
+                        systemImage: "sparkles"
+                    )
                 }
                 .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .help("选择贴图动画")
+                .accessibilityLabel("贴图动画")
+                .accessibilityValue(stickerAnimationTitle(clip.animation))
                 Divider().frame(height: 22)
-                Image(systemName: "drop.halffull")
-                    .foregroundStyle(.secondary)
-                    .help("背景虚化")
-                Slider(
+                Label("虚化", systemImage: "drop.halffull")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Color.white.opacity(clip.hidesScreen ? 0.30 : 0.68))
+                EditorSlider(
                     value: quickStickerBinding(
                         id: clip.id,
                         keyPath: \.backdropBlur,
                         fallback: clip.backdropBlur
                     ),
-                    in: 0...60,
+                    range: 0...60,
+                    formatValue: { String(format: "%.0f", $0) },
                     onEditingChanged: { editing in
                         finishQuickOverlayInteraction(
                             editing: editing,
-                            actionName: "调整贴图背景虚化"
+                            actionName: "调整贴图录屏虚化"
                         )
                     }
                 )
                 .frame(width: 72)
-                Image(systemName: "timer")
-                    .foregroundStyle(.secondary)
-                    .help("入场时长")
-                Slider(
-                    value: quickStickerBinding(
-                        id: clip.id,
-                        keyPath: \.enterDuration,
-                        fallback: clip.enterDuration
-                    ),
-                    in: 0...2,
-                    onEditingChanged: { editing in
-                        finishQuickOverlayInteraction(
-                            editing: editing,
-                            actionName: "调整贴图入场时长"
-                        )
-                    }
+                .disabled(clip.hidesScreen)
+                .opacity(clip.hidesScreen ? 0.42 : 1)
+                .accessibilityLabel("贴图录屏虚化")
+                .accessibilityValue(
+                    clip.hidesScreen
+                        ? "仅背景模式下不可用"
+                        : String(format: "%.0f", clip.backdropBlur)
                 )
-                .frame(width: 62)
+                Divider().frame(height: 22)
+                quickToggle(
+                    title: "仅背景",
+                    symbol: "rectangle.slash",
+                    isSelected: clip.hidesScreen
+                ) {
+                    replaceSticker(
+                        id: clip.id,
+                        actionName: clip.hidesScreen
+                            ? "关闭贴图仅背景"
+                            : "开启贴图仅背景"
+                    ) {
+                        $0.hidesScreen.toggle()
+                    }
+                }
+                .help(
+                    clip.hidesScreen
+                        ? "恢复录屏画面"
+                        : "隐藏录屏画面，仅保留画布背景与贴图"
+                )
             }
         }
     }
@@ -203,40 +370,32 @@ extension CanvasPreview {
             .max { $0.time < $1.time }
         return quickEditorCard {
             HStack(spacing: 8) {
-                ForEach(ProgressOverlayPlacement.allCases, id: \.self) { placement in
-                    quickToggle(
-                        title: progressPlacementTitle(placement),
-                        symbol: progressPlacementSymbol(placement),
-                        isSelected: overlay.placement == placement
-                    ) {
-                        replaceProgress(actionName: "调整进度条位置") {
-                            $0.placement = placement
-                        }
-                    }
-                }
+                Label("当前看点", systemImage: "text.bubble")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Color.white.opacity(0.68))
                 Divider().frame(height: 22)
                 if let chapter {
-                    TextField(
-                        "节点文字",
+                    CanvasQuickTextField(
+                        placeholder: "节点文字",
                         text: quickProgressChapterTitleBinding(
                             chapter.id,
                             fallback: chapter.title
                         )
                     )
-                    .textFieldStyle(.plain)
-                    .frame(width: 105)
+                    .accessibilityLabel("当前看点文字")
                 } else {
                     Text("尚无节点")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .frame(width: 105)
+                        .frame(width: 118)
                 }
                 Button {
                     addProgressChapter(at: time)
                 } label: {
                     Label("新分段", systemImage: "plus")
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.editorQuiet)
+                .help("在当前播放位置添加看点")
             }
         }
     }
@@ -246,18 +405,28 @@ extension CanvasPreview {
     ) -> some View {
         content()
             .font(.system(size: 11, weight: .medium))
-            .padding(.horizontal, 10)
-            .frame(height: 38)
+            .padding(.horizontal, 11)
+            .frame(height: 48)
             .foregroundStyle(Color.white.opacity(0.94))
             .background(
-                Color(white: 0.055).opacity(0.97),
-                in: RoundedRectangle(cornerRadius: 10)
+                EditorTheme.cardElevated.opacity(0.94),
+                in: RoundedRectangle(cornerRadius: 11, style: .continuous)
             )
             .overlay {
-                RoundedRectangle(cornerRadius: 10)
-                    .stroke(Color.white.opacity(0.32), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .stroke(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(0.24),
+                                Color.white.opacity(0.08)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 0.75
+                    )
             }
-            .shadow(color: .black.opacity(0.55), radius: 9, y: 3)
+            .shadow(color: Color.black.opacity(0.45), radius: 10, y: 4)
     }
 
     func quickToggle(
@@ -266,29 +435,101 @@ extension CanvasPreview {
         isSelected: Bool,
         action: @escaping () -> Void
     ) -> some View {
-        Button(action: action) {
+        Button {
+            withAnimation(SpringMotion.interactive) {
+                action()
+            }
+        } label: {
             Label(title, systemImage: symbol)
-                .foregroundStyle(isSelected ? Color.black : Color.primary)
-                .padding(.horizontal, 7)
-                .frame(height: 24)
+                .foregroundStyle(isSelected ? Color.black.opacity(0.9) : Color.primary.opacity(0.85))
+                .padding(.horizontal, 8)
+                .frame(height: 28)
                 .background(
-                    isSelected ? editorAccent : Color.white.opacity(0.07),
-                    in: RoundedRectangle(cornerRadius: 6)
+                    isSelected
+                        ? LinearGradient(
+                            colors: [Color.white, Color(white: 0.88)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        : LinearGradient(
+                            colors: [Color.white.opacity(0.08), Color.white.opacity(0.04)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                    in: RoundedRectangle(cornerRadius: 7, style: .continuous)
                 )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .stroke(Color.white.opacity(isSelected ? 0.35 : 0.08), lineWidth: 0.5)
+                )
+                .scaleEffect(isSelected ? 1.02 : 1.0)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.editorThumbnail)
+        .animation(SpringMotion.interactive, value: isSelected)
+        .accessibilityLabel(title)
+        .accessibilityValue(isSelected ? "已选择" : "未选择")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
-    func quickEditorPosition(
+    private func quickEditorPlacement(
         bounds: CGRect,
         canvasSize: CGSize,
         width: CGFloat
-    ) -> CGPoint {
+    ) -> CanvasQuickEditorPlacement {
+        let editorHeight: CGFloat = 48
+        let edgeMargin: CGFloat = 8
+        let objectGap: CGFloat = 8
         let half = width / 2
-        let x = min(max(bounds.midX, half + 8), canvasSize.width - half - 8)
-        let above = bounds.minY - 27
-        let y = above >= 24 ? above : min(bounds.maxY + 27, canvasSize.height - 24)
-        return CGPoint(x: x, y: y)
+        let halfHeight = editorHeight / 2
+        let x = min(
+            max(bounds.midX, half + edgeMargin),
+            canvasSize.width - half - edgeMargin
+        )
+        let aboveY = bounds.minY - objectGap - halfHeight
+        let belowY = bounds.maxY + objectGap + halfHeight
+        let fitsAbove = aboveY - halfHeight >= edgeMargin
+        let fitsBelow = belowY + halfHeight <= canvasSize.height - edgeMargin
+
+        if fitsAbove {
+            return CanvasQuickEditorPlacement(
+                point: CGPoint(x: x, y: aboveY),
+                transitionAnchor: .bottom
+            )
+        }
+        if fitsBelow {
+            return CanvasQuickEditorPlacement(
+                point: CGPoint(x: x, y: belowY),
+                transitionAnchor: .top
+            )
+        }
+
+        let prefersAbove = bounds.midY >= canvasSize.height / 2
+        let proposedY = prefersAbove ? aboveY : belowY
+        let clampedY = min(
+            max(proposedY, halfHeight + edgeMargin),
+            canvasSize.height - halfHeight - edgeMargin
+        )
+        return CanvasQuickEditorPlacement(
+            point: CGPoint(x: x, y: clampedY),
+            transitionAnchor: prefersAbove ? .bottom : .top
+        )
+    }
+
+    private func rotatedStickerBounds(
+        center: CGPoint,
+        size: CGSize,
+        rotation: Double
+    ) -> CGRect {
+        let cosine = abs(cos(rotation))
+        let sine = abs(sin(rotation))
+        let width = size.width * cosine + size.height * sine
+        let height = size.width * sine + size.height * cosine
+        return CGRect(
+            x: center.x - width / 2,
+            y: center.y - height / 2,
+            width: width,
+            height: height
+        )
     }
 
     func quickMosaicBinding(
@@ -447,19 +688,4 @@ extension CanvasPreview {
         }
     }
 
-    func progressPlacementTitle(_ placement: ProgressOverlayPlacement) -> String {
-        switch placement {
-        case .top: return "顶部"
-        case .custom: return "自由"
-        case .bottom: return "底部"
-        }
-    }
-
-    func progressPlacementSymbol(_ placement: ProgressOverlayPlacement) -> String {
-        switch placement {
-        case .top: return "rectangle.topthird.inset.filled"
-        case .custom: return "arrow.up.and.down"
-        case .bottom: return "rectangle.bottomthird.inset.filled"
-        }
-    }
 }

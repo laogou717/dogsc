@@ -284,21 +284,6 @@ extension EditorInspectorView {
         )
     }
 
-    func zoomAnimationFocusComponentBinding(
-        _ index: Int,
-        keyPath: WritableKeyPath<NormalizedPoint, Double>
-    ) -> Binding<Double> {
-        let point = zoomAnimationFocusBinding(index)
-        return Binding(
-            get: { point.wrappedValue[keyPath: keyPath] },
-            set: { value in
-                var updated = point.wrappedValue
-                updated[keyPath: keyPath] = value
-                point.wrappedValue = updated
-            }
-        )
-    }
-
     func zoomAnimationOriginBinding(_ index: Int) -> Binding<ZoomKeyframeOrigin> {
         let id = editorStore.previewProject.zoomAnimations.indices.contains(index)
             ? editorStore.previewProject.zoomAnimations[index].id
@@ -361,12 +346,13 @@ extension EditorInspectorView {
                 guard let id,
                       let current = editorStore.previewProject.zoomAnimations.first(where: { $0.id == id })
                 else { return }
-                updateZoomAnimation(
+                updateZoomTimeAnimation(
                     EditorTimelineMath.moving(
                         animation: current,
                         to: value,
                         among: editorStore.previewProject.zoomAnimations,
-                        duration: timelineDuration
+                        duration: timelineDuration,
+                        defaultExit: editorStore.previewProject.motion.defaultZoomTransitionDuration
                     )
                 )
             }
@@ -388,12 +374,13 @@ extension EditorInspectorView {
                 guard let id,
                       let current = editorStore.previewProject.zoomAnimations.first(where: { $0.id == id })
                 else { return }
-                updateZoomAnimation(
+                updateZoomTimeAnimation(
                     EditorTimelineMath.resizing(
                         animation: current,
                         proposedEnd: current.startTime + value,
                         among: editorStore.previewProject.zoomAnimations,
-                        duration: timelineDuration
+                        duration: timelineDuration,
+                        defaultExit: editorStore.previewProject.motion.defaultZoomTransitionDuration
                     )
                 )
             }
@@ -403,21 +390,134 @@ extension EditorInspectorView {
     func zoomTimeStepper(
         _ title: String,
         value: Binding<Double>,
-        range: ClosedRange<Double>
+        range: ClosedRange<Double>,
+        resolvedValue: @escaping (Double) -> Double
     ) -> some View {
-        Stepper(value: value, in: range, step: 0.1) {
-            HStack {
-                Text(title)
-                Spacer()
-                Text(String(format: "%.2fs", value.wrappedValue))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-            }
+        let step = 0.1
+        let current = value.wrappedValue
+        let proposedDecrease = max(current - step, range.lowerBound)
+        let proposedIncrease = min(current + step, range.upperBound)
+        let decreasedValue = resolvedValue(proposedDecrease)
+        let increasedValue = resolvedValue(proposedIncrease)
+        let format = EditorSliderValueFormat.seconds
+        return EditorNumericStepControl(
+            title,
+            valueText: format.text(for: current),
+            canDecrease: decreasedValue < current - 0.000_1,
+            canIncrease: increasedValue > current + 0.000_1,
+            onDecrease: {
+                let proposed = max(value.wrappedValue - step, range.lowerBound)
+                value.wrappedValue = resolvedValue(proposed)
+            },
+            onIncrease: {
+                let proposed = min(value.wrappedValue + step, range.upperBound)
+                value.wrappedValue = resolvedValue(proposed)
+            },
+            editConfiguration: EditorNumericStepEditConfiguration(
+                draftText: format.editingText(for: current),
+                onBegin: beginZoomTimeEditing,
+                onPreview: { text in
+                    guard let parsed = format.value(from: text) else { return false }
+                    value.wrappedValue = resolvedValue(
+                        min(max(parsed, range.lowerBound), range.upperBound)
+                    )
+                    return true
+                },
+                onCommit: commitZoomTimeEditing,
+                onCancel: { _ in cancelZoomTimeEditing() }
+            ),
+            // Exact entry is the fast path for large changes. Keeping these two
+            // buttons discrete prevents press-and-hold from producing a long
+            // chain of separate document undo commands.
+            repeatsSteps: false
+        )
+    }
+
+    func resolvedZoomStartValue(_ index: Int, proposed: Double) -> Double {
+        guard editorStore.previewProject.zoomAnimations.indices.contains(index) else {
+            return proposed
         }
-        .font(.caption)
-        .padding(.horizontal, 8)
-        .frame(height: 32)
-        .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 7))
+        let current = editorStore.previewProject.zoomAnimations[index]
+        return EditorTimelineMath.moving(
+            animation: current,
+            to: proposed,
+            among: editorStore.previewProject.zoomAnimations,
+            duration: timelineDuration,
+            defaultExit: editorStore.previewProject.motion.defaultZoomTransitionDuration
+        ).startTime
+    }
+
+    func resolvedZoomDurationValue(_ index: Int, proposed: Double) -> Double {
+        guard editorStore.previewProject.zoomAnimations.indices.contains(index) else {
+            return proposed
+        }
+        let current = editorStore.previewProject.zoomAnimations[index]
+        let resized = EditorTimelineMath.resizing(
+            animation: current,
+            proposedEnd: current.startTime + proposed,
+            among: editorStore.previewProject.zoomAnimations,
+            duration: timelineDuration,
+            defaultExit: editorStore.previewProject.motion.defaultZoomTransitionDuration
+        )
+        return resized.duration
+    }
+
+    func beginZoomTimeEditing() {
+        guard let selectedZoomID else { return }
+        _ = editorStore.beginContinuousInteraction(
+            commandScope: .selection,
+            selection: .zoom(selectedZoomID)
+        )
+    }
+
+    func commitZoomTimeEditing() {
+        updateEditorContinuousInteraction(
+            store: editorStore,
+            isEditing: false,
+            commandScope: .selection,
+            actionName: "调整缩放时间",
+            onError: onError
+        )
+    }
+
+    func cancelZoomTimeEditing() {
+        guard editorStore.interaction?.commandScope == .selection else { return }
+        editorStore.cancelInteraction()
+    }
+
+    /// Inspector timing edits use the same draft repair as timeline dragging.
+    /// In particular, breaking or creating adjacency may change the effective
+    /// return window of the edited clip and its predecessor; publishing only
+    /// the selected clip would make the two editing surfaces disagree.
+    func updateZoomTimeAnimation(_ animation: ZoomAnimationClip) {
+        let ownsInteraction = editorStore.interaction?.commandScope == .selection
+            && editorStore.interaction?.selection == .zoom(animation.id)
+        if !ownsInteraction {
+            _ = editorStore.beginContinuousInteraction(
+                commandScope: .selection,
+                selection: .zoom(animation.id)
+            )
+        }
+        editorStore.updateInteraction { project in
+            guard let index = project.zoomAnimations.firstIndex(where: {
+                $0.id == animation.id
+            }) else { return }
+            project.zoomAnimations[index] = animation
+            for patch in EditorTimelineMath.exitNormalizations(
+                afterEditing: animation.id,
+                among: project.zoomAnimations,
+                defaultExit: project.motion.defaultZoomTransitionDuration
+            ) {
+                guard let patchIndex = project.zoomAnimations.firstIndex(where: {
+                    $0.id == patch.id
+                }) else { continue }
+                project.zoomAnimations[patchIndex] = patch
+            }
+            EditorTimelineAuthoredOrder.normalize(&project.timeline.zoomClips)
+        }
+        if !ownsInteraction {
+            commitZoomTimeEditing()
+        }
     }
 
     var cropSizeText: String {
@@ -425,11 +525,6 @@ extension EditorInspectorView {
         return "\(max(Int((crop.width * sourcePixelSize.width).rounded()), 1)) × "
             + "\(max(Int((crop.height * sourcePixelSize.height).rounded()), 1))"
     }
-
-    func isNearPosition(_ position: NormalizedPoint, x: Double, y: Double) -> Bool {
-        abs(position.x - x) < 0.08 && abs(position.y - y) < 0.08
-    }
-
 
     func updateZoomAnimation(_ animation: ZoomAnimationClip) {
         if editorStore.interaction?.commandScope == .selection,

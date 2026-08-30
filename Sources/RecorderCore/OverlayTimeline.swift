@@ -223,6 +223,14 @@ public struct StickerClip: Codable, Equatable, Identifiable, Sendable {
     public var enterDuration: TimeInterval
     public var exitDuration: TimeInterval
     public var backdropBlur: Double
+    /// Whether the sticker's backdrop blur also softens the independent
+    /// camera layer. The recorded screen/background remain the default target.
+    public var backdropBlurIncludesCamera: Bool
+    /// Temporarily reveal only the authored canvas background behind this
+    /// sticker. The transition follows the sticker's own entrance/exit curve.
+    public var hidesScreen: Bool
+    /// Temporarily suppress the camera while this sticker is visible.
+    public var hidesCamera: Bool
     public var layerIndex: Int
 
     public init(
@@ -245,6 +253,9 @@ public struct StickerClip: Codable, Equatable, Identifiable, Sendable {
         enterDuration: TimeInterval = 0.7,
         exitDuration: TimeInterval = 0.22,
         backdropBlur: Double = 20,
+        backdropBlurIncludesCamera: Bool = false,
+        hidesScreen: Bool = false,
+        hidesCamera: Bool = false,
         layerIndex: Int = 0
     ) {
         self.id = id
@@ -266,7 +277,107 @@ public struct StickerClip: Codable, Equatable, Identifiable, Sendable {
         self.enterDuration = enterDuration
         self.exitDuration = exitDuration
         self.backdropBlur = backdropBlur
+        self.backdropBlurIncludesCamera = backdropBlurIncludesCamera
+        self.hidesScreen = hidesScreen
+        self.hidesCamera = hidesCamera
         self.layerIndex = layerIndex
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case timing
+        case relativePath
+        case position
+        case width
+        case rotationDegrees
+        case opacity
+        case cornerRadius
+        case borderWidth
+        case borderColor
+        case shadowOpacity
+        case shadowRadius
+        case shadowOffsetX
+        case shadowOffsetY
+        case animation
+        case exitAnimation
+        case enterDuration
+        case exitDuration
+        case backdropBlur
+        case backdropBlurIncludesCamera
+        case hidesScreen
+        case hidesCamera
+        case layerIndex
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try container.decode(UUID.self, forKey: .id),
+            timing: try container.decode(OverlayTiming.self, forKey: .timing),
+            relativePath: try container.decode(String.self, forKey: .relativePath),
+            position: try container.decode(NormalizedPoint.self, forKey: .position),
+            width: try container.decode(Double.self, forKey: .width),
+            rotationDegrees: try container.decode(Double.self, forKey: .rotationDegrees),
+            opacity: try container.decode(Double.self, forKey: .opacity),
+            cornerRadius: try container.decode(Double.self, forKey: .cornerRadius),
+            borderWidth: try container.decode(Double.self, forKey: .borderWidth),
+            borderColor: try container.decode(HexColor.self, forKey: .borderColor),
+            shadowOpacity: try container.decode(Double.self, forKey: .shadowOpacity),
+            shadowRadius: try container.decode(Double.self, forKey: .shadowRadius),
+            shadowOffsetX: try container.decode(Double.self, forKey: .shadowOffsetX),
+            shadowOffsetY: try container.decode(Double.self, forKey: .shadowOffsetY),
+            animation: try container.decode(StickerAnimationPreset.self, forKey: .animation),
+            exitAnimation: try container.decodeIfPresent(
+                StickerAnimationPreset.self,
+                forKey: .exitAnimation
+            ),
+            enterDuration: try container.decode(Double.self, forKey: .enterDuration),
+            exitDuration: try container.decode(Double.self, forKey: .exitDuration),
+            backdropBlur: try container.decode(Double.self, forKey: .backdropBlur),
+            backdropBlurIncludesCamera: try container.decodeIfPresent(
+                Bool.self,
+                forKey: .backdropBlurIncludesCamera
+            ) ?? false,
+            hidesScreen: try container.decodeIfPresent(
+                Bool.self,
+                forKey: .hidesScreen
+            ) ?? false,
+            hidesCamera: try container.decodeIfPresent(
+                Bool.self,
+                forKey: .hidesCamera
+            ) ?? false,
+            layerIndex: try container.decode(Int.self, forKey: .layerIndex)
+        )
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(timing, forKey: .timing)
+        try container.encode(relativePath, forKey: .relativePath)
+        try container.encode(position, forKey: .position)
+        try container.encode(width, forKey: .width)
+        try container.encode(rotationDegrees, forKey: .rotationDegrees)
+        try container.encode(opacity, forKey: .opacity)
+        try container.encode(cornerRadius, forKey: .cornerRadius)
+        try container.encode(borderWidth, forKey: .borderWidth)
+        try container.encode(borderColor, forKey: .borderColor)
+        try container.encode(shadowOpacity, forKey: .shadowOpacity)
+        try container.encode(shadowRadius, forKey: .shadowRadius)
+        try container.encode(shadowOffsetX, forKey: .shadowOffsetX)
+        try container.encode(shadowOffsetY, forKey: .shadowOffsetY)
+        try container.encode(animation, forKey: .animation)
+        try container.encodeIfPresent(exitAnimation, forKey: .exitAnimation)
+        try container.encode(enterDuration, forKey: .enterDuration)
+        try container.encode(exitDuration, forKey: .exitDuration)
+        try container.encode(backdropBlur, forKey: .backdropBlur)
+        try container.encode(
+            backdropBlurIncludesCamera,
+            forKey: .backdropBlurIncludesCamera
+        )
+        try container.encode(hidesScreen, forKey: .hidesScreen)
+        try container.encode(hidesCamera, forKey: .hidesCamera)
+        try container.encode(layerIndex, forKey: .layerIndex)
     }
 }
 
@@ -291,6 +402,10 @@ public struct ProgressChapter: Codable, Equatable, Identifiable, Sendable {
 /// One project-wide authored playback indicator. Chapter times live on the
 /// same ripple output clock as every other visual track.
 public struct ProgressOverlay: Codable, Equatable, Sendable {
+    /// Warm content accent used only when the user has not chosen a fill.
+    /// Stored project colors remain authoritative after decoding.
+    public static let defaultFillColor = HexColor(rgb24: 0xD6_A1_5C)
+
     public var placement: ProgressOverlayPlacement
     public var position: NormalizedPoint
     public var width: Double
@@ -315,7 +430,7 @@ public struct ProgressOverlay: Codable, Equatable, Sendable {
         backgroundColor: HexColor = HexColor(rgb24: 0x18_19_1F),
         backgroundOpacity: Double = 0.88,
         trackColor: HexColor = HexColor(rgb24: 0xFF_FF_FF),
-        fillColor: HexColor = HexColor(rgb24: 0x78_8F_C4),
+        fillColor: HexColor = ProgressOverlay.defaultFillColor,
         nodeColor: HexColor = .white,
         textColor: HexColor = .white,
         chapters: [ProgressChapter] = [ProgressChapter(time: 0, title: "开场介绍")]
@@ -367,7 +482,7 @@ public struct ProgressOverlay: Codable, Equatable, Sendable {
         trackColor = try values.decodeIfPresent(HexColor.self, forKey: .trackColor)
             ?? HexColor(rgb24: 0xFF_FF_FF)
         fillColor = try values.decodeIfPresent(HexColor.self, forKey: .fillColor)
-            ?? HexColor(rgb24: 0x78_8F_C4)
+            ?? ProgressOverlay.defaultFillColor
         nodeColor = try values.decodeIfPresent(HexColor.self, forKey: .nodeColor)
             ?? .white
         textColor = try values.decodeIfPresent(HexColor.self, forKey: .textColor)

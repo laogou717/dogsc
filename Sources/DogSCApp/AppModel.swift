@@ -69,6 +69,34 @@ enum CaptureDevicePreferenceKey {
     static let microphoneName = "capture.microphone.device-name"
 }
 
+enum DeviceScreenFrameRecommendation {
+    static func style(
+        deviceName: String?,
+        width: Int? = nil,
+        height: Int? = nil
+    ) -> ScreenFrameStyle {
+        let normalizedName = deviceName?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        let isTablet = normalizedName.contains("ipad")
+            || normalizedName.contains("平板")
+            || normalizedName.contains("tablet")
+        let isLandscape: Bool
+        if let width, let height, width > 0, height > 0 {
+            isLandscape = width >= height
+        } else {
+            // Until the first real device frame arrives, portrait is the least
+            // surprising phone/tablet fallback. It is replaced immediately
+            // after capture starts and verified again from the finished file.
+            isLandscape = false
+        }
+        if isTablet {
+            return isLandscape ? .deviceTabletLandscape : .deviceTabletPortrait
+        }
+        return isLandscape ? .devicePhoneLandscape : .devicePhonePortrait
+    }
+}
+
 /// Fast microphone-meter updates live outside AppModel.objectWillChange.
 /// Otherwise every 55 ms level sample invalidates the complete setup toolbar,
 /// including camera menus and device-format discovery.
@@ -111,14 +139,16 @@ enum PointerTimelineAlignment {
                     time: 0,
                     location: lastPreRoll.location,
                     kind: .move,
-                    modifiers: lastPreRoll.modifiers
+                    modifiers: lastPreRoll.modifiers,
+                    cursorAssetID: lastPreRoll.cursorAssetID
                 ))
             }
             aligned.append(PointerEventRecord(
                 time: max(time, 0),
                 location: event.location,
                 kind: event.kind,
-                modifiers: event.modifiers
+                modifiers: event.modifiers,
+                cursorAssetID: event.cursorAssetID
             ))
         }
 
@@ -127,7 +157,8 @@ enum PointerTimelineAlignment {
                 time: 0,
                 location: lastPreRoll.location,
                 kind: .move,
-                modifiers: lastPreRoll.modifiers
+                modifiers: lastPreRoll.modifiers,
+                cursorAssetID: lastPreRoll.cursorAssetID
             ))
         }
         return aligned
@@ -212,9 +243,6 @@ final class AppModel: ObservableObject {
     @Published var hasCompletedRequiredPermissionOnboarding = UserDefaults.standard.bool(
         forKey: "permissions.required-onboarding-completed"
     )
-    var hasRequestedScreenPermissionThisLaunch = false
-    var hasRequestedAccessibilityPermissionThisLaunch = false
-    var hasStartedPermissionOnboardingThisLaunch = false
 
     /// A freshly recorded project may be discarded from its first editor
     /// session only while the user has not authored any edit. The project is
@@ -231,31 +259,20 @@ final class AppModel: ObservableObject {
     var isRefreshingWindows: Bool { captureSetup.isRefreshingWindows }
     var captureReadiness: CaptureReadiness { captureSetup.readiness }
 
-    var hasRequiredRecordingPermissions: Bool {
-        let screenPermissionIsReady = hasVerifiedScreenRecordingPermission
+    var hasScreenRecordingPermissionForOnboarding: Bool {
+        hasVerifiedScreenRecordingPermission
             || (hasCompletedRequiredPermissionOnboarding
                 && captureReadiness.hasScreenRecordingPermission)
-        return screenPermissionIsReady && hasAccessibilityPermission
+    }
+
+    var hasRequiredRecordingPermissions: Bool {
+        hasScreenRecordingPermissionForOnboarding && hasAccessibilityPermission
     }
 
     var showsRequiredPermissionGate: Bool {
         phase == .setup
             && (!hasRequiredRecordingPermissions
                 || !hasCompletedRequiredPermissionOnboarding)
-    }
-
-    var requiredPermissionActionTitle: String {
-        if isCheckingRequiredPermissions { return "正在检查…" }
-        if !captureReadiness.hasScreenRecordingPermission {
-            return hasRequestedScreenPermissionThisLaunch
-                ? "打开录屏设置" : "授权屏幕录制"
-        }
-        if !hasVerifiedScreenRecordingPermission { return "检查录屏权限" }
-        if !hasAccessibilityPermission {
-            return hasRequestedAccessibilityPermissionThisLaunch
-                ? "打开辅助功能设置" : "授权辅助功能"
-        }
-        return "进入 \(AppIdentity.displayName)"
     }
 
     let recorder = ScreenRecorder()
@@ -300,6 +317,10 @@ final class AppModel: ObservableObject {
             captureSetup: CaptureSetupController()
         )
         project = EditorStylePresetStore.applyingLastUsedStyle(to: project)
+        if project.canvas.backgroundSource == .defaultBundledImage,
+           let currentDesktop = SystemWallpaperLibrary.currentBackgroundSource() {
+            project.canvas.backgroundSource = currentDesktop
+        }
         applySavedSystemAudioPreference()
     }
 
@@ -516,12 +537,26 @@ final class AppModel: ObservableObject {
                 // defaults without inheriting the previous project's edits.
                 project.motion = project.motion.preparedForNewRecording()
                 recorderTransitionStage = .creatingProject
-                let session = try ProjectStore.createSession()
+                let recordingCreatedAt = Date()
+                project.createdAt = recordingCreatedAt
+                project.capture = plan.configuration
+                project.title = RecordingProjectNaming.title(
+                    for: plan.configuration,
+                    createdAt: recordingCreatedAt
+                )
+                let session = try ProjectStore.createSession(
+                    preferredTitle: project.title,
+                    createdAt: recordingCreatedAt
+                )
                 workspace.activate(session: session, isSaved: false)
                 recordingPerformanceMonitor = RecordingPerformanceMonitor(
                     volumeURL: session.packageURL
                 )
-                project.capture = plan.configuration
+                if plan.configuration.source == .device {
+                    project.canvas.screenFrame = DeviceScreenFrameRecommendation.style(
+                        deviceName: plan.configuration.deviceName
+                    )
+                }
                 project.media = plan.initialMediaManifest
                 _ = try await workspace.flush(project)
                 preparationLogger.notice("prepare: session created and flushed")
@@ -600,6 +635,12 @@ final class AppModel: ObservableObject {
                         )
                         guard recordingRuns.isCurrent(run.id) else { return }
                         recordingRuns.markStarted(.device, for: run.id)
+                        let dimensions = deviceRecorder.configuredVideoDimensions
+                        project.canvas.screenFrame = DeviceScreenFrameRecommendation.style(
+                            deviceName: plan.configuration.deviceName,
+                            width: dimensions?.width,
+                            height: dimensions?.height
+                        )
                     } else {
                         try await recorder.start(
                             runID: run.id, configuration: plan.configuration,
@@ -859,6 +900,17 @@ final class AppModel: ObservableObject {
             }
             if !recordingIsUsable {
                 recordingURL = nil
+            }
+            if recordingIsUsable,
+               run.plan.configuration.source == .device,
+               let recordingURL,
+               let displayedSize = await displayedVideoSize(at: recordingURL) {
+                guard recordingRuns.isCurrent(run.id) else { return }
+                project.canvas.screenFrame = DeviceScreenFrameRecommendation.style(
+                    deviceName: run.plan.configuration.deviceName,
+                    width: Int(displayedSize.width.rounded()),
+                    height: Int(displayedSize.height.rounded())
+                )
             }
             if var media = project.media {
                 if cameraRecordingURL.map(isNonemptyFile) != true {

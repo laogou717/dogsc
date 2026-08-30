@@ -35,6 +35,8 @@ struct EditorStylePreset: Codable, Equatable, Identifiable {
         // current background untouched instead of saving a broken reference.
         if case .projectImage = project.canvas.backgroundSource {
             includesBackground = false
+        } else if case .projectVideo = project.canvas.backgroundSource {
+            includesBackground = false
         } else {
             includesBackground = true
         }
@@ -62,9 +64,11 @@ struct EditorStylePreset: Codable, Equatable, Identifiable {
         switch source {
         case let .systemImage(absolutePath):
             return FileManager.default.fileExists(atPath: absolutePath)
-        case .projectImage:
+        case let .systemVideo(absolutePath):
+            return FileManager.default.fileExists(atPath: absolutePath)
+        case .projectImage, .projectVideo:
             return false
-        case .gradient, .solidColor, .bundledImage:
+        case .gradient, .solidColor, .bundledImage, .pattern, .dynamicFlow:
             return true
         }
     }

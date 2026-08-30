@@ -14,6 +14,7 @@ final class CaptureDisplaySelector {
     private var displays: [CaptureDisplay] = []
     private var selectedDisplayID: UInt32?
     private var localKeyMonitor: Any?
+    private var recorderMoveObservers: [NSObjectProtocol] = []
     private var activeToken: CaptureSelectionToken?
 
     func start(displays: [CaptureDisplay], token: CaptureSelectionToken) {
@@ -36,15 +37,21 @@ final class CaptureDisplaySelector {
             panel.orderFrontRegardless()
             return panel
         }
+        installRecorderMoveObservers()
+        updateAttachment()
         installKeyMonitor()
         NSApplication.shared.activate(ignoringOtherApps: true)
         let pointer = NSEvent.mouseLocation
         (panels.first(where: { $0.frame.contains(pointer) }) ?? panels.first)?
             .makeKeyAndOrderFront(nil)
+        DispatchQueue.main.async { [weak self] in
+            self?.panels.forEach { $0.makeFirstResponder(nil) }
+        }
     }
 
     func stop() {
         removeKeyMonitor()
+        removeRecorderMoveObservers()
         panels.forEach { $0.orderOut(nil) }
         panels = []
         displays = []
@@ -55,7 +62,7 @@ final class CaptureDisplaySelector {
     private func select(_ display: CaptureDisplay, token: CaptureSelectionToken) {
         guard activeToken == token else { return }
         selectedDisplayID = display.id
-        panels.forEach { $0.update(selected: $0.display.id == display.id) }
+        updateAttachment()
         onSelect?(display, token)
     }
 
@@ -99,6 +106,45 @@ final class CaptureDisplaySelector {
             self.localKeyMonitor = nil
         }
     }
+
+    private func installRecorderMoveObservers() {
+        removeRecorderMoveObservers()
+        guard let recorderWindow = RecorderCaptureSourceAnchorResolver.recorderWindow else {
+            return
+        }
+        let names: [Notification.Name] = [
+            NSWindow.didMoveNotification,
+            NSWindow.didResizeNotification,
+            NSWindow.didChangeScreenNotification,
+        ]
+        recorderMoveObservers = names.map { name in
+            NotificationCenter.default.addObserver(
+                forName: name,
+                object: recorderWindow,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.updateAttachment() }
+            }
+        }
+    }
+
+    private func removeRecorderMoveObservers() {
+        recorderMoveObservers.forEach(NotificationCenter.default.removeObserver)
+        recorderMoveObservers = []
+    }
+
+    private func updateAttachment() {
+        let anchor = RecorderCaptureSourceAnchorResolver.recorderFrame
+        panels.forEach { panel in
+            let panelAnchor = anchor.flatMap {
+                panel.frame.intersects($0) ? $0 : nil
+            }
+            panel.update(
+                selected: panel.display.id == selectedDisplayID,
+                anchorFrame: panelAnchor
+            )
+        }
+    }
 }
 
 private final class DisplaySelectionPanel: NSPanel {
@@ -108,9 +154,13 @@ private final class DisplaySelectionPanel: NSPanel {
     var onCancel: (() -> Void)?
 
     private var hostingView: NSHostingView<DisplaySelectionOverlay>!
+    private let screenFrame: CGRect
+    private let visibleFrame: CGRect
 
     init(screen: NSScreen, display: CaptureDisplay) {
         self.display = display
+        screenFrame = screen.frame
+        visibleFrame = screen.visibleFrame
         super.init(
             contentRect: screen.frame,
             styleMask: [.borderless],
@@ -123,22 +173,36 @@ private final class DisplaySelectionPanel: NSPanel {
         hasShadow = false
         level = CaptureWindowLevelPolicy.level(for: .selectionOverlay)
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
-        sharingType = .none
-        hostingView = NSHostingView(rootView: makeRoot(selected: false))
+        sharingType = CommandLine.arguments.contains("--design-review") ? .readOnly : .none
+        hostingView = NSHostingView(
+            rootView: makeRoot(selected: false, anchorFrame: nil)
+        )
         contentView = hostingView
     }
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
 
-    func update(selected: Bool) {
-        hostingView.rootView = makeRoot(selected: selected)
+    func update(selected: Bool, anchorFrame: CGRect?) {
+        hostingView.rootView = makeRoot(
+            selected: selected,
+            anchorFrame: anchorFrame
+        )
+        DispatchQueue.main.async { [weak self] in
+            self?.makeFirstResponder(nil)
+        }
     }
 
-    private func makeRoot(selected: Bool) -> DisplaySelectionOverlay {
+    private func makeRoot(
+        selected: Bool,
+        anchorFrame: CGRect?
+    ) -> DisplaySelectionOverlay {
         DisplaySelectionOverlay(
             display: display,
             selected: selected,
+            screenFrame: screenFrame,
+            visibleFrame: visibleFrame,
+            anchorFrame: anchorFrame,
             onSelect: { [weak self] in self?.onSelect?() },
             onStart: { [weak self] in self?.onStart?() },
             onCancel: { [weak self] in self?.onCancel?() }
@@ -149,64 +213,109 @@ private final class DisplaySelectionPanel: NSPanel {
 private struct DisplaySelectionOverlay: View {
     let display: CaptureDisplay
     let selected: Bool
+    let screenFrame: CGRect
+    let visibleFrame: CGRect
+    let anchorFrame: CGRect?
     let onSelect: () -> Void
     let onStart: () -> Void
     let onCancel: () -> Void
 
     var body: some View {
+        let cardSize = CGSize(width: 490, height: 199)
+        let cardCenter = CaptureSelectionCardPlacement.localCenter(
+            anchorFrame: anchorFrame,
+            cardSize: cardSize,
+            screenFrame: screenFrame,
+            visibleFrame: visibleFrame
+        )
         ZStack {
-            Color.black.opacity(selected ? 0.48 : 0.68)
+            Color.black.opacity(selected ? 0.46 : 0.64)
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(
-                    selected ? captureSelectionAccent : Color.white.opacity(0.13),
-                    lineWidth: selected ? 4 : 1
+                    selected ? captureSelectionAccent : Color.white.opacity(0.11),
+                    lineWidth: selected ? 3 : 1
                 )
                 .padding(10)
 
-            VStack(spacing: 16) {
-                Image(systemName: selected ? "display.and.arrow.down" : "display")
-                    .font(.system(size: 42, weight: .medium))
-                    .foregroundStyle(
-                        selected ? captureSelectionAccent : Color.white.opacity(0.82)
-                    )
-                    .symbolEffect(.bounce, value: selected)
+            VStack(alignment: .leading, spacing: 22) {
+                HStack(alignment: .center, spacing: 16) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(Color.white.opacity(0.065))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                    .stroke(Color.white.opacity(0.1))
+                            }
+                        Image(systemName: selected ? "display.and.arrow.down" : "display")
+                            .font(.system(size: 28, weight: .medium))
+                            .foregroundStyle(selected ? captureSelectionAccent : EditorTheme.platinumAccent)
+                            .symbolEffect(.bounce, value: selected)
+                    }
+                    .frame(width: 62, height: 62)
                     .accessibilityHidden(true)
-                Text(selected ? "已选择此显示器" : "选择此显示器")
-                    .font(.headline)
-                    .foregroundStyle(.secondary)
-                Text(display.name)
-                    .font(.system(size: 26, weight: .semibold))
-                    .foregroundStyle(.white)
-                Text("\(display.width) × \(display.height)  ·  \(display.refreshRate) Hz")
-                    .font(.system(.body, design: .monospaced).weight(.medium))
-                    .foregroundStyle(.secondary)
 
-                Button(action: selected ? onStart : onSelect) {
-                    Label(
-                        selected ? "开始录制" : "选择此显示器",
-                        systemImage: selected ? "record.circle" : "checkmark.circle"
-                    )
-                    .font(.system(size: 16, weight: .semibold))
-                    .frame(width: 210, height: 46)
-                    .background(
-                        captureSelectionAccent,
-                        in: RoundedRectangle(cornerRadius: 13)
-                    )
-                    .foregroundStyle(.white)
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("显示器")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color.white.opacity(0.48))
+                        Text(display.name)
+                            .font(.system(size: 23, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                        Text("\(display.width) × \(display.height)  ·  \(display.refreshRate) Hz")
+                            .font(.system(.callout, design: .monospaced).weight(.medium))
+                            .foregroundStyle(Color.white.opacity(0.55))
+                    }
+
+                    Spacer(minLength: 12)
+
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(selected ? captureSelectionAccent : Color.white.opacity(0.34))
+                            .frame(width: 6, height: 6)
+                        Text(selected ? "已锁定" : "待选择")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .foregroundStyle(selected ? captureSelectionAccent : Color.white.opacity(0.52))
+                    .padding(.horizontal, 11)
+                    .frame(height: 28)
+                    .background(Color.white.opacity(0.055), in: Capsule())
                 }
-                .buttonStyle(.plain)
 
-                Button("取消 · Esc", action: onCancel)
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
+                Rectangle()
+                    .fill(Color.white.opacity(0.08))
+                    .frame(height: 1)
+
+                HStack(spacing: 10) {
+                    Button(action: onCancel) {
+                        Label("取消", systemImage: "xmark")
+                            .font(.system(size: 14, weight: .semibold))
+                            .frame(width: 104, height: 44)
+                    }
+                    .buttonStyle(CaptureSelectionSecondaryButtonStyle())
+                    .focusEffectDisabled()
+                    .help("按 Esc 取消")
+
+                    Spacer()
+
+                    Button(action: selected ? onStart : onSelect) {
+                        Label(
+                            selected ? "开始录制" : "选择此显示器",
+                            systemImage: selected ? "record.circle" : "checkmark"
+                        )
+                        .font(.system(size: 15, weight: .semibold))
+                        .frame(width: 190, height: 44)
+                    }
+                    .buttonStyle(CaptureSelectionPrimaryButtonStyle())
+                    .focusEffectDisabled()
+                }
             }
-            .padding(30)
-            .frame(width: 430)
-            .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .stroke(Color.white.opacity(0.12), lineWidth: 1)
-            }
+            .padding(24)
+            .frame(width: 490)
+            .captureSelectionCardSurface()
+            .position(cardCenter)
+            .scaleEffect(selected ? 1.01 : 1)
+            .animation(SpringMotion.fluid, value: selected)
         }
         .ignoresSafeArea()
         .preferredColorScheme(.dark)

@@ -249,7 +249,8 @@ public struct TimelineMap: Equatable, Sendable {
                         time: segment.outputStart,
                         location: seed.location,
                         kind: .move,
-                        modifiers: seed.modifiers
+                        modifiers: seed.modifiers,
+                        cursorAssetID: seed.cursorAssetID
                     )
                 )
             }
@@ -259,7 +260,8 @@ public struct TimelineMap: Equatable, Sendable {
                         + (event.time - segment.sourceStart) / segment.playbackRate,
                     location: event.location,
                     kind: event.kind,
-                    modifiers: event.modifiers
+                    modifiers: event.modifiers,
+                    cursorAssetID: event.cursorAssetID
                 )
             })
             return TimelineMappedPointerSegment(

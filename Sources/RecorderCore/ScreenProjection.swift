@@ -264,11 +264,19 @@ public enum ScreenProjection {
         rotationX: Double,
         rotationY: Double,
         rotationZ: Double,
-        perspective: Double
+        perspective: Double,
+        anchor: CompositionPoint? = nil
     ) -> ProjectedScreenQuad {
-        let halfWidth = max(rect.width, 0) / 2
-        let halfHeight = max(rect.height, 0) / 2
-        let center = CompositionPoint(x: rect.midX, y: rect.midY)
+        let safeWidth = max(rect.width, 0)
+        let safeHeight = max(rect.height, 0)
+        let fallbackAnchor = CompositionPoint(x: rect.midX, y: rect.midY)
+        let pivot = if let anchor,
+                       anchor.x.isFinite,
+                       anchor.y.isFinite {
+            anchor
+        } else {
+            fallbackAnchor
+        }
         let maximumDimension = max(rect.width, rect.height, 1)
         let depth = min(max(perspective, 0), 2)
         let cameraDistance = depth > 0
@@ -312,16 +320,19 @@ public enum ScreenProjection {
                 projectionScale = 1
             }
             return CompositionPoint(
-                x: center.x + xAfterZ * projectionScale,
-                y: center.y + yAfterZ * projectionScale
+                x: pivot.x + xAfterZ * projectionScale,
+                y: pivot.y + yAfterZ * projectionScale
             )
         }
 
         return ProjectedScreenQuad(
-            topLeft: point(-halfWidth, -halfHeight),
-            topRight: point(halfWidth, -halfHeight),
-            bottomRight: point(halfWidth, halfHeight),
-            bottomLeft: point(-halfWidth, halfHeight)
+            topLeft: point(rect.x - pivot.x, rect.y - pivot.y),
+            topRight: point(rect.x + safeWidth - pivot.x, rect.y - pivot.y),
+            bottomRight: point(
+                rect.x + safeWidth - pivot.x,
+                rect.y + safeHeight - pivot.y
+            ),
+            bottomLeft: point(rect.x - pivot.x, rect.y + safeHeight - pivot.y)
         )
     }
 

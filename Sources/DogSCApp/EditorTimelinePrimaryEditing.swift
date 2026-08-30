@@ -177,10 +177,10 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
                     .foregroundStyle(.white)
             }
             .frame(width: 17, height: 17)
-            .frame(width: 22, height: 22)
+            .frame(width: 28, height: 28)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.editorInlineAction)
         .contentShape(Rectangle())
         .help(
             junction.hasRemovedSourceGap
@@ -212,10 +212,10 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
                     .foregroundStyle(.white)
             }
             .frame(width: 17, height: 17)
-            .frame(width: 22, height: 22)
+            .frame(width: 28, height: 28)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.editorInlineAction)
         .help("还原开头剪辑（已剪 \(timelineTimestamp(gap.removedDuration))）")
         .accessibilityLabel("还原开头剪辑")
         .accessibilityValue(timelineTimestamp(gap.removedDuration))
@@ -234,10 +234,10 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
                     .foregroundStyle(.white)
             }
             .frame(width: 17, height: 17)
-            .frame(width: 22, height: 22)
+            .frame(width: 28, height: 28)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.editorInlineAction)
         .help("还原结尾剪辑（已剪 \(timelineTimestamp(gap.removedDuration))）")
         .accessibilityLabel("还原结尾剪辑")
         .accessibilityValue(timelineTimestamp(gap.removedDuration))
@@ -258,7 +258,6 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
             primaryRetimeDraft = nil
             selectPrimarySegment(restoredID)
             seekTimeline(to: junction.outputTime)
-            isRestoreCutMode = false
         } catch {
             onError(error.localizedDescription)
         }
@@ -276,7 +275,6 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
             primaryRetimeDraft = nil
             selectPrimarySegment(restoredID)
             seekTimeline(to: 0)
-            isRestoreCutMode = false
         } catch {
             onError(error.localizedDescription)
         }
@@ -294,7 +292,6 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
             primaryRetimeDraft = nil
             selectPrimarySegment(restoredID)
             seekTimeline(to: gap.outputTime)
-            isRestoreCutMode = false
         } catch {
             onError(error.localizedDescription)
         }
@@ -312,7 +309,6 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
             primaryRetimeDraft = nil
             selectPrimarySegment(junction.previousSegmentID)
             seekTimeline(to: junction.outputTime)
-            isRestoreCutMode = false
         } catch {
             onError(error.localizedDescription)
         }
@@ -497,55 +493,6 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
             from: timelineMap,
             trimDraft: primaryTrimDraft,
             retimeDraft: primaryRetimeDraft
-        )
-    }
-
-    /// Pointer badges re-render at the parent-clock rate (60 Hz during
-    /// playback); the segment mapping is pure and only changes when the map or
-    /// the event array changes, so memoize it instead of re-sorting and
-    /// re-mapping every frame.
-    func timelinePointerClicks(outputEnd: TimeInterval) -> [PointerEventRecord] {
-        guard let timelineMap else { return [] }
-        let mappedPointerClicks = derivedPresentationCache.pointerClicks(
-            for: timelineMap
-        )
-        guard primaryTrimDraft != nil else { return mappedPointerClicks }
-        return EditorPrimaryTimelinePresentation.pointerClicks(
-            mappedPointerClicks,
-            beforeOutputEnd: outputEnd
-        )
-    }
-
-    /// 点击事件标记按当前缩放级别分级呈现：1× 全片浏览时只是一颗安静的
-    /// 小点（知道"这里有点击"即可），放大进入精剪上下文后才展开为带图标
-    /// 的完整徽章。雾白极简下用白底深图标，不再引入紫色。
-    func pointerEventBadge(_ event: PointerEventRecord, emphasized: Bool) -> some View {
-        let isRightClick = event.kind == .rightClick
-        return ZStack {
-            Circle()
-                .fill(isRightClick ? editorZoomClip : Color(white: 0.92))
-                .overlay(
-                    Circle().stroke(
-                        .black.opacity(emphasized ? 0.35 : 0.2),
-                        lineWidth: emphasized ? 1 : 0.5
-                    )
-                )
-            if emphasized {
-                Image(systemName: isRightClick ? "cursorarrow.click.2" : "cursorarrow.click")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundStyle(isRightClick ? .white : .black.opacity(0.78))
-            }
-        }
-        .frame(width: emphasized ? 18 : 9, height: emphasized ? 18 : 9)
-        .opacity(emphasized ? 1 : 0.55)
-        .animation(.easeOut(duration: 0.14), value: emphasized)
-        .help(
-            "\(isRightClick ? "右键" : "左键")点击 · "
-                + timelineTimestamp(event.time)
-        )
-        .accessibilityLabel(
-            "\(isRightClick ? "右键" : "左键")点击，"
-                + timelineTimestamp(event.time)
         )
     }
 
@@ -845,12 +792,17 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
     /// deactivates, leaving the source segment permanently dimmed. A direct
     /// drag has a deterministic end/cancel path and never creates an external
     /// pasteboard session.
-    func updatePrimarySegmentDrag(segmentID: UUID, translation: CGFloat) {
+    func updatePrimarySegmentDrag(
+        segmentID: UUID,
+        translation: CGFloat,
+        documentX: CGFloat
+    ) {
         if draggedPrimarySegmentID == nil {
             draggedPrimarySegmentID = segmentID
         }
         guard draggedPrimarySegmentID == segmentID else { return }
         primarySegmentDragTranslation = translation
+        primarySegmentDragDocumentX = documentX
     }
 
     func finishPrimarySegmentDrag(

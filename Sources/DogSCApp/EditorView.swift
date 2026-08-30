@@ -57,22 +57,140 @@ private struct EditorToolbarIconSurface: View {
 
     var body: some View {
         Image(systemName: systemName)
+            .font(.system(size: 13, weight: isActive ? .semibold : .medium))
             .foregroundStyle(foregroundColor)
-            .frame(width: 28, height: 28)
-            .background(
-                isHovered && isEnabled ? Color.white.opacity(0.07) : .clear,
-                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+            .frame(width: 32, height: 32)
+            .background {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(
+                        isActive
+                            ? EditorTheme.platinumAccent.opacity(isHovered ? 0.20 : 0.14)
+                            : Color.white.opacity(isHovered && isEnabled ? 0.085 : 0)
+                    )
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .stroke(
+                        isActive
+                            ? EditorTheme.platinumAccent.opacity(isHovered ? 0.52 : 0.30)
+                            : Color.white.opacity(isHovered && isEnabled ? 0.12 : 0),
+                        lineWidth: 0.75
+                    )
+            }
+            .shadow(
+                color: Color.black.opacity(isActive ? 0.16 : 0),
+                radius: 2,
+                y: 1
             )
-            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .scaleEffect(isHovered && isEnabled ? 1.045 : 1.0)
             .onHover { isHovered = $0 }
-            .animation(.easeOut(duration: 0.12), value: isHovered)
+            .animation(SpringMotion.interactive, value: isHovered)
     }
 
     private var foregroundColor: Color {
         if isActive {
-            return editorAccent
+            return EditorTheme.platinumAccent.opacity(0.96)
         }
         return isEnabled ? Color.primary.opacity(0.85) : Color.secondary
+    }
+}
+
+/// Text controls and menus in the toolbar use the same compact material and
+/// hover motion. The label owns this feedback so native macOS menus keep their
+/// normal presentation and keyboard behaviour.
+struct EditorToolbarControlSurface<Content: View>: View {
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var isHovered = false
+
+    let accessibilityTitle: String
+    var isActive = false
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        content()
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(foregroundColor)
+            .padding(.horizontal, 8)
+            .frame(height: 30)
+            .background {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(backgroundStyle)
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(
+                        LinearGradient(
+                            colors: borderColors,
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 0.75
+                    )
+            }
+            .overlay(alignment: .top) {
+                Capsule()
+                    .fill(Color.white.opacity(isHovered && isEnabled ? 0.18 : 0))
+                    .frame(height: 1)
+                    .padding(.horizontal, 8)
+            }
+            .shadow(
+                color: Color.black.opacity(isActive ? 0.16 : isHovered ? 0.20 : 0),
+                radius: isHovered ? 4 : 2,
+                y: isHovered ? 2 : 1
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .scaleEffect(isHovered && isEnabled ? 1.02 : 1)
+            .offset(y: isHovered && isEnabled ? -0.5 : 0)
+            .onHover { hovering in
+                withAnimation(SpringMotion.snappy) {
+                    isHovered = hovering
+                }
+            }
+            .animation(SpringMotion.interactive, value: isActive)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(accessibilityTitle)
+    }
+
+    private var foregroundColor: Color {
+        if isActive {
+            return EditorTheme.platinumAccent.opacity(0.98)
+        }
+        return isEnabled ? Color.primary.opacity(isHovered ? 1 : 0.86) : .secondary
+    }
+
+    private var backgroundStyle: LinearGradient {
+        if isActive {
+            return LinearGradient(
+                colors: [
+                    EditorTheme.platinumAccent.opacity(isHovered ? 0.24 : 0.18),
+                    EditorTheme.platinumAccent.opacity(isHovered ? 0.14 : 0.10)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
+        return LinearGradient(
+            colors: [
+                Color.white.opacity(isHovered && isEnabled ? 0.105 : 0),
+                Color.white.opacity(isHovered && isEnabled ? 0.045 : 0)
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+    }
+
+    private var borderColors: [Color] {
+        if isActive {
+            return [
+                EditorTheme.platinumAccent.opacity(isHovered ? 0.58 : 0.42),
+                EditorTheme.platinumAccent.opacity(0.16)
+            ]
+        }
+        if isHovered && isEnabled {
+            return [Color.white.opacity(0.18), Color.white.opacity(0.055)]
+        }
+        return [.clear, .clear]
     }
 }
 
@@ -86,15 +204,18 @@ struct EditorView: View {
     @Environment(\.undoManager) private var undoManager
     @State private var showsExportSheet = false
     @State private var showsShortcutCheatsheet = false
+    @State private var showsAddPalette = false
     @State var savedStylePresets: [EditorStylePreset] = []
     @State var isNamingStylePreset = false
     @State var stylePresetName = ""
     @State private var spaceKeyMonitor: Any?
     @State private var isEditingTitle = false
+    @State private var isProjectTitleHovered = false
     @State private var titleDraft = ""
     /// Sync repair is an exceptional workflow, not a permanent editor lane.
     /// The camera inspector owns its disclosure while the timeline mirrors it.
     @State private var isCameraSyncEditing = false
+    @State private var explicitInspectorTab: InspectorTab?
     @State private var timelineTrackVisibility: EditorTimelineTrackVisibility
     @AppStorage(AppPreferences.previewResolutionModeKey)
     private var previewResolutionMode = EditorPreviewResolutionMode.low
@@ -162,9 +283,13 @@ struct EditorView: View {
         .frame(minWidth: 1120, minHeight: 680)
         .frame(idealWidth: 1510, idealHeight: 820)
         .background(appBackground)
-        // 编辑器单一强调色：滑块、Toggle、分段控件与选中态同属一个紫色
-        // 体系，不再与系统蓝混用；显式颜色（橙/红/青语义色）不受影响。
+        // 界面交互使用铂金强调；橙/红/绿只表达内容身份与录制状态。
         .tint(editorAccent)
+        .onChange(of: editorStore.selection) { _, selection in
+            if selection != .canvas {
+                explicitInspectorTab = nil
+            }
+        }
         .background {
             EditorWindowLifecycleBridge(
                 projectTitle: projectDisplayTitle,
@@ -218,6 +343,10 @@ struct EditorView: View {
             _ = editorStore.prepareForExternalAction(.export)
             showsExportSheet = true
         }
+        .onReceive(EditorMenuBridge.shared.shortcutCheatsheetRequest) { _ in
+            guard !isCropping, !showsShortcutCheatsheet else { return }
+            showsShortcutCheatsheet = true
+        }
         .onReceive(EditorMenuBridge.shared.quitRequest) { _ in
             let needsPanelDismissal = showsExportSheet
                 || showsShortcutCheatsheet
@@ -236,7 +365,7 @@ struct EditorView: View {
                 NSApplication.shared.terminate(nil)
             }
         }
-        .animation(.easeOut(duration: 0.16), value: hostActions.errorMessage)
+        .animation(SpringMotion.fluid, value: hostActions.errorMessage)
         .task(id: editorMediaRequest) {
             await mediaSession.prepare(editorMediaRequest)
         }
@@ -313,11 +442,19 @@ struct EditorView: View {
 
     private var selectedInspector: InspectorTab {
         get {
-            EditorInspectorRouting.tab(for: editorStore.selection)
+            explicitInspectorTab
+                ?? EditorInspectorRouting.tab(for: editorStore.selection)
         }
         nonmutating set {
+            if newValue == .opening || newValue == .mockup {
+                explicitInspectorTab = newValue
+                editorStore.selection = .canvas
+                return
+            }
+            explicitInspectorTab = nil
             switch newValue {
             case .frame: editorStore.selection = .canvas
+            case .opening, .mockup: break
             case .zoom:
                 if selectedZoomID == nil { editorStore.selection = .zoomTrack }
             case .cursor: editorStore.selection = .cursor
@@ -345,6 +482,12 @@ struct EditorView: View {
             fallback = .screenMotionTrack
         case .cameraMotion where !visibility.contains(.cameraMotion):
             fallback = .camera
+        case .mosaic where !visibility.contains(.mosaic):
+            fallback = .canvas
+        case .sticker where !visibility.contains(.sticker):
+            fallback = .canvas
+        case .progress where !visibility.contains(.progress):
+            fallback = .canvas
         default:
             fallback = nil
         }
@@ -382,222 +525,262 @@ struct EditorView: View {
         Binding(get: { selectedInspector }, set: { selectedInspector = $0 })
     }
 
-    /// 工具栏按"项目 ｜ 画布 ｜ 历史 ｜ 视图 ｜ 样式 ｜ 导出"分区，
-    /// 每区一枚安静胶囊；文字不再裸排在条上。
+    /// 工具栏按任务分区，每组只承载一种意图。
     private func toolbarCapsule<Content: View>(
         @ViewBuilder _ content: () -> Content
     ) -> some View {
         HStack(spacing: 2) { content() }
             .padding(.horizontal, 3)
-            .frame(height: 30)
+            .frame(height: 34)
             .background(
-                Color.white.opacity(0.045),
-                in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+                LinearGradient(
+                    colors: [Color.white.opacity(0.062), Color.white.opacity(0.032)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                ),
+                in: RoundedRectangle(cornerRadius: 11, style: .continuous)
             )
             .overlay {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .stroke(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(0.13),
+                                Color.white.opacity(0.025)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 0.75
+                    )
             }
+            .shadow(color: Color.black.opacity(0.22), radius: 3, y: 1)
     }
 
     private var editorToolbar: some View {
-        ZStack {
-            titleEditor
+        GeometryReader { proxy in
+            let usesCompactPresentation = proxy.size.width < 1_320
+            ZStack {
+                titleEditor
+                    .frame(maxWidth: usesCompactPresentation ? 260 : 340)
 
-            HStack(spacing: 10) {
-                appLogo
-
-                Menu {
-                    Button(action: hostActions.openProject) {
-                        Label("打开项目…", systemImage: "folder")
-                    }
-                    Button(action: hostActions.revealProjectInFinder) {
-                        Label("在 Finder 中显示项目包", systemImage: "magnifyingglass")
-                    }
-                    Divider()
-                    Button(action: hostActions.exportProjectSourceMedia) {
-                        Label("导出项目源文件…", systemImage: "square.and.arrow.up")
-                    }
-                    .disabled(context.media.source == nil)
-                    Button(action: hostActions.importCameraReplacement) {
-                        Label("替换当前项目摄像头…", systemImage: "video.badge.plus")
-                    }
-                    .disabled(editorStore.project.media?.camera == nil)
-                    Divider()
-                    Button {
-                        showsShortcutCheatsheet = true
-                    } label: {
-                        Label("快捷键速查", systemImage: "keyboard")
-                    }
-                    Divider()
-                    Button(role: .destructive, action: hostActions.deleteProject) {
-                        Label("删除当前项目…", systemImage: "trash")
-                    }
-                } label: {
-                    Label {
-                        Text("项目")
-                    } icon: {
-                        EditorToolbarIconSurface(systemName: "folder")
-                    }
-                    .labelStyle(.iconOnly)
-                }
-                .menuStyle(.borderlessButton)
-                .disabled(isCropping)
-                .help("项目")
-                .accessibilityIdentifier("editor.project.menu")
-
-                previewControls
-
-                toolbarCapsule {
-                    Button(action: addMosaicAtPlayhead) {
-                        EditorToolbarIconSurface(systemName: "drop.halffull")
-                    }
-                    .buttonStyle(.plain)
-                    .help("在播放头添加柔化或突出区域")
-
-                    Button(action: addStickerAtPlayhead) {
-                        EditorToolbarIconSurface(systemName: "photo.badge.plus")
-                    }
-                    .buttonStyle(.plain)
-                    .help("导入贴图（也可直接 ⌘V 粘贴）")
-
-                    Button(action: addOrSelectProgressOverlay) {
-                        EditorToolbarIconSurface(systemName: "chart.bar.fill")
-                    }
-                    .buttonStyle(.plain)
-                    .help("添加或选中进度条")
-
-                    Button(action: toggleFrameMotionBlur) {
-                        Label("动态模糊", systemImage: "wind")
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(
-                                editorStore.project.motion.frameMotionBlur.isEnabled
-                                    ? Color.black.opacity(0.88)
-                                    : Color.primary.opacity(0.85)
-                            )
-                            .padding(.horizontal, 9)
-                            .frame(height: 28)
-                            .background(
-                                editorStore.project.motion.frameMotionBlur.isEnabled
-                                    ? Color(white: 0.92)
-                                    : Color.white.opacity(0.045),
-                                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            )
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                    .stroke(
-                                        editorStore.project.motion.frameMotionBlur.isEnabled
-                                            ? Color.white.opacity(0.68)
-                                            : Color.white.opacity(0.08),
-                                        lineWidth: 1
-                                    )
+                HStack(spacing: 8) {
+                    toolbarCapsule {
+                        Menu {
+                            Button(action: hostActions.openProject) {
+                                Label("打开项目…", systemImage: "folder")
                             }
-                            .contentShape(Rectangle())
+                            Button(action: hostActions.revealProjectInFinder) {
+                                Label("在 Finder 中显示项目包", systemImage: "magnifyingglass")
+                            }
+                            Divider()
+                            Button(action: hostActions.exportProjectSourceMedia) {
+                                Label("导出项目源文件…", systemImage: "square.and.arrow.up")
+                            }
+                            .disabled(context.media.source == nil)
+                            Button(action: hostActions.importCameraReplacement) {
+                                Label("替换当前项目摄像头…", systemImage: "video.badge.plus")
+                            }
+                            .disabled(editorStore.project.media?.camera == nil)
+                            Divider()
+                            Button(role: .destructive, action: hostActions.deleteProject) {
+                                Label("删除当前项目…", systemImage: "trash")
+                            }
+                        } label: {
+                            Label {
+                                Text("项目")
+                            } icon: {
+                                EditorToolbarIconSurface(systemName: "folder")
+                            }
+                            .labelStyle(.iconOnly)
+                        }
+                        .menuStyle(.borderlessButton)
+                        .disabled(isCropping)
+                        .help("项目")
+                        .accessibilityIdentifier("editor.project.menu")
                     }
-                    .buttonStyle(.plain)
-                    .animation(
-                        .easeOut(duration: 0.14),
-                        value: editorStore.project.motion.frameMotionBlur.isEnabled
-                    )
-                    .help(
-                        editorStore.project.motion.frameMotionBlur.isEnabled
-                            ? "关闭动态模糊"
-                            : "开启动态模糊"
-                    )
-                    .accessibilityLabel("动态模糊")
-                    .accessibilityValue(
-                        editorStore.project.motion.frameMotionBlur.isEnabled
-                            ? "已开启"
-                            : "已关闭"
-                    )
-                }
-                .disabled(isCropping || mediaSession.outputDuration <= 0)
 
-                Spacer()
+                    previewControls
 
-                persistenceIndicator
-
-                toolbarCapsule {
-                    Button { undoManager?.undo() } label: {
-                        EditorToolbarIconSurface(systemName: "arrow.uturn.backward")
+                    toolbarCapsule {
+                        Button {
+                            showsAddPalette.toggle()
+                        } label: {
+                            EditorToolbarControlSurface(
+                                accessibilityTitle: "添加",
+                                isActive: showsAddPalette
+                            ) {
+                                // The toolbar surface must receive one label
+                                // view. Passing three sibling views caused its
+                                // material/focus modifiers to be distributed
+                                // into three small controls when the popover
+                                // took focus, and exposed three duplicate AX
+                                // buttons with the same identifier.
+                                HStack(spacing: 6) {
+                                    Image(systemName: "plus")
+                                        .font(.system(size: 11, weight: .bold))
+                                    if !usesCompactPresentation {
+                                        Text("添加")
+                                        Image(systemName: "chevron.down")
+                                            .font(.system(size: 8, weight: .bold))
+                                            .foregroundStyle(.secondary)
+                                            .rotationEffect(
+                                                .degrees(showsAddPalette ? 180 : 0)
+                                            )
+                                    }
+                                }
+                            }
+                        }
+                        .buttonStyle(.editorToolbarPress)
+                        .focusEffectDisabled()
+                        .popover(isPresented: $showsAddPalette, arrowEdge: .top) {
+                            EditorAddPalette(
+                                insertionTime: overlayInsertionTime,
+                                hasProgressOverlay: editorStore.previewProject.timeline.progressOverlay != nil,
+                                canPasteImage: canPasteOverlayImage,
+                                onAddMosaic: {
+                                    dismissAddPaletteAndPerform(addMosaicAtPlayhead)
+                                },
+                                onImportSticker: {
+                                    dismissAddPaletteAndPerform(addStickerAtPlayhead)
+                                },
+                                onPasteSticker: {
+                                    dismissAddPaletteAndPerform(addPastedSticker)
+                                },
+                                onSelectProgress: {
+                                    dismissAddPaletteAndPerform(addOrSelectProgressOverlay)
+                                }
+                            )
+                        }
+                        .help("添加柔化、贴图或成片进度条")
+                        .accessibilityIdentifier("editor.add.palette")
                     }
-                    .buttonStyle(.plain)
-                    .disabled(isCropping || undoManager?.canUndo != true)
-                    .help(undoManager?.undoActionName.isEmpty == false
-                        ? "撤销“\(undoManager?.undoActionName ?? "")”（⌘Z）"
-                        : "撤销（⌘Z）")
+                    .disabled(isCropping || mediaSession.outputDuration <= 0)
 
-                    Button { undoManager?.redo() } label: {
-                        EditorToolbarIconSurface(systemName: "arrow.uturn.forward")
+                    Spacer(minLength: usesCompactPresentation ? 272 : 356)
+
+                    persistenceIndicator
+
+                    toolbarCapsule {
+                        Button { undoManager?.undo() } label: {
+                            EditorToolbarIconSurface(systemName: "arrow.uturn.backward")
+                        }
+                        .buttonStyle(.editorToolbarPress)
+                        .disabled(isCropping || undoManager?.canUndo != true)
+                        .help(undoManager?.undoActionName.isEmpty == false
+                            ? "撤销“\(undoManager?.undoActionName ?? "")”（⌘Z）"
+                            : "撤销（⌘Z）")
+                        .accessibilityLabel(undoManager?.undoActionName.isEmpty == false
+                            ? "撤销\(undoManager?.undoActionName ?? "")"
+                            : "撤销")
+
+                        Button { undoManager?.redo() } label: {
+                            EditorToolbarIconSurface(systemName: "arrow.uturn.forward")
+                        }
+                        .buttonStyle(.editorToolbarPress)
+                        .disabled(isCropping || undoManager?.canRedo != true)
+                        .help(undoManager?.redoActionName.isEmpty == false
+                            ? "重做“\(undoManager?.redoActionName ?? "")”（⌘⇧Z）"
+                            : "重做（⌘⇧Z）")
+                        .accessibilityLabel(undoManager?.redoActionName.isEmpty == false
+                            ? "重做\(undoManager?.redoActionName ?? "")"
+                            : "重做")
                     }
-                    .buttonStyle(.plain)
-                    .disabled(isCropping || undoManager?.canRedo != true)
-                    .help(undoManager?.redoActionName.isEmpty == false
-                        ? "重做“\(undoManager?.redoActionName ?? "")”（⌘⇧Z）"
-                        : "重做（⌘⇧Z）")
-                }
 
-                toolbarCapsule {
-                    previewResolutionMenu
+                    toolbarCapsule {
+                        previewResolutionMenu(compact: usesCompactPresentation)
+
+                        Button {
+                            isInspectorVisible.toggle()
+                        } label: {
+                            EditorToolbarIconSurface(
+                                systemName: "sidebar.right",
+                                isActive: isInspectorVisible
+                            )
+                        }
+                        .buttonStyle(.editorToolbarPress)
+                        .keyboardShortcut("i", modifiers: [.command, .option])
+                        .help(
+                            isInspectorVisible
+                                ? "隐藏检查器（⌥⌘I）"
+                                : "显示检查器（⌥⌘I）"
+                        )
+                        .accessibilityLabel(
+                            isInspectorVisible ? "隐藏检查器" : "显示检查器"
+                        )
+                        .accessibilityValue(isInspectorVisible ? "已显示" : "已隐藏")
+                        .accessibilityIdentifier("editor.inspector.visibility")
+                    }
+
+                    toolbarCapsule {
+                        Button(action: toggleFrameMotionBlur) {
+                            EditorToolbarControlSurface(
+                                accessibilityTitle: "动态模糊",
+                                isActive: editorStore.project.motion.frameMotionBlur.isEnabled
+                            ) {
+                                if usesCompactPresentation {
+                                    Image(systemName: "wind")
+                                } else {
+                                    Label("动态模糊", systemImage: "wind")
+                                }
+                            }
+                        }
+                        .buttonStyle(.editorToolbarPress)
+                        .disabled(isCropping || mediaSession.outputDuration <= 0)
+                        .animation(SpringMotion.interactive, value: editorStore.project.motion.frameMotionBlur.isEnabled)
+                        .help(
+                            editorStore.project.motion.frameMotionBlur.isEnabled
+                                ? "关闭动态模糊"
+                                : "开启动态模糊"
+                        )
+                        .accessibilityLabel("动态模糊")
+                        .accessibilityValue(
+                            editorStore.project.motion.frameMotionBlur.isEnabled
+                                ? "已开启"
+                                : "已关闭"
+                        )
+
+                        stylePresetControl(compact: usesCompactPresentation)
+                            .disabled(isCropping)
+                            .help(
+                                savedStylePresets.isEmpty
+                                    ? "保存当前画布、摄像头、光标与运镜样式"
+                                    : "保存或复用自己的画布、摄像头、光标与运镜样式"
+                            )
+                    }
 
                     Button {
-                        isInspectorVisible.toggle()
+                        _ = editorStore.prepareForExternalAction(.export)
+                        showsExportSheet = true
                     } label: {
-                        EditorToolbarIconSurface(
-                            systemName: "sidebar.right",
-                            isActive: isInspectorVisible
-                        )
+                        Label("导出", systemImage: "arrow.up.right")
                     }
-                    .buttonStyle(.plain)
-                    .keyboardShortcut("i", modifiers: [.command, .option])
-                    .help(
-                        isInspectorVisible
-                            ? "隐藏检查器（⌥⌘I）"
-                            : "显示检查器（⌥⌘I）"
-                    )
-                    .accessibilityLabel(
-                        isInspectorVisible ? "隐藏检查器" : "显示检查器"
-                    )
-                    .accessibilityValue(isInspectorVisible ? "已显示" : "已隐藏")
-                    .accessibilityIdentifier("editor.inspector.visibility")
+                    .buttonStyle(.editorPrimary)
+                    .disabled(isCropping)
+                    .help(isCropping ? "请先完成或取消裁切" : "导出成片（⌘E）")
                 }
-
-                toolbarCapsule {
-                    stylePresetControl
-                }
-                .disabled(isCropping)
-                .help(
-                    savedStylePresets.isEmpty
-                        ? "保存当前画布、摄像头、光标与运镜样式"
-                        : "保存或复用自己的画布、摄像头、光标与运镜样式"
-                )
-
-                Button {
-                    _ = editorStore.prepareForExternalAction(.export)
-                    showsExportSheet = true
-                } label: {
-                    Label("导出", systemImage: "arrow.up.right")
-                }
-                .buttonStyle(.editorPrimary)
-                .disabled(isCropping)
-                .help(isCropping ? "请先完成或取消裁切" : "导出成片（⌘E）")
             }
+            .padding(.leading, 14)
+            .padding(.trailing, 16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .padding(.leading, 14)
-        .padding(.trailing, 16)
-        .frame(height: 46)
-        .background(Color.white.opacity(0.028))
+        .frame(height: 52)
+        .background(
+            LinearGradient(
+                colors: [EditorTheme.panelRaised.opacity(0.72), EditorTheme.panelSurface.opacity(0.94)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
     }
 
     @ViewBuilder
     private var persistenceIndicator: some View {
         switch hostActions.persistenceStatus {
         case .clean:
-            Image(systemName: "checkmark.circle")
-                .foregroundStyle(.secondary)
-                .help("项目已自动保存")
-                .accessibilityLabel("项目已自动保存")
-                .accessibilityRemoveTraits(.isSelected)
+            // 自动保存成功是默认状态，不长期占用顶部栏。只有正在保存
+            // 或保存失败时才出现反馈，避免一个没有操作价值的常驻图标。
+            EmptyView()
         case .saving:
             ProgressView()
                 .controlSize(.small)
@@ -607,11 +790,10 @@ struct EditorView: View {
                 hostActions.reportError("自动保存失败：\(message)")
             } label: {
                 Label("保存失败", systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.orange)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.editorWarning)
             .help("自动保存失败：\(message)；点击查看")
+            .accessibilityLabel("查看自动保存失败原因")
         }
     }
 
@@ -636,12 +818,10 @@ struct EditorView: View {
             } label: {
                 Image(systemName: "xmark")
                     .font(.caption.weight(.bold))
-                    .frame(width: 24, height: 24)
-                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
+            .buttonStyle(.editorDismissIcon(size: 28))
             .help("关闭提示")
+            .accessibilityLabel("关闭错误提示")
         }
         .padding(.leading, 13)
         .padding(.trailing, 9)
@@ -660,26 +840,6 @@ struct EditorView: View {
         .accessibilityLabel("操作未完成：\(message)")
     }
 
-    /// 应用图标（顶部栏左上角）：固定使用打包的 AppIcon.icns；
-    /// 资源缺失时退回系统图形，避免空槽。
-    private var appLogo: some View {
-        Group {
-            if let icon = AppPreferences.bundledAppIcon {
-                Image(nsImage: icon)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-            } else {
-                Image(systemName: "record.circle.fill")
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .foregroundStyle(editorAccent)
-            }
-        }
-        .frame(width: 22, height: 22)
-        .clipShape(RoundedRectangle(cornerRadius: 5.5, style: .continuous))
-        .accessibilityHidden(true)
-    }
-
     /// 居中项目名：点击进入编辑，回车或失焦提交，改名命令走撤销与自动保存。
     @ViewBuilder
     private var titleEditor: some View {
@@ -688,7 +848,21 @@ struct EditorView: View {
                 .textFieldStyle(.plain)
                 .font(.callout.weight(.semibold))
                 .multilineTextAlignment(.center)
-                .frame(width: 240)
+                .frame(width: 220)
+                .padding(.horizontal, 10)
+                .frame(height: 30)
+                .background {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(EditorTheme.platinumAccent.opacity(0.10))
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .stroke(
+                            EditorTheme.platinumAccent.opacity(0.44),
+                            lineWidth: 0.75
+                        )
+                }
+                .shadow(color: Color.black.opacity(0.20), radius: 3, y: 1)
                 .focused($titleFieldFocused)
                 .onSubmit(commitTitleEdit)
                 .onChange(of: titleFieldFocused) { _, focused in
@@ -713,12 +887,37 @@ struct EditorView: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)
                     .background {
-                        Capsule()
-                            .fill(Color.white.opacity(0.055))
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .fill(Color.white.opacity(isProjectTitleHovered ? 0.085 : 0.05))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                    .stroke(
+                                        LinearGradient(
+                                            colors: [
+                                                Color.white.opacity(isProjectTitleHovered ? 0.20 : 0.12),
+                                                Color.white.opacity(isProjectTitleHovered ? 0.075 : 0.04)
+                                            ],
+                                            startPoint: .top,
+                                            endPoint: .bottom
+                                        ),
+                                        lineWidth: 0.75
+                                    )
+                            )
                     }
-                    .contentShape(Rectangle())
+                    .shadow(
+                        color: Color.black.opacity(isProjectTitleHovered ? 0.18 : 0),
+                        radius: 3,
+                        y: 1
+                    )
+                    .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .scaleEffect(isProjectTitleHovered ? 1.012 : 1)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.editorToolbarPress)
+            .onHover { hovering in
+                withAnimation(SpringMotion.interactive) {
+                    isProjectTitleHovered = hovering
+                }
+            }
             .accessibilityLabel("重命名项目")
             .accessibilityValue(projectDisplayTitle)
             .help("点击重命名项目")
@@ -754,6 +953,7 @@ struct EditorView: View {
                 outputDuration: mediaSession.outputDuration
             )
             timelineTrackVisibility.formUnion(.overlays)
+            previewCanvasFocused = true
         } catch {
             hostActions.reportError(error.localizedDescription)
         }
@@ -781,16 +981,49 @@ struct EditorView: View {
                 outputDuration: mediaSession.outputDuration
             )
             timelineTrackVisibility.formUnion(.overlays)
+            previewCanvasFocused = true
         } catch {
             hostActions.reportError(error.localizedDescription)
         }
     }
 
     private var overlayInsertionTime: TimeInterval {
-        min(
+        let duration = max(mediaSession.outputDuration, 0)
+        let minimumVisibleDuration = min(0.25, duration)
+        return min(
             max(playbackController.outputTime, 0),
-            max(mediaSession.outputDuration, 0)
+            max(duration - minimumVisibleDuration, 0)
         )
+    }
+
+    private var canPasteOverlayImage: Bool {
+        let pasteboard = NSPasteboard.general
+        if pasteboard.canReadItem(
+            withDataConformingToTypes: [UTType.image.identifier]
+        ) {
+            return true
+        }
+        guard let urls = pasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: nil
+        ) as? [URL] else {
+            return false
+        }
+        return urls.contains { url in
+            guard let type = UTType(filenameExtension: url.pathExtension) else {
+                return false
+            }
+            return type.conforms(to: .image)
+        }
+    }
+
+    private func dismissAddPaletteAndPerform(
+        _ action: @escaping @MainActor @Sendable () -> Void
+    ) {
+        showsAddPalette = false
+        Task { @MainActor in
+            action()
+        }
     }
 
     private func toggleFrameMotionBlur() {
@@ -807,82 +1040,80 @@ struct EditorView: View {
         do {
             try editorStore.enableProgressOverlay()
             timelineTrackVisibility.insert(.progress)
+            previewCanvasFocused = true
         } catch {
             hostActions.reportError(error.localizedDescription)
         }
     }
 
     private var previewControls: some View {
-        HStack(spacing: 2) {
-            if cropPresentation.toolbarMode == .cropControls {
-                Label("裁切模式", systemImage: "crop")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 6)
+        toolbarCapsule {
+            HStack(spacing: 2) {
+                if cropPresentation.toolbarMode == .cropControls {
+                    HStack(spacing: 5) {
+                        Image(systemName: "crop")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(Color.orange)
+                        Text("裁切模式")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Color.orange)
+                    }
+                    .padding(.horizontal, 8)
 
-                Button("重置") { resetCrop() }
-                    .buttonStyle(.editorGhost)
-                Button("取消") { discardCrop() }
-                    .buttonStyle(.editorGhost)
-                Button("完成") { confirmCrop() }
-                    .buttonStyle(.editorPrimary(minHeight: 24))
-            } else {
-                Menu {
-                    ForEach(CanvasAspectRatio.allCases) { ratio in
-                        Button {
-                            setCanvasAspectRatio(ratio)
-                        } label: {
-                            if editorStore.project.canvas.aspectRatio == ratio {
-                                Label(ratio.rawValue, systemImage: "checkmark")
-                            } else {
-                                Text(ratio.rawValue)
+                    Button("重置") { resetCrop() }
+                        .buttonStyle(.editorGhost)
+                    Button("取消") { discardCrop() }
+                        .buttonStyle(.editorGhost)
+                    Button("完成") { confirmCrop() }
+                        .buttonStyle(.editorPrimary(minHeight: 24))
+                } else {
+                    Menu {
+                        ForEach(CanvasAspectRatio.allCases) { ratio in
+                            Button {
+                                setCanvasAspectRatio(ratio)
+                            } label: {
+                                if editorStore.project.canvas.aspectRatio == ratio {
+                                    Label(ratio.rawValue, systemImage: "checkmark")
+                                } else {
+                                    Text(ratio.rawValue)
+                                }
+                            }
+                        }
+                    } label: {
+                        EditorToolbarControlSurface(accessibilityTitle: "画布比例") {
+                            HStack(spacing: 6) {
+                                Image(systemName: "aspectratio")
+                                    .font(.system(size: 12, weight: .medium))
+                                Text(editorStore.project.canvas.aspectRatio.rawValue)
+                                    .font(.system(size: 12, weight: .medium))
+                                    .frame(minWidth: 38, alignment: .leading)
+                                Image(systemName: "chevron.down")
+                                    .font(.system(size: 8, weight: .bold))
+                                    .foregroundStyle(.secondary)
                             }
                         }
                     }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "aspectratio")
-                        Text(editorStore.project.canvas.aspectRatio.rawValue)
-                            .frame(minWidth: 38, alignment: .leading)
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.horizontal, 8)
-                    .frame(height: 26)
-                    .contentShape(Rectangle())
-                }
-                .menuStyle(.borderlessButton)
-                .accessibilityIdentifier("editor.canvas.aspect-ratio")
-                .accessibilityLabel("画布比例")
-                .accessibilityValue(editorStore.project.canvas.aspectRatio.rawValue)
+                    .menuStyle(.borderlessButton)
+                    .accessibilityIdentifier("editor.canvas.aspect-ratio")
+                    .accessibilityLabel("画布比例")
+                    .accessibilityValue(editorStore.project.canvas.aspectRatio.rawValue)
 
-                Button { beginCrop() } label: {
-                    Label("裁切", systemImage: "crop")
-                        .padding(.horizontal, 7)
-                        .frame(height: 26)
-                        .contentShape(Rectangle())
-                }
-                    .buttonStyle(.editorGhost)
+                    Button { beginCrop() } label: {
+                        EditorToolbarControlSurface(accessibilityTitle: "裁切") {
+                            Label("裁切", systemImage: "crop")
+                        }
+                    }
+                    .buttonStyle(.editorToolbarPress)
                     .accessibilityIdentifier("editor.crop.begin")
                     .help("直接拖动八个控制点裁切素材；按 Esc 取消")
+                }
             }
-        }
-        .padding(.horizontal, 3)
-        .frame(height: 30)
-        .background(
-            Color.white.opacity(0.045),
-            in: RoundedRectangle(cornerRadius: 9, style: .continuous)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .stroke(Color.white.opacity(0.06), lineWidth: 1)
         }
     }
 
     /// 预览画质只影响本地预览流畅度，属于"视图"范畴：与检查器开关同区，
     /// 不再与写项目的画布比例/裁切混在同一胶囊里。
-    private var previewResolutionMenu: some View {
+    private func previewResolutionMenu(compact: Bool) -> some View {
         Menu {
             ForEach(EditorPreviewResolutionMode.allCases) { mode in
                 Button {
@@ -896,10 +1127,13 @@ struct EditorView: View {
                 }
             }
         } label: {
-            Text(previewResolutionMode == .full ? "画质·完整" : "画质·低清")
-            .padding(.horizontal, 9)
-            .frame(height: 28)
-            .contentShape(Rectangle())
+            EditorToolbarControlSurface(accessibilityTitle: "预览分辨率") {
+                Text(
+                    compact
+                        ? (previewResolutionMode == .full ? "完整" : "流畅")
+                        : (previewResolutionMode == .full ? "画质 · 完整" : "画质 · 流畅")
+                )
+            }
             // A borderless macOS Menu may rebuild its native accessibility
             // cell after first display and drop modifiers applied only to the
             // outer Menu. Pin the stable name/value to the extracted label too.
@@ -910,12 +1144,18 @@ struct EditorView: View {
         .accessibilityIdentifier("editor.preview.resolution")
         .accessibilityLabel("预览分辨率")
         .accessibilityValue(previewResolutionMode.label)
-        .help("低清优先流畅；完整分辨率在播放与暂停时都保留素材细节")
+        .help("流畅模式降低预览分辨率；完整模式保留素材细节")
     }
 
     private var previewArea: some View {
         ZStack(alignment: .topTrailing) {
             Color.black.opacity(0.16)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    guard cropPresentation.canvasMode != .cropEditor else { return }
+                    previewCanvasFocused = true
+                    editorStore.selection = .canvas
+                }
             CanvasPreview(
                 editorStore: editorStore,
                 mediaSession: mediaSession,
@@ -943,7 +1183,8 @@ struct EditorView: View {
                 .padding(14)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .animation(.easeOut(duration: 0.18), value: mediaSession.lifecycle)
+        .animation(SpringMotion.gentle, value: mediaSession.lifecycle)
+        .animation(SpringMotion.gentle, value: playbackController.lifecycle)
     }
 
     @ViewBuilder
@@ -1003,42 +1244,85 @@ struct EditorView: View {
         showsProgress: Bool,
         isBlocking: Bool
     ) -> some View {
-        HStack(spacing: 10) {
-            if showsProgress {
-                ProgressView().controlSize(.small)
-            } else if let systemImage {
-                Image(systemName: systemImage)
-                    .foregroundStyle(.orange)
+        let tint = showsProgress ? EditorTheme.platinumAccent : EditorTheme.amberAccent
+        return HStack(spacing: 11) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(tint.opacity(showsProgress ? 0.10 : 0.13))
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .stroke(tint.opacity(showsProgress ? 0.20 : 0.30), lineWidth: 0.75)
+
+                if showsProgress {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(tint)
+                } else if let systemImage {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(tint)
+                }
             }
-            VStack(alignment: .leading, spacing: 2) {
+            .frame(width: 32, height: 32)
+            .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.primary)
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(Color.primary.opacity(0.94))
                 Text(detail)
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    .foregroundStyle(Color.secondary.opacity(0.92))
+                    .lineLimit(isBlocking ? 3 : 2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .frame(maxWidth: isBlocking ? 300 : 260, alignment: .leading)
+        .padding(.horizontal, isBlocking ? 14 : 12)
+        .padding(.vertical, isBlocking ? 12 : 10)
+        .frame(maxWidth: isBlocking ? 320 : 280, alignment: .leading)
         .background(
-            Color(nsColor: .windowBackgroundColor).opacity(0.94),
+            LinearGradient(
+                colors: [
+                    EditorTheme.panelRaised.opacity(0.98),
+                    EditorTheme.panelSurface.opacity(0.98)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            ),
             in: RoundedRectangle(cornerRadius: 11, style: .continuous)
         )
         .overlay {
             RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .stroke(Color.white.opacity(0.10), lineWidth: 1)
+                .stroke(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.18), Color.white.opacity(0.055)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 0.75
+                )
         }
-        .shadow(color: .black.opacity(0.24), radius: 12, y: 5)
+        .overlay(alignment: .top) {
+            Capsule()
+                .fill(Color.white.opacity(0.12))
+                .frame(height: 1)
+                .padding(.horizontal, 12)
+        }
+        .shadow(color: EditorTheme.softShadow.opacity(0.72), radius: 14, y: 6)
+        .transition(
+            .asymmetric(
+                insertion: .opacity.combined(with: .scale(scale: 0.985)),
+                removal: .opacity
+            )
+        )
         .frame(
             maxWidth: .infinity,
             maxHeight: .infinity,
             alignment: isBlocking ? .center : .topTrailing
         )
         .allowsHitTesting(false)
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(title)，\(detail)")
+        .accessibilityValue(showsProgress ? "处理中" : "需要注意")
     }
 
     private var timeline: some View {
@@ -1046,7 +1330,6 @@ struct EditorView: View {
             editorStore: editorStore,
             mediaSession: mediaSession,
             playbackController: playbackController,
-            pointerEvents: context.media.pointerEvents,
             isCameraSyncEditing: isCameraSyncEditing && selectedInspector == .camera,
             windowDeactivationRevision: windowDeactivationRevision,
             primaryLaneHeight: resolvedTimelinePrimaryLaneHeight,
@@ -1081,29 +1364,35 @@ struct EditorView: View {
     /// 空间归还预览；双击恢复默认。持久化值是编辑器界面偏好，不是项目内容。
     private var inspectorResizeHandle: some View {
         ZStack {
-            Rectangle()
-                .fill(Color.black.opacity(0.16))
-            Rectangle()
-                .fill(dividerColor)
-                .frame(width: 1)
-            Capsule()
-                .fill(
-                    isInspectorResizeHandleHovered
-                        ? Color.white.opacity(0.85)
-                        : Color.white.opacity(0.22)
-                )
-                .frame(
-                    width: isInspectorResizeHandleHovered ? 3 : 2,
-                    height: 42
-                )
-                .shadow(
-                    color: .white.opacity(isInspectorResizeHandleHovered ? 0.25 : 0),
-                    radius: 4
-                )
+            Color.clear
+            ZStack {
+                Rectangle()
+                    .fill(Color.black.opacity(0.16))
+                Rectangle()
+                    .fill(dividerColor)
+                    .frame(width: 1)
+                Capsule()
+                    .fill(
+                        isInspectorResizeHandleHovered
+                            ? Color.white.opacity(0.85)
+                            : Color.white.opacity(0.22)
+                    )
+                    .frame(
+                        width: isInspectorResizeHandleHovered ? 3 : 2,
+                        height: 42
+                    )
+                    .shadow(
+                        color: .white.opacity(isInspectorResizeHandleHovered ? 0.25 : 0),
+                        radius: 4
+                    )
+            }
+            .frame(width: 7)
         }
-        .frame(width: 7)
+        // Keep the divider visually quiet while giving the pointer a practical
+        // target. The extra width belongs to editor chrome, not project data.
+        .frame(width: 13)
         .contentShape(Rectangle())
-        .animation(.easeOut(duration: 0.12), value: isInspectorResizeHandleHovered)
+        .animation(SpringMotion.interactive, value: isInspectorResizeHandleHovered)
         .onHover { hovering in
             isInspectorResizeHandleHovered = hovering
             if hovering {
@@ -1173,29 +1462,33 @@ struct EditorView: View {
     /// is global editor chrome, not project content.
     private var timelineResizeHandle: some View {
         ZStack {
-            Rectangle()
-                .fill(Color.black.opacity(0.16))
-            Rectangle()
-                .fill(dividerColor)
-                .frame(height: 1)
-            Capsule()
-                .fill(
-                    isTimelineResizeHandleHovered
-                        ? Color.white.opacity(0.85)
-                        : Color.white.opacity(0.22)
-                )
-                .frame(
-                    width: 42,
-                    height: isTimelineResizeHandleHovered ? 3 : 2
-                )
-                .shadow(
-                    color: .white.opacity(isTimelineResizeHandleHovered ? 0.25 : 0),
-                    radius: 4
-                )
+            Color.clear
+            ZStack {
+                Rectangle()
+                    .fill(Color.black.opacity(0.16))
+                Rectangle()
+                    .fill(dividerColor)
+                    .frame(height: 1)
+                Capsule()
+                    .fill(
+                        isTimelineResizeHandleHovered
+                            ? Color.white.opacity(0.85)
+                            : Color.white.opacity(0.22)
+                    )
+                    .frame(
+                        width: 42,
+                        height: isTimelineResizeHandleHovered ? 3 : 2
+                    )
+                    .shadow(
+                        color: .white.opacity(isTimelineResizeHandleHovered ? 0.25 : 0),
+                        radius: 4
+                    )
+            }
+            .frame(height: 7)
         }
-        .frame(height: 7)
+        .frame(height: 13)
         .contentShape(Rectangle())
-        .animation(.easeOut(duration: 0.12), value: isTimelineResizeHandleHovered)
+        .animation(SpringMotion.interactive, value: isTimelineResizeHandleHovered)
         .onHover { hovering in
             isTimelineResizeHandleHovered = hovering
             if hovering {

@@ -40,6 +40,44 @@ enum EditorSliderValueFormat: Equatable, Hashable, Sendable {
         }
     }
 
+    /// Unit-free text used while the persistent readout is in exact-entry
+    /// mode. The visible readout keeps its semantic unit; the field itself
+    /// stays easy to select and replace.
+    func editingText(for value: Double) -> String {
+        guard value.isFinite else { return "" }
+        switch self {
+        case .points:
+            return "\(Int(value.rounded()))"
+        case .percent:
+            return "\(Int((value * 100).rounded()))"
+        case .multiplier, .seconds:
+            return Self.trimmed(value)
+        case .degrees:
+            return "\(Int(value.rounded()))"
+        case .decimal1:
+            return String(format: "%.1f", value)
+        case .decimal2:
+            return Self.trimmed(value)
+        }
+    }
+
+    /// Parses the same units shown by `text(for:)`. A user may type either
+    /// the bare number or paste the visible value including its suffix.
+    func value(from text: String) -> Double? {
+        var normalized = text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "，", with: ".")
+            .replacingOccurrences(of: ",", with: ".")
+
+        for token in ["％", "%", "×", "x", "倍", "秒", "s", "°", "度"] {
+            normalized = normalized.replacingOccurrences(of: token, with: "")
+        }
+        normalized = normalized.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let raw = Double(normalized), raw.isFinite else { return nil }
+        return self == .percent ? raw / 100 : raw
+    }
+
     /// Up to two decimals, trailing zeros stripped ("1.60" → "1.6").
     private static func trimmed(_ value: Double) -> String {
         let raw = String(format: "%.2f", value)
@@ -56,13 +94,19 @@ struct EditorTransactionalSlider: View {
     let range: ClosedRange<Double>
     let commandScope: EditorInteractionCommandScope
     let actionName: String
+    var formatValue: ((Double) -> String)? = nil
+    var showsFloatingValue = true
+    var onInteractionChanged: (Bool) -> Void = { _ in }
     let onError: (String) -> Void
 
     var body: some View {
         EditorSlider(
             value: transactionalValue,
             range: range,
+            formatValue: formatValue,
+            showsFloatingValue: showsFloatingValue,
             onEditingChanged: { isEditing in
+                onInteractionChanged(isEditing)
                 // 与旧系统滑块同一事务边界：按下开始（幂等），松手提交。
                 if isEditing {
                     _ = editorStore.beginContinuousInteraction(commandScope: commandScope)
@@ -129,30 +173,78 @@ struct EditorTransactionalSliderRow: View {
     let commandScope: EditorInteractionCommandScope
     var format: EditorSliderValueFormat = .decimal2
     let onError: (String) -> Void
+    @State private var isSliderEditing = false
+    @State private var isTextEditing = false
+    @State private var hasTextPreview = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack {
-                Text(title).font(.caption)
-                Spacer()
-                Text(format.text(for: value.wrappedValue))
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(.secondary)
-            }
-            // The adjustable control below already exposes this title and
-            // formatted value. Keep the visual readout without making users
-            // traverse a duplicate, non-interactive text stop first.
-            .accessibilityHidden(true)
+        VStack(alignment: .leading, spacing: 7) {
+            EditorInspectorParameterReadout(
+                title: title,
+                valueText: format.text(for: value.wrappedValue),
+                isEditing: isSliderEditing || isTextEditing,
+                editConfiguration: EditorInspectorParameterEditConfiguration(
+                    draftText: format.editingText(for: value.wrappedValue),
+                    onBegin: beginTextEditing,
+                    onPreview: previewTextValue,
+                    onCommit: commitTextEditing,
+                    onCancel: cancelTextEditing
+                )
+            )
             EditorTransactionalSlider(
                 editorStore: editorStore,
                 value: value,
                 range: range,
                 commandScope: commandScope,
                 actionName: title,
+                formatValue: { format.text(for: $0) },
+                showsFloatingValue: false,
+                onInteractionChanged: { editing in
+                    isSliderEditing = editing
+                },
                 onError: onError
             )
+            .disabled(isTextEditing)
             .accessibilityLabel(title)
             .accessibilityValue(format.text(for: value.wrappedValue))
+        }
+    }
+
+    private func beginTextEditing() {
+        isTextEditing = true
+        hasTextPreview = false
+        _ = editorStore.beginContinuousInteraction(commandScope: commandScope)
+    }
+
+    private func previewTextValue(_ text: String) -> Bool {
+        guard let parsed = format.value(from: text) else { return false }
+        hasTextPreview = true
+        let clamped = min(max(parsed, range.lowerBound), range.upperBound)
+        value.wrappedValue = clamped
+        return true
+    }
+
+    private func commitTextEditing() {
+        isTextEditing = false
+        if hasTextPreview {
+            updateEditorContinuousInteraction(
+                store: editorStore,
+                isEditing: false,
+                commandScope: commandScope,
+                actionName: title,
+                onError: onError
+            )
+        } else if editorStore.interaction?.commandScope == commandScope {
+            editorStore.cancelInteraction()
+        }
+        hasTextPreview = false
+    }
+
+    private func cancelTextEditing() {
+        isTextEditing = false
+        hasTextPreview = false
+        if editorStore.interaction?.commandScope == commandScope {
+            editorStore.cancelInteraction()
         }
     }
 }
@@ -238,6 +330,26 @@ func editorMotionBinding<Value>(
         get: { $0.motion[keyPath: keyPath] },
         set: { $0.motion[keyPath: keyPath] = $1 },
         replace: { try store.replaceMotion(with: $0.motion, actionName: actionName) },
+        onError: onError
+    )
+}
+
+@MainActor
+func editorOpeningBinding<Value>(
+    store: EditorStore,
+    keyPath: WritableKeyPath<OpeningSequence, Value>,
+    actionName: String,
+    onError: @escaping (String) -> Void
+) -> Binding<Value> {
+    editorDomainBinding(
+        store: store,
+        commandScope: .project,
+        get: { $0.openingSequence[keyPath: keyPath] },
+        set: {
+            $0.openingSequence[keyPath: keyPath] = $1
+            $0.openingSequence.normalizeTiming()
+        },
+        replace: { try store.replaceProject(with: $0, actionName: actionName) },
         onError: onError
     )
 }

@@ -119,40 +119,52 @@ extension EditorTimelineView {
         width: CGFloat,
         duration: TimeInterval
     ) -> some View {
+        let mosaicClips = editorStore.previewProject.timeline.mosaicClips.map {
+            TimelineOverlayClip(
+                id: $0.id,
+                timing: $0.timing,
+                title: $0.style == .spotlight ? "突出" : "柔化",
+                tint: .orange,
+                kind: .mosaic
+            )
+        }
         let orderedStickers = editorStore.previewProject.timeline.stickerClips
             .sorted {
                 $0.layerIndex == $1.layerIndex
                     ? $0.id.uuidString < $1.id.uuidString
                     : $0.layerIndex < $1.layerIndex
             }
+        let stickerClips = orderedStickers.enumerated().map { rank, sticker in
+            TimelineOverlayClip(
+                id: sticker.id,
+                timing: sticker.timing,
+                title: orderedStickers.count > 1
+                    ? "贴图 · 层 \(rank + 1)"
+                    : "贴图",
+                tint: editorOverlayClip,
+                kind: .sticker
+            )
+        }
         return ZStack(alignment: .topLeading) {
-            Color.black.opacity(0.06)
+            timelineLaneSurface(
+                tint: editorOverlayClip,
+                isFocused: focusedTimelineLane == .overlays
+            )
+            if mosaicClips.isEmpty && stickerClips.isEmpty {
+                timelineEmptyTrackHint(
+                    "从顶部“添加”加入柔化或贴图",
+                    documentWidth: width
+                )
+                    .frame(height: overlayTimelineHeight)
+            }
             VStack(spacing: 2) {
                 overlayClipRow(
-                    clips: editorStore.previewProject.timeline.mosaicClips.map {
-                        TimelineOverlayClip(
-                            id: $0.id,
-                            timing: $0.timing,
-                            title: $0.style == .spotlight ? "突出" : "柔化",
-                            tint: .orange,
-                            kind: .mosaic
-                        )
-                    },
+                    clips: mosaicClips,
                     width: width,
                     duration: duration
                 )
                 overlayClipRow(
-                    clips: orderedStickers.enumerated().map { rank, sticker in
-                        TimelineOverlayClip(
-                            id: sticker.id,
-                            timing: sticker.timing,
-                            title: orderedStickers.count > 1
-                                ? "贴图 · 层 \(rank + 1)"
-                                : "贴图",
-                            tint: .pink,
-                            kind: .sticker
-                        )
-                    },
+                    clips: stickerClips,
                     width: width,
                     duration: duration
                 )
@@ -174,8 +186,11 @@ extension EditorTimelineView {
         duration: TimeInterval
     ) -> some View {
         ZStack(alignment: .topLeading) {
-            Color.black.opacity(0.06)
-            if let progress = editorStore.previewProject.timeline.progressOverlay {
+            timelineLaneSurface(
+                tint: editorProgressClip,
+                isFocused: focusedTimelineLane == .progress
+            )
+            if editorStore.previewProject.timeline.progressOverlay != nil {
                 Button {
                     editorStore.selection = .progress
                 } label: {
@@ -183,37 +198,30 @@ extension EditorTimelineView {
                         .fill(Color(white: editorStore.selection == .progress ? 0.26 : 0.15))
                         .overlay {
                             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .fill(Color.mint.opacity(
+                                .fill(editorProgressClip.opacity(
                                     editorStore.selection == .progress ? 0.34 : 0.16
                                 ))
                         }
-                        .overlay(alignment: .leading) {
-                            HStack(spacing: 4) {
-                                Image(systemName: "chart.bar.fill")
-                                Text("全片进度条")
-                                    .lineLimit(1)
-                                Spacer(minLength: 0)
-                            }
-                            .font(.system(size: 10.5, weight: .semibold))
-                            .padding(.horizontal, 8)
-                        }
-                        .overlay(alignment: .topLeading) {
-                            ForEach(progress.chapters) { chapter in
-                                Circle()
-                                    .fill(Color.white.opacity(0.9))
-                                    .frame(width: 6, height: 6)
-                                    .offset(
-                                        x: CGFloat(chapter.time / max(duration, 0.001))
-                                            * width - 3,
-                                        y: 4
+                        .overlay {
+                            if editorStore.selection == .progress {
+                                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                    .stroke(
+                                        EditorTheme.platinumAccent.opacity(0.72),
+                                        lineWidth: 1
                                     )
                             }
                         }
-                        .padding(.vertical, 5)
+                        .padding(.vertical, 7)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("选择全片进度条")
+            } else {
+                timelineEmptyTrackHint(
+                    "从顶部“添加”创建进度条",
+                    documentWidth: width
+                )
+                    .frame(height: overlayTimelineHeight)
             }
         }
         .frame(
@@ -247,20 +255,28 @@ extension EditorTimelineView {
                 let selection = clip.kind.selection(id: clip.id)
                 let isSelected = editorStore.selection == selection
                 let isHovered = hoveredOverlaySelection == selection
+                let emphasis = EditorTimelineClipEmphasis.resolve(
+                    isEditing: overlayTimelineDrag?.id == clip.id
+                        && overlayTimelineDrag?.kind == clip.kind,
+                    isSelected: isSelected,
+                    isHovered: isHovered
+                )
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Color(white: isSelected ? 0.28 : 0.16))
+                    .fill(Color(white: isSelected ? 0.26 : isHovered ? 0.20 : 0.16))
                     .overlay {
                         RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .fill(clip.tint.opacity(isSelected ? 0.38 : 0.18))
+                            .fill(clip.tint.opacity(isSelected ? 0.34 : isHovered ? 0.24 : 0.18))
                     }
                     .overlay(alignment: .leading) {
-                        Text(clip.title)
-                            .font(.system(size: 10, weight: .semibold))
-                            .lineLimit(1)
-                            .padding(.horizontal, 9)
+                        if clipWidth >= 52 {
+                            Text(clip.title)
+                                .font(.system(size: 10, weight: .semibold))
+                                .lineLimit(1)
+                                .padding(.horizontal, 9)
+                        }
                     }
                     .overlay {
-                        if isSelected || isHovered {
+                        if emphasis.showsHandles, clipWidth >= 22 {
                             HStack(spacing: 0) {
                                 Capsule()
                                     .fill(Color.white.opacity(0.9))
@@ -271,12 +287,15 @@ extension EditorTimelineView {
                                     .frame(width: 3, height: 13)
                             }
                             .padding(.horizontal, 2)
+                            .opacity(emphasis.handleOpacity)
                             .allowsHitTesting(false)
                         }
                     }
+                    .editorTimelineClipChrome(cornerRadius: 7, emphasis: emphasis)
                     .contentShape(Rectangle())
                 .frame(width: clipWidth, height: 19)
                 .offset(x: x)
+                .zIndex(emphasis == .editing ? 4 : isSelected ? 3 : isHovered ? 1 : 0)
                 .onHover { hovering in
                     if hovering {
                         hoveredOverlaySelection = selection
@@ -285,6 +304,7 @@ extension EditorTimelineView {
                     }
                 }
                 .help("拖动中部移动；拖动两端调整时长")
+                .accessibilityElement(children: .ignore)
                 .accessibilityLabel("\(clip.title)片段")
                 .accessibilityValue(
                     String(
@@ -293,6 +313,12 @@ extension EditorTimelineView {
                         clip.timing.duration
                     )
                 )
+                .accessibilityAddTraits(
+                    isSelected ? [.isButton, .isSelected] : .isButton
+                )
+                .accessibilityAction {
+                    activateTimelineSelection(selection)
+                }
             }
         }
         .frame(width: width, height: 19, alignment: .leading)
@@ -350,8 +376,7 @@ extension EditorTimelineView {
                 guard gestureOwnership.activeIntent == intent else { return }
                 if drag.mode == .move, abs(value.translation.width) < 3 {
                     editorStore.cancelInteraction()
-                    editorStore.selection = drag.kind.selection(id: drag.id)
-                    playbackController.seek(to: drag.original.startTime, pausing: true)
+                    activateTimelineSelection(drag.kind.selection(id: drag.id))
                 } else {
                     commitOverlayTimelineDrag(drag)
                 }
@@ -492,6 +517,7 @@ extension EditorTimelineView {
                     ? drag.kind.moveActionName
                     : drag.kind.resizeActionName
             )
+            activateTimelineSelection(drag.kind.selection(id: drag.id))
         } catch {
             editorStore.cancelInteraction()
             onError(error.localizedDescription)

@@ -64,9 +64,13 @@ struct PreviewVisualSignature: Equatable {
             return false
         }
 
-        // Presentation/output time and FrameScene.time are evaluation
-        // provenance. Every renderable value has already been lowered into the
-        // scene. Comparing those clocks made a visually identical frame dirty.
+        if case .dynamicFlow = lhs.plan.scene.background.source,
+           lhs.plan.scene.time != rhs.plan.scene.time {
+            return false
+        }
+        // Presentation/output time and FrameScene.time are normally evaluation
+        // provenance. Dynamic backgrounds are the exception because their
+        // visible phase is evaluated by the renderer from scene.time.
         return scenesMatchVisually(
             lhs.plan.scene,
             rhs.plan.scene,
@@ -177,7 +181,22 @@ struct PreviewPreparedBackgroundCache {
         canvasSize: CompositionSize,
         wallpaperSource: CIImage?,
         wallpaperRevision: UInt64
-    ) -> CIImage {
+    ) -> CIImage? {
+        if case .dynamicFlow = scene.source {
+            key = nil
+            value = nil
+            return nil
+        }
+        // A decoded movie frame is already a one-frame resource. Wrapping
+        // each unique 4K frame in `insertingIntermediate(cache: true)` creates
+        // a fresh cached Metal intermediate every display tick and competes
+        // with screen/camera composition. Only time-invariant backgrounds
+        // benefit from this persistent cache.
+        if scene.source.isVideo {
+            key = nil
+            value = nil
+            return nil
+        }
         let nextKey = Key(
             scene: scene,
             canvasSize: canvasSize,
@@ -330,7 +349,7 @@ enum PreviewRenderBackpressurePolicy {
 /// One display-link evaluation produced without publishing SwiftUI state.
 /// Keeping this value backend-neutral lets the NSView pull the same scene and
 /// render plan as export while the rest of the editor tree remains untouched.
-struct SharedPreviewPlaybackFrame {
+struct SharedPreviewPlaybackFrame: Sendable {
     let renderPlan: FrameRenderPlan
     let semanticScene: FrameScene
 }
@@ -430,9 +449,8 @@ enum SharedPreviewFramePipeline {
         result.presentationTime = 0
         result.outputDuration = 0
         var scene = plan.scene
-        // `time` has already been lowered into concrete geometry/style and is
-        // not read by SharedFrameRenderer. Ignore it for visual identity.
-        scene.time = 0
+        // Keep the evaluated time: static scenes ignore it, while animated
+        // backgrounds use it as their visible phase in preview and export.
         if separatesCursor {
             scene.cursor = nil
             scene.layerOrder.removeAll { $0 == .cursor }

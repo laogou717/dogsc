@@ -48,21 +48,26 @@ public struct PointerEventRecord: Codable, Equatable, Sendable {
     public var location: NormalizedPoint
     public var kind: PointerEventKind
     public var modifiers: [PointerModifier]
+    /// System cursor visible at this moment. Legacy projects omit it and
+    /// continue to render the selected manual cursor.
+    public var cursorAssetID: CursorAssetID?
 
     public init(
         time: TimeInterval,
         location: NormalizedPoint,
         kind: PointerEventKind,
-        modifiers: [PointerModifier] = []
+        modifiers: [PointerModifier] = [],
+        cursorAssetID: CursorAssetID? = nil
     ) {
         self.time = time
         self.location = location
         self.kind = kind
         self.modifiers = modifiers
+        self.cursorAssetID = cursorAssetID
     }
 
     private enum CodingKeys: String, CodingKey {
-        case time, location, kind, modifiers
+        case time, location, kind, modifiers, cursorAssetID
     }
 
     public init(from decoder: any Decoder) throws {
@@ -71,6 +76,10 @@ public struct PointerEventRecord: Codable, Equatable, Sendable {
         location = try container.decode(NormalizedPoint.self, forKey: .location)
         kind = try container.decode(PointerEventKind.self, forKey: .kind)
         modifiers = try container.decodeIfPresent([PointerModifier].self, forKey: .modifiers) ?? []
+        cursorAssetID = try container.decodeIfPresent(
+            CursorAssetID.self,
+            forKey: .cursorAssetID
+        )
     }
 }
 

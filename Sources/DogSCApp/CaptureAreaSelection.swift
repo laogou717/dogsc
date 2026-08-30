@@ -290,7 +290,6 @@ private final class CaptureAreaSelectionView: NSView {
     private let heightCaption = NSTextField(labelWithString: "高")
     private let widthField = VerticallyCenteredTextField()
     private let heightField = VerticallyCenteredTextField()
-    private let dimensionReadout = CenteredDrawingLabel("— × —")
     private lazy var dimensionLinkButton: NSButton = {
         let button = NSButton()
         button.image = NSImage(
@@ -391,9 +390,9 @@ private final class CaptureAreaSelectionView: NSView {
             field.font = .monospacedDigitSystemFont(ofSize: 14, weight: .medium)
             field.alignment = .center
             field.textColor = .white
-            field.backgroundColor = .clear
+            field.backgroundColor = captureSelectionRaisedNSColor
             field.isBezeled = false
-            field.drawsBackground = false
+            field.drawsBackground = true
             field.wantsLayer = true
             field.layer?.cornerRadius = 8
             field.layer?.borderWidth = 1
@@ -405,19 +404,6 @@ private final class CaptureAreaSelectionView: NSView {
         }
         widthField.placeholderString = "宽度"
         heightField.placeholderString = "高度"
-
-        dimensionReadout.font = .monospacedDigitSystemFont(ofSize: 13.5, weight: .semibold)
-        dimensionReadout.textColor = captureSelectionAccentNSColor.blended(
-            withFraction: 0.28,
-            of: .white
-        ) ?? captureSelectionAccentNSColor
-        dimensionReadout.wantsLayer = true
-        dimensionReadout.layer?.cornerRadius = 9
-        dimensionReadout.layer?.borderWidth = 1
-        dimensionReadout.layer?.borderColor = captureSelectionAccentNSColor
-            .withAlphaComponent(0.36).cgColor
-        dimensionReadout.layer?.backgroundColor = NSColor.clear.cgColor
-        controlCard.addSubview(dimensionReadout)
 
         dimensionLinkButton.contentTintColor = NSColor.white.withAlphaComponent(0.4)
         dimensionLinkButton.imagePosition = .imageOnly
@@ -445,14 +431,14 @@ private final class CaptureAreaSelectionView: NSView {
     /// One full-featured toolbar in two positions. Without a selection it
     /// sits at the top of the screen; once a region is drawn it moves right
     /// under the selection — keeping every control (ratio presets, exact
-    /// width/height, apply, readout, cancel, 开始录制) so the aspect ratio can
+    /// width/height, apply, cancel, 开始录制) so the aspect ratio can
     /// still be changed after drawing.
     private func layoutControlCard(scale: CGFloat) {
-        let cardHeight: CGFloat = 100 * scale
+        let cardHeight: CGFloat = 88 * scale
         let hasSelection = selectionRect != nil
         escapeHintCard.isHidden = hasSelection
 
-        let cardWidth = 1160 * scale
+        let cardWidth = 1000 * scale
         if hasSelection {
             // Follow the selection: centered under it, flipped above when the
             // selection sits too low on the screen.
@@ -498,75 +484,69 @@ private final class CaptureAreaSelectionView: NSView {
         for button in presetButtons {
             button.frame = CGRect(
                 x: x,
-                y: 12 * scale,
+                y: 8 * scale,
                 width: 60 * scale,
-                height: 76 * scale
+                height: 72 * scale
             )
             button.updateScale(scale)
             x += 68 * scale
         }
         dividerView.frame = CGRect(
             x: x + 4 * scale,
-            y: 18 * scale,
+            y: 14 * scale,
             width: max(scale, 1),
-            height: 64 * scale
+            height: 60 * scale
         )
 
         let dimensionStart = x + 28 * scale
         widthCaption.frame = CGRect(
             x: dimensionStart,
-            y: 70 * scale,
+            y: 58 * scale,
             width: 82 * scale,
             height: 16 * scale
         )
         widthField.frame = CGRect(
             x: dimensionStart,
-            y: 25 * scale,
+            y: 18 * scale,
             width: 82 * scale,
-            height: 38 * scale
+            height: 36 * scale
         )
         dimensionLinkButton.frame = CGRect(
             x: dimensionStart + 88 * scale,
-            y: 29 * scale,
+            y: 20 * scale,
             width: 32 * scale,
             height: 32 * scale
         )
         heightCaption.frame = CGRect(
             x: dimensionStart + 126 * scale,
-            y: 70 * scale,
+            y: 58 * scale,
             width: 82 * scale,
             height: 16 * scale
         )
         heightField.frame = CGRect(
             x: dimensionStart + 126 * scale,
-            y: 25 * scale,
+            y: 18 * scale,
             width: 82 * scale,
-            height: 38 * scale
+            height: 36 * scale
         )
         applySizeButton.frame = CGRect(
             x: dimensionStart + 226 * scale,
-            y: 24 * scale,
+            y: 17 * scale,
             width: 106 * scale,
-            height: 42 * scale
-        )
-        dimensionReadout.frame = CGRect(
-            x: dimensionStart + 348 * scale,
-            y: 28 * scale,
-            width: 136 * scale,
-            height: 34 * scale
+            height: 40 * scale
         )
 
         confirmButton.frame = CGRect(
             x: cardWidth - 116 * scale,
-            y: 14 * scale,
+            y: 12 * scale,
             width: 98 * scale,
-            height: 72 * scale
+            height: 64 * scale
         )
         cancelButton.frame = CGRect(
             x: cardWidth - 216 * scale,
-            y: 14 * scale,
+            y: 12 * scale,
             width: 86 * scale,
-            height: 72 * scale
+            height: 64 * scale
         )
 
         controlCard.layer?.cornerRadius = 18 * scale
@@ -576,8 +556,6 @@ private final class CaptureAreaSelectionView: NSView {
         heightField.font = .monospacedDigitSystemFont(ofSize: 14 * scale, weight: .medium)
         widthField.layer?.cornerRadius = 8 * scale
         heightField.layer?.cornerRadius = 8 * scale
-        dimensionReadout.font = .monospacedDigitSystemFont(ofSize: 13.5 * scale, weight: .semibold)
-        dimensionReadout.layer?.cornerRadius = 9 * scale
         [applySizeButton, cancelButton, confirmButton].forEach {
             $0.updateScale(scale)
         }
@@ -928,16 +906,6 @@ private final class CaptureAreaSelectionView: NSView {
             }
         }
 
-        let sizeText: String
-        if let selectionRect {
-            let scale = max(window?.backingScaleFactor ?? 1, 1)
-            sizeText = "\(Int((selectionRect.width * scale).rounded())) × "
-                + "\(Int((selectionRect.height * scale).rounded()))"
-        } else {
-            sizeText = "— × —"
-        }
-        dimensionReadout.stringValue = sizeText
-
         confirmButton.isEnabled = selectionRect.map {
             $0.width >= 24 && $0.height >= 24
         } ?? false
@@ -964,13 +932,12 @@ private final class CaptureAreaSelectionView: NSView {
         let scale = interfaceScale
         let borderRect = selectionRect.insetBy(dx: 1.5 * scale, dy: 1.5 * scale)
         context.saveGState()
-        context.setStrokeColor(captureSelectionAccentNSColor.withAlphaComponent(0.95).cgColor)
-        context.setLineWidth(4 * scale)
+        context.setStrokeColor(captureSelectionAccentNSColor.withAlphaComponent(0.96).cgColor)
+        context.setLineWidth(3 * scale)
         context.stroke(borderRect)
-        context.setStrokeColor(NSColor.white.withAlphaComponent(0.94).cgColor)
-        context.setLineWidth(2 * scale)
-        context.setLineDash(phase: 0, lengths: [7 * scale, 7 * scale])
-        context.stroke(borderRect)
+        context.setStrokeColor(NSColor.white.withAlphaComponent(0.44).cgColor)
+        context.setLineWidth(max(scale, 1))
+        context.stroke(borderRect.insetBy(dx: 2 * scale, dy: 2 * scale))
         context.restoreGState()
 
         for handle in ResizeHandle.allCases {
@@ -1017,6 +984,6 @@ private final class CaptureAreaSelectionView: NSView {
     }
 
     private var interfaceScale: CGFloat {
-        min(0.78, max(0.52, (bounds.width - 40) / 1160))
+        min(0.84, max(0.56, (bounds.width - 40) / 1000))
     }
 }

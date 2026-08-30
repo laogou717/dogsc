@@ -508,9 +508,8 @@ private final class WindowSelectionOverlayView: NSView {
     private let contextLabel = NSTextField(labelWithString: "将录制此窗口")
     private let titleLabel = NSTextField(labelWithString: "")
     private let detailLabel = NSTextField(labelWithString: "")
-    private let shortcutLabel = NSTextField(labelWithString: "点击「开始录制」或按 ⌘R 开始")
-    private let cancelButton = NSButton()
-    private let startButton = NSButton()
+    private let cancelButton = CaptureSelectionNativeButton()
+    private let startButton = CaptureSelectionNativeButton()
     private let startButtonGradient = CAGradientLayer()
     private var cutoutFrame: CGRect?
     private var windowIdentity: UInt32?
@@ -560,11 +559,6 @@ private final class WindowSelectionOverlayView: NSView {
         detailLabel.lineBreakMode = .byTruncatingTail
         addSubview(detailLabel)
 
-        shortcutLabel.font = .systemFont(ofSize: 11, weight: .medium)
-        shortcutLabel.textColor = NSColor.white.withAlphaComponent(0.46)
-        shortcutLabel.alignment = .right
-        addSubview(shortcutLabel)
-
         cancelButton.title = "取消"
         cancelButton.font = .systemFont(ofSize: 14, weight: .medium)
         cancelButton.contentTintColor = NSColor.white.withAlphaComponent(0.82)
@@ -582,30 +576,30 @@ private final class WindowSelectionOverlayView: NSView {
             string: "开始录制",
             attributes: [
                 .font: NSFont.systemFont(ofSize: 15, weight: .semibold),
-                .foregroundColor: NSColor.white,
+                .foregroundColor: NSColor.black.withAlphaComponent(0.88),
             ]
         )
         startTitle.append(NSAttributedString(
             string: "   ⌘R",
             attributes: [
                 .font: NSFont.systemFont(ofSize: 13, weight: .medium),
-                .foregroundColor: NSColor.white.withAlphaComponent(0.68),
+                .foregroundColor: NSColor.black.withAlphaComponent(0.54),
             ]
         ))
         startButton.attributedTitle = startTitle
-        startButton.contentTintColor = .white
+        startButton.contentTintColor = NSColor.black.withAlphaComponent(0.88)
         startButton.isBordered = false
         startButton.wantsLayer = true
         startButton.layer?.backgroundColor = NSColor.clear.cgColor
         startButtonGradient.colors = [
-            NSColor(calibratedRed: 0.36, green: 0.25, blue: 1, alpha: 1).cgColor,
-            NSColor(calibratedRed: 0.49, green: 0.24, blue: 1, alpha: 1).cgColor,
+            NSColor(calibratedWhite: 0.98, alpha: 1).cgColor,
+            captureSelectionPlatinumNSColor.cgColor,
         ]
         startButtonGradient.startPoint = CGPoint(x: 0, y: 0.5)
         startButtonGradient.endPoint = CGPoint(x: 1, y: 0.5)
         startButton.layer?.insertSublayer(startButtonGradient, at: 0)
         startButton.layer?.cornerRadius = 11
-        startButton.layer?.shadowColor = NSColor.systemPurple.cgColor
+        startButton.layer?.shadowColor = captureSelectionPlatinumNSColor.cgColor
         startButton.layer?.shadowOffset = .zero
         startButton.layer?.shadowOpacity = 0.38
         startButton.layer?.shadowRadius = 9
@@ -613,13 +607,7 @@ private final class WindowSelectionOverlayView: NSView {
         startButton.action = #selector(startRecording(_:))
         addSubview(startButton)
 
-        let pulse = CABasicAnimation(keyPath: "shadowRadius")
-        pulse.fromValue = 7
-        pulse.toValue = 12
-        pulse.duration = 1.15
-        pulse.autoreverses = true
-        pulse.repeatCount = .infinity
-        startButton.layer?.add(pulse, forKey: "recording-pulse")
+        startButton.layer?.shadowOpacity = 0.12
     }
 
     func update(
@@ -642,11 +630,9 @@ private final class WindowSelectionOverlayView: NSView {
         self.recordingHighlight = recordingHighlight
         iconView.image = appIcon
         contextLabel.stringValue = selectionLocked ? "已锁定此窗口" : "单击窗口以锁定"
-        shortcutLabel.stringValue = selectionLocked
-            ? "点击「开始录制」或按 ⌘R 开始"
-            : "锁定后可移动鼠标并开始录制"
         startButton.isEnabled = selectionLocked
         startButton.alphaValue = selectionLocked ? 1 : 0.48
+        updateStartButtonPulse(enabled: selectionLocked)
         titleLabel.stringValue = appName ?? ""
         let dimensions = windowSize.map {
             "\(Int($0.width.rounded())) × \(Int($0.height.rounded()))"
@@ -657,7 +643,7 @@ private final class WindowSelectionOverlayView: NSView {
             : [cleanedWindowTitle, dimensions].filter { !$0.isEmpty }.joined(separator: "  ·  ")
 
         let controlsHidden = appName == nil || !showsControls || recordingHighlight
-        [iconContainerView, contextLabel, titleLabel, detailLabel, shortcutLabel, cancelButton, startButton]
+        [iconContainerView, contextLabel, titleLabel, detailLabel, cancelButton, startButton]
             .forEach { $0.isHidden = controlsHidden }
         needsLayout = true
         needsDisplay = true
@@ -746,12 +732,6 @@ private final class WindowSelectionOverlayView: NSView {
             width: textWidth,
             height: 17 * scale
         )
-        shortcutLabel.frame = CGRect(
-            x: cancelButton.frame.minX,
-            y: card.minY + 15 * scale,
-            width: startButton.frame.maxX - cancelButton.frame.minX,
-            height: 14 * scale
-        )
     }
 
     @objc private func startRecording(_ sender: Any?) {
@@ -778,11 +758,27 @@ private final class WindowSelectionOverlayView: NSView {
         layer.add(group, forKey: "hover-bounce")
     }
 
+    private func updateStartButtonPulse(enabled: Bool) {
+        guard let layer = startButton.layer else { return }
+        layer.removeAnimation(forKey: "recording-pulse")
+        guard enabled, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            layer.shadowOpacity = enabled ? 0.2 : 0.08
+            return
+        }
+        let pulse = CABasicAnimation(keyPath: "shadowOpacity")
+        pulse.fromValue = 0.12
+        pulse.toValue = 0.32
+        pulse.duration = 1.5
+        pulse.autoreverses = true
+        pulse.repeatCount = .infinity
+        layer.add(pulse, forKey: "recording-pulse")
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         let selectionTint = NSColor(
-            calibratedRed: 0.025,
-            green: 0.045,
-            blue: 0.18,
+            calibratedRed: 0.035,
+            green: 0.035,
+            blue: 0.035,
             alpha: recordingHighlight ? 0 : 0.3
         )
         selectionTint.setFill()
@@ -794,9 +790,9 @@ private final class WindowSelectionOverlayView: NSView {
         }
         mask.windingRule = .evenOdd
         NSColor(
-            calibratedRed: 0.025,
-            green: 0.045,
-            blue: 0.18,
+            calibratedRed: 0.035,
+            green: 0.035,
+            blue: 0.035,
             alpha: recordingHighlight ? 0.58 : 0.54
         ).setFill()
         mask.fill()
@@ -807,7 +803,7 @@ private final class WindowSelectionOverlayView: NSView {
             xRadius: 9,
             yRadius: 9
         )
-        NSColor(calibratedRed: 0.39, green: 0.26, blue: 1, alpha: 0.95).setStroke()
+        captureSelectionAccentNSColor.withAlphaComponent(0.95).setStroke()
         outline.lineWidth = recordingHighlight ? 3 : (selectionLocked ? 5 : 4)
         outline.stroke()
 
@@ -821,12 +817,7 @@ private final class WindowSelectionOverlayView: NSView {
         shadow.shadowOffset = CGSize(width: 0, height: -9)
         NSGraphicsContext.saveGraphicsState()
         shadow.set()
-        NSColor(
-            calibratedRed: 0.045,
-            green: 0.047,
-            blue: 0.065,
-            alpha: 0.95
-        ).setFill()
+        captureSelectionSurfaceNSColor.setFill()
         cardPath.fill()
         NSGraphicsContext.restoreGraphicsState()
         NSColor.white.withAlphaComponent(0.12).setStroke()

@@ -1,6 +1,14 @@
 import Foundation
 import RecorderCore
 
+/// A local NSEvent monitor outlives the SwiftUI value that installed it.
+/// Reading the skimming preference through that captured value freezes the
+/// switch at its launch state, so keep the live value in a stable reference.
+@MainActor
+final class EditorTimelineHoverPreviewGate {
+    var isEnabled = true
+}
+
 struct PrimarySegmentTrimDraft: Equatable {
     let segmentID: UUID
     let edge: RecordingSegmentTrimEdge
@@ -215,36 +223,6 @@ enum EditorPrimaryTimelinePresentation {
         )
     }
 
-    /// Mapped click events are ordered by output time. During a ripple-trim
-    /// preview the displayed segments remain one continuous output interval,
-    /// so a pair of binary boundaries exactly replaces the former nested
-    /// event-by-segment scan.
-    static func pointerClicks(
-        _ clicks: [PointerEventRecord],
-        beforeOutputEnd outputEnd: TimeInterval
-    ) -> [PointerEventRecord] {
-        guard outputEnd.isFinite, outputEnd > 0, !clicks.isEmpty else { return [] }
-
-        func firstIndex(atOrAfter time: TimeInterval) -> Int {
-            var lower = clicks.startIndex
-            var upper = clicks.endIndex
-            while lower < upper {
-                let middle = lower + (upper - lower) / 2
-                if clicks[middle].time < time {
-                    lower = middle + 1
-                } else {
-                    upper = middle
-                }
-            }
-            return lower
-        }
-
-        let lower = firstIndex(atOrAfter: 0)
-        let upper = firstIndex(atOrAfter: outputEnd)
-        if lower == clicks.startIndex, upper == clicks.endIndex { return clicks }
-        return Array(clicks[lower..<upper])
-    }
-
     /// Segment output starts form an ordered boundary index. Preserve the
     /// existing rule (the first segment boundary inside 7 pt wins; playback is
     /// the fallback) without allocating and scanning every endpoint.
@@ -397,14 +375,6 @@ enum EditorPrimaryTimelinePresentation {
         }
     }
 
-    static func mappedPointerClicks(
-        sourceEvents: [PointerEventRecord],
-        map: TimelineMap
-    ) -> [PointerEventRecord] {
-        map.mapPointerEventSegments(sourceEvents)
-            .flatMap(\.events)
-            .filter { $0.kind == .leftClick || $0.kind == .rightClick }
-    }
 }
 
 /// Immutable time anchor used while SwiftUI changes the document width. A
@@ -469,6 +439,7 @@ final class EditorTimelineZoomInputCoalescer {
 
     private var pendingTargetZoom: Double?
     private var latestPointerViewportX: CGFloat?
+    private var pendingApply: Apply?
     private var flushTask: Task<Void, Never>?
 
     static func targetZoom(from currentZoom: Double, deltaY: CGFloat) -> Double {
@@ -484,6 +455,25 @@ final class EditorTimelineZoomInputCoalescer {
         let baseZoom = pendingTargetZoom ?? currentZoom
         pendingTargetZoom = Self.targetZoom(from: baseZoom, deltaY: deltaY)
         latestPointerViewportX = pointerViewportX
+        pendingApply = apply
+        scheduleFlush()
+    }
+
+    /// Slider drags provide an absolute target rather than a wheel delta, but
+    /// they can still emit several changes before one display frame. Share the
+    /// same publication gate so every zoom input has one rendering cadence.
+    func enqueue(
+        targetZoom: Double,
+        pointerViewportX: CGFloat?,
+        apply: @escaping Apply
+    ) {
+        pendingTargetZoom = min(max(targetZoom, 1), 120)
+        latestPointerViewportX = pointerViewportX
+        pendingApply = apply
+        scheduleFlush()
+    }
+
+    private func scheduleFlush() {
         guard flushTask == nil else { return }
 
         flushTask = Task { @MainActor [weak self] in
@@ -496,14 +486,24 @@ final class EditorTimelineZoomInputCoalescer {
                 return
             }
             guard let self, !Task.isCancelled else { return }
-            let targetZoom = self.pendingTargetZoom
-            let pointerViewportX = self.latestPointerViewportX
-            self.pendingTargetZoom = nil
-            self.latestPointerViewportX = nil
-            self.flushTask = nil
-            if let targetZoom {
-                apply(targetZoom, pointerViewportX)
-            }
+            self.flush()
+        }
+    }
+
+    /// Mouse-up must not leave the last fraction of a drag waiting behind the
+    /// display gate. Applying it synchronously also keeps the slider thumb and
+    /// the final document scale identical when the interaction ends.
+    func flush() {
+        flushTask?.cancel()
+        flushTask = nil
+        let targetZoom = pendingTargetZoom
+        let pointerViewportX = latestPointerViewportX
+        let apply = pendingApply
+        pendingTargetZoom = nil
+        latestPointerViewportX = nil
+        pendingApply = nil
+        if let targetZoom, let apply {
+            apply(targetZoom, pointerViewportX)
         }
     }
 
@@ -512,6 +512,7 @@ final class EditorTimelineZoomInputCoalescer {
         flushTask = nil
         pendingTargetZoom = nil
         latestPointerViewportX = nil
+        pendingApply = nil
     }
 }
 
@@ -610,7 +611,10 @@ enum EditorTimelineSelectionPresentation {
         sourceSequence: SourceSequence
     ) -> EditorSelection? {
         guard let id = primarySegmentID(from: selection) else { return selection }
-        return primarySegmentIDs(in: sourceSequence).contains(id) ? selection : .screen
+        // A removed timeline segment has lost its own editing context. Fall
+        // back to the neutral canvas instead of activating screen transforms;
+        // temporal selection must never imply spatial manipulation.
+        return primarySegmentIDs(in: sourceSequence).contains(id) ? selection : .canvas
     }
 }
 
@@ -656,6 +660,62 @@ enum EditorTimelineSplitTarget: Equatable {
         case let .sticker(id): self = .sticker(id)
         default: return nil
         }
+    }
+}
+
+/// A temporal selection must remain inspectable on the monitor. Selecting a
+/// clip while the playhead is already inside it preserves the user's frame;
+/// selecting one elsewhere reveals the first useful authored state instead of
+/// leaving a selected inspector attached to an invisible object.
+enum EditorTimelineSelectionReveal {
+    static func time(
+        for selection: EditorSelection,
+        in project: RecorderProject,
+        currentTime: TimeInterval
+    ) -> TimeInterval? {
+        let interval: (start: TimeInterval, end: TimeInterval, preferred: TimeInterval)?
+        switch selection {
+        case let .zoom(id):
+            interval = project.zoomAnimations.first(where: { $0.id == id }).map {
+                (
+                    start: $0.startTime,
+                    end: $0.endTime,
+                    preferred: $0.startTime + min($0.enterDuration, $0.endTime - $0.startTime)
+                )
+            }
+        case let .screenMotion(id):
+            interval = project.timeline.screenMotionClips.first(where: { $0.id == id }).map {
+                (start: $0.timing.startTime,
+                 end: $0.timing.endTime,
+                 preferred: $0.timing.leadInEndTime)
+            }
+        case let .cameraMotion(id):
+            interval = project.timeline.cameraMotionClips.first(where: { $0.id == id }).map {
+                (start: $0.timing.startTime,
+                 end: $0.timing.endTime,
+                 preferred: $0.timing.leadInEndTime)
+            }
+        case let .mosaic(id):
+            interval = project.timeline.mosaicClips.first(where: { $0.id == id }).map {
+                (start: $0.timing.startTime,
+                 end: $0.timing.endTime,
+                 preferred: $0.timing.startTime)
+            }
+        case let .sticker(id):
+            interval = project.timeline.stickerClips.first(where: { $0.id == id }).map {
+                (start: $0.timing.startTime,
+                 end: $0.timing.endTime,
+                 preferred: $0.timing.startTime)
+            }
+        default:
+            interval = nil
+        }
+        guard let interval else { return nil }
+        let start = max(interval.start, 0)
+        let end = max(interval.end, start)
+        if currentTime >= start, currentTime < end { return nil }
+        guard end > start else { return start }
+        return min(max(interval.preferred, start), end - 0.001)
     }
 }
 

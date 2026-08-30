@@ -66,16 +66,45 @@ public struct FrameBackgroundScene: Equatable, Sendable {
     public var source: BackgroundSource
     /// Blur radius in output-canvas pixels.
     public var blurRadius: Double
+    public var patternScale: Double
+    public var patternOpacity: Double
 
-    public init(source: BackgroundSource, blurRadius: Double) {
+    public init(
+        source: BackgroundSource,
+        blurRadius: Double,
+        patternScale: Double = 1.0,
+        patternOpacity: Double = 1.0
+    ) {
         self.source = source
         self.blurRadius = max(blurRadius, 0)
+        self.patternScale = max(patternScale, 0.1)
+        self.patternOpacity = min(max(patternOpacity, 0), 1)
     }
 }
 
 public enum FrameScreenChromeKind: Equatable, Sendable {
     case window
     case browser
+    case devicePhonePortrait
+    case devicePhoneLandscape
+    case deviceTabletPortrait
+    case deviceTabletLandscape
+
+    public var isDevice: Bool {
+        switch self {
+        case .window, .browser: false
+        case .devicePhonePortrait, .devicePhoneLandscape,
+             .deviceTabletPortrait, .deviceTabletLandscape: true
+        }
+    }
+
+    public var isPhone: Bool {
+        self == .devicePhonePortrait || self == .devicePhoneLandscape
+    }
+
+    public var isPortrait: Bool {
+        self == .devicePhonePortrait || self == .deviceTabletPortrait
+    }
 }
 
 /// Fully evaluated vector chrome. Geometry is expressed in the same top-left
@@ -86,6 +115,7 @@ public struct FrameScreenChromeScene: Equatable, Sendable {
     public var outerRect: CompositionRect
     public var toolbarRect: CompositionRect
     public var outerCornerRadius: Double
+    public var contentCornerRadius: Double
     public var surfaceColor: HexColor
     public var toolbarColor: HexColor
     public var separatorColor: HexColor
@@ -97,6 +127,7 @@ public struct FrameScreenChromeScene: Equatable, Sendable {
         outerRect: CompositionRect,
         toolbarRect: CompositionRect,
         outerCornerRadius: Double,
+        contentCornerRadius: Double = 0,
         surfaceColor: HexColor,
         toolbarColor: HexColor,
         separatorColor: HexColor,
@@ -107,6 +138,7 @@ public struct FrameScreenChromeScene: Equatable, Sendable {
         self.outerRect = outerRect
         self.toolbarRect = toolbarRect
         self.outerCornerRadius = max(outerCornerRadius, 0)
+        self.contentCornerRadius = max(contentCornerRadius, 0)
         self.surfaceColor = surfaceColor
         self.toolbarColor = toolbarColor
         self.separatorColor = separatorColor
@@ -155,7 +187,7 @@ public struct FrameMosaicScene: Equatable, Sendable {
     public var style: MosaicEffectStyle
     public var intensity: Double
     public var spotlightDimming: Double
-    /// Eased visibility shared by blur and dimming during interval edges.
+    /// Eased visibility shared by blur or spotlight dimming during interval edges.
     public var transitionProgress: Double
 
     public init(
@@ -195,6 +227,7 @@ public struct FrameScreenScene: Equatable, Sendable {
     public var decoration: FrameScreenDecoration
     public var mosaics: [FrameMosaicScene]
     public var motion: FrameLayerMotion
+    public var opacity: Double
 
     public var projectionRect: CompositionRect {
         decoration.projectionRect ?? finalRect
@@ -213,7 +246,8 @@ public struct FrameScreenScene: Equatable, Sendable {
         shadow: FrameShadow?,
         decoration: FrameScreenDecoration = .none,
         mosaics: [FrameMosaicScene] = [],
-        motion: FrameLayerMotion = .none
+        motion: FrameLayerMotion = .none,
+        opacity: Double = 1
     ) {
         self.sourceCrop = sourceCrop.clamped()
         self.fittedRect = fittedRect
@@ -228,6 +262,7 @@ public struct FrameScreenScene: Equatable, Sendable {
         self.decoration = decoration
         self.mosaics = mosaics
         self.motion = motion
+        self.opacity = min(max(opacity, 0), 1)
     }
 }
 
@@ -343,6 +378,13 @@ public struct FrameStickerScene: Equatable, Sendable {
     public var shadowRadius: Double
     public var shadowOffset: CompositionPoint
     public var backdropBlur: Double
+    public var backdropBlurIncludesCamera: Bool
+    public var hidesScreen: Bool
+    public var hidesCamera: Bool
+    /// Entrance/exit visibility before the user's authored sticker opacity is
+    /// applied. Backdrop suppression follows this value so it never exposes a
+    /// hard first or last frame merely because the sticker is translucent.
+    public var transitionProgress: Double
     public var layerIndex: Int
 }
 
@@ -361,6 +403,9 @@ public struct FrameProgressScene: Equatable, Sendable {
     public var nodeColor: HexColor
     public var textColor: HexColor
     public var chapters: [FrameProgressChapterScene]
+    public var opacity: Double
+    public var scale: Double
+    public var offset: NormalizedPoint
 }
 
 public struct FrameProgressChapterScene: Equatable, Sendable {
@@ -456,6 +501,7 @@ public enum FrameSceneEvaluator {
         cameraSourceSize: CompositionSize? = nil,
         pointerTrack: ProjectPointerTrack? = nil,
         cursorMetrics: CursorAssetMetrics? = nil,
+        cursorMetricsByAssetID: [CursorAssetID: CursorAssetMetrics] = [:],
         zoomTrack: ZoomAnimationTrack? = nil,
         screenMotionTrack: ScreenMotionTrack? = nil,
         cameraMotionTrack: CameraMotionTrack? = nil,
@@ -479,6 +525,7 @@ public enum FrameSceneEvaluator {
             cameraSourceSize: cameraIsAvailable ? cameraSourceSize : nil,
             pointerTrack: pointerTrack,
             cursorMetrics: cursorMetrics,
+            cursorMetricsByAssetID: cursorMetricsByAssetID,
             zoomTrack: zoomTrack,
             screenMotionTrack: screenMotionTrack,
             cameraMotionTrack: cameraMotionTrack,
@@ -513,6 +560,7 @@ public enum FrameSceneEvaluator {
                 cameraSourceSize: nextCameraIsAvailable ? cameraSourceSize : nil,
                 pointerTrack: pointerTrack,
                 cursorMetrics: cursorMetrics,
+                cursorMetricsByAssetID: cursorMetricsByAssetID,
                 zoomTrack: zoomTrack,
                 screenMotionTrack: screenMotionTrack,
                 cameraMotionTrack: cameraMotionTrack,
@@ -542,6 +590,7 @@ public enum FrameSceneEvaluator {
         pointerTrack: ProjectPointerTrack? = nil,
         pointerEvaluation: PointerTrackEvaluation? = nil,
         cursorMetrics: CursorAssetMetrics? = nil,
+        cursorMetricsByAssetID: [CursorAssetID: CursorAssetMetrics] = [:],
         zoomTrack: ZoomAnimationTrack? = nil,
         screenMotionTrack: ScreenMotionTrack? = nil,
         cameraMotionTrack: CameraMotionTrack? = nil,
@@ -601,31 +650,82 @@ public enum FrameSceneEvaluator {
             screenMotionTrack: screenMotionTrack,
             cameraMotionTrack: cameraMotionTrack
         )
+        // The opening roster must remain stable for its whole duration. Using
+        // the current frame's active clips made every earlier element change
+        // delay and duration when a sticker or camera appeared mid-opening.
+        let hasOpeningSticker = project.timeline.stickerClips.contains {
+            $0.timing.startTime <= 0.000_1 && $0.timing.endTime > 0.000_1
+        }
+        let hasOpeningCamera = (project.media?.camera != nil || cameraSourceSize != nil)
+            && !project.camera.isHidden
+        let availableOpeningElements = project.openingSequence.elementOrder.filter { element in
+            guard project.openingSequence.includedElements.contains(element) else { return false }
+            switch element {
+            case .screen: return true
+            case .progress: return project.timeline.progressOverlay != nil
+            case .camera: return hasOpeningCamera
+            case .stickers: return hasOpeningSticker
+            }
+        }
+        let screenOpening = openingSample(
+            for: .screen,
+            sequence: project.openingSequence,
+            activeElements: availableOpeningElements,
+            at: sampleTime,
+            canvasWidth: width,
+            canvasHeight: height
+        )
+        var screenGeometry = geometry.screen
+        screenGeometry.finalRect = openingRect(
+            screenGeometry.finalRect,
+            sample: screenOpening
+        )
+        screenGeometry.finalCornerRadius *= screenOpening.scale
+        screenGeometry.finalBorderWidth *= screenOpening.scale
+        screenGeometry.rotationX += screenOpening.rotationX
+        screenGeometry.rotationY += screenOpening.rotationY
+        screenGeometry.perspective = min(
+            max(screenGeometry.perspective + screenOpening.perspective, 0),
+            2
+        )
         let screenShadow: FrameShadow? = project.canvas.shadowStrength > 0
             ? FrameShadow(
                 opacity: project.canvas.shadowStrength,
-                radius: 22 * styleScale * geometry.screen.manualScale
-                    * geometry.screen.viewport.scale,
+                radius: 22 * styleScale * screenGeometry.manualScale
+                    * screenGeometry.viewport.scale * screenOpening.scale,
                 offset: CompositionPoint(
                     x: 0,
-                    y: 12 * styleScale * geometry.screen.manualScale
-                        * geometry.screen.viewport.scale
+                    y: 12 * styleScale * screenGeometry.manualScale
+                        * screenGeometry.viewport.scale * screenOpening.scale
                 )
             )
             : nil
         let decoration = screenDecoration(
             style: project.canvas.screenFrame,
             frameScale: project.canvas.screenFrameScale,
-            geometry: geometry.screen,
-            styleScale: styleScale
+            geometry: screenGeometry,
+            styleScale: styleScale,
+            groupScale: screenOpening.scale
         )
-        let projectionRect = decoration.projectionRect ?? geometry.screen.finalRect
+        let projectionRect = decoration.projectionRect ?? screenGeometry.finalRect
+        // The inspector point addresses recorded content. The complete chrome,
+        // border and shadow share its projection, but asymmetric decoration
+        // must never reinterpret 0/0 as the outer toolbar corner.
+        let projectionAnchor = CompositionPoint(
+            x: screenGeometry.finalRect.x
+                + screenGeometry.finalRect.width
+                    * screenGeometry.projectionAnchor.x,
+            y: screenGeometry.finalRect.y
+                + screenGeometry.finalRect.height
+                    * screenGeometry.projectionAnchor.y
+        )
         let projectedQuad = ScreenProjection.project(
             rect: projectionRect,
-            rotationX: geometry.screen.rotationX,
-            rotationY: geometry.screen.rotationY,
-            rotationZ: geometry.screen.rotationZ,
-            perspective: geometry.screen.perspective
+            rotationX: screenGeometry.rotationX,
+            rotationY: screenGeometry.rotationY,
+            rotationZ: screenGeometry.rotationZ,
+            perspective: screenGeometry.perspective,
+            anchor: projectionAnchor
         )
         let activeMosaics: [FrameMosaicScene] = project.timeline.mosaicClips.compactMap { clip in
             guard clip.timing.contains(sampleTime) else { return nil }
@@ -646,27 +746,37 @@ public enum FrameSceneEvaluator {
         }
         let screen = FrameScreenScene(
             sourceCrop: project.canvas.crop,
-            fittedRect: geometry.screen.fittedRect,
-            baseRect: geometry.screen.baseRect,
-            finalRect: geometry.screen.finalRect,
+            fittedRect: screenGeometry.fittedRect,
+            baseRect: screenGeometry.baseRect,
+            finalRect: screenGeometry.finalRect,
             projectedQuad: projectedQuad,
-            cornerRadius: geometry.screen.finalCornerRadius,
-            borderWidth: geometry.screen.finalBorderWidth,
+            cornerRadius: screenGeometry.finalCornerRadius,
+            borderWidth: screenGeometry.finalBorderWidth,
             borderColor: project.canvas.borderColor,
             borderOpacity: project.canvas.insetOpacity,
             shadow: screenShadow,
             decoration: decoration,
-            mosaics: activeMosaics
+            mosaics: activeMosaics,
+            opacity: screenOpening.opacity
         )
         let camera = geometry.camera.map { evaluation in
-            FrameCameraScene(
-                rect: evaluation.rect,
+            let opening = openingSample(
+                for: .camera,
+                sequence: project.openingSequence,
+                activeElements: availableOpeningElements,
+                at: sampleTime,
+                canvasWidth: width,
+                canvasHeight: height
+            )
+            let openingCameraRect = openingRect(evaluation.rect, sample: opening)
+            return FrameCameraScene(
+                rect: openingCameraRect,
                 contentFill: cameraSourceSize.flatMap {
                     let visualFocus = project.camera.contentPosition
                     return CameraContentFill.layout(
                         sourceWidth: $0.width,
                         sourceHeight: $0.height,
-                        target: evaluation.rect,
+                        target: openingCameraRect,
                         // Mirroring happens after crop. Interpret the editor's
                         // horizontal control in the final visual direction.
                         focus: NormalizedPoint(
@@ -678,8 +788,8 @@ public enum FrameSceneEvaluator {
                         contentScale: project.camera.contentScale
                     )
                 },
-                cornerRadius: evaluation.cornerRadius,
-                borderWidth: evaluation.borderWidth,
+                cornerRadius: evaluation.cornerRadius * opening.scale,
+                borderWidth: evaluation.borderWidth * opening.scale,
                 shadow: project.camera.shadowStrength > 0
                     ? FrameShadow(
                         opacity: project.camera.shadowStrength,
@@ -687,7 +797,7 @@ public enum FrameSceneEvaluator {
                         offset: CompositionPoint(x: 0, y: 8 * styleScale)
                     )
                     : nil,
-                opacity: project.camera.isHidden ? 0 : evaluation.opacity,
+                opacity: project.camera.isHidden ? 0 : evaluation.opacity * opening.opacity,
                 isMirrored: project.camera.isMirrored
             )
         }
@@ -695,25 +805,99 @@ public enum FrameSceneEvaluator {
             sample: pointer.cursor,
             project: project,
             metrics: cursorMetrics,
+            metricsByAssetID: cursorMetricsByAssetID,
             screen: screen,
             canvasSize: CompositionSize(width: width, height: height),
             styleScale: styleScale
         )
-        let stickers = stickerScenes(
+        var stickers = stickerScenes(
             project.timeline.stickerClips,
-            at: sampleTime
+            at: sampleTime,
+            suppressesInitialEntry: project.openingSequence.isEnabled
+                && project.openingSequence.includedElements.contains(.stickers)
         )
-        let progress = project.timeline.progressOverlay.flatMap { overlay in
+        let stickerOpening = openingSample(
+            for: .stickers,
+            sequence: project.openingSequence,
+            activeElements: availableOpeningElements,
+            at: sampleTime,
+            canvasWidth: width,
+            canvasHeight: height
+        )
+        stickers = stickers.map { scene in
+            var result = scene
+            result.offset = NormalizedPoint(
+                x: scene.offset.x + stickerOpening.offset.x / width,
+                y: scene.offset.y + stickerOpening.offset.y / height
+            )
+            result.scale *= stickerOpening.scale
+            result.opacity *= stickerOpening.opacity
+            return result
+        }
+        var progress = project.timeline.progressOverlay.flatMap { overlay in
             progressScene(
                 overlay,
                 at: sampleTime,
                 outputDuration: outputDuration ?? 0
             )
         }
+        if var openingProgress = progress {
+            var sample = openingSample(
+                for: .progress,
+                sequence: project.openingSequence,
+                activeElements: availableOpeningElements,
+                at: sampleTime,
+                canvasWidth: width,
+                canvasHeight: height
+            )
+            let baseBandHeight = max(openingProgress.bandHeight * width / 1_920, 24)
+            let visualHalfHeight = baseBandHeight * sample.scale / 2
+            let progressCenterY: Double = switch openingProgress.placement {
+            case .top:
+                baseBandHeight / 2
+            case .bottom:
+                height - baseBandHeight / 2
+            case .custom:
+                min(
+                    max(openingProgress.position.y * height, baseBandHeight / 2),
+                    height - baseBandHeight / 2
+                )
+            }
+            let travelMargin = max(height * 0.025, 8)
+            switch openingProgress.placement {
+            case .top:
+                // A finished-film bar is already a long horizontal shape. It
+                // should descend as one rigid strip, not shrink and drift like
+                // a floating card.
+                sample.scale = 1
+                sample.offset.y = -(
+                    progressCenterY + visualHalfHeight + travelMargin
+                ) * sample.remaining
+            case .bottom:
+                sample.scale = 1
+                sample.offset.y = (
+                    height - progressCenterY + visualHalfHeight + travelMargin
+                ) * sample.remaining
+            case .custom:
+                // Once the user detaches the bar from an edge there is no
+                // meaningful off-canvas direction. Reveal it in place with a
+                // compact non-linear scale instead of sweeping a full-width
+                // strip across the composition.
+                sample.offset = CompositionPoint(x: 0, y: 0)
+                sample.scale = 0.84 + 0.16 * (1 - sample.remaining)
+            }
+            openingProgress.opacity = sample.opacity
+            openingProgress.scale = sample.scale
+            openingProgress.offset = NormalizedPoint(
+                x: sample.offset.x / width,
+                y: sample.offset.y / height
+            )
+            progress = openingProgress
+        }
         var order: [FrameLayerRole] = [.background, .screen]
         if cursor != nil { order.append(.cursor) }
-        // Spotlight is one composite effect above the complete base picture,
-        // not two independent blurs on the wallpaper and screen texture.
+        // Spotlight is one dimming effect above the complete base picture,
+        // not separate treatments for the wallpaper and screen texture.
         if activeMosaics.contains(where: { $0.style == .spotlight }) {
             order.append(.spotlight)
         }
@@ -726,7 +910,9 @@ public enum FrameSceneEvaluator {
             color: color,
             background: FrameBackgroundScene(
                 source: project.canvas.backgroundSource,
-                blurRadius: project.canvas.backgroundBlur * styleScale
+                blurRadius: project.canvas.backgroundBlur * styleScale,
+                patternScale: project.canvas.patternScale,
+                patternOpacity: project.canvas.patternOpacity
             ),
             screen: screen,
             camera: camera,
@@ -739,7 +925,8 @@ public enum FrameSceneEvaluator {
 
     private static func stickerScenes(
         _ clips: [StickerClip],
-        at time: TimeInterval
+        at time: TimeInterval,
+        suppressesInitialEntry: Bool = false
     ) -> [FrameStickerScene] {
         clips.compactMap { clip in
             guard clip.timing.contains(time) else { return nil }
@@ -757,14 +944,20 @@ public enum FrameSceneEvaluator {
                 : 1
             let enterDuration = requestedEnter * transitionScale
             let exitDuration = requestedExit * transitionScale
-            let linearEnter = enterDuration > 0
+            let suppressesClipEntry = suppressesInitialEntry
+                && clip.timing.startTime <= 0.000_1
+            let linearEnter = suppressesClipEntry ? 1 : (enterDuration > 0
                 ? min(max(localTime / enterDuration, 0), 1)
-                : 1
+                : 1)
             let linearExit = exitDuration > 0
                 ? min(max(remaining / exitDuration, 0), 1)
                 : 1
-            let enterProgress = smootherStep(linearEnter)
-            let exitProgress = smootherStep(linearExit)
+            // Entry covers a generous off-canvas distance, so a symmetric
+            // smoother-step spends too much of the trip at near-constant
+            // speed. Ease out decisively into the target; exit uses the
+            // complementary ease-in path and accelerates away from it.
+            let enterProgress = easeOutQuart(linearEnter)
+            let exitProgress = easeInExitQuart(linearExit)
             let exitPreset = clip.exitAnimation ?? clip.animation.automaticExit
             let enterVisibility = clip.animation == .none ? 1 : enterProgress
             let exitVisibility = exitPreset == .none ? 1 : exitProgress
@@ -797,6 +990,10 @@ public enum FrameSceneEvaluator {
                     y: clip.shadowOffsetY
                 ),
                 backdropBlur: max(clip.backdropBlur, 0) * visibility,
+                backdropBlurIncludesCamera: clip.backdropBlurIncludesCamera,
+                hidesScreen: clip.hidesScreen,
+                hidesCamera: clip.hidesCamera,
+                transitionProgress: visibility,
                 layerIndex: clip.layerIndex
             )
         }
@@ -894,13 +1091,189 @@ public enum FrameSceneEvaluator {
                     fraction: $0.time / outputDuration,
                     title: $0.title
                 )
-            }
+            },
+            opacity: 1,
+            scale: 1,
+            offset: NormalizedPoint(x: 0, y: 0)
+        )
+    }
+
+    private struct OpeningSample {
+        var opacity: Double
+        var scale: Double
+        var offset: CompositionPoint
+        var rotationX: Double
+        var rotationY: Double
+        var perspective: Double
+        var remaining: Double
+
+        static let identity = OpeningSample(
+            opacity: 1,
+            scale: 1,
+            offset: CompositionPoint(x: 0, y: 0),
+            rotationX: 0,
+            rotationY: 0,
+            perspective: 0,
+            remaining: 0
+        )
+    }
+
+    private static func openingSample(
+        for element: OpeningSequenceElement,
+        sequence: OpeningSequence,
+        activeElements: [OpeningSequenceElement],
+        at time: TimeInterval,
+        canvasWidth: Double,
+        canvasHeight: Double
+    ) -> OpeningSample {
+        guard sequence.isEnabled,
+              time < sequence.duration,
+              let index = activeElements.firstIndex(of: element) else {
+            return .identity
+        }
+        let effectiveStagger = min(
+            sequence.stagger,
+            sequence.maximumStagger(for: activeElements.count)
+        )
+        let lastDelay = effectiveStagger * Double(max(activeElements.count - 1, 0))
+        let itemDuration = max(
+            sequence.duration - lastDelay,
+            OpeningSequence.minimumElementDuration
+        )
+        let start = effectiveStagger * Double(index)
+        let linear = min(max((time - start) / itemDuration, 0), 1)
+        let eased = 1 - pow(1 - linear, 4)
+        let opacity = smootherStep(min(linear * 1.65, 1))
+        let remaining = 1 - eased
+        // Translation settles quickly enough to feel responsive, while a 3D
+        // pose needs to remain visible after the card enters the canvas. The
+        // former shared quartic falloff reduced tilt to almost zero before the
+        // first useful on-canvas frame.
+        let rotationRemaining = pow(1 - linear, 1.5)
+        let overshoot = 1 + 1.35 * pow(linear - 1, 3) + 0.35 * pow(linear - 1, 2)
+        let scaleStart: Double
+        let initialOffset: CompositionPoint
+        let rotationX: Double
+        let rotationY: Double
+        let perspective: Double
+        switch (sequence.preset, element) {
+        case (.converge, .screen):
+            scaleStart = 0.72
+            initialOffset = CompositionPoint(x: -canvasWidth * 1.05, y: -canvasHeight * 0.62)
+            rotationX = 0
+            rotationY = 0
+            perspective = 0
+        case (.converge, .progress):
+            scaleStart = 0.82
+            initialOffset = CompositionPoint(x: 0, y: canvasHeight * 0.22)
+            rotationX = 0
+            rotationY = 0
+            perspective = 0
+        case (.converge, .camera):
+            scaleStart = 0.58
+            initialOffset = CompositionPoint(x: canvasWidth * 1.12, y: canvasHeight * 0.72)
+            rotationX = 0
+            rotationY = 0
+            perspective = 0
+        case (.converge, .stickers):
+            scaleStart = 0.62
+            initialOffset = CompositionPoint(x: -canvasWidth * 1.30, y: -canvasHeight * 0.70)
+            rotationX = 0
+            rotationY = 0
+            perspective = 0
+        case (.sideSlide, .screen):
+            scaleStart = 0.94
+            initialOffset = CompositionPoint(x: -canvasWidth * 1.12, y: 0)
+            rotationX = 0
+            rotationY = 0
+            perspective = 0
+        case (.sideSlide, .progress):
+            scaleStart = 1
+            initialOffset = CompositionPoint(x: 0, y: canvasHeight * 0.22)
+            rotationX = 0
+            rotationY = 0
+            perspective = 0
+        case (.sideSlide, .camera):
+            scaleStart = 0.88
+            initialOffset = CompositionPoint(x: canvasWidth * 1.15, y: 0)
+            rotationX = 0
+            rotationY = 0
+            perspective = 0
+        case (.sideSlide, .stickers):
+            scaleStart = 0.9
+            initialOffset = CompositionPoint(x: -canvasWidth * 1.35, y: 0)
+            rotationX = 0
+            rotationY = 0
+            perspective = 0
+        case (.light3D, .screen):
+            scaleStart = 0.80
+            initialOffset = CompositionPoint(x: -canvasWidth * 1.05, y: canvasHeight * 0.08)
+            rotationX = 9 * rotationRemaining
+            rotationY = -22 * rotationRemaining
+            perspective = 0.72 * rotationRemaining
+        case (.light3D, .progress):
+            scaleStart = 0.92
+            initialOffset = CompositionPoint(x: 0, y: canvasHeight * 0.20)
+            rotationX = 0
+            rotationY = 0
+            perspective = 0
+        case (.light3D, .camera):
+            scaleStart = 0.72
+            initialOffset = CompositionPoint(x: canvasWidth * 1.10, y: canvasHeight * 0.16)
+            rotationX = 0
+            rotationY = 0
+            perspective = 0
+        case (.light3D, .stickers):
+            scaleStart = 0.76
+            initialOffset = CompositionPoint(x: -canvasWidth * 1.30, y: -canvasHeight * 0.12)
+            rotationX = 0
+            rotationY = 0
+            perspective = 0
+        }
+        let settledScale = min(max(overshoot, 0), 1.04)
+        return OpeningSample(
+            opacity: opacity,
+            scale: scaleStart + (settledScale - scaleStart) * eased,
+            offset: CompositionPoint(
+                x: initialOffset.x * remaining,
+                y: initialOffset.y * remaining
+            ),
+            rotationX: rotationX,
+            rotationY: rotationY,
+            perspective: perspective,
+            remaining: remaining
+        )
+    }
+
+    private static func openingRect(
+        _ rect: CompositionRect,
+        sample: OpeningSample
+    ) -> CompositionRect {
+        let width = rect.width * sample.scale
+        let height = rect.height * sample.scale
+        return CompositionRect(
+            x: rect.midX - width / 2 + sample.offset.x,
+            y: rect.midY - height / 2 + sample.offset.y,
+            width: width,
+            height: height
         )
     }
 
     private static func smootherStep(_ value: Double) -> Double {
         let x = min(max(value, 0), 1)
         return x * x * x * (x * (x * 6 - 15) + 10)
+    }
+
+    private static func easeOutQuart(_ value: Double) -> Double {
+        let x = min(max(value, 0), 1)
+        return 1 - pow(1 - x, 4)
+    }
+
+    /// `remainingProgress` travels from 1 to 0 during exit. This curve keeps
+    /// the first motion subtle near the target, then accelerates out of frame.
+    private static func easeInExitQuart(_ remainingProgress: Double) -> Double {
+        let x = min(max(remainingProgress, 0), 1)
+        return 1 - pow(1 - x, 4)
     }
 
     /// Keep privacy and presentation semantics explicit. Ordinary redaction
@@ -1011,25 +1384,35 @@ public enum FrameSceneEvaluator {
         style: ScreenFrameStyle,
         frameScale: Double,
         geometry: ScreenSceneEvaluation,
-        styleScale: Double
+        styleScale: Double,
+        groupScale: Double = 1
     ) -> FrameScreenDecoration {
         guard style != .none else { return .none }
         let authoredFrameScale = min(max(frameScale, 0.6), 1.6)
-        let scale = max(
-            styleScale * geometry.manualScale * geometry.viewport.scale
-                * authoredFrameScale,
+        let motionScale = max(
+            geometry.manualScale * geometry.viewport.scale * groupScale,
             0.000_1
         )
-        let idealHeight = 46 * scale
-        let toolbarHeight = min(
-            max(idealHeight, 4 * styleScale),
-            max(geometry.finalRect.height * 0.25, 4 * styleScale)
+        let scale = max(
+            styleScale * motionScale * authoredFrameScale,
+            0.000_1
         )
+        let authoredInsets = ScreenFrameGeometry.decorationInsetsAtScaleOne(
+            style: style,
+            frameScale: frameScale,
+            fittedWidth: geometry.fittedRect.width,
+            fittedHeight: geometry.fittedRect.height,
+            styleScale: styleScale
+        )
+        let topInset = authoredInsets.top * motionScale
+        let rightInset = authoredInsets.right * motionScale
+        let bottomInset = authoredInsets.bottom * motionScale
+        let leftInset = authoredInsets.left * motionScale
         let outerRect = CompositionRect(
-            x: geometry.finalRect.x,
-            y: geometry.finalRect.y - toolbarHeight,
-            width: geometry.finalRect.width,
-            height: geometry.finalRect.height + toolbarHeight
+            x: geometry.finalRect.x - leftInset,
+            y: geometry.finalRect.y - topInset,
+            width: geometry.finalRect.width + leftInset + rightInset,
+            height: geometry.finalRect.height + topInset + bottomInset
         )
         // A slight overlap fills the source's rounded top-corner cutouts while
         // preserving the exact content rectangle and crop calculation.
@@ -1037,22 +1420,47 @@ public enum FrameSceneEvaluator {
             x: outerRect.x,
             y: outerRect.y,
             width: outerRect.width,
-            height: toolbarHeight + min(2 * scale, toolbarHeight * 0.08)
+            height: topInset + min(2 * scale, topInset * 0.08)
         )
         let isDark = style == .windowDark || style == .browserDark
+            || style == .devicePhone || style == .deviceTablet
+            || style == .devicePhonePortrait || style == .devicePhoneLandscape
+            || style == .deviceTabletPortrait || style == .deviceTabletLandscape
         let kind: FrameScreenChromeKind = switch style {
         case .browserLight, .browserDark: .browser
+        case .devicePhone:
+            geometry.finalRect.width >= geometry.finalRect.height
+                ? .devicePhoneLandscape : .devicePhonePortrait
+        case .deviceTablet:
+            geometry.finalRect.width >= geometry.finalRect.height
+                ? .deviceTabletLandscape : .deviceTabletPortrait
+        case .devicePhonePortrait: .devicePhonePortrait
+        case .devicePhoneLandscape: .devicePhoneLandscape
+        case .deviceTabletPortrait: .deviceTabletPortrait
+        case .deviceTabletLandscape: .deviceTabletLandscape
         case .windowLight, .windowDark, .none: .window
+        }
+        let outerCornerRadius: Double = switch style {
+        case .devicePhone, .devicePhonePortrait, .devicePhoneLandscape:
+            min(max(34 * scale, 5), min(outerRect.width, outerRect.height) * 0.13)
+        case .deviceTablet, .deviceTabletPortrait, .deviceTabletLandscape:
+            min(max(25 * scale, 4), min(outerRect.width, outerRect.height) * 0.09)
+        default: min(max(14 * scale, 2), topInset * 0.48)
+        }
+        let contentCornerRadius: Double = switch style {
+        case .devicePhone, .devicePhonePortrait, .devicePhoneLandscape:
+            min(max(27 * scale, 4), min(geometry.finalRect.width, geometry.finalRect.height) * 0.11)
+        case .deviceTablet, .deviceTabletPortrait, .deviceTabletLandscape:
+            min(max(17 * scale, 3), min(geometry.finalRect.width, geometry.finalRect.height) * 0.065)
+        default: 0
         }
         return .chrome(
             FrameScreenChromeScene(
                 kind: kind,
                 outerRect: outerRect,
                 toolbarRect: toolbarRect,
-                outerCornerRadius: min(
-                    max(14 * scale, 2),
-                    toolbarHeight * 0.48
-                ),
+                outerCornerRadius: outerCornerRadius,
+                contentCornerRadius: contentCornerRadius,
                 surfaceColor: isDark
                     ? HexColor(rgb24: 0x22_23_27)
                     : HexColor(rgb24: 0xEC_ED_F0),
@@ -1076,11 +1484,16 @@ public enum FrameSceneEvaluator {
         sample: PointerSample?,
         project: RecorderProject,
         metrics: CursorAssetMetrics?,
+        metricsByAssetID: [CursorAssetID: CursorAssetMetrics],
         screen: FrameScreenScene,
         canvasSize: CompositionSize,
         styleScale: Double
     ) -> FrameCursorScene? {
-        guard let sample, let metrics else { return nil }
+        guard let sample else { return nil }
+        let assetID = project.cursorStyle.assetID == .automatic
+            ? (sample.recordedCursorAssetID ?? .systemArrow)
+            : project.cursorStyle.assetID
+        guard let metrics = metricsByAssetID[assetID] ?? metrics else { return nil }
         let crop = screen.sourceCrop.clamped()
         let local = NormalizedPoint(
             x: (sample.location.x - crop.x) / crop.width,
@@ -1098,7 +1511,7 @@ public enum FrameSceneEvaluator {
             metrics: metrics
         ) else { return nil }
         return FrameCursorScene(
-            assetID: project.cursorStyle.assetID,
+            assetID: assetID,
             metrics: metrics,
             normalizedScreenPosition: local,
             layout: layout,

@@ -27,17 +27,20 @@ public struct PointerSample: Equatable, Sendable {
     /// The renderer rotates the bitmap around its declared hotspot, so the
     /// authored click coordinate remains exact.
     public var rotationRadians: Double
+    public var recordedCursorAssetID: CursorAssetID?
 
     public init(
         location: NormalizedPoint,
         isClicking: Bool,
         clickPhase: PointerClickPhase? = nil,
-        rotationRadians: Double = 0
+        rotationRadians: Double = 0,
+        recordedCursorAssetID: CursorAssetID? = nil
     ) {
         self.location = location
         self.isClicking = isClicking
         self.clickPhase = clickPhase
         self.rotationRadians = rotationRadians.isFinite ? rotationRadians : 0
+        self.recordedCursorAssetID = recordedCursorAssetID
     }
 }
 
@@ -200,7 +203,8 @@ public struct PointerTrack: Equatable, Sendable {
                     location: rawLocation,
                     isClicking: clicking,
                     clickPhase: clickPhase,
-                    rotationRadians: rotationRadians
+                    rotationRadians: rotationRadians,
+                    recordedCursorAssetID: lower.cursorAssetID
                 )
                 : nil
         )

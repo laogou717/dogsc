@@ -16,7 +16,8 @@ enum SharedFrameCompositor {
             ?? SharedFrameRenderer.backgroundImage(
                 scene: scene.background,
                 canvasRect: extent,
-                wallpaperSource: resources.wallpaper
+                wallpaperSource: resources.wallpaper,
+                time: scene.time
             )
         return SharedFrameRenderer.render(
             scene: scene,

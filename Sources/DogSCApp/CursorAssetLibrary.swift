@@ -202,33 +202,77 @@ struct CursorRenderSource: @unchecked Sendable {
 /// 2026-08-21：放大时的模糊根因是系统位图只有 1x/2x 表示；对系统仅提供
 /// 低位图的手/十字准星样式，改用系统自身的矢量 PDF 渲染到目标像素尺寸。
 enum CursorAssetLibrary {
+    /// New cursor effects follow the editor's warm neutral visual language.
+    /// Purple and blue remain available as explicit user choices, but are no
+    /// longer injected before the user has made a color decision.
+    static let defaultClickColor = HexColor(rgb24: 0xED_A6_47)
+
+    /// Keep the inspector deliberately small. Automatic playback still needs
+    /// every runtime system cursor below, but those internal forms are not
+    /// separate style choices: “系统” follows them as the recording changes.
     static var availableAssets: [ResolvedCursorAsset] {
-        cachedAvailableAssets
+        cachedAllAssets.filter { $0.id == .automatic || $0.id == .touchDot }
+    }
+
+    static var renderAssets: [ResolvedCursorAsset] {
+        cachedAllAssets
+    }
+
+    static var metricsByAssetID: [CursorAssetID: CursorAssetMetrics] {
+        cachedMetricsByAssetID
+    }
+
+    /// Resolve the globally visible macOS cursor into the stable IDs persisted
+    /// with pointer events. `currentSystem` can represent another app's cursor;
+    /// compare both the shared cursor object and its immutable image/hotspot.
+    @MainActor
+    static func recordedSystemAssetID(for cursor: NSCursor?) -> CursorAssetID? {
+        guard let cursor,
+              cursor.image.size.width > 1,
+              cursor.image.size.height > 1 else { return nil }
+        for candidate in systemCursorCandidates {
+            if cursor === candidate.cursor || cursor == candidate.cursor {
+                return candidate.id
+            }
+        }
+        guard let cursorData = cursor.image.tiffRepresentation else { return nil }
+        return systemCursorCandidates.first { candidate in
+            candidate.cursor.hotSpot == cursor.hotSpot
+                && candidate.cursor.image.size == cursor.image.size
+                && candidate.cursor.image.tiffRepresentation == cursorData
+        }?.id
     }
 
     static func resolvedAsset(for id: CursorAssetID) -> ResolvedCursorAsset? {
-        let assets = availableAssets
+        let assets = cachedAllAssets
         return assets.first(where: { $0.id == id })
             ?? assets.first(where: { $0.id == .systemArrow })
     }
 
     /// Playback can evaluate cursor overlays at 120 Hz. Resolve the immutable
     /// system images once instead of querying NSCursor on every frame.
-    private static let cachedAvailableAssets: [ResolvedCursorAsset] = {
+    private static let cachedAllAssets: [ResolvedCursorAsset] = {
         [
+            systemAsset(
+                id: .automatic,
+                displayName: "系统",
+                cursor: .arrow,
+                fallbackSymbol: "cursorarrow.motionlines",
+                clickColor: defaultClickColor
+            ),
             systemAsset(
                 id: .systemArrow,
                 displayName: "系统箭头",
                 cursor: .arrow,
                 fallbackSymbol: "cursorarrow",
-                clickColor: HexColor(rgb24: 0x7C_5C_FC)
+                clickColor: defaultClickColor
             ),
             systemAsset(
                 id: .systemPointingHand,
                 displayName: "指向手势",
                 cursor: .pointingHand,
                 fallbackSymbol: "hand.point.up.left.fill",
-                clickColor: HexColor(rgb24: 0x7C_5C_FC),
+                clickColor: defaultClickColor,
                 vectorDirectory: "pointinghand"
             ),
             systemAsset(
@@ -236,7 +280,7 @@ enum CursorAssetLibrary {
                 displayName: "十字准星",
                 cursor: .crosshair,
                 fallbackSymbol: "scope",
-                clickColor: HexColor(rgb24: 0x54_B8_FF),
+                clickColor: defaultClickColor,
                 vectorDirectory: "cross"
             ),
             systemAsset(
@@ -244,14 +288,14 @@ enum CursorAssetLibrary {
                 displayName: "I 型光标",
                 cursor: .iBeam,
                 fallbackSymbol: "text.cursor",
-                clickColor: HexColor(rgb24: 0x54_B8_FF)
+                clickColor: defaultClickColor
             ),
             systemAsset(
                 id: .systemOpenHand,
                 displayName: "张开手",
                 cursor: .openHand,
                 fallbackSymbol: "hand.raised.fill",
-                clickColor: HexColor(rgb24: 0x7C_5C_FC),
+                clickColor: defaultClickColor,
                 vectorDirectory: "openhand"
             ),
             systemAsset(
@@ -259,7 +303,7 @@ enum CursorAssetLibrary {
                 displayName: "握拳手",
                 cursor: .closedHand,
                 fallbackSymbol: "hand.raised.fist",
-                clickColor: HexColor(rgb24: 0x7C_5C_FC),
+                clickColor: defaultClickColor,
                 vectorDirectory: "closedhand"
             ),
             systemAsset(
@@ -269,6 +313,7 @@ enum CursorAssetLibrary {
                 fallbackSymbol: "nosign",
                 clickColor: HexColor(rgb24: 0xFF_64_64)
             ),
+            touchDotAsset(),
             ResolvedCursorAsset(
                 id: .hidden,
                 displayName: "隐藏",
@@ -276,12 +321,74 @@ enum CursorAssetLibrary {
                 metrics: CursorAssetMetrics(
                     hotspot: CursorAssetPoint(x: 0.5, y: 0.5),
                     intrinsicSize: CursorAssetSize(width: 1, height: 1),
-                    clickColor: HexColor(rgb24: 0x7C_5C_FC)
+                    clickColor: defaultClickColor
                 ),
                 vectorSource: nil
             ),
         ]
     }()
+
+    private static let cachedMetricsByAssetID: [CursorAssetID: CursorAssetMetrics] =
+        Dictionary(
+            uniqueKeysWithValues: cachedAllAssets
+                .filter { !$0.isHidden && $0.id != .automatic }
+                .map { ($0.id, $0.metrics) }
+        )
+
+    @MainActor
+    private static var systemCursorCandidates: [(id: CursorAssetID, cursor: NSCursor)] {
+        [
+            (.systemArrow, .arrow),
+            (.systemPointingHand, .pointingHand),
+            (.systemCrosshair, .crosshair),
+            (.systemIBeam, .iBeam),
+            (.systemOpenHand, .openHand),
+            (.systemClosedHand, .closedHand),
+            (.systemNotAllowed, .operationNotAllowed),
+        ]
+    }
+
+    private static func touchDotAsset() -> ResolvedCursorAsset {
+        // Apple describes the default iPadOS pointer as a 19pt circle whose
+        // material adapts for contrast. A recorded video cannot ask iPadOS to
+        // redraw that live material, so this vector-like two-tone treatment
+        // preserves the same visual weight over both light and dark footage:
+        // translucent neutral fill, bright rim and a soft dark separation.
+        let size: CGFloat = 24
+        let image = NSImage(
+            size: NSSize(width: size, height: size),
+            flipped: false
+        ) { rect in
+            let dotRect = rect.insetBy(dx: 2.5, dy: 2.5)
+            let path = NSBezierPath(ovalIn: dotRect)
+            let shadow = NSShadow()
+            shadow.shadowColor = NSColor.black.withAlphaComponent(0.38)
+            shadow.shadowBlurRadius = 2.4
+            shadow.shadowOffset = NSSize(width: 0, height: -0.7)
+            shadow.set()
+            NSColor(calibratedWhite: 0.72, alpha: 0.88).setFill()
+            path.fill()
+            NSGraphicsContext.current?.saveGraphicsState()
+            NSShadow().set()
+            NSColor.white.withAlphaComponent(0.72).setStroke()
+            path.lineWidth = 1.05
+            path.stroke()
+            NSGraphicsContext.current?.restoreGraphicsState()
+            return true
+        }
+        image.isTemplate = false
+        return ResolvedCursorAsset(
+            id: .touchDot,
+            displayName: "触控圆点",
+            image: image,
+            metrics: CursorAssetMetrics(
+                hotspot: CursorAssetPoint(x: 0.5, y: 0.5),
+                intrinsicSize: CursorAssetSize(width: size, height: size),
+                clickColor: defaultClickColor
+            ),
+            vectorSource: nil
+        )
+    }
 
     private static func systemAsset(
         id: CursorAssetID,

@@ -209,20 +209,14 @@ enum EditorTimelineRangeCreationPolicy {
     }
 }
 
-struct EditorTimelineRulerTick: Identifiable, Equatable {
-    let index: Int
+struct EditorTimelineRulerTick: Equatable {
     let time: TimeInterval
     let isMajor: Bool
-
-    var id: Int { index }
 }
 
-struct EditorTimelineRulerLabel: Identifiable, Equatable {
-    let index: Int
-    let time: TimeInterval
-    let x: CGFloat
-
-    var id: Int { index }
+struct EditorTimelineRulerScaleLayer: Equatable {
+    let majorStep: TimeInterval
+    let opacity: Double
 }
 
 /// Fixed nine marks leave a highly zoomed viewport with no readable time
@@ -245,63 +239,90 @@ enum EditorTimelineRulerPresentation {
         return nice * magnitude
     }
 
-    static func ticks(duration: TimeInterval, width: CGFloat) -> [EditorTimelineRulerTick] {
-        guard duration.isFinite, duration > 0, width.isFinite, width > 0 else { return [] }
-        let majorStep = majorStep(duration: duration, width: width)
-        let minorStep = majorStep / 2
-        let requestedCount = Int(floor(duration / minorStep)) + 1
-        // Keep even multi-hour, maximum-zoom projects bounded while preserving
-        // frame-level resolution at high zoom (up to 120x).
-        let strideMultiplier = max(Int(ceil(Double(requestedCount) / 2400)), 1)
-        let effectiveStep = minorStep * Double(strideMultiplier)
-        let count = min(Int(floor(duration / effectiveStep)) + 1, 2401)
-        return (0..<count).map { index in
-            let time = min(Double(index) * effectiveStep, duration)
-            let majorRatio = time / majorStep
-            return EditorTimelineRulerTick(
-                index: index,
-                time: time,
-                isMajor: abs(majorRatio.rounded() - majorRatio) < 0.000_01
-            )
+    /// A ruler needs readable 1/2/5 time divisions, but replacing the complete
+    /// tick set at each division boundary makes an otherwise continuous zoom
+    /// look like it jumped. Blend the adjacent levels across the whole scale
+    /// interval so the finer ticks arrive progressively and the coarser ticks
+    /// leave at the same rate.
+    static func scaleLayers(
+        duration: TimeInterval,
+        width: CGFloat,
+        targetSpacing: CGFloat = 128
+    ) -> [EditorTimelineRulerScaleLayer] {
+        guard duration.isFinite, duration > 0, width.isFinite, width > 0 else {
+            return []
         }
+        let rawStep = duration / max(Double(width / max(targetSpacing, 1)), 1)
+        let coarseStep = majorStep(
+            duration: duration,
+            width: width,
+            targetSpacing: targetSpacing
+        )
+        let fineStep = nextFinerStep(than: coarseStep)
+        let denominator = log(coarseStep / fineStep)
+        let rawProgress = denominator > 0
+            ? log(coarseStep / max(rawStep, fineStep)) / denominator
+            : 0
+        let progress = min(max(rawProgress, 0), 1)
+        if progress <= 0.001 {
+            return [EditorTimelineRulerScaleLayer(majorStep: coarseStep, opacity: 1)]
+        }
+        if progress >= 0.999 {
+            return [EditorTimelineRulerScaleLayer(majorStep: fineStep, opacity: 1)]
+        }
+        return [
+            EditorTimelineRulerScaleLayer(
+                majorStep: coarseStep,
+                opacity: 1 - progress
+            ),
+            EditorTimelineRulerScaleLayer(
+                majorStep: fineStep,
+                opacity: progress
+            ),
+        ]
     }
 
-
-    /// Labels outside the visible document rect do not contribute any useful
-    /// context, but each SwiftUI Text still participates in layout. On a long
-    /// project at 12× this used to keep well over a hundred off-screen labels
-    /// alive during every zoom tick. Keep only the visible major labels plus a
-    /// small guard band so horizontal scrolling never reveals an empty edge.
-    static func visibleLabels(
-        ticks: [EditorTimelineRulerTick],
+    /// Build only the ticks inside the buffered viewport. This removes the old
+    /// full-document array replacement at a ruler level boundary and keeps the
+    /// synchronous Canvas cheap even for a multi-hour project at 120×.
+    static func visibleTicks(
+        majorStep: TimeInterval,
         duration: TimeInterval,
         width: CGFloat,
         visibleRange: ClosedRange<CGFloat>,
         guardBand: CGFloat = 80
-    ) -> [EditorTimelineRulerLabel] {
-        guard duration.isFinite, duration > 0, width.isFinite, width > 0 else {
+    ) -> [EditorTimelineRulerTick] {
+        guard majorStep.isFinite, majorStep > 0,
+              duration.isFinite, duration > 0,
+              width.isFinite, width > 0 else {
             return []
         }
         let lower = max(visibleRange.lowerBound - max(guardBand, 0), 0)
         let upper = min(visibleRange.upperBound + max(guardBand, 0), width)
         let lowerTime = duration * Double(lower / width)
         let upperTime = duration * Double(upper / width)
-        let timeRange = lowerTime...upperTime
-        let visibleIndices = EditorTimelineViewportPresentation.visiblePointIndices(
-            in: ticks,
-            timeRange: timeRange,
-            time: \.time
+        let minorStep = majorStep / 2
+        let firstIndex = max(Int(floor(lowerTime / minorStep)) - 1, 0)
+        let finalIndex = min(
+            Int(ceil(upperTime / minorStep)) + 1,
+            Int(floor(duration / minorStep))
         )
-        return visibleIndices.compactMap { index in
-            let tick = ticks[index]
-            guard tick.isMajor else { return nil }
-            let position = width * CGFloat(tick.time / duration)
-            return EditorTimelineRulerLabel(
-                index: tick.index,
-                time: tick.time,
-                x: position
+        guard finalIndex >= firstIndex else { return [] }
+        return (firstIndex...finalIndex).map { index in
+            EditorTimelineRulerTick(
+                time: min(Double(index) * minorStep, duration),
+                isMajor: index.isMultiple(of: 2)
             )
         }
+    }
+
+    private static func nextFinerStep(than step: TimeInterval) -> TimeInterval {
+        guard step.isFinite, step > 0 else { return 0.5 }
+        let magnitude = pow(10, floor(log10(step)))
+        let normalized = step / magnitude
+        if normalized <= 1.000_001 { return 5 * magnitude / 10 }
+        if normalized <= 2.000_001 { return magnitude }
+        return 2 * magnitude
     }
 }
 
@@ -573,12 +594,6 @@ struct CameraSyncAnchorDrag {
     var draft: MediaSyncAnchor
 }
 
-struct CameraSyncAuditionRequest: Equatable {
-    let id: UUID
-    let outputTime: TimeInterval
-    let previousPlaybackTimingRevision: UInt64
-}
-
 enum EditorTimelineWaveformLane: Equatable {
     case system
     case microphone
@@ -590,20 +605,33 @@ enum EditorTimelineWaveformLane: Equatable {
         }
     }
 
-    /// EDT-WAVE-003: 两路叠放在同一全高条带，靠明度分工——雾白极简下
-    /// 系统声用中灰，麦克风用近白色，不再引入紫色。
+    var gradientColors: [Color] {
+        switch self {
+        case .microphone:
+            [
+                Color(white: 1.0),
+                Color(white: 0.94)
+            ]
+        case .system:
+            [
+                Color(white: 0.90).opacity(0.65),
+                Color(white: 0.76).opacity(0.50)
+            ]
+        }
+    }
+
     var color: Color {
         switch self {
-        case .system: Color(white: 0.62)
-        case .microphone: Color(red: 0.96, green: 0.99, blue: 1.0)
+        case .system: Color(white: 0.85).opacity(0.65)
+        case .microphone: Color.white
         }
     }
 
     /// 系统声略微透明，叠在麦克风下层时不喧宾夺主。
     var barOpacity: Double {
         switch self {
-        case .system: 0.62
-        case .microphone: 0.96
+        case .system: 0.65
+        case .microphone: 0.98
         }
     }
 
@@ -611,7 +639,7 @@ enum EditorTimelineWaveformLane: Equatable {
     var amplitudeFactor: Double {
         switch self {
         case .system: 0.72
-        case .microphone: 1
+        case .microphone: 1.0
         }
     }
 
@@ -648,8 +676,6 @@ struct EditorTimelineWaveformStripView: View, Equatable {
     }
 
     var body: some View {
-        // EDT-WAVE-003：整条波形自身的自适应振幅增益，条带加高时波形同步
-        // 放大并保持垂直居中，不再上方大片留白。
         let amplitudeGain = EditorTimelineWaveformPresentation.displayAmplitudeGain(
             samples: waveform.samples
         )
@@ -662,12 +688,12 @@ struct EditorTimelineWaveformStripView: View, Equatable {
                 centerLine.addLine(to: CGPoint(x: size.width, y: centerY))
                 context.stroke(
                     centerLine,
-                    with: .color(lane.color.opacity(0.18)),
-                    lineWidth: 1
+                    with: .color(Color.white.opacity(0.18)),
+                    lineWidth: 0.5
                 )
             }
 
-            let spacing: CGFloat = 2
+            let spacing: CGFloat = 1.4
             let barCount = max(Int(ceil(size.width / spacing)), 1)
             var bars = Path()
             for index in 0..<barCount {
@@ -681,28 +707,34 @@ struct EditorTimelineWaveformStripView: View, Equatable {
                     atOutputTime: outputTime
                 )
                 guard peak > 0 else { continue }
-                let amplified = min(peak * amplitudeGain * lane.amplitudeFactor, 1)
+                let amplified = min(peak * amplitudeGain * lane.amplitudeFactor, 1.0)
                 if lane.drawsBottomRiseOnly {
                     // 只保留对称波形的上半截，贴条带底部向上升起。
                     let barHeight = max(
                         CGFloat(amplified) * max(size.height - 6, 1) / 2,
-                        0.5
+                        0.6
                     )
                     bars.move(to: CGPoint(x: x, y: size.height - 3))
-                    bars.addLine(to: CGPoint(x: x, y: size.height - 3 - barHeight))
+                    bars.addLine(to: CGPoint(x: x, y: size.height - 3 - barHeight * 1.3))
                 } else {
                     let halfHeight = max(
                         CGFloat(amplified) * max(size.height - 6, 1) / 2,
-                        0.5
+                        0.6
                     )
                     bars.move(to: CGPoint(x: x, y: centerY - halfHeight))
                     bars.addLine(to: CGPoint(x: x, y: centerY + halfHeight))
                 }
             }
+
+            let gradient = Gradient(colors: lane.gradientColors)
             context.stroke(
                 bars,
-                with: .color(lane.color.opacity(lane.barOpacity)),
-                style: StrokeStyle(lineWidth: 1, lineCap: .round)
+                with: .linearGradient(
+                    gradient,
+                    startPoint: CGPoint(x: 0, y: 0),
+                    endPoint: CGPoint(x: 0, y: size.height)
+                ),
+                style: StrokeStyle(lineWidth: 1.0, lineCap: .round)
             )
         }
         .frame(width: width, height: height)
@@ -761,7 +793,6 @@ struct EditorTimelineView: View {
     @ObservedObject var editorStore: EditorStore
     @ObservedObject var mediaSession: EditorMediaSession
     @ObservedObject var playbackController: EditorPlaybackController
-    let pointerEvents: [PointerEventRecord]
     let isCameraSyncEditing: Bool
     /// Parent-window key-loss epoch. It changes even when the app itself stays
     /// active, for example when a system notification covers the editor.
@@ -783,24 +814,21 @@ struct EditorTimelineView: View {
     @State var modifierFlagsMonitor: Any?
     @State var scrollWheelMonitor: Any?
     @State var hoverTrackingMonitor: Any?
+    @State var hoverPreviewGate = EditorTimelineHoverPreviewGate()
     @State var hoveredPrimarySegmentID: UUID?
     @State var draggedPrimarySegmentID: UUID?
     @State var primarySegmentDragTranslation: CGFloat = 0
+    @State var primarySegmentDragDocumentX: CGFloat?
     @State var primarySegmentDragLocalMonitor: Any?
     @State var primarySegmentDragGlobalMonitor: Any?
     @State var primaryTrimDraft: PrimarySegmentTrimDraft?
     @State var primaryRetimeDraft: PrimarySegmentRetimeDraft?
     @State var isRestoreCutMode = false
-    /// 时间轴鼠标点击标记开关（UX-019）：默认隐藏，避免遮挡波形；
-    /// 在时间线工具栏剪辑胶囊内切换，跨会话记忆。
-    @AppStorage(AppPreferences.editorTimelinePointerClickMarkersKey)
-    var showsTimelinePointerClickMarkers = false
     /// 时间轴悬浮预览轴开关（Skimming）：默认开启；关闭后恢复传统固定播放头模式。
     @AppStorage(AppPreferences.editorTimelineHoverPreviewEnabledKey)
     var isHoverPreviewEnabled = true
     @State var manualZoomDragStart: TimeInterval?
     @State var manualZoomDragEnd: TimeInterval?
-    @State var isZoomTrackHovered = false
     @State var hoveredZoomTrackLocation: CGPoint?
     @State var hoveredZoomID: UUID?
     @State var zoomGestureOrigin: ZoomAnimationClip?
@@ -818,15 +846,11 @@ struct EditorTimelineView: View {
     @State var microphoneWaveform: EditorTimelineWaveformData?
     @State var selectedCameraSyncAnchorID: UUID?
     @State var cameraSyncAnchorDrag: CameraSyncAnchorDrag?
-    @State var pendingCameraSyncAudition: CameraSyncAuditionRequest?
-    @State var cameraSyncAuditionTask: Task<Void, Never>?
-    @State var activeCameraSyncAuditionID: UUID?
 
     init(
         editorStore: EditorStore,
         mediaSession: EditorMediaSession,
         playbackController: EditorPlaybackController,
-        pointerEvents: [PointerEventRecord],
         isCameraSyncEditing: Bool,
         windowDeactivationRevision: UInt64 = 0,
         primaryLaneHeight: CGFloat = EditorTimelineSizing.defaultPrimaryLaneHeight,
@@ -836,7 +860,6 @@ struct EditorTimelineView: View {
         _editorStore = ObservedObject(wrappedValue: editorStore)
         _mediaSession = ObservedObject(wrappedValue: mediaSession)
         _playbackController = ObservedObject(wrappedValue: playbackController)
-        self.pointerEvents = pointerEvents
         self.isCameraSyncEditing = isCameraSyncEditing
         self.windowDeactivationRevision = windowDeactivationRevision
         self.primaryLaneHeight = EditorTimelineSizing.clampedPrimaryLaneHeight(
@@ -845,9 +868,7 @@ struct EditorTimelineView: View {
         _visibleTracks = visibleTracks
         self.onError = onError
         _derivedPresentationCache = State(
-            initialValue: EditorTimelineDerivedPresentationCache(
-                pointerEvents: pointerEvents
-            )
+            initialValue: EditorTimelineDerivedPresentationCache()
         )
     }
 
@@ -946,6 +967,21 @@ struct EditorTimelineView: View {
         return id
     }
 
+    /// One activation path for mouse, keyboard and accessibility. Timed clips
+    /// reveal themselves only when the playhead is outside their authored
+    /// interval, so an intentional frame inside the clip is never disturbed.
+    func activateTimelineSelection(_ selection: EditorSelection) {
+        primaryTrimDraft = nil
+        primaryRetimeDraft = nil
+        editorStore.selection = selection
+        guard let revealTime = EditorTimelineSelectionReveal.time(
+            for: selection,
+            in: editorStore.project,
+            currentTime: playbackTime
+        ) else { return }
+        playbackController.seek(to: revealTime, pausing: true)
+    }
+
     var showsScreenMotionTimeline: Bool {
         visibleTracks.contains(.screenMotion)
     }
@@ -1005,7 +1041,9 @@ struct EditorTimelineView: View {
         let duration = max(timelineDuration, 0.001)
         return VStack(spacing: 0) {
             timelineControls(duration: duration)
-            Divider().overlay(dividerColor)
+            Divider()
+                .overlay(dividerColor)
+                .frame(height: timelineDividerHeight)
             HStack(spacing: 0) {
                 Color.clear.frame(width: timelineLabelWidth)
                 NativeTimelineOverviewView(
@@ -1021,7 +1059,9 @@ struct EditorTimelineView: View {
             }
             .frame(height: timelineOverviewHeight)
             .background(Color.black.opacity(0.10))
-            Divider().overlay(dividerColor)
+            Divider()
+                .overlay(dividerColor)
+                .frame(height: timelineDividerHeight)
             GeometryReader { geometry in
                 let viewportWidth = max(geometry.size.width - timelineLabelWidth, 1)
                 let contentWidth = viewportWidth * CGFloat(timelineZoom)
@@ -1065,11 +1105,11 @@ struct EditorTimelineView: View {
         .background(Color(red: 0.045, green: 0.047, blue: 0.055))
         // 运动/同步轨随选择显隐时，用短高度过渡代替瞬间跳动；分栏拖动改的
         // 是 primaryLaneHeight，不经过这些布尔值，拖高手感保持直连。
-        .animation(.easeOut(duration: 0.16), value: showsScreenMotionTimeline)
-        .animation(.easeOut(duration: 0.16), value: showsCameraMotionTimeline)
-        .animation(.easeOut(duration: 0.16), value: showsOverlayTimeline)
-        .animation(.easeOut(duration: 0.16), value: showsProgressTimeline)
-        .animation(.easeOut(duration: 0.16), value: showsCameraSyncTimeline)
+        .animation(SpringMotion.fluid, value: showsScreenMotionTimeline)
+        .animation(SpringMotion.fluid, value: showsCameraMotionTimeline)
+        .animation(SpringMotion.fluid, value: showsOverlayTimeline)
+        .animation(SpringMotion.fluid, value: showsProgressTimeline)
+        .animation(SpringMotion.fluid, value: showsCameraSyncTimeline)
         .onChange(of: editorStore.project.timeline) { _, _ in
             // A ripple edit can remove the SwiftUI view that owned the current
             // mouse sequence before `onEnded` arrives. End every local gesture
@@ -1148,11 +1188,11 @@ struct EditorTimelineView: View {
         .onChange(of: isCameraSyncEditing) { _, isEditing in
             if !isEditing { dismissCameraSyncSelection() }
         }
-        .onChange(of: playbackController.lifecycle) { _, lifecycle in
-            startPendingCameraSyncAuditionIfReady(lifecycle)
-        }
-        .onChange(of: playbackController.cameraTimingRevision) { _, _ in
-            startPendingCameraSyncAuditionIfReady(playbackController.lifecycle)
+        .onChange(of: isHoverPreviewEnabled) { _, isEnabled in
+            hoverPreviewGate.isEnabled = isEnabled
+            if !isEnabled {
+                playbackController.endHoverPreview()
+            }
         }
         .onReceive(
             NotificationCenter.default.publisher(for: .editorWillTogglePlaybackFromSpace)
@@ -1160,8 +1200,7 @@ struct EditorTimelineView: View {
             guard let controller = notification.object as? EditorPlaybackController,
                   controller === playbackController,
                   selectedCameraSyncAnchorID != nil
-                    || pendingCameraSyncAudition != nil
-                    || activeCameraSyncAuditionID != nil else { return }
+                    || playbackController.cameraSyncAuditionIsActive else { return }
             dismissCameraSyncSelection()
         }
         .onAppear(perform: installDeleteKeyMonitor)
@@ -1192,7 +1231,7 @@ struct EditorTimelineView: View {
         .onDisappear {
             cancelActiveTimelineGesture()
             endPrimarySegmentDrag()
-            cancelCameraSyncAudition()
+            playbackController.cancelCameraSyncAudition()
             timelineZoomInputCoalescer.cancel()
             removeDeleteKeyMonitor()
             removeScrollWheelMonitor()

@@ -406,19 +406,77 @@ struct RecentProjectSummary: Identifiable, Equatable, Sendable {
     }
 }
 
+/// One source of truth for automatic recording names. The human-facing title
+/// and package filename intentionally share this value so Finder, the editor
+/// and the Dock never describe the same take differently.
+enum RecordingProjectNaming {
+    static func title(
+        for configuration: CaptureConfiguration,
+        createdAt: Date
+    ) -> String {
+        "\(sourceName(for: configuration)) · \(timestamp(createdAt))"
+    }
+
+    static func isAutomaticTitle(
+        _ title: String,
+        configuration: CaptureConfiguration,
+        createdAt: Date
+    ) -> Bool {
+        title.trimmingCharacters(in: .whitespacesAndNewlines)
+            == self.title(for: configuration, createdAt: createdAt)
+    }
+
+    private static func sourceName(
+        for configuration: CaptureConfiguration
+    ) -> String {
+        switch configuration.source {
+        case .display:
+            return "屏幕"
+        case .window:
+            return firstNonempty(
+                configuration.selectedApplicationName,
+                configuration.windowName
+            ) ?? "窗口"
+        case .area:
+            return "区域"
+        case .device:
+            return firstNonempty(configuration.deviceName) ?? "iOS 设备"
+        }
+    }
+
+    private static func firstNonempty(_ values: String?...) -> String? {
+        values.lazy
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
+    }
+
+    private static func timestamp(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.dateFormat = "yyyy-MM-dd HH-mm-ss"
+        return formatter.string(from: date)
+    }
+}
+
 enum ProjectStore {
     private static let recentProjectsDefaultsKey = "cn.laogou.dogsc.recent-project-paths"
     private static var defaults: UserDefaults {
         UserDefaults(suiteName: "cn.laogou.dogsc") ?? .standard
     }
 
-    static func createSession() throws -> RecordingSession {
+    static func createSession(
+        preferredTitle: String? = nil,
+        createdAt: Date = Date()
+    ) throws -> RecordingSession {
         let projectsFolder = workingProjectsFolder
 
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.locale = Locale(identifier: "zh_CN_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
         formatter.dateFormat = "yyyy-MM-dd-HH-mm-ss"
-        let baseName = "录屏-\(formatter.string(from: Date()))"
+        let fallbackName = "录屏-\(formatter.string(from: createdAt))"
+        let baseName = sanitizedPackageBaseName(preferredTitle) ?? fallbackName
         var packageURL = projectsFolder
             .appendingPathComponent("\(baseName).dogscproject", isDirectory: true)
         var suffix = 2
@@ -813,6 +871,17 @@ enum ProjectStore {
         )
     }
 
+    static func importBackgroundVideo(
+        from sourceURL: URL,
+        session: RecordingSession
+    ) throws -> (relativePath: String, url: URL) {
+        try importImageAsset(
+            from: sourceURL,
+            prefix: "background-video",
+            session: session
+        )
+    }
+
     static func importOverlayImage(
         from sourceURL: URL,
         session: RecordingSession
@@ -928,7 +997,64 @@ enum ProjectStore {
         paths.removeAll { URL(fileURLWithPath: $0).standardizedFileURL.path == path }
         paths.insert(path, at: 0)
         defaults.set(Array(paths.prefix(20)), forKey: recentProjectsDefaultsKey)
-        NSDocumentController.shared.noteNewRecentDocumentURL(packageURL)
+        scheduleSystemRecentProjectsSynchronization()
+    }
+
+    @MainActor
+    static func forgetRecentProject(_ packageURL: URL) {
+        let forgottenPath = packageURL.standardizedFileURL.path
+        var paths = defaults.stringArray(forKey: recentProjectsDefaultsKey) ?? []
+        paths.removeAll {
+            URL(fileURLWithPath: $0).standardizedFileURL.path == forgottenPath
+        }
+        defaults.set(Array(paths.prefix(20)), forKey: recentProjectsDefaultsKey)
+        scheduleSystemRecentProjectsSynchronization()
+    }
+
+    /// LaunchServices owns the Dock's recent-file section and may perform slow
+    /// bookmark work while rebuilding it. Never put that work between a
+    /// completed recording and `phase = .editor`; the app-owned recent list is
+    /// already updated synchronously, while the system list can safely follow
+    /// after the editor has been presented.
+    @MainActor
+    private static func scheduleSystemRecentProjectsSynchronization() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            synchronizeSystemRecentProjects()
+        }
+    }
+
+    /// The Dock's file-icon section is owned by macOS, independently from the
+    /// app's own project catalog. Rebuild that list from valid project packages
+    /// so deleted paths, old test packages and rename aliases cannot survive as
+    /// stale or duplicate Dock entries. Register in reverse because AppKit
+    /// inserts every noted document at the front.
+    @MainActor
+    @discardableResult
+    static func synchronizeSystemRecentProjects(limit: Int = 20) -> Bool {
+        let validProjects = recentProjectURLs(limit: limit)
+        let controller = NSDocumentController.shared
+        let expectedPaths = validProjects.map(\.standardizedFileURL.path)
+        func currentPaths() -> [String] {
+            controller.recentDocumentURLs.map(\.standardizedFileURL.path)
+        }
+        guard currentPaths() != expectedPaths else { return true }
+
+        func rebuild(_ projects: [URL]) {
+            controller.clearRecentDocuments(nil)
+            for projectURL in projects {
+                controller.noteNewRecentDocumentURL(projectURL)
+            }
+        }
+
+        // AppKit normally inserts each URL at the front. Verify that against
+        // the actual controller instead of assuming it: if behaviour changes,
+        // retry the opposite publication order rather than leaving the visible
+        // Dock menu reversed.
+        rebuild(Array(validProjects.reversed()))
+        if currentPaths() != expectedPaths {
+            rebuild(validProjects)
+        }
+        return currentPaths() == expectedPaths
     }
 
     static func recentProjectURLs(limit: Int = 8) -> [URL] {
@@ -979,10 +1105,16 @@ enum ProjectStore {
             )
         }
         let rawTitle = project.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasAutomaticSourceTitle = RecordingProjectNaming.isAutomaticTitle(
+            rawTitle,
+            configuration: project.capture,
+            createdAt: project.createdAt
+        )
         let hasAuthoredTitle = !rawTitle.isEmpty
             && rawTitle != "未命名录制"
             && !rawTitle.hasPrefix("录屏-")
             && !rawTitle.hasPrefix("录制-")
+            && !hasAutomaticSourceTitle
         let isEdited = hasAuthoredTitle
             || project.timeline.sourceSequence != .fullRecording
             || !project.zoomAnimations.isEmpty
@@ -1039,8 +1171,18 @@ enum ProjectStore {
         paths.insert(newPath, at: 0)
         defaults.set(Array(paths.prefix(20)), forKey: recentProjectsDefaultsKey)
 
-        NSDocumentController.shared.noteNewRecentDocumentURL(destination)
+        scheduleSystemRecentProjectsSynchronization()
         return destination
+    }
+
+    private static func sanitizedPackageBaseName(_ title: String?) -> String? {
+        guard let title else { return nil }
+        let invalid = CharacterSet(charactersIn: "/:\\?%*|\"<>")
+        let sanitized = title
+            .components(separatedBy: invalid)
+            .joined(separator: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return sanitized.isEmpty ? nil : sanitized
     }
 
     private static var workingProjectsFolder: URL {

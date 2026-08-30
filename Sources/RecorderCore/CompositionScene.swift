@@ -37,6 +37,7 @@ public struct ScreenSceneEvaluation: Equatable, Sendable {
     public var rotationY: Double
     public var rotationZ: Double
     public var perspective: Double
+    public var projectionAnchor: NormalizedPoint
     public var baseCornerRadius: Double
     public var baseBorderWidth: Double
     public var finalCornerRadius: Double
@@ -45,14 +46,97 @@ public struct ScreenSceneEvaluation: Equatable, Sendable {
     public var viewport: ZoomViewportTransform
 
     public var projectedQuad: ProjectedScreenQuad {
-        ScreenProjection.project(
+        // The authored 3D target selects a point inside the recorded screen.
+        // Border/chrome travel with that screen, but must not move the pivot
+        // away from the selected content merely because their insets differ.
+        let anchor = CompositionPoint(
+            x: finalRect.x + finalRect.width * projectionAnchor.x,
+            y: finalRect.y + finalRect.height * projectionAnchor.y
+        )
+        return ScreenProjection.project(
             rect: finalRect,
             rotationX: rotationX,
             rotationY: rotationY,
             rotationZ: rotationZ,
-            perspective: perspective
+            perspective: perspective,
+            anchor: anchor
         )
     }
+}
+
+public struct ScreenDecorationInsets: Equatable, Sendable {
+    public var top: Double
+    public var right: Double
+    public var bottom: Double
+    public var left: Double
+
+    public init(top: Double = 0, right: Double = 0, bottom: Double = 0, left: Double = 0) {
+        self.top = max(top, 0)
+        self.right = max(right, 0)
+        self.bottom = max(bottom, 0)
+        self.left = max(left, 0)
+    }
+
+    public static let zero = ScreenDecorationInsets()
+}
+
+/// Shared screen-frame measurements used before motion layout and again while
+/// lowering the final vector chrome. Keeping this formula in one place makes
+/// the motion anchor account for the exact same toolbar the renderer draws.
+public enum ScreenFrameGeometry {
+    public static func decorationInsetsAtScaleOne(
+        style: ScreenFrameStyle,
+        frameScale: Double,
+        fittedWidth: Double,
+        fittedHeight: Double,
+        styleScale: Double
+    ) -> ScreenDecorationInsets {
+        guard style != .none else { return .zero }
+        let safeStyleScale = max(styleScale, 0.000_1)
+        let authoredFrameScale = min(max(frameScale, 0.6), 1.6)
+        let visualScale = safeStyleScale * authoredFrameScale
+        switch style {
+        case .none:
+            return .zero
+        case .windowLight, .windowDark, .browserLight, .browserDark:
+            let idealHeight = 46 * visualScale
+            return ScreenDecorationInsets(top: min(
+                max(idealHeight, 4 * safeStyleScale),
+                max(max(fittedHeight, 0) * 0.25, 4 * safeStyleScale)
+            ))
+        case .devicePhone, .devicePhonePortrait:
+            let shortEdge = max(min(fittedWidth, fittedHeight), 1)
+            let side = min(max(17 * visualScale, 4 * safeStyleScale), shortEdge * 0.055)
+            let vertical = min(max(21 * visualScale, 5 * safeStyleScale), shortEdge * 0.068)
+            return ScreenDecorationInsets(
+                top: vertical,
+                right: side,
+                bottom: vertical,
+                left: side
+            )
+        case .devicePhoneLandscape:
+            let shortEdge = max(min(fittedWidth, fittedHeight), 1)
+            let horizontal = min(
+                max(21 * visualScale, 5 * safeStyleScale),
+                shortEdge * 0.068
+            )
+            let vertical = min(
+                max(15 * visualScale, 4 * safeStyleScale),
+                shortEdge * 0.050
+            )
+            return ScreenDecorationInsets(
+                top: vertical,
+                right: horizontal,
+                bottom: vertical,
+                left: horizontal
+            )
+        case .deviceTablet, .deviceTabletPortrait, .deviceTabletLandscape:
+            let shortEdge = max(min(fittedWidth, fittedHeight), 1)
+            let side = min(max(14 * visualScale, 4 * safeStyleScale), shortEdge * 0.045)
+            return ScreenDecorationInsets(top: side, right: side, bottom: side, left: side)
+        }
+    }
+
 }
 
 public struct CameraSceneEvaluation: Equatable, Sendable {
@@ -133,6 +217,13 @@ public enum CompositionSceneEvaluator {
             scale: project.canvas.contentScale
         )
         let borderWidthAtScaleOne = min(max(project.canvas.borderWidth, 0), 60) * scale
+        let decorationInsetsAtScaleOne = ScreenFrameGeometry.decorationInsetsAtScaleOne(
+            style: project.canvas.screenFrame,
+            frameScale: project.canvas.screenFrameScale,
+            fittedWidth: fittedRect.width,
+            fittedHeight: fittedRect.height,
+            styleScale: scale
+        )
         let screenMotionSample = (screenMotionTrack ?? motionTrackCache.screenTrack(
             for: project.timeline.screenMotionClips
         )).sampleLayout(
@@ -144,7 +235,11 @@ public enum CompositionSceneEvaluator {
                 canvasHeight: height,
                 fittedWidth: fittedRect.width,
                 fittedHeight: fittedRect.height,
-                borderWidthAtScaleOne: borderWidthAtScaleOne
+                borderWidthAtScaleOne: borderWidthAtScaleOne,
+                decorationTopAtScaleOne: decorationInsetsAtScaleOne.top,
+                decorationRightAtScaleOne: decorationInsetsAtScaleOne.right,
+                decorationBottomAtScaleOne: decorationInsetsAtScaleOne.bottom,
+                decorationLeftAtScaleOne: decorationInsetsAtScaleOne.left
             )
         )
         let screenMotion = screenMotionSample.state
@@ -208,6 +303,7 @@ public enum CompositionSceneEvaluator {
             rotationY: min(max(screenMotion.rotationY, -89), 89),
             rotationZ: screenMotion.rotationZ,
             perspective: min(max(screenMotion.perspective, 0), 2),
+            projectionAnchor: screenMotionSample.projectionAnchor,
             baseCornerRadius: max(project.canvas.cornerRadius, 0) * scale * manualScale,
             baseBorderWidth: baseBorderWidth,
             finalCornerRadius: max(project.canvas.cornerRadius, 0)

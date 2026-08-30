@@ -158,6 +158,7 @@ public struct RecorderProject: Codable, Equatable, Sendable {
     public var camera: CameraStyle
     public var audio: AudioStyle
     public var motion: MotionStyle
+    public var openingSequence: OpeningSequence
     public var cursorStyle: CursorStyle
     public var exportSettings: ExportSettings
     public var timeline: ProjectTimeline
@@ -179,6 +180,7 @@ public struct RecorderProject: Codable, Equatable, Sendable {
         camera: CameraStyle = CameraStyle(),
         audio: AudioStyle = AudioStyle(),
         motion: MotionStyle = MotionStyle(),
+        openingSequence: OpeningSequence = OpeningSequence(),
         cursorStyle: CursorStyle = CursorStyle(),
         exportSettings: ExportSettings = ExportSettings(),
         zoomAnimations: [ZoomAnimationClip] = [],
@@ -193,6 +195,7 @@ public struct RecorderProject: Codable, Equatable, Sendable {
         self.camera = camera
         self.audio = audio
         self.motion = motion
+        self.openingSequence = openingSequence
         self.cursorStyle = cursorStyle
         self.exportSettings = exportSettings
         self.timeline = timeline ?? ProjectTimeline(zoomClips: zoomAnimations)
@@ -208,6 +211,7 @@ public struct RecorderProject: Codable, Equatable, Sendable {
         case camera
         case audio
         case motion
+        case openingSequence
         case cursorStyle
         case exportSettings
         case timeline
@@ -252,6 +256,10 @@ public struct RecorderProject: Codable, Equatable, Sendable {
         camera = try container.decodeIfPresent(CameraStyle.self, forKey: .camera) ?? CameraStyle()
         audio = try container.decodeIfPresent(AudioStyle.self, forKey: .audio) ?? AudioStyle()
         motion = try container.decodeIfPresent(MotionStyle.self, forKey: .motion) ?? MotionStyle()
+        openingSequence = try container.decodeIfPresent(
+            OpeningSequence.self,
+            forKey: .openingSequence
+        ) ?? OpeningSequence()
         cursorStyle = try container.decodeIfPresent(CursorStyle.self, forKey: .cursorStyle) ?? CursorStyle()
         if decodedVersion >= 5 {
             var decodedSettings = try container.decode(
@@ -373,6 +381,7 @@ public struct RecorderProject: Codable, Equatable, Sendable {
         try container.encode(camera, forKey: .camera)
         try container.encode(audio, forKey: .audio)
         try container.encode(motion, forKey: .motion)
+        try container.encode(openingSequence, forKey: .openingSequence)
         try container.encode(cursorStyle, forKey: .cursorStyle)
         try container.encode(exportSettings, forKey: .exportSettings)
         try container.encode(timeline, forKey: .timeline)

@@ -18,6 +18,83 @@ enum RecordingCameraPreviewShape: String, CaseIterable, Identifiable {
     }
 }
 
+/// App-level creation preferences for newly pasted/imported stickers. These
+/// are deliberately limited to authoring intent that is useful across assets;
+/// geometry, timing and layer order remain unique to every new sticker.
+private struct RememberedStickerCreationDefaults: Codable, Equatable {
+    var version = 1
+    var animation: StickerAnimationPreset
+    var exitAnimation: StickerAnimationPreset?
+    var enterDuration: TimeInterval
+    var exitDuration: TimeInterval
+    var backdropBlur: Double
+    var backdropBlurIncludesCamera: Bool
+    var hidesScreen: Bool
+    var hidesCamera: Bool
+
+    static let standard = Self(
+        animation: .pop,
+        exitAnimation: nil,
+        enterDuration: 0.7,
+        exitDuration: 0.22,
+        backdropBlur: 20,
+        backdropBlurIncludesCamera: false,
+        hidesScreen: false,
+        hidesCamera: false
+    )
+
+    init(
+        animation: StickerAnimationPreset,
+        exitAnimation: StickerAnimationPreset?,
+        enterDuration: TimeInterval,
+        exitDuration: TimeInterval,
+        backdropBlur: Double,
+        backdropBlurIncludesCamera: Bool,
+        hidesScreen: Bool,
+        hidesCamera: Bool
+    ) {
+        self.animation = animation
+        self.exitAnimation = exitAnimation
+        self.enterDuration = enterDuration
+        self.exitDuration = exitDuration
+        self.backdropBlur = backdropBlur
+        self.backdropBlurIncludesCamera = backdropBlurIncludesCamera
+        self.hidesScreen = hidesScreen
+        self.hidesCamera = hidesCamera
+        normalize()
+    }
+
+    init(sticker: StickerClip) {
+        self.init(
+            animation: sticker.animation,
+            exitAnimation: sticker.exitAnimation,
+            enterDuration: sticker.enterDuration,
+            exitDuration: sticker.exitDuration,
+            backdropBlur: sticker.backdropBlur,
+            backdropBlurIncludesCamera: sticker.backdropBlurIncludesCamera,
+            hidesScreen: sticker.hidesScreen,
+            hidesCamera: sticker.hidesCamera
+        )
+    }
+
+    mutating func normalize() {
+        enterDuration = min(max(enterDuration.isFinite ? enterDuration : 0.7, 0), 2)
+        exitDuration = min(max(exitDuration.isFinite ? exitDuration : 0.22, 0), 2)
+        backdropBlur = min(max(backdropBlur.isFinite ? backdropBlur : 20, 0), 60)
+    }
+
+    func apply(to sticker: inout StickerClip) {
+        sticker.animation = animation
+        sticker.exitAnimation = exitAnimation
+        sticker.enterDuration = enterDuration
+        sticker.exitDuration = exitDuration
+        sticker.backdropBlur = backdropBlur
+        sticker.backdropBlurIncludesCamera = backdropBlurIncludesCamera
+        sticker.hidesScreen = hidesScreen
+        sticker.hidesCamera = hidesCamera
+    }
+}
+
 /// Timeline rows are editor presentation, not authored video state. Keeping
 /// this bit set outside `RecorderProject` lets a user hide a busy row without
 /// deleting its clips or changing preview/export output.
@@ -52,8 +129,6 @@ enum AppPreferences {
     static let previewResolutionModeKey = "editor.previewResolutionMode"
     static let editorTimelinePrimaryLaneHeightKey =
         "editor.timeline.primary-lane-height"
-    static let editorTimelinePointerClickMarkersKey =
-        "editor.timeline.pointer-click-markers"
     static let editorTimelineHoverPreviewEnabledKey =
         "editor.timeline.hover-preview-enabled"
     private static let editorTimelineTrackVisibilityPrefix =
@@ -68,6 +143,8 @@ enum AppPreferences {
         "cn.laogou.dogsc.editor-window-full-screen"
     static let exportDirectoryKey =
         "cn.laogou.dogsc.export-directory"
+    private static let stickerCreationDefaultsKey =
+        "editor.sticker.last-used-creation-defaults.v1"
 
     static var isExportCompletionSoundEnabled: Bool {
         let defaults = UserDefaults.standard
@@ -175,6 +252,39 @@ enum AppPreferences {
             url.standardizedFileURL.path,
             forKey: exportDirectoryKey
         )
+    }
+
+    static func applyRememberedStickerCreationDefaults(to sticker: inout StickerClip) {
+        var defaults = rememberedStickerCreationDefaults
+        defaults.normalize()
+        defaults.apply(to: &sticker)
+    }
+
+    /// Save only after an existing sticker's inheritable fields actually
+    /// changed. Merely selecting, moving, resizing or rotating an old sticker
+    /// must never replace the user's next-sticker creation preference.
+    static func rememberStickerCreationDefaultsIfChanged(
+        before: StickerClip,
+        after: StickerClip
+    ) {
+        let previous = RememberedStickerCreationDefaults(sticker: before)
+        let updated = RememberedStickerCreationDefaults(sticker: after)
+        guard previous != updated,
+              let data = try? JSONEncoder().encode(updated) else { return }
+        UserDefaults.standard.set(data, forKey: stickerCreationDefaultsKey)
+    }
+
+    private static var rememberedStickerCreationDefaults: RememberedStickerCreationDefaults {
+        guard let data = UserDefaults.standard.data(forKey: stickerCreationDefaultsKey),
+              var decoded = try? JSONDecoder().decode(
+                  RememberedStickerCreationDefaults.self,
+                  from: data
+              ),
+              decoded.version == 1 else {
+            return .standard
+        }
+        decoded.normalize()
+        return decoded
     }
 
     static func setExportDirectory(_ url: URL) throws {

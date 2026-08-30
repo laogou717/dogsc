@@ -6,6 +6,82 @@ import QuartzCore
 import RecorderCore
 import SwiftUI
 
+enum CanvasObjectInteractionPhase: Int, Equatable {
+    case idle
+    case hovered
+    case selected
+    case selectedHovered
+    case editing
+}
+
+struct CanvasObjectInteractionChrome {
+    let phase: CanvasObjectInteractionPhase
+
+    var showsOutline: Bool { phase != .idle }
+
+    var fillColor: Color {
+        switch phase {
+        case .idle:
+            return .clear
+        case .hovered:
+            return EditorTheme.platinumAccent.opacity(0.028)
+        case .selected:
+            return EditorTheme.platinumAccent.opacity(0.018)
+        case .selectedHovered:
+            return EditorTheme.platinumAccent.opacity(0.036)
+        case .editing:
+            return EditorTheme.platinumAccent.opacity(0.052)
+        }
+    }
+
+    var strokeColor: Color {
+        switch phase {
+        case .idle:
+            return .clear
+        case .hovered:
+            return EditorTheme.platinumAccent.opacity(0.48)
+        case .selected:
+            return EditorTheme.platinumAccent.opacity(0.88)
+        case .selectedHovered:
+            return EditorTheme.platinumAccent.opacity(0.96)
+        case .editing:
+            return EditorTheme.platinumAccent
+        }
+    }
+
+    var lineWidth: CGFloat {
+        switch phase {
+        case .idle: return 0
+        case .hovered: return 1
+        case .selected: return 1.5
+        case .selectedHovered: return 1.75
+        case .editing: return 2
+        }
+    }
+
+    var glowColor: Color {
+        switch phase {
+        case .editing:
+            return EditorTheme.platinumAccent.opacity(0.28)
+        case .selected:
+            return EditorTheme.platinumAccent.opacity(0.10)
+        case .selectedHovered:
+            return EditorTheme.platinumAccent.opacity(0.18)
+        case .idle, .hovered:
+            return .clear
+        }
+    }
+
+    var glowRadius: CGFloat {
+        switch phase {
+        case .editing: return 6
+        case .selected: return 3
+        case .selectedHovered: return 4
+        case .idle, .hovered: return 0
+        }
+    }
+}
+
 @MainActor
 final class EditorCanvasDragPreviewRenderer {
     private lazy var context = CIContext(options: [
@@ -59,6 +135,36 @@ final class EditorCanvasDragPreviewRenderer {
 }
 
 extension CanvasPreview {
+    func canvasObjectChrome(
+        for selection: EditorSelection,
+        isSelected: Bool? = nil
+    ) -> CanvasObjectInteractionChrome {
+        let selected = isSelected ?? (editorStore.selection == selection)
+        let phase: CanvasObjectInteractionPhase
+        if editorStore.interaction?.selection == selection {
+            phase = .editing
+        } else if selected, hoveredCanvasSelection == selection {
+            phase = .selectedHovered
+        } else if selected {
+            phase = .selected
+        } else if hoveredCanvasSelection == selection {
+            phase = .hovered
+        } else {
+            phase = .idle
+        }
+        return CanvasObjectInteractionChrome(phase: phase)
+    }
+
+    func updateCanvasHover(_ selection: EditorSelection, hovering: Bool) {
+        withAnimation(SpringMotion.interactive) {
+            if hovering {
+                hoveredCanvasSelection = selection
+            } else if hoveredCanvasSelection == selection {
+                hoveredCanvasSelection = nil
+            }
+        }
+    }
+
 /// 拖动摄像头用的即时预览图：取播放控制器的暂停摄像头帧，
     /// 按黑边检测裁剪，并按项目设置水平镜像——合成器在渲染时才做镜像，
     /// 暂停帧本身是未镜像的原始方向，漏掉这一步拖动时画面会左右翻转。
@@ -219,20 +325,39 @@ struct ProjectedScreenShape: Shape {
 /// 画布拖动吸附：把归一化位置吸附到锚点（中心/边缘停靠位），
 /// 返回吸附后的点与各轴命中的参考线位置。
 enum CanvasSnapMath {
+    static let targetPixelDistance: CGFloat = 9
+
+    static func normalizedThreshold(
+        pixelDistance: CGFloat = targetPixelDistance,
+        along travel: CGFloat,
+        limits: ClosedRange<Double> = 0.003...0.08
+    ) -> Double {
+        let safeTravel = max(abs(travel), 1)
+        return min(
+            max(Double(pixelDistance / safeTravel), limits.lowerBound),
+            limits.upperBound
+        )
+    }
+
     static func snapped(
         _ point: NormalizedPoint,
         anchorsX: [Double],
         anchorsY: [Double],
-        threshold: Double = 0.02
+        thresholdX: Double,
+        thresholdY: Double
     ) -> (point: NormalizedPoint, guideX: Double?, guideY: Double?) {
-        func snap(_ value: Double, _ anchors: [Double]) -> (Double, Double?) {
+        func snap(
+            _ value: Double,
+            _ anchors: [Double],
+            threshold: Double
+        ) -> (Double, Double?) {
             for anchor in anchors where abs(value - anchor) <= threshold {
                 return (anchor, anchor)
             }
             return (value, nil)
         }
-        let x = snap(point.x, anchorsX)
-        let y = snap(point.y, anchorsY)
+        let x = snap(point.x, anchorsX, threshold: thresholdX)
+        let y = snap(point.y, anchorsY, threshold: thresholdY)
         return (NormalizedPoint(x: x.0, y: y.0), x.1, y.1)
     }
 }

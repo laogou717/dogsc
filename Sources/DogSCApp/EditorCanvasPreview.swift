@@ -16,6 +16,52 @@ enum OverlayResizeCorner: String, CaseIterable, Identifiable {
     var ySign: Double { self == .topLeft || self == .topRight ? -1 : 1 }
 }
 
+struct StickerResizeGestureOrigin {
+    let id: UUID
+    let width: Double
+    let center: CGPoint
+    let handle: CGPoint
+    let handleRadius: CGFloat
+}
+
+struct StickerRotationGestureOrigin {
+    let id: UUID
+    let rotationDegrees: Double
+    let center: CGPoint
+    let handle: CGPoint
+    let handleAngle: Double
+}
+
+struct StickerRotationHandleGeometry {
+    let anchor: CGPoint
+    let handle: CGPoint
+}
+
+enum ProgressResizeEdge: Hashable {
+    case leading
+    case trailing
+}
+
+struct ProgressResizeGestureOrigin {
+    let edge: ProgressResizeEdge
+    let leading: Double
+    let trailing: Double
+}
+
+enum ProgressHeightResizeEdge: Hashable {
+    case top
+    case bottom
+}
+
+struct ProgressHeightResizeGestureOrigin {
+    let edge: ProgressHeightResizeEdge
+    let bandHeight: Double
+    let positionY: Double
+    let fixedCanvasY: CGFloat
+    let handleCanvasY: CGFloat
+    let placement: ProgressOverlayPlacement
+}
+
 struct CanvasPreview: View {
     @Environment(\.displayScale) var displayScale
     @ObservedObject var editorStore: EditorStore
@@ -34,8 +80,10 @@ struct CanvasPreview: View {
     let onCanvasFocused: () -> Void
     let onError: (String) -> Void
     @State var resolvedWallpaperImage: NSImage?
+    @State var resolvedWallpaperVideoURL: URL?
     @State var resolvedStickerImages: [String: NSImage] = [:]
     @State var playbackTrackCache: EditorCanvasPlaybackTrackCache
+    @State var playbackPlanCache: EditorCanvasPlaybackPlanCache
     @State var perspectivePrewarmPlanCache: EditorCanvasPerspectivePrewarmPlanCache
     @State var cropSourceFrameCache: EditorCanvasCropSourceFrameCache
     /// Reuses one Core Image context for all direct-manipulation snapshots in
@@ -67,8 +115,16 @@ struct CanvasPreview: View {
     @State var overlayDragSelection: EditorSelection?
     @State var mosaicDragOrigin: NormalizedOverlayRect?
     @State var mosaicResizeOrigin: NormalizedOverlayRect?
-    @State var stickerResizeOrigin: Double?
+    @State var stickerResizeOrigin: StickerResizeGestureOrigin?
+    @State var stickerRotationOrigin: StickerRotationGestureOrigin?
+    @State var progressResizeOrigin: ProgressResizeGestureOrigin?
+    @State var progressHeightResizeOrigin: ProgressHeightResizeGestureOrigin?
+    @State var progressHeightDragHandleY: CGFloat?
     @State var overlayResizeSelection: EditorSelection?
+    /// The canvas owns one hover identity across screen, camera and authored
+    /// overlays. Keeping it here prevents every object type from inventing a
+    /// slightly different hover state and transition.
+    @State var hoveredCanvasSelection: EditorSelection?
     /// 分栏拖动起始时的画布点尺寸；nil 表示不在拖动中。
     @State var splitterResizeFrozenCanvasSize: CGSize?
     /// 非拖动状态下最近一次实际画布尺寸，供拖动起手时冻结。
@@ -104,6 +160,9 @@ struct CanvasPreview: View {
             initialValue: EditorCanvasPlaybackTrackCache(
                 project: editorStore.previewProject
             )
+        )
+        _playbackPlanCache = State(
+            initialValue: EditorCanvasPlaybackPlanCache()
         )
         _perspectivePrewarmPlanCache = State(
             initialValue: EditorCanvasPerspectivePrewarmPlanCache()
@@ -184,6 +243,15 @@ struct CanvasPreview: View {
                             return project.timeline.screenMotionClips
                                 .first { $0.id == id }
                                 .map { $0.timing.endTime - 0.001 }
+                        // Overlays are manipulated directly on the frame the
+                        // user is already looking at. Jumping a sticker or
+                        // mosaic back to its clip start changed the screen,
+                        // background and sibling overlays for the lifetime of
+                        // the drag, then snapped everything back on mouse-up.
+                        // Their first-frame authoring visibility is handled by
+                        // overlayAuthoringProject(at:) without changing time.
+                        case .mosaic, .sticker:
+                            return nil
                         default:
                             return nil
                         }
@@ -219,9 +287,20 @@ struct CanvasPreview: View {
                         using: renderedFrame.layout.playbackEvaluation
                     )
                 }()
+                let playbackPlanCacheHandle = renderedFrame.flatMap {
+                    playbackPlanCache.prepare(
+                        around: playbackController.outputTime,
+                        using: $0.layout.playbackEvaluation,
+                        isPlaying: playbackController.isPlaying,
+                        isInteracting: editorStore.interaction != nil
+                    )
+                }
 
                 ZStack {
-                    Color.clear
+                    // A nearly transparent fill is a reliable AppKit hit
+                    // surface. Pure Color.clear may disappear from hit testing
+                    // after the Metal preview layer is rebuilt.
+                    Color.black.opacity(0.001)
                         .contentShape(Rectangle())
                         .onTapGesture {
                             guard !isCropping else { return }
@@ -255,12 +334,22 @@ struct CanvasPreview: View {
                             pausedScreenImage: playbackController.pausedScreenImage,
                             pausedCameraImage: playbackController.pausedCameraImage,
                             wallpaperImage: resolvedWallpaperImage,
+                            wallpaperVideoURL: resolvedWallpaperVideoURL,
                             stickerImages: resolvedStickerImages,
                             suppressCameraContent: cameraCompositorSuppressed,
                             suppressScreenContent: screenCompositorSuppressed,
                             playbackController: playbackController,
                             playbackFrameProvider: { tick in
-                                layout.playbackEvaluation.frame(at: tick.outputTime)
+                                if let playbackPlanCacheHandle,
+                                   let cached = playbackPlanCache.frame(
+                                       at: tick.outputTime,
+                                       handle: playbackPlanCacheHandle
+                                   ) {
+                                    return cached
+                                }
+                                return layout.playbackEvaluation.frame(
+                                    at: tick.outputTime
+                                )
                             },
                             onCameraContentApplied: {
                                 // 合成帧已带着摄像头内容落地，覆盖图可以退出了
@@ -307,6 +396,19 @@ struct CanvasPreview: View {
                             // 否则屏幕素材盖住摄像头时，屏幕的命中区会把点击全部吞掉。
                             if CanvasPreviewInteractionPolicy.showsEditingOverlays(
                                 isPlaying: playbackController.isPlaying
+                            ) {
+                                // Mosaic/spotlight regions belong to the screen
+                                // composite. Their hit surfaces must remain
+                                // below the camera, matching the rendered stack.
+                                mosaicSelectionTargets(
+                                    scene: layout.frameScene,
+                                    canvasSize: rasterCanvasSize,
+                                    time: renderedFrame.playbackTime
+                                )
+                            }
+
+                            if CanvasPreviewInteractionPolicy.showsEditingOverlays(
+                                isPlaying: playbackController.isPlaying
                             ),
                                hasCameraTrack,
                                !project.camera.isHidden,
@@ -323,32 +425,31 @@ struct CanvasPreview: View {
                             if CanvasPreviewInteractionPolicy.showsEditingOverlays(
                                 isPlaying: playbackController.isPlaying
                             ) {
-                                overlaySelectionTargets(
+                                // Stickers and the finished-film progress band
+                                // render above the camera and therefore keep
+                                // their interaction targets above it as well.
+                                frontOverlaySelectionTargets(
                                     scene: layout.frameScene,
                                     canvasSize: rasterCanvasSize,
                                     time: renderedFrame.playbackTime
                                 )
+                                if !isDirectCanvasManipulation {
+                                    overlayQuickEditor(
+                                        scene: layout.frameScene,
+                                        canvasSize: rasterCanvasSize,
+                                        time: renderedFrame.playbackTime
+                                    )
+                                    .frame(
+                                        width: rasterCanvasSize.width,
+                                        height: rasterCanvasSize.height
+                                    )
+                                    .zIndex(200)
+                                }
                             }
                         }
 
-                        if let canvasSnapGuideX {
-                            Path { path in
-                                path.move(to: CGPoint(x: canvasSnapGuideX * liveCanvasSize.width, y: 0))
-                                path.addLine(to: CGPoint(x: canvasSnapGuideX * liveCanvasSize.width, y: liveCanvasSize.height))
-                            }
-                            .stroke(editorAccent.opacity(0.75), style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
-                            .frame(width: liveCanvasSize.width, height: liveCanvasSize.height)
-                            .allowsHitTesting(false)
-                        }
-                        if let canvasSnapGuideY {
-                            Path { path in
-                                path.move(to: CGPoint(x: 0, y: canvasSnapGuideY * liveCanvasSize.height))
-                                path.addLine(to: CGPoint(x: liveCanvasSize.width, y: canvasSnapGuideY * liveCanvasSize.height))
-                            }
-                            .stroke(editorAccent.opacity(0.75), style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
-                            .frame(width: liveCanvasSize.width, height: liveCanvasSize.height)
-                            .allowsHitTesting(false)
-                        }
+                        canvasManipulationFeedback(canvasSize: liveCanvasSize)
+                            .zIndex(300)
                     }
 
                 }
@@ -367,9 +468,46 @@ struct CanvasPreview: View {
                 }
         }
         .task(id: project.canvas.backgroundSource) {
-            guard let url = wallpaperURLResolver(project.canvas.backgroundSource) else {
+            let source = project.canvas.backgroundSource
+            guard let url = wallpaperURLResolver(source) else {
                 resolvedWallpaperImage = nil
+                resolvedWallpaperVideoURL = nil
                 return
+            }
+            if source.isVideo {
+                // Start preparing the movie immediately, while the selected
+                // tile's cached first frame acts as a zero-wait poster. The
+                // first live movie pixel replaces it inside the shared
+                // renderer instead of exposing the old background or black.
+                resolvedWallpaperImage = SystemWallpaperThumbnailLoader.cachedImage(
+                    at: url
+                )
+                resolvedWallpaperVideoURL = url
+                if resolvedWallpaperImage == nil {
+                    let poster = await SystemWallpaperThumbnailLoader.image(
+                        at: url,
+                        isVideo: true
+                    )
+                    guard !Task.isCancelled else { return }
+                    resolvedWallpaperImage = poster
+                }
+                return
+            }
+
+            resolvedWallpaperVideoURL = nil
+            if case .systemImage = source {
+                // System HEIC files are commonly 5K/6K and materially slower
+                // to decode than bundled JPEGs. Reuse the visible tile now and
+                // refine it with the original pixels in the background.
+                if let poster = SystemWallpaperThumbnailLoader.cachedImage(at: url) {
+                    resolvedWallpaperImage = poster
+                } else if let poster = await SystemWallpaperThumbnailLoader.image(
+                    at: url,
+                    isVideo: false
+                ) {
+                    guard !Task.isCancelled else { return }
+                    resolvedWallpaperImage = poster
+                }
             }
             let image = await WallpaperFullImageLoader.image(at: url)
             guard !Task.isCancelled else { return }
@@ -391,6 +529,19 @@ struct CanvasPreview: View {
             }
             guard !Task.isCancelled else { return }
             resolvedStickerImages = images
+        }
+        .onChange(of: playbackController.isPlaying) { _, isPlaying in
+            if isPlaying {
+                hoveredCanvasSelection = nil
+            }
+        }
+        .onChange(of: editorStore.interaction?.selection) { _, selection in
+            if selection == nil, isDirectCanvasManipulation {
+                clearCanvasManipulationPresentation()
+            }
+        }
+        .onDisappear {
+            playbackPlanCache.invalidate()
         }
     }
 
@@ -429,20 +580,33 @@ struct CanvasPreview: View {
         scene: FrameScreenScene,
         canvasSize: CGSize
     ) -> some View {
+        let selection = EditorSelection.screen
         let shape = ProjectedScreenShape(quad: scene.projectedQuad)
+        let chrome = isScreenSelectionActive
+            ? CanvasObjectInteractionChrome(phase: .idle)
+            : canvasObjectChrome(for: selection, isSelected: false)
         return shape
-        .fill(.clear)
+        .fill(chrome.fillColor)
         .contentShape(shape)
+        .overlay {
+            if chrome.showsOutline {
+                shape.stroke(chrome.strokeColor, lineWidth: chrome.lineWidth)
+            }
+        }
+        .shadow(color: chrome.glowColor, radius: chrome.glowRadius)
         .frame(width: canvasSize.width, height: canvasSize.height)
         .onTapGesture {
             onCanvasFocused()
-            editorStore.selection = .screen
+            editorStore.selection = selection
+        }
+        .onHover {
+            updateCanvasHover(selection, hovering: $0)
         }
         .accessibilityLabel("屏幕素材")
         .accessibilityHint("点击以选择屏幕")
         .accessibilityAddTraits(.isButton)
         .accessibilityAction {
-            editorStore.selection = .screen
+            editorStore.selection = selection
         }
     }
 
@@ -493,6 +657,7 @@ struct CanvasPreview: View {
                 pausedScreenImage: playbackController.pausedScreenImage,
                 pausedCameraImage: nil,
                 wallpaperImage: nil,
+                wallpaperVideoURL: nil,
                 stickerImages: [:],
                 suppressCameraContent: false,
                 suppressScreenContent: false,
@@ -554,6 +719,10 @@ struct CanvasPreview: View {
         cropProject.zoomAnimations = []
         cropProject.timeline.screenMotionClips = []
         cropProject.timeline.cameraMotionClips = []
+        cropProject.timeline.mosaicClips = []
+        cropProject.timeline.stickerClips = []
+        cropProject.timeline.progressOverlay = nil
+        cropProject.openingSequence.isEnabled = false
         cropProject.camera.isHidden = true
         cropProject.cursorStyle.assetID = .hidden
         return cropProject
@@ -756,11 +925,10 @@ struct CanvasPreview: View {
         let shape = ProjectedScreenShape(quad: quad)
         let handle = quad.resizeHandlePoint
         let bounds = quad.bounds
-        let labelPoint = CGPoint(
-            x: min(max(CGFloat(bounds.x) + 54, 54), max(canvasSize.width - 54, 54)),
-            y: min(max(CGFloat(bounds.y) + 22, 22), max(canvasSize.height - 22, 22))
-        )
         let scaleReference = max(min(scene.finalRect.width, scene.finalRect.height), 1)
+        let selection = scope.selection ?? .screen
+        let chrome = canvasObjectChrome(for: selection, isSelected: true)
+        let isResizing = screenScaleOrigin != nil
 
         return ZStack(alignment: .topLeading) {
             if let screenDragPreviewImage {
@@ -778,14 +946,12 @@ struct CanvasPreview: View {
                     .allowsHitTesting(false)
             }
             shape
-                .fill(Color.clear)
+                .fill(chrome.fillColor)
                 .contentShape(shape)
                 .overlay {
-                    shape.stroke(
-                        editorAccent,
-                        style: StrokeStyle(lineWidth: 1.5, dash: [6, 4])
-                    )
+                    shape.stroke(chrome.strokeColor, lineWidth: chrome.lineWidth)
                 }
+                .shadow(color: chrome.glowColor, radius: chrome.glowRadius)
                 .gesture(
                     DragGesture(minimumDistance: 1, coordinateSpace: .global)
                         .onChanged { value in
@@ -831,7 +997,13 @@ struct CanvasPreview: View {
                             let snapped = CanvasSnapMath.snapped(
                                 proposed,
                                 anchorsX: [0.5],
-                                anchorsY: [0.5]
+                                anchorsY: [0.5],
+                                thresholdX: CanvasSnapMath.normalizedThreshold(
+                                    along: xTravel
+                                ),
+                                thresholdY: CanvasSnapMath.normalizedThreshold(
+                                    along: yTravel
+                                )
                             )
                             canvasSnapGuideX = snapped.guideX
                             canvasSnapGuideY = snapped.guideY
@@ -858,6 +1030,9 @@ struct CanvasPreview: View {
                             canvasSnapGuideY = nil
                         }
                 )
+                .onHover {
+                    updateCanvasHover(selection, hovering: $0)
+                }
                 .accessibilityLabel("屏幕素材")
                 .accessibilityHint("拖动以移动素材")
                 .accessibilityValue(
@@ -875,11 +1050,19 @@ struct CanvasPreview: View {
                     .fill(editorAccent)
                     .overlay(Circle().stroke(.white, lineWidth: 1.5))
                     .frame(width: 16, height: 16)
-                    .shadow(color: .black.opacity(0.45), radius: 3, y: 1)
+                    .shadow(
+                        color: isResizing
+                            ? editorAccent.opacity(0.34)
+                            : .black.opacity(0.45),
+                        radius: isResizing ? 6 : 3,
+                        y: isResizing ? 0 : 1
+                    )
             }
                 .frame(width: 30, height: 30)
                 .contentShape(Rectangle())
                 .position(x: CGFloat(handle.x), y: CGFloat(handle.y))
+                .scaleEffect(isResizing ? 1.08 : 1)
+                .animation(SpringMotion.interactive, value: isResizing)
                 .highPriorityGesture(
                     DragGesture(minimumDistance: 0, coordinateSpace: .global)
                         .onChanged { value in
@@ -941,13 +1124,6 @@ struct CanvasPreview: View {
                 )
                 .accessibilityHidden(true)
 
-            Label("拖动移动", systemImage: "hand.draw")
-                .font(.caption2.weight(.semibold))
-                .padding(.horizontal, 8)
-                .frame(height: 24)
-                .background(.black.opacity(0.72), in: Capsule())
-                .position(labelPoint)
-                .allowsHitTesting(false)
         }
         .frame(width: canvasSize.width, height: canvasSize.height)
     }
@@ -966,6 +1142,9 @@ struct CanvasPreview: View {
             if case .camera = editScope { return true }
             return false
         }()
+        let selection = scope.selection ?? .camera
+        let chrome = canvasObjectChrome(for: selection, isSelected: isSelected)
+        let isResizing = cameraSizeOrigin != nil
         let base = min(size.width, size.height)
         let width = CGFloat(evaluation.rect.width)
         let height = CGFloat(evaluation.rect.height)
@@ -980,7 +1159,7 @@ struct CanvasPreview: View {
 
         ZStack(alignment: .bottomTrailing) {
             RoundedRectangle(cornerRadius: cameraOuterRadius, style: .continuous)
-                .fill(.clear)
+                .fill(chrome.fillColor)
             .frame(width: cameraOuterSize.width, height: cameraOuterSize.height)
             .overlay {
                 if let dragPreviewImage {
@@ -1008,11 +1187,12 @@ struct CanvasPreview: View {
                         .frame(width: cameraOuterSize.width, height: cameraOuterSize.height)
                         .allowsHitTesting(false)
                 }
-                if isSelected {
+                if chrome.showsOutline {
                     RoundedRectangle(cornerRadius: cameraOuterRadius, style: .continuous)
-                        .stroke(editorAccent, style: StrokeStyle(lineWidth: 2, dash: [5, 3]))
+                        .stroke(chrome.strokeColor, lineWidth: chrome.lineWidth)
                 }
             }
+            .shadow(color: chrome.glowColor, radius: chrome.glowRadius)
             .contentShape(RoundedRectangle(cornerRadius: cameraOuterRadius, style: .continuous))
             .gesture(
                 // 必须用全局坐标系：覆盖层本身会跟随拖动移动，局部坐标系会随视图
@@ -1056,7 +1236,13 @@ struct CanvasPreview: View {
                         let snapped = CanvasSnapMath.snapped(
                             proposed,
                             anchorsX: [0, 0.5, 1],
-                            anchorsY: [0, 0.5, 1]
+                            anchorsY: [0, 0.5, 1],
+                            thresholdX: CanvasSnapMath.normalizedThreshold(
+                                along: size.width - width
+                            ),
+                            thresholdY: CanvasSnapMath.normalizedThreshold(
+                                along: size.height - height
+                            )
                         )
                         canvasSnapGuideX = snapped.guideX
                         canvasSnapGuideY = snapped.guideY
@@ -1082,6 +1268,9 @@ struct CanvasPreview: View {
                         canvasSnapGuideY = nil
                     }
             )
+            .onHover {
+                updateCanvasHover(selection, hovering: $0)
+            }
             .accessibilityLabel("摄像头画面")
             .accessibilityHint("拖动以移动，拖右下角圆点调整大小")
             .accessibilityValue(
@@ -1104,10 +1293,19 @@ struct CanvasPreview: View {
                         .fill(editorAccent)
                         .overlay(Circle().stroke(.white, lineWidth: 1.5))
                         .frame(width: 16, height: 16)
+                        .shadow(
+                            color: isResizing
+                                ? editorAccent.opacity(0.34)
+                                : .black.opacity(0.45),
+                            radius: isResizing ? 6 : 3,
+                            y: isResizing ? 0 : 1
+                        )
                 }
                     .frame(width: 30, height: 30)
                     .contentShape(Rectangle())
                     .offset(x: 15, y: 15)
+                    .scaleEffect(isResizing ? 1.08 : 1)
+                    .animation(SpringMotion.interactive, value: isResizing)
                     .gesture(
                         // 同摄像头拖动：把手随视图移动，必须全局坐标系避免振荡。
                         DragGesture(minimumDistance: 0, coordinateSpace: .global)

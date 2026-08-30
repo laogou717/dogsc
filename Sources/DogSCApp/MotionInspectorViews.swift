@@ -8,25 +8,28 @@ struct MotionInspectorScopeHeader: View {
     let title: String
     let detail: String
     var statusTitle: String? = nil
+    var showsContextHeader = true
     let addTitle: String
     let onAdd: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
-            HStack(spacing: 8) {
-                Label(title, systemImage: "rectangle.stack")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.secondary)
-                Spacer(minLength: 4)
-                Text(statusTitle ?? "初始状态")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(Color.secondary)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 4)
-                    .background(
-                        Color.white.opacity(0.07),
-                        in: Capsule()
-                    )
+            if showsContextHeader {
+                HStack(spacing: 8) {
+                    Label(title, systemImage: "rectangle.stack")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Color.secondary)
+                    Spacer(minLength: 4)
+                    Text(statusTitle ?? "初始状态")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Color.secondary)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 4)
+                        .background(
+                            Color.white.opacity(0.07),
+                            in: Capsule()
+                        )
+                }
             }
 
             Text(detail)
@@ -38,12 +41,8 @@ struct MotionInspectorScopeHeader: View {
                 Label(addTitle, systemImage: "plus.circle.fill")
                     .font(.caption.weight(.semibold))
                     .frame(maxWidth: .infinity)
-                    .frame(height: 28)
             }
-            .buttonStyle(.plain)
-            // 雾白极简的主动作：米白底 + 深字，一个面板只此一处。
-            .foregroundStyle(Color.black.opacity(0.85))
-            .background(Color(white: 0.9), in: RoundedRectangle(cornerRadius: 8))
+            .buttonStyle(.editorPrimary(minHeight: 32))
             .accessibilityIdentifier("motion.add-at-playhead")
         }
         .padding(11)
@@ -69,35 +68,33 @@ struct ScreenMotionTargetInspector: View {
     var body: some View {
         if let clip {
             VStack(alignment: .leading, spacing: 13) {
-                MotionPositionPad(
-                    title: "目标位置",
-                    point: clip.target.position,
-                    onChanged: { point in
-                        updateDraft { $0.target.position = point }
-                    },
-                    onEnded: { commitDraft(actionName: "调整屏幕 3D 位置") }
-                )
+                EditorInspectorSection("构图") {
+                    EditorPositionPad(
+                        title: "缩放锚点",
+                        detail: "放大时画面向锚点的反方向展开；缩小时会向锚点收拢，因此 1× 两侧的移动方向会自然相反。",
+                        point: clip.target.position,
+                        onChanged: { point in
+                            updateDraft { $0.target.position = point }
+                        },
+                        onEnded: { commitDraft(actionName: "调整屏幕 3D 位置") },
+                        onCancelled: { editorStore.cancelInteraction() }
+                    )
 
-                MotionValueSlider(
-                    title: "目标大小",
-                    value: clip.target.scale,
-                    range: 0.25...4,
-                    valueText: String(format: "%.2f×", clip.target.scale),
-                    onChanged: { value in updateDraft { $0.target.scale = value } },
-                    onEditingEnded: { commitDraft(actionName: "调整屏幕 3D 大小") }
-                )
+                    MotionValueSlider(
+                        title: "目标大小",
+                        value: clip.target.scale,
+                        range: 0.25...4,
+                        valueText: String(format: "%.2f×", clip.target.scale),
+                        formatValue: { String(format: "%.2f×", $0) },
+                        inputFormat: .multiplier,
+                        onChanged: { value in updateDraft { $0.target.scale = value } },
+                        onEditingEnded: { commitDraft(actionName: "调整屏幕 3D 大小") },
+                        onEditingCancelled: { editorStore.cancelInteraction() }
+                    )
+                }
 
-                VStack(alignment: .leading, spacing: 7) {
-                    HStack {
-                        Text("3D 倾斜")
-                            .font(.caption.weight(.semibold))
-                        Spacer()
-                        Text("拖动平面")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    .accessibilityHidden(true)
-                    TiltPad(
+                EditorInspectorSection("空间姿态") {
+                    EditorTiltPad(
                         rotationX: clip.target.rotationX,
                         rotationY: clip.target.rotationY,
                         onChanged: { x, y in
@@ -106,43 +103,54 @@ struct ScreenMotionTargetInspector: View {
                                 $0.target.rotationY = y
                             }
                         },
-                        onEnded: { commitDraft(actionName: "调整屏幕 3D 倾斜") }
+                        onEnded: { commitDraft(actionName: "调整屏幕 3D 倾斜") },
+                        onCancelled: { editorStore.cancelInteraction() }
                     )
-                }
 
-                EditorDisclosure("高级数值") {
-                    VStack(alignment: .leading, spacing: 11) {
-                        HStack(spacing: 6) {
-                            MotionMetricTile(title: "X", value: clip.target.rotationX, suffix: "°")
-                            MotionMetricTile(title: "Y", value: clip.target.rotationY, suffix: "°")
+                    EditorDisclosure(
+                        "平面旋转与透视",
+                        detail: "Z \(String(format: "%.1f°", clip.target.rotationZ)) · 透视 \(String(format: "%.2f", clip.target.perspective))"
+                    ) {
+                        VStack(alignment: .leading, spacing: 11) {
+                            MotionValueSlider(
+                                title: "平面旋转",
+                                value: clip.target.rotationZ,
+                                range: -30...30,
+                                valueText: String(format: "%.1f°", clip.target.rotationZ),
+                                formatValue: { String(format: "%.1f°", $0) },
+                                inputFormat: .decimal1,
+                                onChanged: { value in updateDraft { $0.target.rotationZ = value } },
+                                onEditingEnded: { commitDraft(actionName: "调整屏幕平面旋转") },
+                                onEditingCancelled: { editorStore.cancelInteraction() }
+                            )
+                            MotionValueSlider(
+                                title: "透视强度",
+                                value: clip.target.perspective,
+                                range: 0...2,
+                                valueText: String(format: "%.2f", clip.target.perspective),
+                                formatValue: { String(format: "%.2f", $0) },
+                                inputFormat: .decimal2,
+                                onChanged: { value in updateDraft { $0.target.perspective = value } },
+                                onEditingEnded: { commitDraft(actionName: "调整屏幕透视") },
+                                onEditingCancelled: { editorStore.cancelInteraction() }
+                            )
                         }
-                        MotionValueSlider(
-                            title: "平面旋转",
-                            value: clip.target.rotationZ,
-                            range: -30...30,
-                            valueText: String(format: "%.1f°", clip.target.rotationZ),
-                            onChanged: { value in updateDraft { $0.target.rotationZ = value } },
-                            onEditingEnded: { commitDraft(actionName: "调整屏幕平面旋转") }
-                        )
-                        MotionValueSlider(
-                            title: "透视强度",
-                            value: clip.target.perspective,
-                            range: 0...2,
-                            valueText: String(format: "%.2f", clip.target.perspective),
-                            onChanged: { value in updateDraft { $0.target.perspective = value } },
-                            onEditingEnded: { commitDraft(actionName: "调整屏幕透视") }
-                        )
                     }
                 }
 
-                MotionTimingControls(
-                    timing: clip.timing,
-                    maximumDuration: maximumDuration,
-                    onDurationChanged: { value in updateDraft { $0.timing.duration = value } },
-                    onDurationEnded: { commitDraft(actionName: "调整屏幕 3D 时长") },
-                    onLeadInChanged: { value in updateDraft { $0.timing.leadInDuration = value } },
-                    onLeadInEnded: { commitDraft(actionName: "调整屏幕 3D 过渡") }
-                )
+                EditorInspectorSection("动画时间") {
+                    MotionTimingControls(
+                        timing: clip.timing,
+                        maximumDuration: maximumDuration,
+                        showsHeader: false,
+                        onDurationChanged: { value in updateDraft { $0.timing.duration = value } },
+                        onDurationEnded: { commitDraft(actionName: "调整屏幕 3D 时长") },
+                        onDurationCancelled: { editorStore.cancelInteraction() },
+                        onLeadInChanged: { value in updateDraft { $0.timing.leadInDuration = value } },
+                        onLeadInEnded: { commitDraft(actionName: "调整屏幕 3D 过渡") },
+                        onLeadInCancelled: { editorStore.cancelInteraction() }
+                    )
+                }
 
                 motionFooter(
                     baseTitle: "返回屏幕初始状态",
@@ -151,15 +159,13 @@ struct ScreenMotionTargetInspector: View {
                 )
             }
         } else {
-            VStack(spacing: 10) {
-                ContentUnavailableView(
-                    "动画已不存在",
-                    systemImage: "diamond.fill",
-                    description: Text("可能已在时间线中删除或被撤销。")
-                )
-                Button("返回屏幕初始状态") { editorStore.selection = .screen }
-                    .buttonStyle(.editorQuiet)
-            }
+            EditorInspectorEmptyState(
+                title: "动画已不存在",
+                detail: "它可能已在时间线中删除或被撤销。",
+                systemImage: "cube.transparent",
+                actionTitle: "返回屏幕初始状态",
+                action: { editorStore.selection = .screen }
+            )
         }
     }
 
@@ -225,79 +231,101 @@ struct CameraMotionTargetInspector: View {
     var body: some View {
         if let clip {
             VStack(alignment: .leading, spacing: 13) {
-                EditorSegmentedControl(
-                    options: CameraTargetLayoutChoice.allCases,
-                    title: { $0 == .shape ? "形状" : "全屏" },
-                    selection: layoutChoiceBinding
-                )
-                .accessibilityIdentifier("camera-motion.layout")
-
-                EditorToggle(
-                    isOn: Binding(
-                        get: { targetIsVisible },
-                        set: { visible in
-                            replaceImmediately { $0.target.opacity = visible ? 1 : 0 }
-                        }
-                    ),
-                    title: "显示摄像头"
-                )
-                if !targetIsVisible {
-                    Text("这一段摄像头完全隐藏，进入和离开时自动淡入淡出")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-
-                if case .shape = clip.target.layout {
-                    CameraShapeIconPicker(
-                        selection: shapeBinding.wrappedValue,
-                        onSelect: { shapeBinding.wrappedValue = $0 }
+                EditorInspectorSection("目标状态") {
+                    EditorToggle(
+                        isOn: Binding(
+                            get: { targetIsVisible },
+                            set: { visible in
+                                replaceImmediately { $0.target.opacity = visible ? 1 : 0 }
+                            }
+                        ),
+                        title: "显示摄像头"
                     )
-                }
-
-                MotionPositionPad(
-                    title: "目标位置",
-                    point: clip.target.position,
-                    onChanged: { point in updateDraft { $0.target.position = point } },
-                    onEnded: { commitDraft(actionName: "调整摄像运动位置") }
-                )
-
-                MotionValueSlider(
-                    title: "目标大小",
-                    value: clip.target.size,
-                    range: 0.05...1,
-                    valueText: String(format: "%.0f%%", clip.target.size * 100),
-                    onChanged: { value in updateDraft { $0.target.size = value } },
-                    onEditingEnded: { commitDraft(actionName: "调整摄像运动大小") }
-                )
-
-                if case let .shape(shape) = clip.target.layout, shape != .circle {
                     MotionValueSlider(
-                        title: "圆角",
-                        value: clip.target.roundness,
+                        title: "不透明度",
+                        value: clip.target.opacity,
                         range: 0...1,
-                        valueText: String(format: "%.0f%%", clip.target.roundness * 100),
-                        onChanged: { value in updateDraft { $0.target.roundness = value } },
-                        onEditingEnded: { commitDraft(actionName: "调整摄像运动圆角") }
+                        valueText: String(format: "%.0f%%", clip.target.opacity * 100),
+                        formatValue: { String(format: "%.0f%%", $0 * 100) },
+                        inputFormat: .percent,
+                        onChanged: { value in updateDraft { $0.target.opacity = value } },
+                        onEditingEnded: { commitDraft(actionName: "调整摄像运动透明度") },
+                        onEditingCancelled: { editorStore.cancelInteraction() }
                     )
+
+                    if targetIsVisible {
+                        EditorSegmentedControl(
+                            options: CameraTargetLayoutChoice.allCases,
+                            title: { $0 == .shape ? "形状" : "全屏" },
+                            selection: layoutChoiceBinding
+                        )
+                        .accessibilityIdentifier("camera-motion.layout")
+
+                        if case .shape = clip.target.layout {
+                            CameraShapeIconPicker(
+                                selection: shapeBinding.wrappedValue,
+                                onSelect: { shapeBinding.wrappedValue = $0 }
+                            )
+                        }
+                    } else {
+                        Text("这段动画只让摄像头原地淡出，位置和形状不参与过渡。")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
 
-                MotionValueSlider(
-                    title: "不透明度",
-                    value: clip.target.opacity,
-                    range: 0...1,
-                    valueText: String(format: "%.0f%%", clip.target.opacity * 100),
-                    onChanged: { value in updateDraft { $0.target.opacity = value } },
-                    onEditingEnded: { commitDraft(actionName: "调整摄像运动透明度") }
-                )
+                if targetIsVisible, case .shape = clip.target.layout {
+                    EditorInspectorSection("位置与尺寸") {
+                        EditorPositionPad(
+                            title: "目标位置",
+                            point: clip.target.position,
+                            onChanged: { point in updateDraft { $0.target.position = point } },
+                            onEnded: { commitDraft(actionName: "调整摄像运动位置") },
+                            onCancelled: { editorStore.cancelInteraction() }
+                        )
 
-                MotionTimingControls(
-                    timing: clip.timing,
-                    maximumDuration: maximumDuration,
-                    onDurationChanged: { value in updateDraft { $0.timing.duration = value } },
-                    onDurationEnded: { commitDraft(actionName: "调整摄像运动时长") },
-                    onLeadInChanged: { value in updateDraft { $0.timing.leadInDuration = value } },
-                    onLeadInEnded: { commitDraft(actionName: "调整摄像运动过渡") }
-                )
+                        MotionValueSlider(
+                            title: "目标大小",
+                            value: clip.target.size,
+                            range: 0.05...1,
+                            valueText: String(format: "%.0f%%", clip.target.size * 100),
+                            formatValue: { String(format: "%.0f%%", $0 * 100) },
+                            inputFormat: .percent,
+                            onChanged: { value in updateDraft { $0.target.size = value } },
+                            onEditingEnded: { commitDraft(actionName: "调整摄像运动大小") },
+                            onEditingCancelled: { editorStore.cancelInteraction() }
+                        )
+
+                        if case let .shape(shape) = clip.target.layout, shape != .circle {
+                            MotionValueSlider(
+                                title: "圆角",
+                                value: clip.target.roundness,
+                                range: 0...1,
+                                valueText: String(format: "%.0f%%", clip.target.roundness * 100),
+                                formatValue: { String(format: "%.0f%%", $0 * 100) },
+                                inputFormat: .percent,
+                                onChanged: { value in updateDraft { $0.target.roundness = value } },
+                                onEditingEnded: { commitDraft(actionName: "调整摄像运动圆角") },
+                                onEditingCancelled: { editorStore.cancelInteraction() }
+                            )
+                        }
+                    }
+                }
+
+                EditorInspectorSection("动画时间") {
+                    MotionTimingControls(
+                        timing: clip.timing,
+                        maximumDuration: maximumDuration,
+                        showsHeader: false,
+                        onDurationChanged: { value in updateDraft { $0.timing.duration = value } },
+                        onDurationEnded: { commitDraft(actionName: "调整摄像运动时长") },
+                        onDurationCancelled: { editorStore.cancelInteraction() },
+                        onLeadInChanged: { value in updateDraft { $0.timing.leadInDuration = value } },
+                        onLeadInEnded: { commitDraft(actionName: "调整摄像运动过渡") },
+                        onLeadInCancelled: { editorStore.cancelInteraction() }
+                    )
+                }
 
                 motionFooter(
                     baseTitle: "返回摄像头初始状态",
@@ -306,15 +334,13 @@ struct CameraMotionTargetInspector: View {
                 )
             }
         } else {
-            VStack(spacing: 10) {
-                ContentUnavailableView(
-                    "动画已不存在",
-                    systemImage: "diamond.fill",
-                    description: Text("可能已在时间线中删除或被撤销。")
-                )
-                Button("返回摄像头初始状态") { editorStore.selection = .camera }
-                    .buttonStyle(.editorQuiet)
-            }
+            EditorInspectorEmptyState(
+                title: "动画已不存在",
+                detail: "它可能已在时间线中删除或被撤销。",
+                systemImage: "video.fill",
+                actionTitle: "返回摄像头初始状态",
+                action: { editorStore.selection = .camera }
+            )
         }
     }
 
@@ -418,256 +444,104 @@ struct MotionValueSlider: View {
     let value: Double
     let range: ClosedRange<Double>
     let valueText: String
+    let formatValue: (Double) -> String
+    let inputFormat: EditorSliderValueFormat
     let onChanged: @MainActor @Sendable (Double) -> Void
     let onEditingEnded: @MainActor @Sendable () -> Void
+    let onEditingCancelled: @MainActor @Sendable () -> Void
+    @State private var isSliderEditing = false
+    @State private var isTextEditing = false
+    @State private var hasTextPreview = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack {
-                Text(title).font(.caption)
-                Spacer()
-                Text(valueText)
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(.secondary)
-            }
-            // The slider below already exposes both the contextual title and
-            // current value. Keep this row visual without creating a second,
-            // non-adjustable stop immediately before the real control.
-            .accessibilityHidden(true)
+        VStack(alignment: .leading, spacing: 7) {
+            EditorInspectorParameterReadout(
+                title: title,
+                valueText: valueText,
+                isEditing: isSliderEditing || isTextEditing,
+                editConfiguration: EditorInspectorParameterEditConfiguration(
+                    draftText: inputFormat.editingText(for: value),
+                    onBegin: beginTextEditing,
+                    onPreview: previewTextValue,
+                    onCommit: commitTextEditing,
+                    onCancel: cancelTextEditing
+                )
+            )
             EditorSlider(
                 value: Binding(
                     get: { value },
                     set: { newValue in onChanged(newValue) }
                 ),
                 range: range,
+                formatValue: formatValue,
+                showsFloatingValue: false,
                 onEditingChanged: { editing in
-                    if !editing { onEditingEnded() }
+                    isSliderEditing = editing
+                    if !editing {
+                        onEditingEnded()
+                    }
                 }
             )
+            .disabled(isTextEditing)
             .accessibilityLabel(title)
             .accessibilityValue(valueText)
         }
     }
-}
 
-struct MotionPositionPad: View {
-    @GestureState private var draggedPoint: NormalizedPoint?
-
-    let title: String
-    let point: NormalizedPoint
-    let onChanged: (NormalizedPoint) -> Void
-    let onEnded: () -> Void
-    var snapsToGrid = true
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(title)
-                    .font(.caption.weight(.semibold))
-                    .accessibilityHidden(true)
-                Spacer()
-                Text(String(format: "%.0f, %.0f", point.x * 100, point.y * 100))
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .accessibilityHidden(true)
-                Button {
-                    onChanged(NormalizedPoint(x: 0.5, y: 0.5))
-                    onEnded()
-                } label: {
-                    Text("重置")
-                        .font(.caption2)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .disabled(abs(point.x - 0.5) < 0.001 && abs(point.y - 0.5) < 0.001)
-                .accessibilityLabel("重置\(title)")
-            }
-            GeometryReader { proxy in
-                let inset: CGFloat = 10
-                let usableWidth = max(proxy.size.width - inset * 2, 1)
-                let usableHeight = max(proxy.size.height - inset * 2, 1)
-                let displayedPoint = draggedPoint ?? point
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10)
-                        .fill(Color.black.opacity(0.22))
-                    // 九宫格参考线（三分线），中线略亮
-                    Path { path in
-                        for fraction in [1.0 / 3.0, 2.0 / 3.0] {
-                            let x = inset + usableWidth * fraction
-                            let y = inset + usableHeight * fraction
-                            path.move(to: CGPoint(x: x, y: inset))
-                            path.addLine(to: CGPoint(x: x, y: inset + usableHeight))
-                            path.move(to: CGPoint(x: inset, y: y))
-                            path.addLine(to: CGPoint(x: inset + usableWidth, y: y))
-                        }
-                    }
-                    .stroke(Color.white.opacity(0.08), style: StrokeStyle(lineWidth: 1, dash: [3, 4]))
-                    Path { path in
-                        path.move(to: CGPoint(x: proxy.size.width / 2, y: inset))
-                        path.addLine(to: CGPoint(x: proxy.size.width / 2, y: proxy.size.height - inset))
-                        path.move(to: CGPoint(x: inset, y: proxy.size.height / 2))
-                        path.addLine(to: CGPoint(x: proxy.size.width - inset, y: proxy.size.height / 2))
-                    }
-                    .stroke(Color.white.opacity(0.14), style: StrokeStyle(lineWidth: 1, dash: [3, 4]))
-                    // 网格交点标记
-                    ForEach([0.0, 1.0 / 3.0, 0.5, 2.0 / 3.0, 1.0], id: \.self) { fx in
-                        ForEach([0.0, 1.0 / 3.0, 0.5, 2.0 / 3.0, 1.0], id: \.self) { fy in
-                            Circle()
-                                .fill(Color.white.opacity(0.16))
-                                .frame(width: 2.5, height: 2.5)
-                                .position(x: inset + usableWidth * fx, y: inset + usableHeight * fy)
-                        }
-                    }
-                    Circle()
-                        .fill(editorAccent)
-                        .frame(width: 13, height: 13)
-                        .shadow(color: editorAccent.opacity(0.6), radius: 5)
-                        .position(
-                            x: inset + CGFloat(MotionInspectorLogic.clamp01(displayedPoint.x)) * usableWidth,
-                            y: inset + CGFloat(MotionInspectorLogic.clamp01(displayedPoint.y)) * usableHeight
-                        )
-                        .transaction { $0.animation = nil }
-                }
-                .contentShape(RoundedRectangle(cornerRadius: 10))
-                .gesture(
-                    DragGesture(minimumDistance: 0)
-                        .updating($draggedPoint) { gesture, state, _ in
-                            state = gesturePoint(
-                                location: gesture.location,
-                                size: proxy.size,
-                                inset: inset
-                            )
-                        }
-                        .onChanged { gesture in
-                            onChanged(gesturePoint(
-                                location: gesture.location,
-                                size: proxy.size,
-                                inset: inset
-                            ))
-                        }
-                        .onEnded { _ in onEnded() }
-                )
-            }
-            .frame(height: 72)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(title)
-            .accessibilityValue(String(format: "X %.0f，Y %.0f", point.x * 100, point.y * 100))
-        }
+    private func beginTextEditing() {
+        isTextEditing = true
+        hasTextPreview = false
     }
 
-    private func gesturePoint(
-        location: CGPoint,
-        size: CGSize,
-        inset: CGFloat
-    ) -> NormalizedPoint {
-        let normalized = MotionInspectorLogic.normalizedPoint(
-            location: location,
-            size: size,
-            inset: inset
-        )
-        return snapsToGrid
-            ? MotionInspectorLogic.snappedToGrid(normalized)
-            : normalized
+    private func previewTextValue(_ text: String) -> Bool {
+        guard let parsed = inputFormat.value(from: text) else { return false }
+        hasTextPreview = true
+        onChanged(min(max(parsed, range.lowerBound), range.upperBound))
+        return true
     }
-}
 
-struct TiltPad: View {
-    let rotationX: Double
-    let rotationY: Double
-    let onChanged: (Double, Double) -> Void
-    let onEnded: () -> Void
-
-    var body: some View {
-        GeometryReader { proxy in
-            let center = CGPoint(x: proxy.size.width / 2, y: proxy.size.height / 2)
-            let point = MotionInspectorLogic.tiltPoint(
-                rotationX: rotationX,
-                rotationY: rotationY,
-                size: proxy.size
-            )
-            ZStack {
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.white.opacity(0.075), Color.black.opacity(0.22)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                RoundedRectangle(cornerRadius: 9)
-                    .stroke(editorAccent.opacity(0.35), lineWidth: 1)
-                    .padding(7)
-                    .rotation3DEffect(.degrees(rotationX * 0.35), axis: (x: 1, y: 0, z: 0), perspective: 0.55)
-                    .rotation3DEffect(.degrees(rotationY * 0.35), axis: (x: 0, y: 1, z: 0), perspective: 0.55)
-                Path { path in
-                    path.move(to: CGPoint(x: center.x, y: 8))
-                    path.addLine(to: CGPoint(x: center.x, y: proxy.size.height - 8))
-                    path.move(to: CGPoint(x: 8, y: center.y))
-                    path.addLine(to: CGPoint(x: proxy.size.width - 8, y: center.y))
-                }
-                .stroke(Color.white.opacity(0.11), lineWidth: 1)
-                Circle()
-                    .fill(Color.white)
-                    .frame(width: 14, height: 14)
-                    .overlay(Circle().stroke(editorAccent, lineWidth: 3))
-                    .shadow(color: editorAccent.opacity(0.65), radius: 6)
-                    .position(point)
-            }
-            .contentShape(RoundedRectangle(cornerRadius: 12))
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { gesture in
-                        let tilt = MotionInspectorLogic.tilt(
-                            location: gesture.location,
-                            size: proxy.size
-                        )
-                        onChanged(tilt.rotationX, tilt.rotationY)
-                    }
-                    .onEnded { _ in onEnded() }
-            )
+    private func commitTextEditing() {
+        isTextEditing = false
+        if hasTextPreview {
+            onEditingEnded()
         }
-        .frame(height: 92)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("3D 倾斜平面")
-        .accessibilityValue(String(format: "X %.1f 度，Y %.1f 度", rotationX, rotationY))
-        .accessibilityIdentifier("screen-motion.tilt-pad")
+        hasTextPreview = false
     }
-}
 
-struct MotionMetricTile: View {
-    let title: String
-    let value: Double
-    let suffix: String
-
-    var body: some View {
-        HStack(spacing: 5) {
-            Text(title)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-            Spacer()
-            Text(String(format: "%.1f%@", value, suffix))
-                .font(.system(.caption2, design: .monospaced))
+    private func cancelTextEditing() {
+        isTextEditing = false
+        if hasTextPreview {
+            onEditingCancelled()
         }
-        .padding(.horizontal, 8)
-        .frame(height: 27)
-        .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 7))
+        hasTextPreview = false
     }
 }
 
 struct MotionTimingControls: View {
     let timing: TransitionTiming
     let maximumDuration: Double
+    var showsHeader = true
     let onDurationChanged: @MainActor @Sendable (Double) -> Void
     let onDurationEnded: @MainActor @Sendable () -> Void
+    let onDurationCancelled: @MainActor @Sendable () -> Void
     let onLeadInChanged: @MainActor @Sendable (Double) -> Void
     let onLeadInEnded: @MainActor @Sendable () -> Void
+    let onLeadInCancelled: @MainActor @Sendable () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
-            Divider().overlay(dividerColor)
+            if showsHeader {
+                Divider().overlay(dividerColor)
+            }
             HStack {
-                Label("过渡", systemImage: "waveform.path")
-                    .font(.caption.weight(.semibold))
+                if showsHeader {
+                    Label("过渡", systemImage: "waveform.path")
+                        .font(.caption.weight(.semibold))
+                } else {
+                    Text("开始位置")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
                 Text(MotionInspectorLogic.timecode(timing.startTime))
                     .font(.system(.caption2, design: .monospaced))
@@ -678,16 +552,22 @@ struct MotionTimingControls: View {
                 value: min(timing.leadInDuration, timing.duration),
                 range: 0.08...max(max(timing.duration, 0.08), 0.08),
                 valueText: String(format: "%.2fs", min(timing.leadInDuration, timing.duration)),
+                formatValue: { String(format: "%.2fs", $0) },
+                inputFormat: .seconds,
                 onChanged: { value in onLeadInChanged(value) },
-                onEditingEnded: { onLeadInEnded() }
+                onEditingEnded: { onLeadInEnded() },
+                onEditingCancelled: { onLeadInCancelled() }
             )
             MotionValueSlider(
                 title: "时长",
                 value: timing.duration,
                 range: 0.08...max(maximumDuration, 0.08),
                 valueText: String(format: "%.2fs", timing.duration),
+                formatValue: { String(format: "%.2fs", $0) },
+                inputFormat: .seconds,
                 onChanged: { value in onDurationChanged(value) },
-                onEditingEnded: { onDurationEnded() }
+                onEditingEnded: { onDurationEnded() },
+                onEditingCancelled: { onDurationCancelled() }
             )
             if timing.duration - timing.leadInDuration > 0.01 {
                 Text("过渡完成后保持 \(String(format: "%.2f", timing.duration - min(timing.leadInDuration, timing.duration)))s")
@@ -709,16 +589,14 @@ private func motionFooter(
         Button(action: onBase) {
             Label(baseTitle, systemImage: "chevron.left")
         }
-            .buttonStyle(.plain)
+            .buttonStyle(.editorGhost)
             .foregroundStyle(.secondary)
             .controlSize(.small)
         Spacer(minLength: 4)
         Button(role: .destructive, action: onDelete) {
             Image(systemName: "trash")
-                .frame(width: 24, height: 22)
         }
-        .buttonStyle(.editorQuiet)
-        .controlSize(.small)
+        .buttonStyle(.editorDestructiveIcon)
         .help("删除该动画")
     }
 }
@@ -726,49 +604,6 @@ private func motionFooter(
 // MARK: - Pure interaction math
 
 enum MotionInspectorLogic {
-    static let maximumTiltX = 28.0
-    static let maximumTiltY = 32.0
-
-    static func clamp01(_ value: Double) -> Double {
-        min(max(value.isFinite ? value : 0.5, 0), 1)
-    }
-
-    static func normalizedPoint(location: CGPoint, size: CGSize, inset: CGFloat) -> NormalizedPoint {
-        let width = max(size.width - inset * 2, 1)
-        let height = max(size.height - inset * 2, 1)
-        return NormalizedPoint(
-            x: clamp01(Double((location.x - inset) / width)),
-            y: clamp01(Double((location.y - inset) / height))
-        )
-    }
-
-    /// 轻吸附到九宫格关键位（边缘、三分线、中心），阈值内才吸附，避免发粘。
-    static func snappedToGrid(_ point: NormalizedPoint, threshold: Double = 0.035) -> NormalizedPoint {
-        let anchors: [Double] = [0, 1.0 / 3.0, 0.5, 2.0 / 3.0, 1.0]
-        func snap(_ value: Double) -> Double {
-            for anchor in anchors where abs(value - anchor) <= threshold {
-                return anchor
-            }
-            return value
-        }
-        return NormalizedPoint(x: snap(point.x), y: snap(point.y))
-    }
-
-    static func tilt(location: CGPoint, size: CGSize) -> (rotationX: Double, rotationY: Double) {
-        let x = clamp01(Double(location.x / max(size.width, 1)))
-        let y = clamp01(Double(location.y / max(size.height, 1)))
-        return (
-            rotationX: (0.5 - y) * maximumTiltX * 2,
-            rotationY: (x - 0.5) * maximumTiltY * 2
-        )
-    }
-
-    static func tiltPoint(rotationX: Double, rotationY: Double, size: CGSize) -> CGPoint {
-        let x = clamp01(rotationY / (maximumTiltY * 2) + 0.5)
-        let y = clamp01(0.5 - rotationX / (maximumTiltX * 2))
-        return CGPoint(x: x * size.width, y: y * size.height)
-    }
-
     static func screenTarget(at time: TimeInterval, in project: RecorderProject) -> ScreenMotionState {
         let base = ScreenMotionState(
             position: project.canvas.contentPosition,
@@ -899,7 +734,7 @@ struct CameraShapeIconPicker: View {
                             isSelected ? Color.primary : Color.secondary
                         )
                         .frame(maxWidth: .infinity)
-                        .frame(height: 26)
+                        .frame(height: 30)
                         .background(
                             RoundedRectangle(cornerRadius: 7, style: .continuous)
                                 .fill(isSelected ? Color.white.opacity(0.14) : Color.white.opacity(0.07))
@@ -909,7 +744,7 @@ struct CameraShapeIconPicker: View {
                                 .stroke(isSelected ? Color.white.opacity(0.75) : .clear, lineWidth: 1)
                         )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.editorThumbnail)
                 .help(shape.rawValue)
                 .accessibilityLabel("形状：\(shape.rawValue)")
                 .accessibilityAddTraits(isSelected ? .isSelected : [])

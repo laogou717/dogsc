@@ -211,12 +211,17 @@ enum SharedFrameOverlayRenderer {
             card = card.composited(over: shadow)
         }
         if abs(scene.rotationRadians) > 0.000_1 {
+            // Sticker authoring uses the top-left-origin canvas convention:
+            // positive angles rotate clockwise, matching SwiftUI and the
+            // direct-manipulation handle. Core Image's coordinate system is
+            // bottom-left-origin, so the same visible rotation needs the
+            // opposite mathematical angle here.
             card = card
                 .transformed(by: CGAffineTransform(
                     translationX: -center.x,
                     y: -center.y
                 ))
-                .transformed(by: CGAffineTransform(rotationAngle: scene.rotationRadians))
+                .transformed(by: CGAffineTransform(rotationAngle: -scene.rotationRadians))
                 .transformed(by: CGAffineTransform(
                     translationX: center.x,
                     y: center.y
@@ -375,6 +380,35 @@ enum SharedFrameOverlayRenderer {
                 // instead of letting it collide with adjacent chapter text.
                 layer = placed.cropped(to: textBounds).composited(over: layer)
             }
+        }
+        if abs(scene.scale - 1) > 0.000_1 {
+            layer = layer
+                .transformed(by: CGAffineTransform(
+                    translationX: -bandRect.midX,
+                    y: -bandRect.midY
+                ))
+                .transformed(by: CGAffineTransform(
+                    scaleX: scene.scale,
+                    y: scene.scale
+                ))
+                .transformed(by: CGAffineTransform(
+                    translationX: bandRect.midX,
+                    y: bandRect.midY
+                ))
+        }
+        if abs(scene.offset.x) > 0.000_1 || abs(scene.offset.y) > 0.000_1 {
+            layer = layer.transformed(by: CGAffineTransform(
+                translationX: canvasRect.width * scene.offset.x,
+                y: -canvasRect.height * scene.offset.y
+            ))
+        }
+        if scene.opacity < 0.999 {
+            layer = layer.applyingFilter(
+                "CIColorMatrix",
+                parameters: [
+                    "inputAVector": CIVector(x: 0, y: 0, z: 0, w: scene.opacity),
+                ]
+            )
         }
         return layer.composited(over: background).cropped(to: canvasRect)
     }

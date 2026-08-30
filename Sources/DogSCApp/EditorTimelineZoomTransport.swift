@@ -22,17 +22,15 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
             ].compactMap { $0 }
         )
         return ZStack(alignment: .leading) {
-            editorZoomClip.opacity(0.07)
-            if isZoomTrackHovered,
-               hoveredZoomID == nil,
-               manualZoomDragStart == nil {
-                Text(
-                    "拖动空白处添加缩放动画"
+            timelineLaneSurface(
+                tint: editorZoomClip,
+                isFocused: focusedTimelineLane == .zoom
+            )
+            if segments.isEmpty {
+                timelineEmptyTrackHint(
+                    "拖动空白处添加缩放动画",
+                    documentWidth: width
                 )
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .padding(.leading, 10)
-                    .allowsHitTesting(false)
             }
             ForEach(visibleSegmentIndices, id: \.self) { index in
                 let segment = segments[index]
@@ -48,13 +46,20 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                     + (segment.origin == .manual ? "手动" : "自动")
                 let accessibilityTraits: AccessibilityTraits = selectedZoomID == segment.id
                     ? [.isButton, .isSelected] : .isButton
+                let isSelected = selectedZoomID == segment.id
+                let isHovered = hoveredZoomID == segment.id
+                let emphasis = EditorTimelineClipEmphasis.resolve(
+                    isEditing: isZoomClipEditing(segment.id),
+                    isSelected: isSelected,
+                    isHovered: isHovered
+                )
                 ZStack {
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
                         .fill(
                             LinearGradient(
                                 colors: [
                                     editorZoomClip,
-                                    Color(red: 0.30, green: 0.38, blue: 0.54),
+                                    Color(red: 0.40, green: 0.31, blue: 0.21),
                                 ],
                                 startPoint: .leading,
                                 endPoint: .trailing
@@ -70,27 +75,22 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                                 .lineLimit(1)
                             }
                         }
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 7)
-                                .stroke(
-                                    selectedZoomID == segment.id
-                                        ? .white : .clear,
-                                    lineWidth: 1.5
-                                )
-                        )
+                        .editorTimelineClipChrome(cornerRadius: 7, emphasis: emphasis)
 
-                    if selectedZoomID == segment.id || hoveredZoomID == segment.id {
-                        HStack {
+                    if emphasis.showsHandles {
+                        HStack(spacing: 0) {
                             zoomResizeHandle(edge: .leading)
                             Spacer(minLength: 0)
                             zoomResizeHandle(edge: .trailing)
                         }
                         .padding(.horizontal, 2)
+                        .opacity(emphasis.handleOpacity)
                         .allowsHitTesting(false)
                     }
                 }
                 .frame(width: segmentWidth, height: 42)
                 .offset(x: startX)
+                .zIndex(emphasis == .editing ? 4 : isSelected ? 3 : isHovered ? 1 : 0)
                 .contentShape(Rectangle())
                 .contextMenu {
                     Button(role: .destructive) {
@@ -108,7 +108,7 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                 .accessibilityValue(accessibilityValue)
                 .accessibilityAddTraits(accessibilityTraits)
                 .accessibilityAction {
-                    beginSelectingZoom(segment)
+                    activateTimelineSelection(.zoom(segment.id))
                 }
                 .accessibilityIdentifier(
                     "editor.timeline.zoom.\(segment.id.uuidString)"
@@ -151,7 +151,6 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
         // 调整、移动或创建。此前背景创建手势与片段手势作为兄弟手势相互竞争，
         // 按下永远先落在创建手势上，导致片段选不中、拖不动、手柄失效。
         .gesture(zoomTrackGesture(width: width, duration: duration))
-        .onHover { isZoomTrackHovered = $0 }
         .onContinuousHover(coordinateSpace: .local) { phase in
             switch phase {
             case let .active(location):
@@ -198,11 +197,19 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
         case resize(UUID, leading: Bool)
     }
 
+    func isZoomClipEditing(_ id: UUID) -> Bool {
+        switch zoomTrackDrag {
+        case let .move(activeID), let .resize(activeID, _):
+            return activeID == id
+        case .create, nil:
+            return false
+        }
+    }
+
     func zoomResizeHandle(edge: ZoomResizeEdge) -> some View {
         Capsule()
             .fill(.white.opacity(0.92))
             .frame(width: 4, height: 30)
-            .frame(width: 10, height: 42)
             .accessibilityLabel(edge == .leading ? "调整动画开始" : "调整动画结束")
     }
 
@@ -308,6 +315,7 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                         splitZoomAnimation(id: origin.id, at: splitTime)
                     } else if abs(value.translation.width) < 3 {
                         editorStore.cancelInteraction()
+                        activateTimelineSelection(.zoom(id))
                     } else {
                         commitZoomInteraction()
                     }
@@ -418,8 +426,12 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
     }
 
     func commitZoomInteraction() {
+        let selection = editorStore.selection
         do {
             _ = try editorStore.commitInteraction(actionName: "调整缩放")
+            if case .zoom = selection, let selection {
+                activateTimelineSelection(selection)
+            }
         } catch {
             editorStore.cancelInteraction()
             onError(error.localizedDescription)
@@ -739,22 +751,24 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
     }
 
     func removeTimelineTarget(_ target: EditorTimelineDeleteTarget) {
-        switch target {
-        case let .primarySegment(id):
-            removePrimarySegment(id: id)
-        case let .screenMotion(id):
-            guard let clip = persistedMotionClip(track: .screen, id: id) else { return }
-            removeMotionClip(clip)
-        case let .cameraMotion(id):
-            guard let clip = persistedMotionClip(track: .camera, id: id) else { return }
-            removeMotionClip(clip)
-        case let .zoom(id):
-            removeZoomAnimation(id: id)
-        case .mosaic, .sticker, .progress:
-            do {
-                try editorStore.removeSelectedOverlay()
-            } catch {
-                onError(error.localizedDescription)
+        withAnimation(SpringMotion.snappy) {
+            switch target {
+            case let .primarySegment(id):
+                removePrimarySegment(id: id)
+            case let .screenMotion(id):
+                guard let clip = persistedMotionClip(track: .screen, id: id) else { return }
+                removeMotionClip(clip)
+            case let .cameraMotion(id):
+                guard let clip = persistedMotionClip(track: .camera, id: id) else { return }
+                removeMotionClip(clip)
+            case let .zoom(id):
+                removeZoomAnimation(id: id)
+            case .mosaic, .sticker, .progress:
+                do {
+                    try editorStore.removeSelectedOverlay()
+                } catch {
+                    onError(error.localizedDescription)
+                }
             }
         }
     }
@@ -819,10 +833,15 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
     /// 动视图坐标系换算，任何子视图都不再吞掉悬浮位置；事件照常透传。
     func installHoverTrackingMonitor() {
         guard hoverTrackingMonitor == nil else { return }
+        hoverPreviewGate.isEnabled = isHoverPreviewEnabled
+        let previewGate = hoverPreviewGate
         hoverTrackingMonitor = NSEvent.addLocalMonitorForEvents(
             matching: [.mouseMoved]
         ) { event in
-            updateTimelineHoverLocation(with: event)
+            updateTimelineHoverLocation(
+                with: event,
+                isPreviewEnabled: previewGate.isEnabled
+            )
             return event
         }
     }
@@ -833,7 +852,10 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
         self.hoverTrackingMonitor = nil
     }
 
-    func updateTimelineHoverLocation(with event: NSEvent) {
+    func updateTimelineHoverLocation(
+        with event: NSEvent,
+        isPreviewEnabled: Bool
+    ) {
         guard event.window?.identifier?.rawValue
                   == "cn.laogou.dogsc.editor-window",
               let scrollView = timelineScrollView,
@@ -854,7 +876,11 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
         hoveredTimelineViewportY = viewportY
         // 播放中画布由播放时钟独占，悬浮只移动参考线；暂停且开启预览时才让画布
         // 实时预览所指帧（EDT-030）。
-        guard isHoverPreviewEnabled, !playbackController.isPlaying else { return }
+        guard isPreviewEnabled else {
+            playbackController.endHoverPreview()
+            return
+        }
+        guard !playbackController.isPlaying else { return }
         let contentX = viewportX + scrollView.documentVisibleRect.origin.x
         let time = EditorTimelineMath.clampedTime(
             atX: Double(contentX),
@@ -865,10 +891,10 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
     }
 
     func clearTimelineHoverLocation() {
-        guard hoveredTimelineViewportX != nil
-                || hoveredTimelineViewportY != nil else { return }
-        hoveredTimelineViewportX = nil
-        hoveredTimelineViewportY = nil
+        if hoveredTimelineViewportX != nil || hoveredTimelineViewportY != nil {
+            hoveredTimelineViewportX = nil
+            hoveredTimelineViewportY = nil
+        }
         playbackController.endHoverPreview()
     }
 
@@ -956,6 +982,7 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
     func endPrimarySegmentDrag() {
         draggedPrimarySegmentID = nil
         primarySegmentDragTranslation = 0
+        primarySegmentDragDocumentX = nil
     }
 
     var hasTransientTimelineGesture: Bool {
@@ -992,9 +1019,8 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
     /// one frame at the new width with the old offset, so a continuous wheel
     /// gesture visibly alternated between two positions.
     func zoomTimeline(to requestedZoom: Double, pointerViewportX: CGFloat?) {
-        let oldZoom = timelineZoom
         let newZoom = min(max(requestedZoom, 1), 120)
-        guard newZoom != oldZoom else { return }
+        guard newZoom != timelineZoom else { return }
         guard let scrollView = timelineScrollView else {
             timelineZoom = newZoom
             return
@@ -1004,10 +1030,11 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
             scrollView.documentView?.bounds.width ?? timelineContentWidth,
             viewportWidth
         )
-        let targetContentWidth = max(
-            currentWidth * CGFloat(newZoom / oldZoom),
-            viewportWidth
-        )
+        // GeometryReader defines the document as viewport × zoom. Deriving the
+        // target from the previous native width as well made a second owner:
+        // rounding/layout lag accumulated during a drag, then SwiftUI snapped
+        // the document back to its canonical width on a later pass.
+        let targetContentWidth = viewportWidth * CGFloat(newZoom)
         let currentOffset = scrollView.documentVisibleRect.origin.x
         let resolvedViewportX = pointerViewportX
             ?? fallbackTimelineZoomViewportX(
@@ -1022,12 +1049,21 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
             targetContentWidth: targetContentWidth
         )
         let targetOffset = anchor.scrollOffset(viewportWidth: viewportWidth)
+        let targetVisibleRange: ClosedRange<CGFloat> = targetOffset...min(
+            targetOffset + viewportWidth,
+            targetContentWidth
+        )
 
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
             timelineZoom = newZoom
             timelineContentWidth = targetContentWidth
+            // Virtualized clips, waveforms and ruler must move to the same
+            // viewport in the same state publication. Waiting for the native
+            // bounds notification exposed one frame of the old range at the
+            // new scale, which looked like a flash at high zoom.
+            timelineVisibleDocumentRange = targetVisibleRange
         }
 
         NSAnimationContext.runAnimationGroup { context in
@@ -1115,7 +1151,7 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
             onError(error.localizedDescription)
             return
         }
-        selectedZoomID = animation.id
+        activateTimelineSelection(.zoom(animation.id))
     }
 
     func timelineTimestamp(_ time: TimeInterval) -> String {

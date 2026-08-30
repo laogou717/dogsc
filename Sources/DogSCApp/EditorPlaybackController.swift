@@ -12,6 +12,12 @@ enum EditorPlaybackLifecycle: Equatable {
     case failed(String)
 }
 
+private struct EditorCameraSyncAuditionRequest: Equatable {
+    let id: UUID
+    let outputTime: TimeInterval
+    let previousPlaybackTimingRevision: UInt64
+}
+
 /// Stable AVFoundation endpoints for one prepared media generation. The render
 /// surface may pull pixels from these outputs, but it never owns or reads the
 /// players that drive them.
@@ -190,7 +196,9 @@ final class EditorPlaybackController: ObservableObject {
         _ itemTime: CMTime,
         _ preferredTransform: CGAffineTransform
     ) async -> NSImage?
-    @Published private(set) var lifecycle: EditorPlaybackLifecycle = .empty
+    @Published private(set) var lifecycle: EditorPlaybackLifecycle = .empty {
+        didSet { handleCameraSyncAuditionLifecycleChange() }
+    }
     // 以下成员的写入放宽到模块内，仅供 EditorPlaybackScrubbing /
     // EditorPlaybackPausedFrames / EditorPlaybackHoverPreview 扩展使用。
     @Published var isPlaying = false {
@@ -211,7 +219,9 @@ final class EditorPlaybackController: ObservableObject {
     /// Acknowledges that the camera-only timing composition/player has been
     /// installed. Sync audition waits for this value, not merely for the
     /// project/media-session model to publish its new anchors.
-    @Published private(set) var cameraTimingRevision: UInt64 = 0
+    @Published private(set) var cameraTimingRevision: UInt64 = 0 {
+        didSet { startPendingCameraSyncAuditionIfReady() }
+    }
     /// Latest transport time without ObservableObject publication. The canvas
     /// display link samples it once, then native timeline layers receive that
     /// snapshot through the observer hub; publishing through SwiftUI laid out
@@ -278,6 +288,13 @@ final class EditorPlaybackController: ObservableObject {
     var seekToken: UInt64 = 0
     var playbackStartToken: UInt64 = 0
     var cameraSeekToken: UInt64 = 0
+    private var pendingCameraSyncAudition: EditorCameraSyncAuditionRequest?
+    private var cameraSyncAuditionTask: Task<Void, Never>?
+    private var activeCameraSyncAuditionID: UUID?
+
+    var cameraSyncAuditionIsActive: Bool {
+        pendingCameraSyncAudition != nil || activeCameraSyncAuditionID != nil
+    }
     var cameraSeekIsPending = false
     private var lastCameraAvailability = false
     private var playbackAnchorTime: TimeInterval = 0
@@ -297,6 +314,8 @@ final class EditorPlaybackController: ObservableObject {
     @Published var hoverPreviewTime: TimeInterval?
     var hoverSeekTask: Task<Void, Never>?
     var hoverSeekCoalescer = EditorScrubSeekCoalescer()
+    var hoverSeekGeneration: UInt64 = 0
+    var hoverSeekInFlightCount = 0
     private var primarySeekIsPending = false
     /// Every AVAssetImageGenerator backing `pausedFrameTask`. A camera project
     /// owns both a screen and camera generator; cancelling only one leaves the
@@ -517,6 +536,100 @@ final class EditorPlaybackController: ObservableObject {
             for: audio,
             bundle: preparedMedia.composition
         )
+    }
+
+    /// Reviews a camera timing edit only after the rebuilt camera composition
+    /// is installed. Owning this sequence beside the sole transport owner lets
+    /// inspector and timeline edits share one cancellable audition instead of
+    /// racing two independent playback tasks.
+    func scheduleCameraSyncAudition(at requestedOutputTime: TimeInterval) {
+        cancelCameraSyncAudition()
+        pendingCameraSyncAudition = EditorCameraSyncAuditionRequest(
+            id: UUID(),
+            outputTime: EditorPlaybackClockPolicy.clampedTime(
+                requestedOutputTime,
+                duration: duration
+            ),
+            previousPlaybackTimingRevision: cameraTimingRevision
+        )
+        pause()
+        startPendingCameraSyncAuditionIfReady()
+    }
+
+    func cancelCameraSyncAudition() {
+        let wasActive = cameraSyncAuditionIsActive
+        pendingCameraSyncAudition = nil
+        activeCameraSyncAuditionID = nil
+        cameraSyncAuditionTask?.cancel()
+        cameraSyncAuditionTask = nil
+        guard wasActive else { return }
+        if isPlaying {
+            pause()
+        } else {
+            // An exact seek can still be pending before playback flips to true.
+            // Invalidate it as well, otherwise its resume callback can start an
+            // audition after the user has already closed sync editing.
+            playbackStartToken &+= 1
+            seekToken &+= 1
+            cameraSeekToken &+= 1
+            primarySeekIsPending = false
+            cameraSeekIsPending = false
+            primaryPlayer?.cancelPendingSeeks()
+            cameraPlayer?.cancelPendingSeeks()
+        }
+    }
+
+    private func handleCameraSyncAuditionLifecycleChange() {
+        switch lifecycle {
+        case .ready:
+            startPendingCameraSyncAuditionIfReady()
+        case .failed, .empty:
+            cancelCameraSyncAudition()
+        case .preparing:
+            break
+        }
+    }
+
+    private func startPendingCameraSyncAuditionIfReady() {
+        guard let request = pendingCameraSyncAudition,
+              case .ready = lifecycle,
+              cameraTimingRevision != request.previousPlaybackTimingRevision else { return }
+        pendingCameraSyncAudition = nil
+        activeCameraSyncAuditionID = request.id
+
+        let startTime = max(request.outputTime - 0.35, 0)
+        let endTime = min(request.outputTime + 1.25, duration)
+        seek(to: startTime, pausing: true, resumeAfterCompletion: true)
+
+        cameraSyncAuditionTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            // Use the media clock: exact seek and decoder startup must not
+            // consume the short review window.
+            for _ in 0..<100 {
+                do {
+                    try await Task.sleep(for: .milliseconds(40))
+                } catch {
+                    return
+                }
+                guard self.activeCameraSyncAuditionID == request.id else { return }
+                if self.outputTime >= endTime - 0.015 {
+                    self.finishCameraSyncAudition(request)
+                    return
+                }
+            }
+            guard self.activeCameraSyncAuditionID == request.id else { return }
+            self.finishCameraSyncAudition(request)
+        }
+    }
+
+    private func finishCameraSyncAudition(
+        _ request: EditorCameraSyncAuditionRequest
+    ) {
+        guard activeCameraSyncAuditionID == request.id else { return }
+        pause()
+        seek(to: request.outputTime, pausing: true)
+        activeCameraSyncAuditionID = nil
+        cameraSyncAuditionTask = nil
     }
 
     /// Replaces only the camera transport after a sync-anchor edit. The

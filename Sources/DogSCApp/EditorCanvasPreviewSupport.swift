@@ -17,7 +17,7 @@ struct CanvasPreviewLayout {
     let playbackEvaluation: CanvasPlaybackEvaluationContext
 }
 
-struct CanvasPlaybackEvaluationContext: Equatable {
+struct CanvasPlaybackEvaluationContext: Equatable, Sendable {
     let project: RecorderProject
     let outputDuration: TimeInterval
     let frameRate: Int
@@ -28,6 +28,7 @@ struct CanvasPlaybackEvaluationContext: Equatable {
     let cameraPlan: TimelineMediaPlan?
     let pointerTrack: ProjectPointerTrack?
     let cursorMetrics: CursorAssetMetrics?
+    let cursorMetricsByAssetID: [CursorAssetID: CursorAssetMetrics]
     let zoomTrack: ZoomAnimationTrack
     let screenMotionTrack: ScreenMotionTrack
     let cameraMotionTrack: CameraMotionTrack
@@ -49,6 +50,7 @@ struct CanvasPlaybackEvaluationContext: Equatable {
             cameraSourceSize: cameraSourceSize,
             pointerTrack: pointerTrack,
             cursorMetrics: cursorMetrics,
+            cursorMetricsByAssetID: cursorMetricsByAssetID,
             zoomTrack: zoomTrack,
             screenMotionTrack: screenMotionTrack,
             cameraMotionTrack: cameraMotionTrack,
@@ -82,14 +84,19 @@ enum EditorPreviewResolutionMode: String, CaseIterable, Identifiable {
 enum CanvasPreviewRasterPolicy {
     static func pixelSize(
         points: CGSize,
-        displayScale: CGFloat,
+        displayScale _: CGFloat,
         mode: EditorPreviewResolutionMode = .low,
         fullResolution: CGSize? = nil
     ) -> CGSize {
-        let scale = max(displayScale.isFinite ? displayScale : 1, 1)
+        // “流畅”是用户主动选择的性能档，而不是窗口当前 backing
+        // scale 的别名。在 Retina 屏幕上按 2× backing pixels 合成，
+        // 仍会让一个大编辑窗口接近 4K 工作量，和完整源分辨率的负担
+        // 差距太小。用 1× point raster 可把像素量稳定降为原来的
+        // 四分之一；CAMetalLayer 负责显示缩放，几何和动画仍由同一
+        // FrameRenderPlan 求值。完整档继续严格使用源分辨率。
         let lowResolution = CGSize(
-            width: max(points.width * scale, 2),
-            height: max(points.height * scale, 2)
+            width: max(points.width.rounded(.up), 2),
+            height: max(points.height.rounded(.up), 2)
         )
         guard mode == .full,
               let fullResolution,

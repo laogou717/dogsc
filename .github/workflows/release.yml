@@ -114,3 +114,6 @@ jobs:
             --notes "" \
             --title "DogSC $GITHUB_REF_NAME" \
             --verify-tag
+          gh release edit "$GITHUB_REF_NAME" \
+            --latest \
+            --prerelease=false

@@ -8,16 +8,86 @@ struct ZoomFocusMap: View {
     let sourcePixelSize: CGSize
     @Binding var focus: NormalizedPoint
     var onEditingChanged: (Bool) -> Void = { _ in }
+    var onEditingCancelled: () -> Void = { }
+
     @State private var thumbnail: NSImage?
     @State private var isEditingFocus = false
+    @State private var isCoordinateEditing = false
+    @State private var isMapHovered = false
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 8) {
+                Text("焦点位置")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.white.opacity(0.84))
+
+                Spacer(minLength: 8)
+
+                Button {
+                    withAnimation(SpringMotion.snappy) {
+                        beginFocusEditingIfNeeded()
+                        focus = NormalizedPoint(x: 0.5, y: 0.5)
+                        endFocusEditing()
+                    }
+                } label: {
+                    Label("居中", systemImage: "scope")
+                        .font(.caption2.weight(.semibold))
+                }
+                .buttonStyle(.editorGhost)
+                .controlSize(.small)
+                .disabled(isCentered)
+                .accessibilityLabel("居中缩放焦点")
+            }
+
+            focusSurface
+
+            EditorPairedParameterReadouts(
+                first: EditorPairedParameterValue(
+                    title: "X",
+                    value: clamp01(focus.x),
+                    range: 0...1,
+                    displayText: EditorSliderValueFormat.percent.text(for: clamp01(focus.x)),
+                    inputFormat: .percent
+                ),
+                second: EditorPairedParameterValue(
+                    title: "Y",
+                    value: clamp01(focus.y),
+                    range: 0...1,
+                    displayText: EditorSliderValueFormat.percent.text(for: clamp01(focus.y)),
+                    inputFormat: .percent
+                ),
+                onChanged: { x, y in
+                    beginFocusEditingIfNeeded()
+                    focus = NormalizedPoint(x: x, y: y)
+                },
+                onEnded: endFocusEditing,
+                onCancelled: cancelFocusEditing,
+                onEditingChanged: { isCoordinateEditing = $0 }
+            )
+        }
+        .task(id: thumbnailRequestID) {
+            await loadThumbnail()
+        }
+        .onDisappear {
+            if isEditingFocus {
+                cancelFocusEditing()
+            }
+        }
+    }
+
+    private var focusSurface: some View {
         GeometryReader { geometry in
             let mapRect = focusMapRect(in: geometry.size)
             let guideInset = ZoomViewportTransform.compositionGuideInset
+            let point = CGPoint(
+                x: mapRect.minX + CGFloat(clamp01(focus.x)) * mapRect.width,
+                y: mapRect.minY + CGFloat(clamp01(focus.y)) * mapRect.height
+            )
+            let isActive = isEditingFocus || isCoordinateEditing
 
             ZStack {
-                Color.black.opacity(0.5)
+                Color.black.opacity(0.48)
 
                 if let thumbnail {
                     Image(nsImage: thumbnail)
@@ -27,21 +97,22 @@ struct ZoomFocusMap: View {
                         .position(x: mapRect.midX, y: mapRect.midY)
                         .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                 } else {
-                    Color.black.opacity(0.42)
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(Color.black.opacity(0.36))
                         .frame(width: mapRect.width, height: mapRect.height)
                         .position(x: mapRect.midX, y: mapRect.midY)
-                        .overlay {
-                            ProgressView()
-                                .controlSize(.small)
-                        }
+
+                    ProgressView()
+                        .controlSize(.small)
+                        .position(x: mapRect.midX, y: mapRect.midY)
                 }
 
-                Color.black.opacity(0.08)
+                Color.black.opacity(isActive ? 0.025 : 0.075)
 
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .stroke(
-                        Color.white.opacity(0.22),
-                        style: StrokeStyle(lineWidth: 1, dash: [4, 4])
+                        EditorTheme.platinumAccent.opacity(isActive ? 0.28 : 0.17),
+                        style: StrokeStyle(lineWidth: 0.75, dash: [4, 4])
                     )
                     .frame(
                         width: mapRect.width * CGFloat(1 - guideInset * 2),
@@ -50,36 +121,52 @@ struct ZoomFocusMap: View {
                     .position(x: mapRect.midX, y: mapRect.midY)
                     .allowsHitTesting(false)
 
-                Circle()
-                    .fill(Color.black.opacity(0.2))
-                    .overlay(Circle().stroke(.white.opacity(0.92), lineWidth: 1.5))
-                    .overlay(Circle().stroke(editorAccent.opacity(0.9), lineWidth: 4).padding(4))
-                    .frame(width: 34, height: 34)
-                    .shadow(color: .black.opacity(0.5), radius: 5, y: 2)
-                    .position(
-                        x: mapRect.minX + CGFloat(focus.x) * mapRect.width,
-                        y: mapRect.minY + CGFloat(focus.y) * mapRect.height
+                if isActive {
+                    Path { path in
+                        path.move(to: CGPoint(x: point.x, y: mapRect.minY))
+                        path.addLine(to: CGPoint(x: point.x, y: mapRect.maxY))
+                        path.move(to: CGPoint(x: mapRect.minX, y: point.y))
+                        path.addLine(to: CGPoint(x: mapRect.maxX, y: point.y))
+                    }
+                    .stroke(
+                        EditorTheme.platinumAccent.opacity(0.30),
+                        style: StrokeStyle(lineWidth: 0.75, dash: [2.5, 3.5])
                     )
-                    .gesture(
-                        DragGesture(minimumDistance: 0)
-                            .onChanged { value in
-                                beginFocusEditingIfNeeded()
-                                focus = normalizedFocus(at: value.location, in: mapRect)
-                            }
-                            .onEnded { _ in endFocusEditing() }
-                    )
-                    .accessibilityLabel("缩放焦点")
-                    .accessibilityValue(
-                        "水平 \(Int(focus.x * 100))%，垂直 \(Int(focus.y * 100))%"
-                    )
-                    .accessibilityHint("拖动以选择缩放锚点，可以移动到四个角")
+                    .allowsHitTesting(false)
+                }
+
+                ZStack {
+                    Circle()
+                        .fill(EditorTheme.platinumAccent.opacity(isActive ? 0.21 : 0.10))
+                        .frame(width: isActive ? 34 : 30, height: isActive ? 34 : 30)
+                    Circle()
+                        .fill(Color.black.opacity(0.38))
+                        .frame(width: isActive ? 24 : 22, height: isActive ? 24 : 22)
+                        .overlay {
+                            Circle()
+                                .stroke(EditorTheme.platinumAccent.opacity(0.92), lineWidth: 1.5)
+                        }
+                        .overlay {
+                            Circle()
+                                .fill(Color.white.opacity(0.92))
+                                .frame(width: 5, height: 5)
+                        }
+                        .shadow(color: Color.black.opacity(0.50), radius: 5, y: 2)
+                }
+                .position(point)
+                .transaction { $0.animation = nil }
             }
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(Color.white.opacity(0.14), lineWidth: 1)
-            )
-            .contentShape(Rectangle())
+            .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .stroke(
+                        isActive
+                            ? EditorTheme.platinumAccent.opacity(0.28)
+                            : Color.white.opacity(isMapHovered ? 0.18 : 0.11),
+                        lineWidth: isActive ? 1 : 0.75
+                    )
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
@@ -88,11 +175,16 @@ struct ZoomFocusMap: View {
                     }
                     .onEnded { _ in endFocusEditing() }
             )
+            .allowsHitTesting(!isCoordinateEditing)
+            .onHover { hovering in
+                withAnimation(SpringMotion.interactive) {
+                    isMapHovered = hovering
+                }
+            }
+            .accessibilityHidden(true)
         }
         .frame(height: 148)
-        .task(id: thumbnailRequestID) {
-            await loadThumbnail()
-        }
+        .accessibilityIdentifier("zoom.focus-map")
     }
 
     private func focusMapRect(in size: CGSize) -> CGRect {
@@ -133,6 +225,20 @@ struct ZoomFocusMap: View {
         guard isEditingFocus else { return }
         isEditingFocus = false
         onEditingChanged(false)
+    }
+
+    private func cancelFocusEditing() {
+        guard isEditingFocus else { return }
+        isEditingFocus = false
+        onEditingCancelled()
+    }
+
+    private var isCentered: Bool {
+        abs(focus.x - 0.5) < 0.000_5 && abs(focus.y - 0.5) < 0.000_5
+    }
+
+    private func clamp01(_ value: Double) -> Double {
+        min(max(value.isFinite ? value : 0.5, 0), 1)
     }
 
     private var thumbnailRequestID: String {

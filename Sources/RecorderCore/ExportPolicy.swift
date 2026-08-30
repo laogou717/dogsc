@@ -8,6 +8,7 @@ public struct RequiredProjectMedia: Equatable, Sendable {
     public let cameraVideo: Bool
     public let microphoneAudio: Bool
     public let backgroundImage: Bool
+    public let backgroundVideo: Bool
 
     public init(project: RecorderProject) {
         screenVideo = true
@@ -17,6 +18,7 @@ public struct RequiredProjectMedia: Equatable, Sendable {
             && !project.audio.isMicrophoneMuted
             && project.audio.microphoneVolume > 0
         backgroundImage = project.canvas.backgroundSource.isImage
+        backgroundVideo = project.canvas.backgroundSource.isVideo
     }
 }
 

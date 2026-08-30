@@ -1,11 +1,12 @@
 import AppKit
 import CoreText
 
-final class AreaPresetButton: NSButton {
+final class AreaPresetButton: CaptureSelectionNativeButton {
     private let areaSymbolName: String
     private let symbolView = MousePassthroughImageView()
     private let captionLabel = MousePassthroughLabel("")
     private var layoutScale: CGFloat = 1
+    private var selectedState = false
 
     init(title: String, symbolName: String) {
         areaSymbolName = symbolName
@@ -34,16 +35,27 @@ final class AreaPresetButton: NSButton {
     }
 
     func setSelected(_ selected: Bool) {
-        let tint = selected
+        selectedState = selected
+        updateAppearance()
+    }
+
+    private func updateAppearance() {
+        let tint = selectedState
             ? captureSelectionAccentNSColor.blended(withFraction: 0.2, of: .white)
             : NSColor.white.withAlphaComponent(0.66)
         symbolView.contentTintColor = tint
         captionLabel.textColor = tint
-        layer?.backgroundColor = selected
+        layer?.backgroundColor = selectedState
             ? captureSelectionAccentNSColor.withAlphaComponent(0.2).cgColor
-            : NSColor.clear.cgColor
-        layer?.borderWidth = selected ? 1 : 0
-        layer?.borderColor = captureSelectionAccentNSColor.withAlphaComponent(0.72).cgColor
+            : NSColor.white.withAlphaComponent(isPointerInside ? 0.07 : 0).cgColor
+        layer?.borderWidth = selectedState || isPointerInside ? 1 : 0
+        layer?.borderColor = selectedState
+            ? captureSelectionAccentNSColor.withAlphaComponent(0.72).cgColor
+            : NSColor.white.withAlphaComponent(0.1).cgColor
+    }
+
+    override func captureInteractionDidChange(hovering: Bool, pressed: Bool) {
+        updateAppearance()
     }
 
     func updateScale(_ scale: CGFloat) {
@@ -80,10 +92,11 @@ final class AreaPresetButton: NSButton {
 
 }
 
-final class AreaActionButton: NSButton {
+final class AreaActionButton: CaptureSelectionNativeButton {
     private let buttonTitleLabel = MousePassthroughLabel("")
     private let shortcutLabel = MousePassthroughLabel("")
     private let buttonShortcut: String?
+    private let primary: Bool
     private var layoutScale: CGFloat = 1
 
     init(
@@ -94,6 +107,7 @@ final class AreaActionButton: NSButton {
         action: Selector?
     ) {
         buttonShortcut = shortcut
+        self.primary = primary
         super.init(frame: .zero)
         super.title = ""
         self.target = target
@@ -103,7 +117,7 @@ final class AreaActionButton: NSButton {
         wantsLayer = true
         layer?.cornerRadius = 10
         layer?.backgroundColor = primary
-            ? captureSelectionAccentNSColor.withAlphaComponent(0.96).cgColor
+            ? captureSelectionPlatinumNSColor.cgColor
             : NSColor.white.withAlphaComponent(0.075).cgColor
         layer?.borderWidth = primary ? 0 : 1
         layer?.borderColor = NSColor.white.withAlphaComponent(0.08).cgColor
@@ -111,12 +125,16 @@ final class AreaActionButton: NSButton {
 
         buttonTitleLabel.stringValue = title
         buttonTitleLabel.alignment = .center
-        buttonTitleLabel.textColor = .white
+        buttonTitleLabel.textColor = primary
+            ? NSColor.black.withAlphaComponent(0.88)
+            : NSColor.white.withAlphaComponent(0.88)
         addSubview(buttonTitleLabel)
 
         shortcutLabel.stringValue = shortcut ?? ""
         shortcutLabel.alignment = .center
-        shortcutLabel.textColor = NSColor.white.withAlphaComponent(primary ? 0.72 : 0.6)
+        shortcutLabel.textColor = primary
+            ? NSColor.black.withAlphaComponent(0.52)
+            : NSColor.white.withAlphaComponent(0.56)
         shortcutLabel.isHidden = shortcut == nil
         addSubview(shortcutLabel)
     }
@@ -131,6 +149,16 @@ final class AreaActionButton: NSButton {
         shortcutLabel.font = .systemFont(ofSize: 10.5 * scale, weight: .medium)
         layer?.cornerRadius = 10 * scale
         needsLayout = true
+    }
+
+    override func captureInteractionDidChange(hovering: Bool, pressed: Bool) {
+        layer?.backgroundColor = primary
+            ? captureSelectionPlatinumNSColor.withAlphaComponent(
+                pressed ? 0.84 : hovering ? 0.92 : 1
+            ).cgColor
+            : NSColor.white.withAlphaComponent(
+                pressed ? 0.15 : hovering ? 0.12 : 0.075
+            ).cgColor
     }
 
     override func layout() {
@@ -302,66 +330,6 @@ final class EscapeHintContentView: NSView {
         CTLineDraw(line, context)
         context.restoreGState()
     }
-}
-
-final class CenteredDrawingLabel: NSView {
-    var stringValue: String {
-        didSet {
-            setAccessibilityLabel(stringValue)
-            needsDisplay = true
-        }
-    }
-    var font: NSFont = .systemFont(ofSize: NSFont.systemFontSize) {
-        didSet { needsDisplay = true }
-    }
-    var textColor: NSColor = .labelColor {
-        didSet { needsDisplay = true }
-    }
-
-    init(_ text: String) {
-        stringValue = text
-        super.init(frame: .zero)
-        setAccessibilityElement(true)
-        setAccessibilityRole(.staticText)
-        setAccessibilityLabel(text)
-    }
-
-    required init?(coder: NSCoder) {
-        stringValue = ""
-        super.init(coder: coder)
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        guard let context = NSGraphicsContext.current?.cgContext else { return }
-        let attributedText = NSAttributedString(
-            string: stringValue,
-            attributes: [
-                .font: font,
-                .foregroundColor: textColor,
-            ]
-        )
-        let line = CTLineCreateWithAttributedString(attributedText)
-        var ascent: CGFloat = 0
-        var descent: CGFloat = 0
-        var leading: CGFloat = 0
-        let width = CGFloat(CTLineGetTypographicBounds(
-            line,
-            &ascent,
-            &descent,
-            &leading
-        ))
-
-        context.saveGState()
-        context.textMatrix = .identity
-        context.textPosition = CGPoint(
-            x: floor((bounds.width - width) / 2),
-            y: floor((bounds.height - ascent - descent) / 2 + descent)
-        )
-        CTLineDraw(line, context)
-        context.restoreGState()
-    }
-
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 final class VerticallyCenteredTextFieldCell: NSTextFieldCell {

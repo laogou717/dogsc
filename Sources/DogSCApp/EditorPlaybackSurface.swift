@@ -226,24 +226,50 @@ final class NativeTimelineOverviewNSView: NSView {
     private let trackLayer = CALayer()
     private let viewportLayer = CALayer()
     private let playheadLayer = CALayer()
+    private var hoverTrackingArea: NSTrackingArea?
+    private var isPointerInside = false
+    private var isPointerDown = false
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        trackLayer.backgroundColor = NSColor.white.withAlphaComponent(0.07).cgColor
-        trackLayer.cornerRadius = 3
-        viewportLayer.backgroundColor = NSColor.white.withAlphaComponent(0.13).cgColor
-        viewportLayer.borderColor = NSColor.white.withAlphaComponent(0.5).cgColor
+        trackLayer.backgroundColor = NSColor.white.withAlphaComponent(0.065).cgColor
+        trackLayer.borderColor = NSColor.white.withAlphaComponent(0.06).cgColor
+        trackLayer.borderWidth = 0.5
+        trackLayer.cornerRadius = 4
+        viewportLayer.backgroundColor = NSColor.white.withAlphaComponent(0.14).cgColor
+        viewportLayer.borderColor = NSColor.white.withAlphaComponent(0.48).cgColor
         viewportLayer.borderWidth = 1
-        viewportLayer.cornerRadius = 3
-        playheadLayer.backgroundColor = NSColor.white.withAlphaComponent(0.88).cgColor
-        playheadLayer.cornerRadius = 0.75
+        viewportLayer.cornerRadius = 4
+        playheadLayer.backgroundColor = NSColor(
+            calibratedRed: 0.90,
+            green: 0.67,
+            blue: 0.36,
+            alpha: 1
+        ).cgColor
+        playheadLayer.cornerRadius = 1
+        playheadLayer.shadowColor = NSColor.black.cgColor
+        playheadLayer.shadowOpacity = 0.35
+        playheadLayer.shadowRadius = 2
         layer?.addSublayer(trackLayer)
         layer?.addSublayer(viewportLayer)
         layer?.addSublayer(playheadLayer)
     }
 
     required init?(coder: NSCoder) { nil }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverTrackingArea { removeTrackingArea(hoverTrackingArea) }
+        let trackingArea = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeInKeyWindow],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(trackingArea)
+        hoverTrackingArea = trackingArea
+    }
 
     func invalidate() {
         observationTokens.forEach(NotificationCenter.default.removeObserver)
@@ -301,12 +327,12 @@ final class NativeTimelineOverviewNSView: NSView {
     }
 
     private func updateLayers() {
-        let inset: CGFloat = 7
+        let inset: CGFloat = 8
         let track = CGRect(
             x: inset,
-            y: max((bounds.height - 6) / 2, 0),
+            y: max((bounds.height - 8) / 2, 0),
             width: max(bounds.width - inset * 2, 1),
-            height: 6
+            height: 8
         )
         trackLayer.frame = track
         guard let scrollView = trackedScrollView else {
@@ -318,7 +344,7 @@ final class NativeTimelineOverviewNSView: NSView {
         let visible = scrollView.documentVisibleRect
         let startFraction = min(max(visible.minX / documentWidth, 0), 1)
         let widthFraction = min(max(visible.width / documentWidth, 0), 1)
-        let viewportWidth = max(track.width * widthFraction, 5)
+        let viewportWidth = max(track.width * widthFraction, 8)
         let viewportX = min(track.minX + track.width * startFraction, track.maxX - viewportWidth)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -328,6 +354,18 @@ final class NativeTimelineOverviewNSView: NSView {
         )
         CATransaction.commit()
         updatePlayhead()
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isPointerInside = true
+        updateInteractionAppearance(animated: true)
+        window?.invalidateCursorRects(for: self)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isPointerInside = false
+        updateInteractionAppearance(animated: true)
+        window?.invalidateCursorRects(for: self)
     }
 
     private func updatePlayhead(time: TimeInterval? = nil, isPlaying: Bool = false) {
@@ -350,6 +388,9 @@ final class NativeTimelineOverviewNSView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        isPointerDown = true
+        updateInteractionAppearance(animated: true)
+        window?.invalidateCursorRects(for: self)
         playbackController?.beginScrubbing()
         updateScrubbing(with: event)
     }
@@ -361,6 +402,24 @@ final class NativeTimelineOverviewNSView: NSView {
     override func mouseUp(with event: NSEvent) {
         updateScrubbing(with: event)
         playbackController?.endScrubbing()
+        isPointerDown = false
+        updateInteractionAppearance(animated: true)
+        window?.invalidateCursorRects(for: self)
+    }
+
+    private func updateInteractionAppearance(animated: Bool) {
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(animated ? 0.16 : 0)
+        trackLayer.backgroundColor = NSColor.white.withAlphaComponent(
+            isPointerInside ? 0.09 : 0.065
+        ).cgColor
+        viewportLayer.backgroundColor = NSColor.white.withAlphaComponent(
+            isPointerDown ? 0.28 : isPointerInside ? 0.20 : 0.14
+        ).cgColor
+        viewportLayer.borderColor = NSColor.white.withAlphaComponent(
+            isPointerDown ? 0.82 : isPointerInside ? 0.64 : 0.48
+        ).cgColor
+        CATransaction.commit()
     }
 
     private func updateScrubbing(with event: NSEvent) {
@@ -385,7 +444,7 @@ final class NativeTimelineOverviewNSView: NSView {
     }
 
     override func resetCursorRects() {
-        addCursorRect(bounds, cursor: .pointingHand)
+        addCursorRect(bounds, cursor: isPointerDown ? .closedHand : .openHand)
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {

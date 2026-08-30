@@ -33,17 +33,6 @@ final class EditorTimelineDerivedPresentationCache {
         let anchors: [MediaSyncAnchor]
     }
 
-    private struct RulerInput: Equatable {
-        let duration: TimeInterval
-        let width: CGFloat
-    }
-
-    /// Pointer events belong to the immutable EditorSessionContext generation.
-    /// A different project creates a different editor/cache instead of mutating
-    /// this large event array under a live timeline.
-    private let sourcePointerEvents: [PointerEventRecord]
-    private var pointerMap: TimelineMap?
-    private var mappedPointerClicks: [PointerEventRecord] = []
     private var zoomInput: ZoomInput?
     private var zoomSegments: [TimelineZoomSegment] = []
     private var zoomSegmentIndicesByID: [UUID: Int] = [:]
@@ -63,40 +52,6 @@ final class EditorTimelineDerivedPresentationCache {
     private var syncDisplayRange: TimeInterval = 0.118
     private var syncPathInput: CameraSyncPathInput?
     private var syncPathSamples: [EditorCameraSyncCurveSample] = []
-    private var rulerInput: RulerInput?
-    private var cachedRulerTicks: [EditorTimelineRulerTick] = []
-    private(set) var rulerTickBuildCount = 0
-
-    init(pointerEvents: [PointerEventRecord]) {
-        sourcePointerEvents = pointerEvents
-    }
-
-    func pointerClicks(for map: TimelineMap) -> [PointerEventRecord] {
-        if pointerMap != map {
-            pointerMap = map
-            mappedPointerClicks = EditorPrimaryTimelinePresentation.mappedPointerClicks(
-                sourceEvents: sourcePointerEvents,
-                map: map
-            )
-        }
-        return mappedPointerClicks
-    }
-
-    func rulerTicks(
-        duration: TimeInterval,
-        width: CGFloat
-    ) -> [EditorTimelineRulerTick] {
-        let nextInput = RulerInput(duration: duration, width: width)
-        guard rulerInput != nextInput else { return cachedRulerTicks }
-        rulerInput = nextInput
-        cachedRulerTicks = EditorTimelineRulerPresentation.ticks(
-            duration: duration,
-            width: width
-        )
-        rulerTickBuildCount += 1
-        return cachedRulerTicks
-    }
-
     func zoomSegments(
         animations: [ZoomAnimationClip],
         duration: TimeInterval

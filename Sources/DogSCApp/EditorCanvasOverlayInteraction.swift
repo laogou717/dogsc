@@ -3,7 +3,7 @@ import SwiftUI
 
 extension CanvasPreview {
     @ViewBuilder
-    func overlaySelectionTargets(
+    func mosaicSelectionTargets(
         scene: FrameScene,
         canvasSize: CGSize,
         time: TimeInterval
@@ -16,30 +16,66 @@ extension CanvasPreview {
                     clip: clip,
                     screen: scene.screen
                 ) {
-                    let selected = editorStore.selection == .mosaic(clip.id)
-                    ProjectedScreenShape(quad: quad)
-                        .fill(Color.clear)
-                        .contentShape(ProjectedScreenShape(quad: quad))
+                    let selection = EditorSelection.mosaic(clip.id)
+                    let selected = editorStore.selection == selection
+                    let chrome = canvasObjectChrome(for: selection)
+                    let selectionShape = ProjectedScreenShape(quad: quad)
+                    selectionShape
+                        .fill(chrome.fillColor)
+                        .contentShape(selectionShape)
+                        .overlay {
+                            if chrome.showsOutline {
+                                selectionShape
+                                    .stroke(chrome.strokeColor, lineWidth: chrome.lineWidth)
+                            }
+                        }
+                        .shadow(color: chrome.glowColor, radius: chrome.glowRadius)
                         .frame(width: canvasSize.width, height: canvasSize.height)
                         .onTapGesture {
                             onCanvasFocused()
-                            editorStore.selection = .mosaic(clip.id)
+                            editorStore.selection = selection
                         }
                         .gesture(mosaicMoveGesture(
                             clip: clip,
                             screen: scene.screen,
                             canvasSize: canvasSize
                         ))
+                        .onHover {
+                            updateCanvasHover(selection, hovering: $0)
+                        }
+                        .accessibilityLabel(
+                            clip.style == .spotlight ? "突出区域" : "柔化区域"
+                        )
+                        .accessibilityHint("点击以选中，拖动以调整位置")
+                        .accessibilityAddTraits(
+                            selected ? [.isButton, .isSelected] : .isButton
+                        )
+                        .accessibilityAction {
+                            editorStore.selection = selection
+                        }
                     if selected {
                         ForEach(OverlayResizeCorner.allCases) { corner in
+                            let isResizing = overlayResizeSelection == selection
                             Circle()
                                 .fill(Color(white: 0.055))
-                                .overlay(Circle().stroke(editorAccent, lineWidth: 2))
-                                .shadow(color: .black.opacity(0.7), radius: 2)
+                                .overlay {
+                                    Circle().stroke(
+                                        editorAccent.opacity(isResizing ? 1 : 0.90),
+                                        lineWidth: isResizing ? 2.5 : 2
+                                    )
+                                }
+                                .shadow(
+                                    color: isResizing
+                                        ? editorAccent.opacity(0.32)
+                                        : .black.opacity(0.7),
+                                    radius: isResizing ? 5 : 2
+                                )
                                 .frame(width: 12, height: 12)
-                                .frame(width: 26, height: 26)
+                                .frame(width: 30, height: 30)
                                 .contentShape(Rectangle())
                                 .position(mosaicHandlePoint(corner, in: quad))
+                                .scaleEffect(isResizing ? 1.08 : 1)
+                                .animation(SpringMotion.interactive, value: isResizing)
                                 .highPriorityGesture(mosaicResizeGesture(
                                     clip: clip,
                                     corner: corner,
@@ -50,7 +86,17 @@ extension CanvasPreview {
                     }
                 }
             }
+        }
+        .frame(width: canvasSize.width, height: canvasSize.height)
+    }
 
+    @ViewBuilder
+    func frontOverlaySelectionTargets(
+        scene: FrameScene,
+        canvasSize: CGSize,
+        time: TimeInterval
+    ) -> some View {
+        ZStack(alignment: .topLeading) {
             ForEach(scene.stickers, id: \.id) { sticker in
                 let width = canvasSize.width * sticker.width * sticker.scale
                 let sourceSize = resolvedStickerImages[sticker.relativePath]?.size
@@ -61,30 +107,55 @@ extension CanvasPreview {
                     x: canvasSize.width * (sticker.position.x + sticker.offset.x),
                     y: canvasSize.height * (sticker.position.y + sticker.offset.y)
                 )
-                let selected = editorStore.selection == .sticker(sticker.id)
+                let selection = EditorSelection.sticker(sticker.id)
+                let selected = editorStore.selection == selection
+                let chrome = canvasObjectChrome(for: selection)
+                // Keep authored sticker order in the rendered frame, but lift
+                // the selected sticker's transparent interaction chrome above
+                // later stickers and the progress hit surface. Otherwise a
+                // lower sticker selected from the timeline/inspector becomes
+                // impossible to move, resize or rotate wherever it overlaps a
+                // higher layer.
+                let interactionZIndex = selected
+                    ? 10_000.0
+                    : Double(sticker.layerIndex)
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(Color.clear)
+                    .fill(chrome.fillColor)
                     .contentShape(Rectangle())
                     .overlay {
-                        if selected {
+                        if chrome.showsOutline {
                             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .stroke(editorAccent, lineWidth: 1.5)
+                                .stroke(chrome.strokeColor, lineWidth: chrome.lineWidth)
                         }
                     }
+                    .shadow(color: chrome.glowColor, radius: chrome.glowRadius)
                     .frame(width: width, height: height)
                     .rotationEffect(.radians(sticker.rotationRadians))
                     .position(center)
                     .onTapGesture {
                         onCanvasFocused()
-                        editorStore.selection = .sticker(sticker.id)
+                        editorStore.selection = selection
                     }
                     .gesture(overlayMoveGesture(
-                        selection: .sticker(sticker.id),
+                        selection: selection,
                         canvasSize: canvasSize,
                         elementSize: CGSize(width: width, height: height)
                     ))
+                    .onHover {
+                        updateCanvasHover(selection, hovering: $0)
+                    }
+                    .accessibilityLabel("贴图")
+                    .accessibilityHint("点击以选中，拖动以调整位置")
+                    .accessibilityAddTraits(
+                        selected ? [.isButton, .isSelected] : .isButton
+                    )
+                    .accessibilityAction {
+                        editorStore.selection = selection
+                    }
+                    .zIndex(interactionZIndex)
                 if selected {
                     ForEach(OverlayResizeCorner.allCases) { corner in
+                        let isResizing = overlayResizeSelection == selection
                         let point = stickerHandlePoint(
                             corner,
                             center: center,
@@ -93,18 +164,84 @@ extension CanvasPreview {
                         )
                         Circle()
                             .fill(Color(white: 0.055))
-                            .overlay(Circle().stroke(editorAccent, lineWidth: 2))
-                            .shadow(color: .black.opacity(0.7), radius: 2)
+                            .overlay {
+                                Circle().stroke(
+                                    editorAccent.opacity(isResizing ? 1 : 0.90),
+                                    lineWidth: isResizing ? 2.5 : 2
+                                )
+                            }
+                            .shadow(
+                                color: isResizing
+                                    ? editorAccent.opacity(0.32)
+                                    : .black.opacity(0.7),
+                                radius: isResizing ? 5 : 2
+                            )
                             .frame(width: 12, height: 12)
-                            .frame(width: 26, height: 26)
+                            .frame(width: 30, height: 30)
                             .contentShape(Rectangle())
                             .position(point)
+                            .scaleEffect(isResizing ? 1.08 : 1)
+                            .animation(SpringMotion.interactive, value: isResizing)
                             .highPriorityGesture(stickerResizeGesture(
                                 id: sticker.id,
-                                corner: corner,
-                                canvasSize: canvasSize
+                                center: center,
+                                handle: point
                             ))
+                            .zIndex(interactionZIndex + 1)
                     }
+
+                    let rotationGeometry = stickerRotationHandleGeometry(
+                        center: center,
+                        size: CGSize(width: width, height: height),
+                        rotation: sticker.rotationRadians,
+                        canvasSize: canvasSize
+                    )
+                    let isRotating = stickerRotationOrigin?.id == sticker.id
+                    Path { path in
+                        path.move(to: rotationGeometry.anchor)
+                        path.addLine(to: rotationGeometry.handle)
+                    }
+                    .stroke(
+                        editorAccent.opacity(isRotating ? 0.92 : 0.62),
+                        style: StrokeStyle(lineWidth: isRotating ? 1.75 : 1.25)
+                    )
+                    .frame(width: canvasSize.width, height: canvasSize.height)
+                    .allowsHitTesting(false)
+                    .zIndex(interactionZIndex + 1)
+
+                    Circle()
+                        .fill(Color(white: 0.055))
+                        .overlay {
+                            Circle().stroke(
+                                editorAccent.opacity(isRotating ? 1 : 0.90),
+                                lineWidth: isRotating ? 2.5 : 2
+                            )
+                        }
+                        .overlay {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                                .font(.system(size: 8.5, weight: .bold))
+                                .foregroundStyle(editorAccent)
+                        }
+                        .shadow(
+                            color: isRotating
+                                ? editorAccent.opacity(0.34)
+                                : .black.opacity(0.7),
+                            radius: isRotating ? 6 : 2
+                        )
+                        .frame(width: 18, height: 18)
+                        .frame(width: 34, height: 34)
+                        .contentShape(Rectangle())
+                        .position(rotationGeometry.handle)
+                        .scaleEffect(isRotating ? 1.10 : 1)
+                        .animation(SpringMotion.interactive, value: isRotating)
+                        .highPriorityGesture(stickerRotationGesture(
+                            id: sticker.id,
+                            center: center,
+                            handle: rotationGeometry.handle
+                        ))
+                        .help("拖动旋转贴图")
+                        .accessibilityHidden(true)
+                        .zIndex(interactionZIndex + 2)
                 }
             }
 
@@ -131,31 +268,138 @@ extension CanvasPreview {
                         bandHeight: bandHeight
                     )
                 )
-                let selected = editorStore.selection == .progress
+                let selection = EditorSelection.progress
+                let selected = editorStore.selection == selection
+                let chrome = canvasObjectChrome(for: selection)
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color.black.opacity(0.001))
+                    .fill(
+                        chrome.phase == .idle
+                            ? Color.black.opacity(0.001)
+                            : chrome.fillColor
+                    )
                     .contentShape(Rectangle())
                     .overlay {
-                        if selected {
+                        if chrome.showsOutline {
                             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .stroke(editorAccent, lineWidth: 1.5)
+                                .stroke(chrome.strokeColor, lineWidth: chrome.lineWidth)
                         }
                     }
+                    .shadow(color: chrome.glowColor, radius: chrome.glowRadius)
                     .frame(width: width, height: bandHeight)
                     .position(center)
-                    .highPriorityGesture(overlayMoveGesture(
-                        selection: .progress,
+                    .onTapGesture {
+                        onCanvasFocused()
+                        editorStore.selection = selection
+                    }
+                    .gesture(overlayMoveGesture(
+                        selection: selection,
                         canvasSize: canvasSize,
                         elementSize: CGSize(width: width, height: bandHeight)
                     ))
+                    .onHover {
+                        updateCanvasHover(selection, hovering: $0)
+                    }
+                    .accessibilityLabel("成片进度条")
+                    .accessibilityHint("点击以选中，拖动以调整位置")
+                    .accessibilityAddTraits(
+                        selected ? [.isButton, .isSelected] : .isButton
+                    )
+                    .accessibilityAction {
+                        editorStore.selection = selection
+                    }
                     .zIndex(100)
-            }
+                if selected {
+                    ForEach(
+                        [ProgressResizeEdge.leading, .trailing],
+                        id: \.self
+                    ) { edge in
+                        let active = progressResizeOrigin?.edge == edge
+                        let edgeX = edge == .leading
+                            ? center.x - width / 2
+                            : center.x + width / 2
+                        Capsule(style: .continuous)
+                            .fill(Color(white: 0.055))
+                            .overlay {
+                                Capsule(style: .continuous)
+                                    .stroke(
+                                        editorAccent.opacity(active ? 1 : 0.90),
+                                        lineWidth: active ? 2.5 : 2
+                                    )
+                            }
+                            .shadow(
+                                color: active
+                                    ? editorAccent.opacity(0.34)
+                                    : .black.opacity(0.7),
+                                radius: active ? 6 : 2
+                            )
+                            .frame(
+                                width: 8,
+                                height: min(max(bandHeight * 0.56, 14), 28)
+                            )
+                            .frame(width: 32, height: max(bandHeight, 34))
+                            .contentShape(Rectangle())
+                            .position(x: edgeX, y: center.y)
+                            .scaleEffect(active ? 1.10 : 1)
+                            .animation(SpringMotion.interactive, value: active)
+                            .highPriorityGesture(progressResizeGesture(
+                                edge: edge,
+                                leading: Double((center.x - width / 2) / canvasSize.width),
+                                trailing: Double((center.x + width / 2) / canvasSize.width),
+                                canvasSize: canvasSize
+                            ))
+                            .help(edge == .leading ? "拖动调整左边界" : "拖动调整右边界")
+                            .accessibilityHidden(true)
+                            .zIndex(101)
+                    }
 
-            overlayQuickEditor(
-                scene: scene,
-                canvasSize: canvasSize,
-                time: time
-            )
+                    let heightEdge = progressHeightResizeEdge(
+                        for: progress.placement
+                    )
+                    let heightActive = progressHeightResizeOrigin?.edge == heightEdge
+                    let heightY = heightActive
+                        ? progressHeightDragHandleY ?? progressHeightHandleY(
+                            edge: heightEdge,
+                            centerY: center.y,
+                            bandHeight: bandHeight
+                        )
+                        : progressHeightHandleY(
+                            edge: heightEdge,
+                            centerY: center.y,
+                            bandHeight: bandHeight
+                        )
+                    Capsule(style: .continuous)
+                        .fill(Color(white: 0.055))
+                        .overlay {
+                            Capsule(style: .continuous)
+                                .stroke(
+                                    editorAccent.opacity(heightActive ? 1 : 0.90),
+                                    lineWidth: heightActive ? 2.5 : 2
+                                )
+                        }
+                        .shadow(
+                            color: heightActive
+                                ? editorAccent.opacity(0.34)
+                                : .black.opacity(0.7),
+                            radius: heightActive ? 6 : 2
+                        )
+                        .frame(width: 22, height: 6)
+                        .frame(width: 32, height: 26)
+                        .contentShape(Rectangle())
+                        .position(x: center.x, y: heightY)
+                        .scaleEffect(heightActive ? 1.06 : 1)
+                        .animation(SpringMotion.interactive, value: heightActive)
+                        .highPriorityGesture(progressHeightResizeGesture(
+                            edge: heightEdge,
+                            placement: progress.placement,
+                            centerY: center.y,
+                            visibleHeight: bandHeight,
+                            canvasSize: canvasSize
+                        ))
+                        .help("拖动调整条带高度")
+                        .accessibilityHidden(true)
+                        .zIndex(101)
+                }
+            }
         }
         .frame(width: canvasSize.width, height: canvasSize.height)
     }
@@ -248,7 +492,8 @@ extension CanvasPreview {
                         )
                         let snapped = snappedOverlayCenter(
                             rawPosition,
-                            normalizedSize: normalizedSize
+                            normalizedSize: normalizedSize,
+                            canvasSize: canvasSize
                         )
                         canvasSnapGuideX = snapped.guideX
                         canvasSnapGuideY = snapped.guideY
@@ -262,7 +507,8 @@ extension CanvasPreview {
                         )
                         let snapped = snappedOverlayCenter(
                             rawPosition,
-                            normalizedSize: normalizedSize
+                            normalizedSize: normalizedSize,
+                            canvasSize: canvasSize
                         )
                         let y = snapped.point.y
                         canvasSnapGuideX = snapped.guideX
@@ -326,6 +572,236 @@ extension CanvasPreview {
         }
     }
 
+    func progressResizeGesture(
+        edge: ProgressResizeEdge,
+        leading: Double,
+        trailing: Double,
+        canvasSize: CGSize
+    ) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .global)
+            .onChanged { value in
+                if progressResizeOrigin == nil {
+                    onCanvasFocused()
+                    progressResizeOrigin = ProgressResizeGestureOrigin(
+                        edge: edge,
+                        leading: min(max(leading, 0), 1),
+                        trailing: min(max(trailing, 0), 1)
+                    )
+                    editorStore.beginInteraction(
+                        tool: .select,
+                        selection: .progress
+                    )
+                }
+                guard let origin = progressResizeOrigin,
+                      origin.edge == edge else { return }
+                // Projects created before the current 20% inspector minimum
+                // may contain a narrower band. Preserve that width on pickup,
+                // but never let the gesture shrink it further.
+                let minimumWidth = min(
+                    0.20,
+                    max(origin.trailing - origin.leading, 0.05)
+                )
+                let delta = Double(
+                    value.translation.width / max(canvasSize.width, 1)
+                )
+                let threshold = CanvasSnapMath.normalizedThreshold(
+                    along: canvasSize.width
+                )
+                var leading = origin.leading
+                var trailing = origin.trailing
+                var guide: Double?
+                switch edge {
+                case .leading:
+                    leading = min(max(origin.leading + delta, 0), trailing - minimumWidth)
+                    if let anchor = [0.0, 0.5, 1.0].first(where: {
+                        abs(leading - $0) <= threshold
+                            && $0 <= trailing - minimumWidth
+                    }) {
+                        leading = anchor
+                        guide = anchor
+                    }
+                case .trailing:
+                    trailing = max(min(origin.trailing + delta, 1), leading + minimumWidth)
+                    if let anchor = [0.0, 0.5, 1.0].first(where: {
+                        abs(trailing - $0) <= threshold
+                            && $0 >= leading + minimumWidth
+                    }) {
+                        trailing = anchor
+                        guide = anchor
+                    }
+                }
+                canvasSnapGuideX = guide
+                editorStore.updateInteraction { project in
+                    guard var progress = project.timeline.progressOverlay else {
+                        return
+                    }
+                    progress.width = trailing - leading
+                    progress.position = NormalizedPoint(
+                        x: (leading + trailing) / 2,
+                        y: progress.position.y
+                    )
+                    project.timeline.progressOverlay = progress
+                }
+            }
+            .onEnded { _ in
+                defer {
+                    progressResizeOrigin = nil
+                    canvasSnapGuideX = nil
+                }
+                do {
+                    _ = try editorStore.commitInteraction(
+                        actionName: "调整进度条宽度"
+                    )
+                } catch {
+                    editorStore.cancelInteraction()
+                    onError(error.localizedDescription)
+                }
+            }
+    }
+
+    func progressHeightResizeGesture(
+        edge: ProgressHeightResizeEdge,
+        placement: ProgressOverlayPlacement,
+        centerY: CGFloat,
+        visibleHeight: CGFloat,
+        canvasSize: CGSize
+    ) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .global)
+            .onChanged { value in
+                if progressHeightResizeOrigin == nil {
+                    onCanvasFocused()
+                    guard let progress = editorStore.project.timeline
+                        .progressOverlay else { return }
+                    let fixedCanvasY = switch edge {
+                    case .top: centerY + visibleHeight / 2
+                    case .bottom: centerY - visibleHeight / 2
+                    }
+                    let handleCanvasY = progressHeightHandleY(
+                        edge: edge,
+                        centerY: centerY,
+                        bandHeight: visibleHeight
+                    )
+                    progressHeightResizeOrigin = ProgressHeightResizeGestureOrigin(
+                        edge: edge,
+                        bandHeight: progress.bandHeight,
+                        positionY: progress.position.y,
+                        fixedCanvasY: fixedCanvasY,
+                        handleCanvasY: handleCanvasY,
+                        placement: placement
+                    )
+                    progressHeightDragHandleY = handleCanvasY
+                    editorStore.beginInteraction(
+                        tool: .select,
+                        selection: .progress
+                    )
+                }
+                guard let origin = progressHeightResizeOrigin,
+                      origin.edge == edge else { return }
+                // Keep the visible grip attached to the pointer's original
+                // canvas-space edge. Re-evaluating it from the resized band
+                // makes SwiftUI's moving gesture surface jump toward the bar
+                // on the first drag tick.
+                progressHeightDragHandleY = origin.handleCanvasY
+                    + value.translation.height
+                let visualDelta = edge == .bottom
+                    ? value.translation.height
+                    : -value.translation.height
+                if abs(visualDelta) <= 0.01 {
+                    editorStore.updateInteraction { project in
+                        guard var progress = project.timeline.progressOverlay else {
+                            return
+                        }
+                        progress.bandHeight = origin.bandHeight
+                        if origin.placement == .custom {
+                            progress.position = NormalizedPoint(
+                                x: progress.position.x,
+                                y: origin.positionY
+                            )
+                        }
+                        project.timeline.progressOverlay = progress
+                    }
+                    return
+                }
+                let canvasScale = max(Double(canvasSize.width) / 1_920, 0.001)
+                let renderedFloor = 24 / canvasScale
+                let baseHeight = visualDelta > 0
+                    ? max(origin.bandHeight, renderedFloor)
+                    : origin.bandHeight
+                var maximumHeight = 180.0
+                if origin.placement == .custom {
+                    let availableHeight = switch edge {
+                    case .top: origin.fixedCanvasY
+                    case .bottom: canvasSize.height - origin.fixedCanvasY
+                    }
+                    maximumHeight = min(
+                        maximumHeight,
+                        max(Double(availableHeight) / canvasScale, 28)
+                    )
+                }
+                let bandHeight = min(max(
+                    baseHeight + Double(visualDelta) / canvasScale,
+                    28
+                ), maximumHeight)
+                let renderedHeight = min(
+                    max(CGFloat(bandHeight * canvasScale), 24),
+                    canvasSize.height
+                )
+                editorStore.updateInteraction { project in
+                    guard var progress = project.timeline.progressOverlay else {
+                        return
+                    }
+                    progress.bandHeight = bandHeight
+                    if origin.placement == .custom {
+                        let centerY = switch edge {
+                        case .top:
+                            origin.fixedCanvasY - renderedHeight / 2
+                        case .bottom:
+                            origin.fixedCanvasY + renderedHeight / 2
+                        }
+                        progress.position = NormalizedPoint(
+                            x: progress.position.x,
+                            y: min(max(
+                                Double(centerY / max(canvasSize.height, 1)),
+                                0
+                            ), 1)
+                        )
+                    }
+                    project.timeline.progressOverlay = progress
+                }
+            }
+            .onEnded { _ in
+                defer {
+                    progressHeightResizeOrigin = nil
+                    progressHeightDragHandleY = nil
+                }
+                do {
+                    _ = try editorStore.commitInteraction(
+                        actionName: "调整进度条高度"
+                    )
+                } catch {
+                    editorStore.cancelInteraction()
+                    onError(error.localizedDescription)
+                }
+            }
+    }
+
+    func progressHeightResizeEdge(
+        for placement: ProgressOverlayPlacement
+    ) -> ProgressHeightResizeEdge {
+        placement == .bottom ? .top : .bottom
+    }
+
+    func progressHeightHandleY(
+        edge: ProgressHeightResizeEdge,
+        centerY: CGFloat,
+        bandHeight: CGFloat
+    ) -> CGFloat {
+        switch edge {
+        case .top: centerY - bandHeight / 2
+        case .bottom: centerY + bandHeight / 2
+        }
+    }
+
     func overlayPosition(
         for selection: EditorSelection,
         in project: RecorderProject
@@ -365,7 +841,12 @@ extension CanvasPreview {
                     width: origin.width,
                     height: origin.height
                 ).clamped()
-                let snapped = snappedMosaicRect(proposed)
+                let thresholds = mosaicSnapThresholds(screen: screen)
+                let snapped = snappedMosaicRect(
+                    proposed,
+                    thresholdX: thresholds.x,
+                    thresholdY: thresholds.y
+                )
                 canvasSnapGuideX = snapped.guideX
                 canvasSnapGuideY = snapped.guideY
                 editorStore.updateInteraction { project in
@@ -433,7 +914,8 @@ extension CanvasPreview {
                         width: right - left,
                         height: bottom - top
                     ),
-                    corner: corner
+                    corner: corner,
+                    thresholds: mosaicSnapThresholds(screen: screen)
                 )
                 canvasSnapGuideX = snapped.guideX
                 canvasSnapGuideY = snapped.guideY
@@ -462,26 +944,44 @@ extension CanvasPreview {
 
     func stickerResizeGesture(
         id: UUID,
-        corner: OverlayResizeCorner,
-        canvasSize: CGSize
+        center: CGPoint,
+        handle: CGPoint
     ) -> some Gesture {
         let selection = EditorSelection.sticker(id)
         return DragGesture(minimumDistance: 0, coordinateSpace: .global)
             .onChanged { value in
                 if stickerResizeOrigin == nil {
                     onCanvasFocused()
-                    stickerResizeOrigin = editorStore.project.timeline.stickerClips
-                        .first(where: { $0.id == id })?.width
+                    guard let width = editorStore.project.timeline.stickerClips
+                        .first(where: { $0.id == id })?.width else { return }
+                    stickerResizeOrigin = StickerResizeGestureOrigin(
+                        id: id,
+                        width: width,
+                        center: center,
+                        handle: handle,
+                        handleRadius: max(hypot(
+                            handle.x - center.x,
+                            handle.y - center.y
+                        ), 1)
+                    )
                     overlayResizeSelection = selection
                     editorStore.beginInteraction(tool: .select, selection: selection)
                 }
                 guard overlayResizeSelection == selection,
-                      let origin = stickerResizeOrigin else { return }
-                let x = Double(value.translation.width / max(canvasSize.width, 1))
-                    * corner.xSign
-                let y = Double(value.translation.height / max(canvasSize.height, 1))
-                    * corner.ySign
-                let width = min(max(origin + x + y, 0.03), 1.5)
+                      let origin = stickerResizeOrigin,
+                      origin.id == id else { return }
+                let pointer = CGPoint(
+                    x: origin.handle.x + value.translation.width,
+                    y: origin.handle.y + value.translation.height
+                )
+                let radius = hypot(
+                    pointer.x - origin.center.x,
+                    pointer.y - origin.center.y
+                )
+                let width = min(max(
+                    origin.width * Double(radius / origin.handleRadius),
+                    0.03
+                ), 1.5)
                 editorStore.updateInteraction { project in
                     guard let index = project.timeline.stickerClips.firstIndex(
                         where: { $0.id == id }
@@ -501,6 +1001,85 @@ extension CanvasPreview {
                     onError(error.localizedDescription)
                 }
             }
+    }
+
+    func stickerRotationGesture(
+        id: UUID,
+        center: CGPoint,
+        handle: CGPoint
+    ) -> some Gesture {
+        let selection = EditorSelection.sticker(id)
+        return DragGesture(minimumDistance: 0, coordinateSpace: .global)
+            .onChanged { value in
+                if stickerRotationOrigin == nil {
+                    onCanvasFocused()
+                    guard let degrees = editorStore.project.timeline.stickerClips
+                        .first(where: { $0.id == id })?.rotationDegrees else {
+                        return
+                    }
+                    stickerRotationOrigin = StickerRotationGestureOrigin(
+                        id: id,
+                        rotationDegrees: degrees,
+                        center: center,
+                        handle: handle,
+                        handleAngle: atan2(
+                            handle.y - center.y,
+                            handle.x - center.x
+                        )
+                    )
+                    editorStore.beginInteraction(tool: .select, selection: selection)
+                }
+                guard let origin = stickerRotationOrigin,
+                      origin.id == id else { return }
+                let pointer = CGPoint(
+                    x: origin.handle.x + value.translation.width,
+                    y: origin.handle.y + value.translation.height
+                )
+                let pointerAngle = atan2(
+                    pointer.y - origin.center.y,
+                    pointer.x - origin.center.x
+                )
+                let angleDelta = normalizedStickerRotationRadians(
+                    pointerAngle - origin.handleAngle
+                )
+                let proposed = origin.rotationDegrees + angleDelta * 180 / .pi
+                let degrees = snappedStickerRotationDegrees(proposed)
+                editorStore.updateInteraction { project in
+                    guard let index = project.timeline.stickerClips.firstIndex(
+                        where: { $0.id == id }
+                    ) else { return }
+                    project.timeline.stickerClips[index].rotationDegrees = degrees
+                }
+            }
+            .onEnded { _ in
+                defer { stickerRotationOrigin = nil }
+                do {
+                    _ = try editorStore.commitInteraction(actionName: "旋转贴图")
+                } catch {
+                    editorStore.cancelInteraction()
+                    onError(error.localizedDescription)
+                }
+            }
+    }
+
+    func normalizedStickerRotationRadians(_ radians: Double) -> Double {
+        var value = radians.truncatingRemainder(dividingBy: 2 * .pi)
+        if value > .pi { value -= 2 * .pi }
+        if value < -.pi { value += 2 * .pi }
+        return value
+    }
+
+    func snappedStickerRotationDegrees(_ proposed: Double) -> Double {
+        var normalized = proposed.truncatingRemainder(dividingBy: 360)
+        if normalized > 180 { normalized -= 360 }
+        if normalized < -180 { normalized += 360 }
+        let anchors = [-180.0, -90, 0, 90, 180]
+        if let nearest = anchors.min(by: {
+            abs(normalized - $0) < abs(normalized - $1)
+        }), abs(normalized - nearest) <= 3 {
+            return nearest
+        }
+        return normalized
     }
 
     func mosaicSourceDelta(
@@ -529,54 +1108,66 @@ extension CanvasPreview {
 
     func snappedOverlayCenter(
         _ proposed: NormalizedPoint,
-        normalizedSize: CGSize
+        normalizedSize: CGSize,
+        canvasSize: CGSize
     ) -> (point: NormalizedPoint, guideX: Double?, guideY: Double?) {
         let halfWidth = Double(normalizedSize.width) / 2
         let halfHeight = Double(normalizedSize.height) / 2
         func snapAxis(
             _ value: Double,
-            half: Double
+            half: Double,
+            threshold: Double
         ) -> (Double, Double?) {
             let candidates = [
                 (0.5, 0.5),
                 (half, 0),
                 (1 - half, 1),
             ]
-            for (target, guide) in candidates where abs(value - target) <= 0.018 {
+            for (target, guide) in candidates where abs(value - target) <= threshold {
                 return (target, guide)
             }
             return (min(max(value, half), 1 - half), nil)
         }
-        let x = snapAxis(proposed.x, half: halfWidth)
-        let y = snapAxis(proposed.y, half: halfHeight)
+        let x = snapAxis(
+            proposed.x,
+            half: halfWidth,
+            threshold: CanvasSnapMath.normalizedThreshold(along: canvasSize.width)
+        )
+        let y = snapAxis(
+            proposed.y,
+            half: halfHeight,
+            threshold: CanvasSnapMath.normalizedThreshold(along: canvasSize.height)
+        )
         return (NormalizedPoint(x: x.0, y: y.0), x.1, y.1)
     }
 
     func snappedMosaicRect(
-        _ proposed: NormalizedOverlayRect
+        _ proposed: NormalizedOverlayRect,
+        thresholdX: Double,
+        thresholdY: Double
     ) -> (rect: NormalizedOverlayRect, guideX: Double?, guideY: Double?) {
         var rect = proposed.clamped()
         var guideX: Double?
         var guideY: Double?
         let centerX = rect.x + rect.width / 2
-        if abs(centerX - 0.5) <= 0.015 {
+        if abs(centerX - 0.5) <= thresholdX {
             rect.x += 0.5 - centerX
             guideX = 0.5
-        } else if abs(rect.x) <= 0.015 {
+        } else if abs(rect.x) <= thresholdX {
             rect.x = 0
             guideX = 0
-        } else if abs(rect.x + rect.width - 1) <= 0.015 {
+        } else if abs(rect.x + rect.width - 1) <= thresholdX {
             rect.x = 1 - rect.width
             guideX = 1
         }
         let centerY = rect.y + rect.height / 2
-        if abs(centerY - 0.5) <= 0.015 {
+        if abs(centerY - 0.5) <= thresholdY {
             rect.y += 0.5 - centerY
             guideY = 0.5
-        } else if abs(rect.y) <= 0.015 {
+        } else if abs(rect.y) <= thresholdY {
             rect.y = 0
             guideY = 0
-        } else if abs(rect.y + rect.height - 1) <= 0.015 {
+        } else if abs(rect.y + rect.height - 1) <= thresholdY {
             rect.y = 1 - rect.height
             guideY = 1
         }
@@ -585,7 +1176,8 @@ extension CanvasPreview {
 
     func snappedMosaicResize(
         _ proposed: NormalizedOverlayRect,
-        corner: OverlayResizeCorner
+        corner: OverlayResizeCorner,
+        thresholds: (x: Double, y: Double)
     ) -> (rect: NormalizedOverlayRect, guideX: Double?, guideY: Double?) {
         var left = proposed.x
         var top = proposed.y
@@ -595,11 +1187,15 @@ extension CanvasPreview {
         var guideY: Double?
         let xEdge = corner == .topLeft || corner == .bottomLeft ? left : right
         let yEdge = corner == .topLeft || corner == .topRight ? top : bottom
-        if let anchor = [0.0, 0.5, 1.0].first(where: { abs(xEdge - $0) <= 0.015 }) {
+        if let anchor = [0.0, 0.5, 1.0].first(
+            where: { abs(xEdge - $0) <= thresholds.x }
+        ) {
             if corner == .topLeft || corner == .bottomLeft { left = anchor } else { right = anchor }
             guideX = anchor
         }
-        if let anchor = [0.0, 0.5, 1.0].first(where: { abs(yEdge - $0) <= 0.015 }) {
+        if let anchor = [0.0, 0.5, 1.0].first(
+            where: { abs(yEdge - $0) <= thresholds.y }
+        ) {
             if corner == .topLeft || corner == .topRight { top = anchor } else { bottom = anchor }
             guideY = anchor
         }
@@ -618,6 +1214,30 @@ extension CanvasPreview {
             ).clamped(),
             guideX,
             guideY
+        )
+    }
+
+    func mosaicSnapThresholds(
+        screen: FrameScreenScene
+    ) -> (x: Double, y: Double) {
+        let quad = screen.projectedQuad
+        let horizontalTravel = hypot(
+            quad.topRight.x - quad.topLeft.x,
+            quad.topRight.y - quad.topLeft.y
+        ) / max(screen.sourceCrop.width, 0.001)
+        let verticalTravel = hypot(
+            quad.bottomLeft.x - quad.topLeft.x,
+            quad.bottomLeft.y - quad.topLeft.y
+        ) / max(screen.sourceCrop.height, 0.001)
+        return (
+            CanvasSnapMath.normalizedThreshold(
+                along: horizontalTravel,
+                limits: 0.003...0.04
+            ),
+            CanvasSnapMath.normalizedThreshold(
+                along: verticalTravel,
+                limits: 0.003...0.04
+            )
         )
     }
 
@@ -647,6 +1267,39 @@ extension CanvasPreview {
             x: center.x + dx * cosine - dy * sine,
             y: center.y + dx * sine + dy * cosine
         )
+    }
+
+    func stickerRotationHandleGeometry(
+        center: CGPoint,
+        size: CGSize,
+        rotation: Double,
+        canvasSize: CGSize
+    ) -> StickerRotationHandleGeometry {
+        func geometry(direction: CGFloat) -> StickerRotationHandleGeometry {
+            let cosine = CGFloat(cos(rotation))
+            let sine = CGFloat(sin(rotation))
+            let anchorDistance = direction * size.height / 2
+            let handleDistance = anchorDistance + direction * 34
+            func point(distance: CGFloat) -> CGPoint {
+                CGPoint(
+                    x: center.x - distance * sine,
+                    y: center.y + distance * cosine
+                )
+            }
+            return StickerRotationHandleGeometry(
+                anchor: point(distance: anchorDistance),
+                handle: point(distance: handleDistance)
+            )
+        }
+
+        let top = geometry(direction: -1)
+        let bottom = geometry(direction: 1)
+        let safeCanvas = CGRect(origin: .zero, size: canvasSize)
+            .insetBy(dx: 18, dy: 18)
+        if safeCanvas.contains(top.handle) || !safeCanvas.contains(bottom.handle) {
+            return top
+        }
+        return bottom
     }
 
 }

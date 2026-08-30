@@ -84,14 +84,17 @@ struct EditorHexColorInput: View {
                 } label: {
                     RoundedRectangle(cornerRadius: 5)
                         .fill(Color(hex: draft.parsed ?? draft.committed))
-                        .frame(width: 28, height: 22)
+                        .frame(width: 32, height: 26)
                         .overlay(
                             RoundedRectangle(cornerRadius: 5)
-                                .stroke(Color.white.opacity(0.18), lineWidth: 1)
+                                .stroke(Color.white.opacity(0.24), lineWidth: 1)
                         )
+                        .frame(width: 36, height: 30)
+                        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.editorSwatch)
                 .accessibilityLabel("选择\(title)")
+                .help("打开\(title)取色器")
                 .popover(isPresented: $showsPicker, arrowEdge: .trailing) {
                     pickerPopover
                 }
@@ -103,8 +106,21 @@ struct EditorHexColorInput: View {
                         set: { updateTextDraft($0) }
                     )
                 )
-                .textFieldStyle(.roundedBorder)
-                .font(.system(.body, design: .monospaced))
+                .textFieldStyle(.plain)
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .padding(.horizontal, 9)
+                .frame(height: 30)
+                .background(
+                    Color.black.opacity(textIsFocused ? 0.32 : 0.24),
+                    in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .stroke(
+                            Color.white.opacity(textIsFocused ? 0.24 : 0.085),
+                            lineWidth: textIsFocused ? 1 : 0.75
+                        )
+                }
                 .focused($textIsFocused)
                 .onSubmit(submitTextDraft)
                 .onExitCommand {
@@ -122,10 +138,11 @@ struct EditorHexColorInput: View {
                     }
                 }
                 .accessibilityLabel("\(title)十六进制值")
+                .animation(SpringMotion.interactive, value: textIsFocused)
             }
 
             if draft.isDirty, !draft.isValid {
-                Text("请输入 6 位十六进制颜色，例如 #D9C8FF")
+                Text("请输入 6 位十六进制颜色，例如 #D8B26A")
                     .font(.caption2)
                     .foregroundStyle(.red)
                     .accessibilityLabel("\(title)格式无效")
@@ -151,25 +168,45 @@ struct EditorHexColorInput: View {
 
     private var pickerPopover: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(title)
-                .font(.headline)
+            HStack(spacing: 10) {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color(hex: pickerDraft))
+                    .frame(width: 38, height: 38)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(Color.white.opacity(0.20), lineWidth: 1)
+                    }
 
-            ColorPicker(
-                title,
-                selection: Binding(
-                    get: { Color(hex: pickerDraft) },
-                    set: { previewPickerColor($0.hexColor) }
-                ),
-                supportsOpacity: false
-            )
-            .labelsHidden()
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.headline)
+                    Text(pickerDraft.hexString)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
 
-            Text(pickerDraft.hexString)
-                .font(.system(.caption, design: .monospaced))
+                Spacer(minLength: 8)
+
+                ColorPicker(
+                    title,
+                    selection: Binding(
+                        get: { Color(hex: pickerDraft) },
+                        set: { previewPickerColor($0.hexColor) }
+                    ),
+                    supportsOpacity: false
+                )
+                .labelsHidden()
+                .controlSize(.large)
+                .accessibilityLabel("调整\(title)")
+            }
+
+            Text("拖动取色器时会直接更新画面，关闭后自动保存。")
+                .font(.caption2)
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(14)
-        .frame(width: 220)
+        .padding(16)
+        .frame(width: 260)
     }
 
     private func submitTextDraft() {
@@ -228,6 +265,7 @@ struct EditorTransactionalColorInput: View {
     var selection: EditorSelection? = nil
     let actionName: String
     let onError: (String) -> Void
+    @State private var ownedInteractionID: UUID?
 
     var body: some View {
         EditorHexColorInput(
@@ -243,11 +281,17 @@ struct EditorTransactionalColorInput: View {
         if isEditing {
             _ = editorStore.beginContinuousInteraction(
                 commandScope: commandScope,
-                selection: selection
+                selection: selection,
+                commitsWhenReplacedAs: actionName
             )
+            ownedInteractionID = editorStore.interaction?.id
             return
         }
-        guard editorStore.interaction?.commandScope == commandScope else { return }
+        defer { ownedInteractionID = nil }
+        guard let ownedInteractionID,
+              editorStore.interaction?.id == ownedInteractionID,
+              editorStore.interaction?.commandScope == commandScope
+        else { return }
         do {
             _ = try editorStore.commitInteraction(actionName: actionName)
         } catch {

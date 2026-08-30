@@ -41,9 +41,16 @@ extension SharedRenderedPreviewNSView {
         }
         if self.queueColorContract != job.colorContract {
             self.queueColorContract = job.colorContract
+            // The screen projection, chrome, border and shadow graph changes
+            // every animation frame. Context-wide intermediate caching retains
+            // those one-frame Metal resources and lets a long preview grow far
+            // beyond its live working set. Stable backgrounds already opt into
+            // their own explicit `insertingIntermediate(cache: true)` boundary,
+            // so keep that reuse while allowing all transient frame graphs to
+            // be released as soon as their command buffer finishes.
             self.queueContext = job.colorProfile.makeMetalContext(
                 device: device,
-                cacheIntermediates: true
+                cacheIntermediates: false
             )
             self.queueCommandQueue = device.makeCommandQueue()
             self.queueDidPrewarmPerspective = false

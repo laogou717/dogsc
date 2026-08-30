@@ -97,6 +97,19 @@ final class CameraRecorder: NSObject,
         syncOnSessionQueue { recordingStartedAtStorage }
     }
 
+    var configuredVideoDimensions: CameraCaptureResolution? {
+        syncOnSessionQueue {
+            guard let configuredCameraWidth,
+                  let configuredCameraHeight,
+                  configuredCameraWidth > 0,
+                  configuredCameraHeight > 0 else { return nil }
+            return CameraCaptureResolution(
+                width: configuredCameraWidth,
+                height: configuredCameraHeight
+            )
+        }
+    }
+
     /// Returns the file time that corresponds to a shared host-clock instant.
     /// Delegate callback wall time is not a media timestamp and can be late;
     /// back-projecting the writer's real recorded duration onto the host clock
@@ -750,12 +763,12 @@ final class CameraRecorder: NSObject,
                 to: input,
                 device: device
             )
-            let dimensions = CMVideoFormatDescriptionGetDimensions(
-                device.activeFormat.formatDescription
-            )
-            configuredCameraWidth = Int(dimensions.width)
-            configuredCameraHeight = Int(dimensions.height)
         }
+        let dimensions = CMVideoFormatDescriptionGetDimensions(
+            device.activeFormat.formatDescription
+        )
+        configuredCameraWidth = Int(dimensions.width)
+        configuredCameraHeight = Int(dimensions.height)
         configuredDeviceUniqueID = device.uniqueID
         configuredCapturesDeviceAudio = capturesDeviceAudio
         configuredCaptureResolution = captureResolution

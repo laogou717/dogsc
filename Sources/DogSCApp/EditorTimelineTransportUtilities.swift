@@ -19,7 +19,9 @@ extension EditorTimelineView {
     var motionTimelineHeight: CGFloat { 46 }
     var overlayTimelineHeight: CGFloat { 42 }
     var timelineRulerHeight: CGFloat { 50 }
-    var timelineOverviewHeight: CGFloat { 16 }
+    var timelineControlsHeight: CGFloat { 50 }
+    var timelineOverviewHeight: CGFloat { 20 }
+    var timelineDividerHeight: CGFloat { 1 }
     var timelineLabelWidth: CGFloat { 86 }
     var primaryTimelineHeight: CGFloat {
         EditorTimelineSizing.clampedPrimaryLaneHeight(primaryLaneHeight)
@@ -29,7 +31,10 @@ extension EditorTimelineView {
     }
 
     var timelineHeight: CGFloat {
-        46 + timelineOverviewHeight + timelineCanvasHeight
+        timelineControlsHeight
+            + timelineOverviewHeight
+            + timelineCanvasHeight
+            + timelineDividerHeight * 2
     }
 
     func seekTimeline(to time: TimeInterval) {

@@ -5,7 +5,7 @@ import SwiftUI
 
 extension EditorView {
     @ViewBuilder
-    var stylePresetControl: some View {
+    func stylePresetControl(compact: Bool) -> some View {
         if savedStylePresets.isEmpty {
             Button {
                 stylePresetName = "我的样式 1"
@@ -14,10 +14,11 @@ extension EditorView {
                 stylePresetToolbarLabel(
                     title: "保存样式",
                     systemImage: "square.and.arrow.down",
-                    showsMenuIndicator: false
+                    showsMenuIndicator: false,
+                    compact: compact
                 )
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.editorToolbarPress)
         } else {
             Menu {
                 Section("我的样式") {
@@ -49,7 +50,8 @@ extension EditorView {
                 stylePresetToolbarLabel(
                     title: "样式",
                     systemImage: "paintpalette",
-                    showsMenuIndicator: true
+                    showsMenuIndicator: true,
+                    compact: compact
                 )
             }
             .menuStyle(.borderlessButton)
@@ -60,22 +62,22 @@ extension EditorView {
     private func stylePresetToolbarLabel(
         title: String,
         systemImage: String,
-        showsMenuIndicator: Bool
+        showsMenuIndicator: Bool,
+        compact: Bool
     ) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: systemImage)
-            Text(title)
-            if showsMenuIndicator {
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.secondary)
+        EditorToolbarControlSurface(accessibilityTitle: title) {
+            HStack(spacing: 6) {
+                Image(systemName: systemImage)
+                if !compact {
+                    Text(title)
+                    if showsMenuIndicator {
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
         }
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(Color.primary.opacity(0.88))
-        .padding(.horizontal, 8)
-        .frame(height: 26)
-        .contentShape(Rectangle())
     }
 
     func canvasBinding<Value>(

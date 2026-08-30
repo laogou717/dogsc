@@ -53,13 +53,24 @@ extension EditorPlaybackController {
     /// 只需让位，不再归还。
     func endHoverPreview(restoreTransport: Bool) {
         let wasPreviewing = hoverPreviewTime != nil
+        let needsTransportRestore = wasPreviewing || hoverSeekInFlightCount > 0
+        let hasScheduledHover = hoverSeekTask != nil
+            || hoverSeekCoalescer.pendingTarget != nil
+        guard needsTransportRestore || hasScheduledHover else { return }
+        // Invalidate even when the seek has not published hoverPreviewTime yet.
+        // Otherwise a result that lands after the user disables skimming can
+        // resurrect the hover frame without its reference line.
+        hoverSeekGeneration &+= 1
         hoverSeekTask?.cancel()
         hoverSeekTask = nil
         hoverSeekCoalescer.cancel()
+        hoverSeekInFlightCount = 0
         if wasPreviewing {
             hoverPreviewTime = nil
         }
-        guard wasPreviewing, restoreTransport, let primaryPlayer else { return }
+        guard needsTransportRestore, let primaryPlayer else { return }
+        primaryPlayer.cancelPendingSeeks()
+        guard restoreTransport else { return }
         // 逻辑时钟从未离开播放头，这里只归还物理传输位置；不 advance
         // discontinuity，画布回落由 hoverPreviewTime = nil 的发布驱动。
         let target = EditorPlaybackClockPolicy.clampedTime(
@@ -104,6 +115,8 @@ extension EditorPlaybackController {
 
     private func performHoverSeek(to target: TimeInterval) {
         guard let primaryPlayer, !isPlaying, !scrubIsActive else { return }
+        let requestedHoverGeneration = hoverSeekGeneration
+        hoverSeekInFlightCount += 1
         seekToken &+= 1
         let requestedSeek = seekToken
         let requestedGeneration = endpoints?.generation
@@ -117,7 +130,13 @@ extension EditorPlaybackController {
                 toleranceBefore: .zero,
                 toleranceAfter: .zero
             )
-            guard let self,
+            guard let self else { return }
+            let belongsToCurrentHoverSession = self.hoverSeekGeneration
+                == requestedHoverGeneration
+            if belongsToCurrentHoverSession {
+                self.hoverSeekInFlightCount = max(self.hoverSeekInFlightCount - 1, 0)
+            }
+            guard belongsToCurrentHoverSession,
                   self.seekToken == requestedSeek,
                   self.endpoints?.generation == requestedGeneration,
                   finished else { return }

@@ -29,6 +29,13 @@ struct DogSCApp: App {
         Settings {
             AppSettingsView()
         }
+        .commands {
+            CommandGroup(after: .toolbar) {
+                Button("快捷键速查") {
+                    EditorMenuBridge.shared.shortcutCheatsheetRequest.send()
+                }
+            }
+        }
     }
 }
 
@@ -43,11 +50,7 @@ struct RecorderMainWindowRoot: View {
         Group {
             switch phase {
             case .setup:
-                if model.showsRequiredPermissionGate {
-                    RequiredRecordingPermissionView(model: model)
-                } else {
-                    SetupView(model: model)
-                }
+                SetupView(model: model)
             case .preparing:
                 RecorderPhaseProgressView(
                     title: model.recorderTransitionStage.title,
@@ -136,25 +139,53 @@ private struct EditorSessionHost: View {
 enum WindowCoordinator {
     private static let editorWindowController = EditorWindowController()
     private static var recorderPanelController: RecorderPanelController?
-    private static var phaseObservation: AnyCancellable?
+    private static var permissionWindowController: RequiredPermissionWindowController?
+    private static var presentationObservation: AnyCancellable?
     private static weak var model: AppModel?
 
     static func install(model: AppModel) {
         self.model = model
         recorderPanelController = RecorderPanelController(model: model)
-        phaseObservation = model.$phase
-            .removeDuplicates()
-            .sink { [weak model] phase in
+        permissionWindowController = RequiredPermissionWindowController(model: model)
+        let presentationTriggers: [AnyPublisher<Void, Never>] = [
+            model.$phase.map { _ in () }.eraseToAnyPublisher(),
+            model.$hasVerifiedScreenRecordingPermission
+                .map { _ in () }.eraseToAnyPublisher(),
+            model.$hasAccessibilityPermission
+                .map { _ in () }.eraseToAnyPublisher(),
+            model.$hasCompletedRequiredPermissionOnboarding
+                .map { _ in () }.eraseToAnyPublisher(),
+            model.captureSetup.$readiness
+                .map { _ in () }.eraseToAnyPublisher(),
+        ]
+        presentationObservation = Publishers.MergeMany(presentationTriggers)
+            // `@Published` emits from willSet. Reading the model directly in
+            // that synchronous callback leaves every window one state behind:
+            // the permission button waits for the next poll and a cold-opened
+            // project remains on the finishing surface. Deliver on the next
+            // main-queue turn so all related properties hold their new values.
+            .receive(on: DispatchQueue.main)
+            .sink { [weak model] in
                 guard let model else { return }
-                apply(phase: phase, model: model)
+                apply(phase: model.phase, model: model)
             }
     }
 
     private static func apply(phase: AppPhase, model: AppModel) {
-        guard let recorderPanelController else { return }
+        guard let recorderPanelController,
+              let permissionWindowController else { return }
+        permissionWindowController.refreshDragAssistantState()
         if phase != .setup {
             recorderPanelController.setCaptureSelectionActive(false)
         }
+        if model.showsRequiredPermissionGate {
+            editorWindowController.closeForPhaseChange()
+            recorderPanelController.hide()
+            permissionWindowController.present()
+            return
+        }
+
+        permissionWindowController.hide()
         switch phase {
         case .editor:
             recorderPanelController.present(phase: phase)
@@ -189,9 +220,21 @@ enum WindowCoordinator {
     static func bringCurrentWindowFront() {
         if model?.phase == .editor {
             editorWindowController.bringToFront()
+        } else if model?.showsRequiredPermissionGate == true {
+            permissionWindowController?.bringToFront()
         } else {
             recorderPanelController?.bringToFront()
         }
+    }
+
+    static func showPermissionDragAssistant(
+        for permission: RequiredRecordingPermissionKind
+    ) {
+        permissionWindowController?.showDragAssistant(for: permission)
+    }
+
+    static func dismissPermissionDragAssistant() {
+        permissionWindowController?.refreshDragAssistantState()
     }
 
     /// Menu-bar "打开项目…" entry. A recorder/editor has one authoritative
@@ -224,8 +267,10 @@ enum WindowCoordinator {
     }
 
     static func shutdown() {
-        phaseObservation = nil
+        presentationObservation = nil
         editorWindowController.closeForPhaseChange()
+        permissionWindowController?.shutdown()
+        permissionWindowController = nil
         recorderPanelController?.shutdown()
         recorderPanelController = nil
         model = nil
@@ -256,7 +301,11 @@ private final class EditorWindowController: NSObject, NSWindowDelegate {
 
         if let window = windowController?.window {
             NSApplication.shared.activate(ignoringOtherApps: true)
+            if window.isMiniaturized {
+                window.deminiaturize(nil)
+            }
             window.makeKeyAndOrderFront(nil)
+            window.orderFrontRegardless()
             return
         }
 
@@ -314,6 +363,7 @@ private final class EditorWindowController: NSObject, NSWindowDelegate {
         NSApplication.shared.activate(ignoringOtherApps: true)
         controller.showWindow(nil)
         window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
         // 不把键盘焦点交给第一个可聚焦控件（导出按钮等），避免无边框
         // 窗口出现"键盘控制"焦点环；与录制条面板同一先例。
         window.makeFirstResponder(nil)

@@ -98,6 +98,7 @@ private final class PointerEventBuffer: @unchecked Sendable {
     private var mainDisplayHeight: CGFloat = 0
     private var records: [PointerEventRecord] = []
     private var lastMoveTime: TimeInterval = -.infinity
+    private var currentCursorAssetID: CursorAssetID?
     private var ordering = PointerEventOrderingState()
     private var eventTap: CFMachPort?
 
@@ -105,7 +106,8 @@ private final class PointerEventBuffer: @unchecked Sendable {
         at uptime: TimeInterval,
         captureFrame: CGRect,
         initialPointer: CGPoint,
-        mainDisplayHeight: CGFloat
+        mainDisplayHeight: CGFloat,
+        initialCursorAssetID: CursorAssetID
     ) {
         lock.lock()
         defer { lock.unlock() }
@@ -117,14 +119,46 @@ private final class PointerEventBuffer: @unchecked Sendable {
         records.removeAll(keepingCapacity: true)
         lastMoveTime = -.infinity
         ordering.reset()
+        currentCursorAssetID = initialCursorAssetID
         if let normalized = PointerCoordinateMapper.normalized(
             point: initialPointer,
             in: captureFrame
         ) {
             appendRecordLocked(
-                PointerEventRecord(time: 0, location: normalized, kind: .move)
+                PointerEventRecord(
+                    time: 0,
+                    location: normalized,
+                    kind: .move,
+                    cursorAssetID: initialCursorAssetID
+                )
             )
         }
+    }
+
+    func recordCursorShapeChange(
+        _ assetID: CursorAssetID,
+        timestamp: TimeInterval,
+        appKitLocation: CGPoint
+    ) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let startedAtUptime, pausedAtUptime == nil, let captureFrame,
+              currentCursorAssetID != assetID else { return }
+        let time = timestamp - startedAtUptime - accumulatedPausedDuration
+        guard time.isFinite, time >= 0,
+              let normalized = PointerCoordinateMapper.normalized(
+                  point: appKitLocation,
+                  in: captureFrame
+              ) else { return }
+        currentCursorAssetID = assetID
+        appendRecordLocked(
+            PointerEventRecord(
+                time: time,
+                location: normalized,
+                kind: .move,
+                cursorAssetID: assetID
+            )
+        )
     }
 
     func updateCaptureFrame(_ frame: CGRect) {
@@ -168,6 +202,7 @@ private final class PointerEventBuffer: @unchecked Sendable {
         startedAtUptime = nil
         pausedAtUptime = nil
         captureFrame = nil
+        currentCursorAssetID = nil
         // Quartz event-tap timestamps are normally delivered in monotonic
         // order. Sorting and copying ~576k points at the end of a 40-minute
         // 240 Hz track only delays finalization and briefly doubles memory.
@@ -267,7 +302,8 @@ private final class PointerEventBuffer: @unchecked Sendable {
             time: time,
             location: normalized,
             kind: kind,
-            modifiers: Self.pointerModifiers(from: flags)
+            modifiers: Self.pointerModifiers(from: flags),
+            cursorAssetID: currentCursorAssetID
         ))
     }
 
@@ -433,6 +469,8 @@ final class PointerEventRecorder {
     private var localMonitor: Any?
     private var frameSource: PointerCaptureFrameSource?
     private var frameRefreshTimer: Timer?
+    private var cursorShapeTimer: Timer?
+    private var lastObservedSystemCursor: NSCursor?
     private var previousMouseCoalescingEnabled: Bool?
 
     /// Global monitors require the Accessibility permission and only receive
@@ -459,15 +497,22 @@ final class PointerEventRecorder {
         // shift the reconstructed cursor against native screen video.
         let hostTime = CMClockGetTime(CMClockGetHostTimeClock()).seconds
         let wallTime = Date()
+        let initialCursor = NSCursor.currentSystem
+        let initialCursorAssetID = CursorAssetLibrary.recordedSystemAssetID(
+            for: initialCursor
+        ) ?? .systemArrow
+        lastObservedSystemCursor = initialCursor
         buffer.start(
             at: hostTime,
             captureFrame: initialFrame,
             initialPointer: NSEvent.mouseLocation,
-            mainDisplayHeight: CGDisplayBounds(CGMainDisplayID()).height
+            mainDisplayHeight: CGDisplayBounds(CGMainDisplayID()).height,
+            initialCursorAssetID: initialCursorAssetID
         )
         previousMouseCoalescingEnabled = NSEvent.isMouseCoalescingEnabled
         NSEvent.isMouseCoalescingEnabled = false
         installFrameRefreshTimer()
+        installCursorShapeTimer()
         if !(await installEventTap()) { installMonitorFallback() }
         guard !Task.isCancelled else {
             _ = stop()
@@ -480,6 +525,9 @@ final class PointerEventRecorder {
     func stop() -> [PointerEventRecord] {
         frameRefreshTimer?.invalidate()
         frameRefreshTimer = nil
+        cursorShapeTimer?.invalidate()
+        cursorShapeTimer = nil
+        lastObservedSystemCursor = nil
         eventTapRunner?.stop()
         eventTapRunner = nil
         if let globalMonitor {
@@ -504,6 +552,7 @@ final class PointerEventRecorder {
 
     func resume() {
         buffer.resume(at: CMClockGetTime(CMClockGetHostTimeClock()).seconds)
+        sampleSystemCursorShape(force: true)
     }
 
     private func installFrameRefreshTimer() {
@@ -515,6 +564,30 @@ final class PointerEventRecorder {
         }
         RunLoop.main.add(timer, forMode: .common)
         frameRefreshTimer = timer
+    }
+
+    private func installCursorShapeTimer() {
+        let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.sampleSystemCursorShape(force: false)
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        cursorShapeTimer = timer
+    }
+
+    private func sampleSystemCursorShape(force: Bool) {
+        guard let cursor = NSCursor.currentSystem else { return }
+        if !force, cursor === lastObservedSystemCursor { return }
+        lastObservedSystemCursor = cursor
+        guard let assetID = CursorAssetLibrary.recordedSystemAssetID(for: cursor) else {
+            return
+        }
+        buffer.recordCursorShapeChange(
+            assetID,
+            timestamp: CMClockGetTime(CMClockGetHostTimeClock()).seconds,
+            appKitLocation: NSEvent.mouseLocation
+        )
     }
 
     private func installEventTap() async -> Bool {

@@ -65,8 +65,10 @@ final class DirectExportPipeline: @unchecked Sendable {
     private let frameRate: OutputFrameRate
     private let outputFrameSchedule: OutputFrameSchedule
     private let wallpaperImage: CIImage?
+    private let wallpaperVideoReader: ExportLoopingWallpaperVideoReader?
     private let stickerImages: [String: CIImage]
-    private let cursorSource: CursorRenderSource?
+    private let cursorSources: [CursorAssetID: CursorRenderSource]
+    private let cursorMetricsByAssetID: [CursorAssetID: CursorAssetMetrics]
     private let pointerTrack: ProjectPointerTrack
     private let zoomTrack: ZoomAnimationTrack
     private let screenMotionTrack: ScreenMotionTrack
@@ -109,11 +111,12 @@ final class DirectExportPipeline: @unchecked Sendable {
     init(
         media: TimelineCompositionBundle,
         wallpaperImage: CIImage?,
+        wallpaperVideo: LoadedVideoAsset?,
         stickerImages: [String: CIImage] = [:],
         outputURL: URL,
         canvasSize: CGSize,
         project: RecorderProject,
-        cursorSource: CursorRenderSource?,
+        cursorSources: [CursorAssetID: CursorRenderSource],
         frameRate: OutputFrameRate,
         cameraContentCrop: NormalizedCrop? = nil,
         progressHandler: (@Sendable (Double) -> Void)?
@@ -145,8 +148,12 @@ final class DirectExportPipeline: @unchecked Sendable {
         self.sourcePreferredTransform = media.primaryVideoTrack.preferredTransform
         self.cameraPreferredTransform = media.cameraVideoTrack?.preferredTransform ?? .identity
         self.wallpaperImage = wallpaperImage
+        wallpaperVideoReader = try wallpaperVideo.map {
+            try ExportLoopingWallpaperVideoReader(source: $0)
+        }
         self.stickerImages = stickerImages
-        self.cursorSource = cursorSource
+        self.cursorSources = cursorSources
+        cursorMetricsByAssetID = cursorSources.mapValues(\.metrics)
         self.pointerTrack = media.plan.pointer
         self.zoomTrack = ZoomAnimationTrack(project.zoomAnimations)
         self.screenMotionTrack = ScreenMotionTrack(project.timeline.screenMotionClips)
@@ -529,17 +536,30 @@ final class DirectExportPipeline: @unchecked Sendable {
                         CompositionSize(width: $0.extent.width, height: $0.extent.height)
                     },
                     pointerTrack: pointerTrack,
-                    cursorMetrics: cursorSource?.metrics,
+                    cursorMetrics: cursorSources[project.cursorStyle.assetID]?.metrics,
+                    cursorMetricsByAssetID: cursorMetricsByAssetID,
                     zoomTrack: zoomTrack,
                     screenMotionTrack: screenMotionTrack,
                     cameraMotionTrack: cameraMotionTrack,
                     activePrimaryRange: primaryRange,
                     activeCameraRange: cameraRange
                 )
+                let cursorSource = renderPlan.scene.cursor.flatMap {
+                    cursorSources[$0.assetID]
+                }
+                let wallpaperFrame: CIImage?
+                do {
+                    wallpaperFrame = try wallpaperVideoReader?.frame(
+                        at: targetTime.seconds
+                    ) ?? wallpaperImage
+                } catch {
+                    finishVideo(error: error)
+                    return
+                }
                 let resources = SharedFrameRenderResources(
                     screen: sourceImage,
                     camera: cameraImage,
-                    wallpaper: wallpaperImage,
+                    wallpaper: wallpaperFrame,
                     cursor: cursorSource?.image,
                     stickers: stickerImages
                 )

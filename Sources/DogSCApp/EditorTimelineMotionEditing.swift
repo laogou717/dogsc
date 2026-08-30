@@ -37,14 +37,18 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
             retainingIndices: motionRetainedClipIndices(for: track)
         )
         return ZStack(alignment: .leading) {
-            motionTrackColor(track).opacity(0.055)
+            timelineLaneSurface(
+                tint: motionTrackColor(track),
+                isFocused: focusedTimelineLane == (track == .screen ? .screenMotion : .cameraMotion)
+            )
 
             if clips.isEmpty {
-                Text(track == .screen ? "拖动空白处添加屏幕 3D" : "拖动空白处添加摄像运动")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.secondary.opacity(0.78))
-                    .padding(.leading, 10)
-                    .allowsHitTesting(false)
+                timelineEmptyTrackHint(
+                    track == .screen
+                        ? "拖动空白处添加屏幕 3D"
+                        : "拖动空白处添加摄像运动",
+                    documentWidth: width
+                )
             }
 
             ForEach(visibleClipIndices, id: \.self) { index in
@@ -59,6 +63,11 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
                 let selected = isMotionClipSelected(clip)
                 let hovered = hoveredMotionClip?.id == clip.id
                     && hoveredMotionClip?.track == clip.track
+                let emphasis = EditorTimelineClipEmphasis.resolve(
+                    isEditing: isMotionClipEditing(clip),
+                    isSelected: selected,
+                    isHovered: hovered
+                )
                 // 片段全部保留圆角；首尾相接处在交界处画一条分割线，
                 // 既能看出是两段，又不会像两个圆角叠在一起那样脏。
                 let touchesPrevious = index > 0
@@ -100,26 +109,22 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
                                 .padding(.horizontal, 9)
                             }
                         }
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .stroke(
-                                    selected ? Color.white.opacity(0.96) : Color.white.opacity(0.14),
-                                    lineWidth: selected ? 1.4 : 0.6
-                                )
-                        }
+                        .editorTimelineClipChrome(cornerRadius: 6, emphasis: emphasis)
 
-                    if selected || hovered {
+                    if emphasis.showsHandles {
                         HStack(spacing: 0) {
                             motionResizeHandle(leading: true)
                             Spacer(minLength: 0)
                             motionResizeHandle(leading: false)
                         }
-                        .padding(.horizontal, 1)
+                        .padding(.horizontal, 0.5)
+                        .opacity(emphasis.handleOpacity)
                         .allowsHitTesting(false)
                     }
                 }
                 .frame(width: clipWidth, height: 36)
                 .offset(x: startX)
+                .zIndex(emphasis == .editing ? 4 : selected ? 3 : hovered ? 1 : 0)
                 .contentShape(Rectangle())
                 .contextMenu {
                     Button(role: .destructive) {
@@ -146,7 +151,11 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
                     selected ? [.isButton, .isSelected] : .isButton
                 )
                 .accessibilityAction {
-                    selectMotionClip(clip)
+                    activateTimelineSelection(
+                        clip.track == .screen
+                            ? .screenMotion(clip.id)
+                            : .cameraMotion(clip.id)
+                    )
                 }
                 .accessibilityIdentifier(
                     "editor.timeline.motion.\(track == .screen ? "screen" : "camera").\(clip.id.uuidString)"
@@ -226,14 +235,13 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
         Capsule(style: .continuous)
             .fill(Color.white.opacity(0.94))
             .frame(width: 3, height: 26)
-            .frame(width: 9, height: 36)
             .accessibilityLabel(leading ? "调整动画开始" : "调整动画结束")
     }
 
     func motionTrackColor(_ track: EditorMotionTimelineTrack) -> Color {
         switch track {
-        case .screen: return Color(red: 0.13, green: 0.67, blue: 0.92)
-        case .camera: return Color(red: 0.82, green: 0.31, blue: 0.88)
+        case .screen: return Color(red: 0.85, green: 0.58, blue: 0.24)
+        case .camera: return Color(red: 0.43, green: 0.67, blue: 0.47)
         }
     }
 
@@ -248,6 +256,15 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
         case create
         case move(UUID)
         case resize(UUID, leading: Bool)
+    }
+
+    func isMotionClipEditing(_ clip: EditorMotionTimelineClip) -> Bool {
+        switch motionTrackDrag {
+        case let .move(id), let .resize(id, _):
+            return id == clip.id && motionGestureOrigin?.clip.track == clip.track
+        case .create, nil:
+            return false
+        }
     }
 
     struct MotionCreateDragState: Equatable {
@@ -356,6 +373,13 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
                     guard gestureOwnership.activeIntent == intent else { return }
                     if abs(value.translation.width) < 3 {
                         editorStore.cancelInteraction()
+                        if let origin {
+                            activateTimelineSelection(
+                                track == .screen
+                                    ? .screenMotion(origin.clip.id)
+                                    : .cameraMotion(origin.clip.id)
+                            )
+                        }
                     } else {
                         commitMotionGesture(origin: origin)
                     }
@@ -525,7 +549,7 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
                     )
                 )
                 try editorStore.insertScreenMotion(clip, actionName: "添加屏幕 3D")
-                editorStore.selection = .screenMotion(clip.id)
+                activateTimelineSelection(.screenMotion(clip.id))
             case .camera:
                 let base = editorStore.project.camera
                 let clip = CameraMotionClip(
@@ -539,7 +563,7 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
                     )
                 )
                 try editorStore.insertCameraMotion(clip, actionName: "添加摄像运动")
-                editorStore.selection = .cameraMotion(clip.id)
+                activateTimelineSelection(.cameraMotion(clip.id))
             }
         } catch {
             onError(error.localizedDescription)
@@ -805,6 +829,11 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
         }
         do {
             _ = try editorStore.commitInteraction(actionName: actionName)
+            activateTimelineSelection(
+                origin.clip.track == .screen
+                    ? .screenMotion(origin.clip.id)
+                    : .cameraMotion(origin.clip.id)
+            )
         } catch {
             editorStore.cancelInteraction()
             onError(error.localizedDescription)

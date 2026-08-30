@@ -245,22 +245,23 @@ extension AppModel {
         }
     }
 
-    func chooseWallpaperAsset() -> (relativePath: String, url: URL)? {
+    func chooseWallpaperAsset() -> BackgroundSource? {
         guard let currentSession else {
             errorMessage = "请先完成一次真实录制，再把壁纸保存进项目。"
             return nil
         }
         let panel = NSOpenPanel()
-        panel.title = "选择画布壁纸"
-        panel.prompt = "使用这张图片"
+        panel.title = "选择画布背景"
+        panel.prompt = "使用这个背景"
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
-        panel.allowedContentTypes = [.png, .jpeg, .heic, .tiff]
+        panel.allowedContentTypes = [
+            .png, .jpeg, .heic, .tiff, .movie, .mpeg4Movie, .quickTimeMovie,
+        ]
         guard panel.runModal() == .OK, let sourceURL = panel.url else { return nil }
 
         do {
-            let imported = try ProjectStore.importWallpaper(from: sourceURL, session: currentSession)
-            return imported
+            return try importBackgroundAsset(from: sourceURL, session: currentSession)
         } catch {
             errorMessage = error.localizedDescription
             return nil
@@ -323,37 +324,51 @@ extension AppModel {
         }
     }
 
-    /// 把用户当前桌面壁纸导入项目。macOS 只对"用户自己设置的图片"
-    /// 提供可读文件；系统默认/系统图库壁纸走 MobileAssets 下发，本地
-    /// 没有可用文件——此时明确告知，而不是静默失败。
-    func importCurrentDesktopWallpaper() -> (relativePath: String, url: URL)? {
+    /// 用户自己的桌面图片复制进项目以保证可移植；Apple 管理的系统
+    /// 壁纸与屏保只保留本机引用，不把系统素材静默复制成项目资产。
+    func importCurrentDesktopWallpaper() -> BackgroundSource? {
         guard let currentSession else {
             errorMessage = "请先完成一次真实录制，再把壁纸保存进项目。"
             return nil
         }
         guard let screen = NSScreen.screens.first,
-              let sourceURL = NSWorkspace.shared.desktopImageURL(for: screen) else {
+              let desktopURL = NSWorkspace.shared.desktopImageURL(for: screen),
+              let sourceURL = SystemWallpaperLibrary.resolvedMediaURL(
+                  forDesktopImageURL: desktopURL
+              ) else {
             errorMessage = "无法读取当前桌面壁纸。"
             return nil
         }
-        let supportedExtensions: Set<String> = ["heic", "jpg", "jpeg", "png", "tiff", "webp"]
-        let fileSize = (try? FileManager.default.attributesOfItem(
-            atPath: sourceURL.path
-        )[.size] as? Int) ?? 0
-        guard supportedExtensions.contains(sourceURL.pathExtension.lowercased()),
-              fileSize > 4_096,
-              FileManager.default.isReadableFile(atPath: sourceURL.path) else {
-            errorMessage = "当前桌面是系统默认或系统图库壁纸，macOS 未提供可读取的图片文件；"
-                + "你可以在系统设置里把自己的照片设为桌面壁纸后再试，或用“选择自己的图片…”导入。"
+        guard FileManager.default.isReadableFile(atPath: sourceURL.path) else {
+            errorMessage = "当前桌面资源不可读取。"
             return nil
         }
+        if SystemWallpaperLibrary.isAppleManagedMediaURL(sourceURL) {
+            return SystemWallpaperLibrary.isVideoURL(sourceURL)
+                ? .systemVideo(absolutePath: sourceURL.path)
+                : .systemImage(absolutePath: sourceURL.path)
+        }
         do {
-            let imported = try ProjectStore.importWallpaper(from: sourceURL, session: currentSession)
-            return imported
+            return try importBackgroundAsset(from: sourceURL, session: currentSession)
         } catch {
             errorMessage = error.localizedDescription
             return nil
         }
+    }
+
+    private func importBackgroundAsset(
+        from sourceURL: URL,
+        session: RecordingSession
+    ) throws -> BackgroundSource {
+        if SystemWallpaperLibrary.isVideoURL(sourceURL) {
+            let imported = try ProjectStore.importBackgroundVideo(
+                from: sourceURL,
+                session: session
+            )
+            return .projectVideo(relativePath: imported.relativePath)
+        }
+        let imported = try ProjectStore.importWallpaper(from: sourceURL, session: session)
+        return .projectImage(relativePath: imported.relativePath)
     }
 
     /// SRC-001: copy the actual media files used by the current editor into a
@@ -565,7 +580,34 @@ extension AppModel {
     func updateSessionPackageURL(to newURL: URL) {
         let updatedSession = RecordingSession(packageURL: newURL)
         workspace.activate(session: updatedSession, isSaved: workspace.isSaved)
+        // Moving the package invalidates every absolute media URL captured by
+        // the current editor generation. Resolve all project-owned tracks
+        // against the new package before publishing the replacement context.
+        // Otherwise a title edit rebuilds the preview with the old package
+        // path and reports a missing screen recording even though it moved.
+        relocateEditorMedia(for: project, to: updatedSession)
         refreshRecentProjects()
+    }
+
+    /// Rebinds immutable editor inputs after a project package move. Save As
+    /// and in-place rename share this path so screen, camera, microphone and
+    /// package-relative assets all switch generations together.
+    func relocateEditorMedia(
+        for project: RecorderProject,
+        to session: RecordingSession
+    ) {
+        recordingURL = ProjectStore.resolve(
+            relativePath: project.media?.screen.relativePath,
+            session: session
+        )
+        cameraRecordingURL = ProjectStore.resolve(
+            relativePath: project.media?.camera?.relativePath,
+            session: session
+        )
+        microphoneRecordingURL = ProjectStore.resolve(
+            relativePath: project.media?.microphone?.relativePath,
+            session: session
+        )
         editorContextRevision &+= 1
     }
 
@@ -748,83 +790,69 @@ extension AppModel {
 
     func beginRequiredPermissionOnboardingIfNeeded() {
         refreshRequiredRecordingPermissions()
-        guard showsRequiredPermissionGate,
-              !hasStartedPermissionOnboardingThisLaunch else { return }
-        hasStartedPermissionOnboardingThisLaunch = true
-        // If screen access is already present, keep the gate visible until the
-        // user explicitly continues. Auto-verifying and immediately replacing
-        // the gate made the hierarchy visually indistinguishable from the old
-        // toolbar-first flow. A truly missing permission is still requested on
-        // first launch without exposing any capture selector underneath it.
-        if !captureReadiness.hasScreenRecordingPermission {
-            continueRequiredPermissionOnboarding()
-        }
+        guard showsRequiredPermissionGate else { return }
+        captureSetup.stopPresentation()
+        WindowCoordinator.endCaptureSourceSelection()
     }
 
     func resumeRequiredPermissionOnboardingAfterActivation() {
         refreshRequiredRecordingPermissions()
+        guard showsRequiredPermissionGate else { return }
+        Task { @MainActor [weak self] in
+            await self?.verifyRequiredRecordingPermissions()
+        }
     }
 
-    func continueRequiredPermissionOnboarding() {
+    /// Refreshes both required permissions without showing another prompt or
+    /// modal. The first-run page owns cadence; returning from System Settings
+    /// and its one-second idle loop both converge on this same verification.
+    func verifyRequiredRecordingPermissions() async {
         guard phase == .setup, !isCheckingRequiredPermissions else { return }
-        errorMessage = nil
-        captureSetup.stopPresentation()
-        WindowCoordinator.endCaptureSourceSelection()
         captureSetup.refreshReadiness()
+        let accessibilityGranted = AXIsProcessTrusted()
+        if hasAccessibilityPermission != accessibilityGranted {
+            hasAccessibilityPermission = accessibilityGranted
+        }
 
-        // Checking and entering are two visible steps. A successful check
-        // leaves both green statuses on this bar; only the next explicit
-        // enter action replaces it with the recorder controls.
-        if hasVerifiedScreenRecordingPermission,
-           hasAccessibilityPermission {
-            setRequiredPermissionOnboardingCompleted(true)
+        guard captureReadiness.hasScreenRecordingPermission else {
+            hasVerifiedScreenRecordingPermission = false
+            setRequiredPermissionOnboardingCompleted(false)
             return
         }
 
-        if !captureReadiness.hasScreenRecordingPermission {
+        guard !hasVerifiedScreenRecordingPermission else { return }
+        isCheckingRequiredPermissions = true
+        defer { isCheckingRequiredPermissions = false }
+        do {
+            _ = try await SCShareableContent.excludingDesktopWindows(
+                false,
+                onScreenWindowsOnly: true
+            )
+            hasVerifiedScreenRecordingPermission = true
+        } catch {
             hasVerifiedScreenRecordingPermission = false
             setRequiredPermissionOnboardingCompleted(false)
-            if hasRequestedScreenPermissionThisLaunch {
-                openScreenRecordingSettings()
-            } else {
-                hasRequestedScreenPermissionThisLaunch = true
-                _ = CGRequestScreenCaptureAccess()
-                captureSetup.refreshReadiness()
-            }
-            guard captureReadiness.hasScreenRecordingPermission else { return }
         }
+    }
 
-        isCheckingRequiredPermissions = true
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            defer { isCheckingRequiredPermissions = false }
-            do {
-                _ = try await SCShareableContent.excludingDesktopWindows(
-                    false,
-                    onScreenWindowsOnly: true
-                )
-                hasVerifiedScreenRecordingPermission = true
-            } catch {
-                hasVerifiedScreenRecordingPermission = false
-                setRequiredPermissionOnboardingCompleted(false)
-                openScreenRecordingSettings()
-                return
-            }
+    func openRequiredPermissionSettings(
+        _ permission: RequiredRecordingPermissionKind
+    ) {
+        guard phase == .setup else { return }
+        errorMessage = nil
+        captureSetup.stopPresentation()
+        WindowCoordinator.endCaptureSourceSelection()
+        // This button has one job: open the exact settings page. Calling the
+        // TCC request API here as well presents a second native alert over
+        // System Settings and leaves two competing authorization paths.
+        openPrivacySettings(section: permission.settingsSection)
+        WindowCoordinator.showPermissionDragAssistant(for: permission)
+    }
 
-            let accessibilityGranted = AXIsProcessTrusted()
-            hasAccessibilityPermission = accessibilityGranted
-            guard !accessibilityGranted else { return }
-
-            if hasRequestedAccessibilityPermissionThisLaunch {
-                openAccessibilitySettings()
-            } else {
-                hasRequestedAccessibilityPermissionThisLaunch = true
-                _ = AXIsProcessTrustedWithOptions(
-                    ["AXTrustedCheckOptionPrompt": true] as CFDictionary
-                )
-                hasAccessibilityPermission = AXIsProcessTrusted()
-            }
-        }
+    func finishRequiredPermissionOnboarding() {
+        guard phase == .setup, hasRequiredRecordingPermissions else { return }
+        setRequiredPermissionOnboardingCompleted(true)
+        WindowCoordinator.dismissPermissionDragAssistant()
     }
 
     private func setRequiredPermissionOnboardingCompleted(_ completed: Bool) {
@@ -834,13 +862,6 @@ extension AppModel {
             completed,
             forKey: "permissions.required-onboarding-completed"
         )
-    }
-
-    private func openAccessibilitySettings() {
-        guard let url = URL(
-            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
-        ) else { return }
-        NSWorkspace.shared.open(url)
     }
 
     func refreshCaptureDevices() {

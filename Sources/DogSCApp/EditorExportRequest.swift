@@ -213,7 +213,7 @@ enum EditorExportRequestBuilder {
         let microphone = try requiredMedia.microphoneAudio
             ? requiredAsset(preparedRequest.microphone, role: .microphoneRecording)
             : nil
-        let wallpaper = try requiredMedia.backgroundImage
+        let wallpaper = try (requiredMedia.backgroundImage || requiredMedia.backgroundVideo)
             ? requiredWallpaper(at: wallpaperURL)
             : nil
         let stickerPaths = Set(project.timeline.stickerClips.map(\.relativePath))

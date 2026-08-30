@@ -51,6 +51,15 @@ final class AppSettingsWindowController {
         window.identifier = Self.windowIdentifier
         window.title = "\(applicationName) 设置"
         window.contentViewController = hostingController
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.backgroundColor = NSColor(
+            calibratedRed: 0.071,
+            green: 0.074,
+            blue: 0.079,
+            alpha: 1
+        )
+        window.titlebarAppearsTransparent = true
+        window.titlebarSeparatorStyle = .none
         window.isReleasedWhenClosed = false
         window.tabbingMode = .disallowed
         window.animationBehavior = .documentWindow
