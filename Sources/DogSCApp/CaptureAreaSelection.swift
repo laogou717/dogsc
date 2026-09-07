@@ -46,17 +46,22 @@ final class CaptureAreaSelector {
             defer: false,
             screen: screen
         )
+        // Screen-relative NSWindow initialization can offset secondary displays.
+        // Anchor both the window and its drawing canvas in the resolved screen.
+        window.setFrame(screen.frame, display: false)
+        window.isReleasedWhenClosed = false
+        view.autoresizingMask = [.width, .height]
         window.contentView = view
+        window.appearance = NSAppearance(named: .aqua)
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = false
+        window.hidesOnDeactivate = false
         window.ignoresMouseEvents = false
         window.acceptsMouseMovedEvents = true
-        let isDesignReview = CommandLine.arguments.contains("--design-review")
-            || Bundle.main.bundleIdentifier?.hasSuffix(".design-review") == true
         window.level = CaptureWindowLevelPolicy.level(for: .selectionOverlay)
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        window.sharingType = isDesignReview ? .readOnly : .none
+        window.sharingType = .readOnly
         self.escapeKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
             [weak self] event in
             guard event.keyCode == 53 else { return event }
@@ -64,9 +69,10 @@ final class CaptureAreaSelector {
             return nil
         }
         NSApplication.shared.activate(ignoringOtherApps: true)
+        selectionWindow = window
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(view)
-        selectionWindow = window
+        animateRecorderOverlayIn(window)
     }
 
     func cancel() {
@@ -106,6 +112,11 @@ final class CaptureAreaSelector {
             defer: false,
             screen: screen
         )
+        // Screen-relative NSWindow initialization can offset secondary displays.
+        // Anchor both the window and its drawing canvas in the resolved screen.
+        window.setFrame(screen.frame, display: false)
+        window.isReleasedWhenClosed = false
+        view.autoresizingMask = [.width, .height]
         window.contentView = view
         window.isOpaque = false
         window.backgroundColor = .clear
@@ -282,8 +293,8 @@ private final class CaptureAreaSelectionView: NSView {
         case resize(handle: ResizeHandle, original: CGRect)
     }
 
-    private let controlCard = NSVisualEffectView()
-    private let escapeHintCard = NSVisualEffectView()
+    private let controlCard = NSView()
+    private let escapeHintCard = NSView()
     private let escapeHintContent = EscapeHintContentView()
     private let dividerView = NSView()
     private let widthCaption = NSTextField(labelWithString: "宽")
@@ -331,6 +342,14 @@ private final class CaptureAreaSelectionView: NSView {
         return button
     }
 
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .crosshair)
+        addCursorRect(controlCard.frame, cursor: .arrow)
+        addCursorRect(escapeHintCard.frame, cursor: .arrow)
+    }
+
     private var selectedPreset: AspectPreset = .free
     private var dimensionLinkEnabled = false
     private var dragOperation: DragOperation?
@@ -354,24 +373,21 @@ private final class CaptureAreaSelectionView: NSView {
         wantsLayer = true
 
         [controlCard, escapeHintCard].forEach { card in
-            card.appearance = NSAppearance(named: .darkAqua)
-            card.material = .hudWindow
-            card.blendingMode = .withinWindow
-            card.state = .active
+            card.appearance = NSAppearance(named: .aqua)
             card.wantsLayer = true
             card.layer?.cornerRadius = 18
-            card.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.62).cgColor
+            card.layer?.backgroundColor = captureSelectionSurfaceNSColor.cgColor
             card.layer?.borderWidth = 1
-            card.layer?.borderColor = NSColor.white.withAlphaComponent(0.13).cgColor
+            card.layer?.borderColor = captureSelectionInkNSColor.withAlphaComponent(0.08).cgColor
             card.layer?.shadowColor = NSColor.black.cgColor
-            card.layer?.shadowOpacity = 0.34
+            card.layer?.shadowOpacity = 0.12
             card.layer?.shadowRadius = 18
             card.layer?.shadowOffset = CGSize(width: 0, height: -6)
             addSubview(card)
         }
 
         dividerView.wantsLayer = true
-        dividerView.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.13).cgColor
+        dividerView.layer?.backgroundColor = captureSelectionInkNSColor.withAlphaComponent(0.08).cgColor
         controlCard.addSubview(dividerView)
 
         presetButtons.forEach(controlCard.addSubview)
@@ -379,7 +395,7 @@ private final class CaptureAreaSelectionView: NSView {
 
         [widthCaption, heightCaption].forEach { caption in
             caption.font = .systemFont(ofSize: 11.5, weight: .medium)
-            caption.textColor = NSColor.white.withAlphaComponent(0.58)
+            caption.textColor = captureSelectionInkNSColor.withAlphaComponent(0.65)
             caption.alignment = .center
             caption.drawsBackground = false
             caption.backgroundColor = .clear
@@ -389,14 +405,14 @@ private final class CaptureAreaSelectionView: NSView {
         [widthField, heightField].forEach { field in
             field.font = .monospacedDigitSystemFont(ofSize: 14, weight: .medium)
             field.alignment = .center
-            field.textColor = .white
+            field.textColor = captureSelectionInkNSColor
             field.backgroundColor = captureSelectionRaisedNSColor
             field.isBezeled = false
             field.drawsBackground = true
             field.wantsLayer = true
             field.layer?.cornerRadius = 8
             field.layer?.borderWidth = 1
-            field.layer?.borderColor = NSColor.white.withAlphaComponent(0.18).cgColor
+            field.layer?.borderColor = captureSelectionInkNSColor.withAlphaComponent(0.08).cgColor
             field.focusRingType = .none
             field.target = self
             field.action = #selector(applyManualSize(_:))
@@ -405,7 +421,7 @@ private final class CaptureAreaSelectionView: NSView {
         widthField.placeholderString = "宽度"
         heightField.placeholderString = "高度"
 
-        dimensionLinkButton.contentTintColor = NSColor.white.withAlphaComponent(0.4)
+        dimensionLinkButton.contentTintColor = captureSelectionInkNSColor.withAlphaComponent(0.5)
         dimensionLinkButton.imagePosition = .imageOnly
         dimensionLinkButton.imageScaling = .scaleProportionallyDown
         controlCard.addSubview(dimensionLinkButton)
@@ -434,11 +450,11 @@ private final class CaptureAreaSelectionView: NSView {
     /// width/height, apply, cancel, 开始录制) so the aspect ratio can
     /// still be changed after drawing.
     private func layoutControlCard(scale: CGFloat) {
-        let cardHeight: CGFloat = 88 * scale
+        let cardHeight: CGFloat = 76 * scale
         let hasSelection = selectionRect != nil
         escapeHintCard.isHidden = hasSelection
 
-        let cardWidth = 1000 * scale
+        let cardWidth = 744 * scale
         if hasSelection {
             // Follow the selection: centered under it, flipped above when the
             // selection sits too low on the screen.
@@ -480,74 +496,21 @@ private final class CaptureAreaSelectionView: NSView {
             )
         }
 
-        var x: CGFloat = 18 * scale
+        var x: CGFloat = 12 * scale
         for button in presetButtons {
-            button.frame = CGRect(
-                x: x,
-                y: 8 * scale,
-                width: 60 * scale,
-                height: 72 * scale
-            )
+            button.frame = CGRect(x: x, y: 11 * scale, width: 50 * scale, height: 54 * scale)
             button.updateScale(scale)
-            x += 68 * scale
+            x += 54 * scale
         }
-        dividerView.frame = CGRect(
-            x: x + 4 * scale,
-            y: 14 * scale,
-            width: max(scale, 1),
-            height: 60 * scale
-        )
-
-        let dimensionStart = x + 28 * scale
-        widthCaption.frame = CGRect(
-            x: dimensionStart,
-            y: 58 * scale,
-            width: 82 * scale,
-            height: 16 * scale
-        )
-        widthField.frame = CGRect(
-            x: dimensionStart,
-            y: 18 * scale,
-            width: 82 * scale,
-            height: 36 * scale
-        )
-        dimensionLinkButton.frame = CGRect(
-            x: dimensionStart + 88 * scale,
-            y: 20 * scale,
-            width: 32 * scale,
-            height: 32 * scale
-        )
-        heightCaption.frame = CGRect(
-            x: dimensionStart + 126 * scale,
-            y: 58 * scale,
-            width: 82 * scale,
-            height: 16 * scale
-        )
-        heightField.frame = CGRect(
-            x: dimensionStart + 126 * scale,
-            y: 18 * scale,
-            width: 82 * scale,
-            height: 36 * scale
-        )
-        applySizeButton.frame = CGRect(
-            x: dimensionStart + 226 * scale,
-            y: 17 * scale,
-            width: 106 * scale,
-            height: 40 * scale
-        )
-
-        confirmButton.frame = CGRect(
-            x: cardWidth - 116 * scale,
-            y: 12 * scale,
-            width: 98 * scale,
-            height: 64 * scale
-        )
-        cancelButton.frame = CGRect(
-            x: cardWidth - 216 * scale,
-            y: 12 * scale,
-            width: 86 * scale,
-            height: 64 * scale
-        )
+        dividerView.frame = CGRect(x: 286 * scale, y: 16 * scale, width: 1, height: 44 * scale)
+        widthCaption.frame = CGRect(x: 302 * scale, y: 49 * scale, width: 58 * scale, height: 15 * scale)
+        widthField.frame = CGRect(x: 302 * scale, y: 15 * scale, width: 58 * scale, height: 30 * scale)
+        dimensionLinkButton.frame = CGRect(x: 368 * scale, y: 17 * scale, width: 26 * scale, height: 26 * scale)
+        heightCaption.frame = CGRect(x: 402 * scale, y: 49 * scale, width: 58 * scale, height: 15 * scale)
+        heightField.frame = CGRect(x: 402 * scale, y: 15 * scale, width: 58 * scale, height: 30 * scale)
+        applySizeButton.frame = CGRect(x: 470 * scale, y: 15 * scale, width: 64 * scale, height: 30 * scale)
+        cancelButton.frame = CGRect(x: 546 * scale, y: 17 * scale, width: 62 * scale, height: 42 * scale)
+        confirmButton.frame = CGRect(x: 620 * scale, y: 17 * scale, width: 112 * scale, height: 42 * scale)
 
         controlCard.layer?.cornerRadius = 18 * scale
         widthCaption.font = .systemFont(ofSize: 11.5 * scale, weight: .medium)
@@ -628,6 +591,13 @@ private final class CaptureAreaSelectionView: NSView {
             updateSelectionUI()
             NSSound.beep()
             return
+        }
+        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            let entrance = CABasicAnimation(keyPath: "opacity")
+            entrance.fromValue = 0
+            entrance.toValue = 1
+            entrance.duration = 0.18
+            controlCard.layer?.add(entrance, forKey: "selection-entrance")
         }
         // 松开：重新显示上下文工具条并贴到新选区下方。
         controlCard.isHidden = false
@@ -890,7 +860,7 @@ private final class CaptureAreaSelectionView: NSView {
     private func updateDimensionLink() {
         dimensionLinkButton.contentTintColor = dimensionLinkEnabled
             ? captureSelectionAccentNSColor.blended(withFraction: 0.2, of: .white)
-            : NSColor.white.withAlphaComponent(0.38)
+            : captureSelectionInkNSColor.withAlphaComponent(0.45)
         dimensionLinkButton.toolTip = dimensionLinkEnabled ? "宽高比例已锁定" : "宽高比例未锁定"
     }
 
@@ -923,7 +893,7 @@ private final class CaptureAreaSelectionView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
-        context.setFillColor(NSColor.black.withAlphaComponent(0.57).cgColor)
+        context.setFillColor(NSColor.black.withAlphaComponent(0.25).cgColor)
         context.fill(bounds)
 
         guard let selectionRect else { return }
@@ -984,6 +954,6 @@ private final class CaptureAreaSelectionView: NSView {
     }
 
     private var interfaceScale: CGFloat {
-        min(0.84, max(0.56, (bounds.width - 40) / 1000))
+        min(1, max(0.56, (bounds.width - 24) / 744))
     }
 }

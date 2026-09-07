@@ -33,6 +33,79 @@ struct RecordingSession: Sendable {
     }
 }
 
+/// One project-owned copy created from the persistent user asset library.
+/// The value is kept until the matching timeline command commits so a failed
+/// command can remove exactly the file created for that attempt.
+struct ImportedProjectOverlayAsset: Equatable, Sendable {
+    let relativePath: String
+    let url: URL
+}
+
+enum ProjectAssetTransferError: LocalizedError, Equatable, Sendable {
+    case unavailableProject
+    case invalidImportedAsset
+
+    var errorDescription: String? {
+        switch self {
+        case .unavailableProject:
+            return "请先打开一个可编辑项目。"
+        case .invalidImportedAsset:
+            return "项目素材的回滚路径无效。"
+        }
+    }
+}
+
+/// Heavy library-to-project copies never run on MainActor. Regular file-panel
+/// and pasteboard imports intentionally keep their existing synchronous API;
+/// only the persistent library uses this transaction boundary.
+struct EditorProjectAssetTransfer: Sendable {
+    private let session: RecordingSession?
+
+    init(session: RecordingSession?) {
+        self.session = session
+    }
+
+    func importOverlayAsset(
+        from sourceURL: URL
+    ) async throws -> ImportedProjectOverlayAsset {
+        guard let session else {
+            throw ProjectAssetTransferError.unavailableProject
+        }
+        return try await Task.detached(priority: .userInitiated) {
+            let imported = try ProjectStore.importOverlayImage(
+                from: sourceURL,
+                session: session
+            )
+            return ImportedProjectOverlayAsset(
+                relativePath: imported.relativePath,
+                url: imported.url
+            )
+        }.value
+    }
+
+    func discard(_ imported: ImportedProjectOverlayAsset) async throws {
+        guard let session else {
+            throw ProjectAssetTransferError.unavailableProject
+        }
+        try await Task.detached(priority: .utility) {
+            try ProjectStore.discardImportedOverlayAsset(
+                imported,
+                session: session
+            )
+        }.value
+    }
+
+    func importBackgroundAsset(from sourceURL: URL, isVideo: Bool) async throws -> ImportedProjectOverlayAsset {
+        guard let session else { throw ProjectAssetTransferError.unavailableProject }
+        return try await Task.detached(priority: .userInitiated) {
+            let imported = isVideo
+                ? try ProjectStore.importBackgroundVideo(from: sourceURL, session: session)
+                : try ProjectStore.importWallpaper(from: sourceURL, session: session)
+            return ImportedProjectOverlayAsset(relativePath: imported.relativePath, url: imported.url)
+        }.value
+    }
+}
+
 /// A process-local identity for one open project session. The package URL is
 /// deliberately not the identity because saving a project can move that
 /// package while delayed autosaves are still waiting to run.
@@ -52,6 +125,14 @@ struct ProjectSaveReceipt: Equatable, Sendable {
 struct ProjectMoveReceipt: Sendable {
     let session: RecordingSession
     let save: ProjectSaveReceipt
+}
+
+struct ProjectLoadResult: Sendable {
+    let project: RecorderProject
+    let session: RecordingSession
+    /// True only when `project.json` could not be read/decoded/validated and
+    /// the last known-good rolling snapshot was used instead.
+    let recoveredFromPreviousRevision: Bool
 }
 
 enum ProjectRepositoryError: LocalizedError, Equatable, Sendable {
@@ -461,6 +542,7 @@ enum RecordingProjectNaming {
 
 enum ProjectStore {
     private static let recentProjectsDefaultsKey = "cn.laogou.dogsc.recent-project-paths"
+    @MainActor private static var systemRecentProjectsSynchronizationToken: UInt64 = 0
     private static var defaults: UserDefaults {
         UserDefaults(suiteName: "cn.laogou.dogsc") ?? .standard
     }
@@ -615,6 +697,16 @@ enum ProjectStore {
     static func commitStagedProject(at stagedURL: URL, session: RecordingSession) throws {
         let destination = session.packageURL.appendingPathComponent("project.json")
         if FileManager.default.fileExists(atPath: destination.path) {
+            // Preserve one known-good revision before publishing the next one.
+            // A corrupt/truncated primary must never replace an older valid
+            // recovery snapshot merely because autosave runs after opening it.
+            if let currentData = try? Data(contentsOf: destination),
+               (try? decodeProjectData(currentData)) != nil {
+                let previousURL = session.packageURL.appendingPathComponent(
+                    "project.previous.json"
+                )
+                try currentData.write(to: previousURL, options: .atomic)
+            }
             _ = try FileManager.default.replaceItemAt(
                 destination,
                 withItemAt: stagedURL,
@@ -850,7 +942,8 @@ enum ProjectStore {
 
     static func isRecoverableProject(at packageURL: URL) -> Bool {
         guard let manifest = recoveryManifest(at: packageURL) else { return false }
-        return (manifest.state == "recording" || manifest.state == "paused") && manifest.fileSize > 1_024
+        let recoverableStates: Set<String> = ["recording", "paused", "failed"]
+        return recoverableStates.contains(manifest.state) && manifest.fileSize > 1_024
     }
 
     static func recoverableProjectURLs(
@@ -903,6 +996,30 @@ enum ProjectStore {
         return ("assets/\(filename)", destinationURL)
     }
 
+    static func discardImportedOverlayAsset(
+        _ imported: ImportedProjectOverlayAsset,
+        session: RecordingSession
+    ) throws {
+        let assetsURL = session.packageURL
+            .appendingPathComponent("assets", isDirectory: true)
+            .standardizedFileURL
+        let destinationURL = session.packageURL
+            .appendingPathComponent(imported.relativePath)
+            .standardizedFileURL
+        let components = imported.relativePath.split(separator: "/")
+        guard !imported.relativePath.hasPrefix("/"),
+              components.count == 2,
+              components.first == "assets",
+              destinationURL.deletingLastPathComponent() == assetsURL,
+              destinationURL == imported.url.standardizedFileURL else {
+            throw ProjectAssetTransferError.invalidImportedAsset
+        }
+        guard FileManager.default.fileExists(atPath: destinationURL.path) else {
+            return
+        }
+        try FileManager.default.removeItem(at: destinationURL)
+    }
+
     private static func importImageAsset(
         from sourceURL: URL,
         prefix: String,
@@ -938,28 +1055,104 @@ enum ProjectStore {
         return FileManager.default.fileExists(atPath: candidate.path) ? candidate : nil
     }
 
-    static func loadProject(at packageURL: URL) throws -> (project: RecorderProject, session: RecordingSession) {
+    /// Repairs stale package-relative declarations without ever consulting an
+    /// external directory. A relocation is accepted only when exactly one
+    /// regular file with the same basename exists below the allowed package
+    /// folders; ambiguous matches remain unresolved for explicit user action.
+    static func relocatedRelativePath(
+        for stalePath: String,
+        session: RecordingSession,
+        allowedDirectories: [String]
+    ) -> String? {
+        if resolve(relativePath: stalePath, session: session) != nil {
+            return stalePath
+        }
+        let filename = URL(fileURLWithPath: stalePath).lastPathComponent
+        guard !filename.isEmpty, filename != ".", filename != ".." else { return nil }
+        let fileManager = FileManager.default
+        let packageURL = session.packageURL.standardizedFileURL
+        let packagePrefix = packageURL.path + "/"
+        var matches = Set<String>()
+
+        for directory in allowedDirectories where !directory.isEmpty {
+            guard !directory.contains("/"), directory != ".", directory != ".." else {
+                continue
+            }
+            let root = packageURL.appendingPathComponent(directory, isDirectory: true)
+            guard let enumerator = fileManager.enumerator(
+                at: root,
+                includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+                options: [.skipsHiddenFiles, .skipsPackageDescendants]
+            ) else { continue }
+            for case let candidate as URL in enumerator where candidate.lastPathComponent == filename {
+                let values = try? candidate.resourceValues(
+                    forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+                )
+                guard values?.isRegularFile == true,
+                      values?.isSymbolicLink != true else { continue }
+                let standardized = candidate.standardizedFileURL
+                guard standardized.path.hasPrefix(packagePrefix) else { continue }
+                matches.insert(String(standardized.path.dropFirst(packagePrefix.count)))
+                if matches.count > 1 { return nil }
+            }
+        }
+        return matches.first
+    }
+
+    static func loadProject(at packageURL: URL) throws -> ProjectLoadResult {
         let session = RecordingSession(packageURL: packageURL)
         let projectURL = packageURL.appendingPathComponent("project.json")
-        let data = try Data(contentsOf: projectURL)
-        let sourceVersion = (
-            try? JSONDecoder().decode(ProjectVersionHeader.self, from: data).version
-        ) ?? 1
+        var primaryFailure: (any Error)?
+        do {
+            let data = try Data(contentsOf: projectURL)
+            let sourceVersion = (
+                try? JSONDecoder().decode(ProjectVersionHeader.self, from: data).version
+            ) ?? 1
 
-        // 先保护原始字节再尝试解码：若未来 schema 不兼容导致 decode 失败，
-        // 备份必须已经落盘，否则旧项目将完全无法恢复。
-        if sourceVersion < ProjectSchema.currentVersion {
-            let backupURL = packageURL.appendingPathComponent(
-                "project-v\(sourceVersion)-before-migration.json"
+            // 先保护原始字节再尝试解码：若未来 schema 不兼容导致 decode 失败，
+            // 备份必须已经落盘，否则旧项目将完全无法恢复。
+            if sourceVersion < ProjectSchema.currentVersion {
+                let backupURL = packageURL.appendingPathComponent(
+                    "project-v\(sourceVersion)-before-migration.json"
+                )
+                try writeMigrationBackupIfNeeded(data, to: backupURL)
+            }
+            return ProjectLoadResult(
+                project: try decodeProjectData(data),
+                session: session,
+                recoveredFromPreviousRevision: false
             )
-            try writeMigrationBackupIfNeeded(data, to: backupURL)
+        } catch let schemaError as ProjectSchemaError {
+            // A project written by a newer DogSC is not corruption. Falling
+            // back to an older snapshot would let the current app later
+            // overwrite unknown future fields, exactly what the schema guard
+            // exists to prevent.
+            if case .unsupportedFutureVersion = schemaError {
+                throw schemaError
+            }
+            primaryFailure = schemaError
+        } catch {
+            primaryFailure = error
         }
 
+        let previousURL = packageURL.appendingPathComponent("project.previous.json")
+        if let previousData = try? Data(contentsOf: previousURL),
+           let previousProject = try? decodeProjectData(previousData) {
+            return ProjectLoadResult(
+                project: previousProject,
+                session: session,
+                recoveredFromPreviousRevision: true
+            )
+        }
+        throw primaryFailure ?? CocoaError(.fileReadCorruptFile)
+    }
+
+    private static func decodeProjectData(_ data: Data) throws -> RecorderProject {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         let project = try decoder.decode(RecorderProject.self, from: data)
         try ProjectValidator.validate(project)
-        return (project, session)
+        return project
     }
 
     private static func writeMigrationBackupIfNeeded(_ data: Data, to backupURL: URL) throws {
@@ -997,6 +1190,10 @@ enum ProjectStore {
         paths.removeAll { URL(fileURLWithPath: $0).standardizedFileURL.path == path }
         paths.insert(path, at: 0)
         defaults.set(Array(paths.prefix(20)), forKey: recentProjectsDefaultsKey)
+
+        // Opening/creating a project is the authoritative recency event. The
+        // Rebuild once after the current transition; the menu itself remains
+        // read-only and never guesses recency from package modification dates.
         scheduleSystemRecentProjectsSynchronization()
     }
 
@@ -1026,35 +1223,39 @@ enum ProjectStore {
     /// The Dock's file-icon section is owned by macOS, independently from the
     /// app's own project catalog. Rebuild that list from valid project packages
     /// so deleted paths, old test packages and rename aliases cannot survive as
-    /// stale or duplicate Dock entries. Register in reverse because AppKit
-    /// inserts every noted document at the front.
+    /// stale or duplicate Dock entries. `noteNewRecentDocumentURL` promotes each
+    /// URL to the front, so publish oldest first and the newest one last.
     @MainActor
     @discardableResult
     static func synchronizeSystemRecentProjects(limit: Int = 20) -> Bool {
         let validProjects = recentProjectURLs(limit: limit)
         let controller = NSDocumentController.shared
-        let expectedPaths = validProjects.map(\.standardizedFileURL.path)
-        func currentPaths() -> [String] {
-            controller.recentDocumentURLs.map(\.standardizedFileURL.path)
-        }
-        guard currentPaths() != expectedPaths else { return true }
+        // `NSDocumentController` may expose fewer Dock recent-document slots
+        // than DogSC keeps in its own project history (five on current macOS).
+        // Compare and publish only that visible prefix; otherwise the capped
+        // result is mistaken for a failed rebuild and the fallback republishes
+        // the list in the opposite order, leaving the oldest projects visible.
+        let publishedProjects = Array(validProjects.prefix(controller.maximumRecentDocumentCount))
+        systemRecentProjectsSynchronizationToken &+= 1
+        let requestedSynchronization = systemRecentProjectsSynchronizationToken
 
-        func rebuild(_ projects: [URL]) {
-            controller.clearRecentDocuments(nil)
-            for projectURL in projects {
+        // `clearRecentDocuments` persists through LaunchServices rather than
+        // completing synchronously. Publishing the newest project in the same
+        // run-loop turn races that clear; field evidence showed exactly the
+        // first URL missing from the resulting sfl4 while the following four
+        // survived. Split clearing and publication into two phases. The token
+        // prevents an older delayed phase from overwriting a newer recency
+        // event.
+        controller.clearRecentDocuments(nil)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            guard systemRecentProjectsSynchronizationToken == requestedSynchronization else {
+                return
+            }
+            for projectURL in publishedProjects.reversed() {
                 controller.noteNewRecentDocumentURL(projectURL)
             }
         }
-
-        // AppKit normally inserts each URL at the front. Verify that against
-        // the actual controller instead of assuming it: if behaviour changes,
-        // retry the opposite publication order rather than leaving the visible
-        // Dock menu reversed.
-        rebuild(Array(validProjects.reversed()))
-        if currentPaths() != expectedPaths {
-            rebuild(validProjects)
-        }
-        return currentPaths() == expectedPaths
+        return true
     }
 
     static func recentProjectURLs(limit: Int = 8) -> [URL] {

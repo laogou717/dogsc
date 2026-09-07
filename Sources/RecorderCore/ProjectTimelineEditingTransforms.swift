@@ -11,6 +11,10 @@ extension ProjectTimelineEditing {
     ) throws -> ProjectTimeline {
         var result = timeline
         result.sourceSequence = sourceSequence
+        result.primarySegmentAudioOverrides = prunedPrimarySegmentAudioOverrides(
+            timeline.primarySegmentAudioOverrides,
+            sourceSequence: sourceSequence
+        )
         result.zoomClips = try timeline.zoomClips.compactMap {
             try ripple($0, deleting: deletion, deletesOutputTail: deletesOutputTail)
         }
@@ -25,12 +29,6 @@ extension ProjectTimelineEditing {
         }
         result.stickerClips = timeline.stickerClips.compactMap {
             ripple($0, deleting: deletion, deletesOutputTail: deletesOutputTail)
-        }
-        if var progress = timeline.progressOverlay {
-            progress.chapters = progress.chapters.compactMap {
-                ripple($0, deleting: deletion, deletesOutputTail: deletesOutputTail)
-            }
-            result.progressOverlay = progress
         }
         sortZoom(&result.zoomClips)
         sortScreenMotion(&result.screenMotionClips)
@@ -185,17 +183,6 @@ extension ProjectTimelineEditing {
         return edited
     }
 
-    static func inserting(
-        _ chapter: ProgressChapter,
-        at insertionTime: TimeInterval,
-        duration: TimeInterval
-    ) -> ProgressChapter {
-        guard chapter.time >= insertionTime - epsilon else { return chapter }
-        var edited = chapter
-        edited.time += duration
-        return edited
-    }
-
     static func ripple(
         _ timing: OverlayTiming,
         deleting deletion: OutputDeletion,
@@ -258,22 +245,12 @@ extension ProjectTimelineEditing {
     }
 
     static func ripple(
-        _ chapter: ProgressChapter,
-        deleting deletion: OutputDeletion,
-        deletesOutputTail: Bool
-    ) -> ProgressChapter? {
-        if chapter.time < deletion.start - epsilon { return chapter }
-        if deletesOutputTail || chapter.time < deletion.end - epsilon { return nil }
-        var edited = chapter
-        edited.time -= deletion.duration
-        return edited
-    }
-
-    static func ripple(
         _ clip: ZoomAnimationClip,
         deleting deletion: OutputDeletion,
         deletesOutputTail: Bool
     ) throws -> ZoomAnimationClip? {
+        var clip = clip
+        clip.preserveTransitionIntent()
         if clip.effectEndTime <= deletion.start + epsilon {
             return clip
         }
@@ -433,17 +410,15 @@ extension ProjectTimelineEditing {
     ) -> [ZoomAnimationClip] {
         var result = mapped
         for index in result.indices {
-            guard result[index].enterDuration <= epsilon,
-                  let old = original.first(where: { $0.id == result[index].id }),
-                  old.startTime >= deletion.start - epsilon,
+            guard let old = original.first(where: { $0.id == result[index].id }),
                   old.startTime < deletion.end - epsilon,
-                  old.startTime + old.enterDuration <= deletion.end + epsilon,
-                  old.endTime > deletion.end + epsilon else { continue }
-            result[index].enterDuration = min(
-                max(defaultTransition, 0),
-                result[index].duration
-            )
-            result[index].enterProgressOffset = 0
+                  old.startTime + old.enterDuration > deletion.start + epsilon
+            else { continue }
+            result[index].enterDuration = min(old.requestedEnterDuration, result[index].duration)
+            // The old animation start was deleted: this is a new entrance in
+            // retained content, not permission to replay an old camera focus.
+            result[index].enterProgressOffset = old.startTime >= deletion.start - epsilon
+                ? 0 : old.enterProgressOffset
         }
         return result
     }
@@ -502,42 +477,19 @@ extension ProjectTimelineEditing {
     ) -> [ZoomAnimationClip] {
         var result = mapped.sorted(by: zoomOrder)
         for index in result.indices {
-            guard let old = original.first(where: { $0.id == result[index].id }),
-                  old.exitDuration > epsilon else { continue }
-            let touchesNext = result.indices.contains(index + 1)
-                && abs(result[index + 1].startTime - result[index].endTime)
-                    <= ZoomInterpolator.adjacencyTolerance
-            let available = result.indices.contains(index + 1)
-                ? max(result[index + 1].startTime - result[index].endTime, 0)
-                : old.exitDuration
-
-            // The return had already started before the deleted range, but its
-            // remaining part lived inside that range. Mapping effectEnd to the
-            // near-side junction truncates the duration to elapsed time and
-            // makes the junction itself jump straight to base. Restore the
-            // original phase clock so the first retained frame continues from
-            // exactly the pre-cut state at the same velocity.
-            let deletionConsumesReturnTail = old.endTime < deletion.start - epsilon
-                && old.effectEndTime > deletion.start + epsilon
-                && old.effectEndTime <= deletion.end + epsilon
-            if deletionConsumesReturnTail,
-               !touchesNext,
-               result[index].exitDuration < old.exitDuration - epsilon {
-                result[index].exitDuration = min(old.exitDuration, available)
-                result[index].exitProgressOffset = old.exitProgressOffset
-                continue
-            }
-
-            guard result[index].exitDuration <= epsilon,
-                  old.endTime > deletion.start + epsilon,
-                  old.endTime <= deletion.end + epsilon,
-                  old.effectEndTime <= deletion.end + epsilon else { continue }
-            guard !touchesNext else { continue }
-            let restoredAvailable = result.indices.contains(index + 1)
-                ? available
-                : max(defaultTransition, 0)
-            result[index].exitDuration = min(max(defaultTransition, 0), restoredAvailable)
-            result[index].exitProgressOffset = 0
+            guard let old = original.first(where: { $0.id == result[index].id }) else { continue }
+            let requested = old.requestedExitDuration(defaultTransition: defaultTransition)
+            let next = result.indices.contains(index + 1) ? result[index + 1] : nil
+            let gap = next.map { max($0.startTime - result[index].endTime, 0) }
+            let touchesNext = gap.map { $0 <= ZoomInterpolator.adjacencyTolerance } ?? false
+            result[index].preferredExitDuration = requested
+            if touchesNext { continue }
+            result[index].exitDuration = min(requested, gap ?? requested)
+            // Deleting the middle of an outgoing transition must not speed up
+            // its original phase clock. A removed return start gets a fresh
+            // return at the new junction, from the still-zoomed near side.
+            result[index].exitProgressOffset = old.endTime >= deletion.start - epsilon
+                && old.endTime < deletion.end - epsilon ? 0 : old.exitProgressOffset
         }
         return result
     }
@@ -790,6 +742,7 @@ extension ProjectTimelineEditing {
                 newStarts: newStarts
             )
             var moved = clip
+            moved.preserveTransitionIntent()
             moved.startTime = min(max(clip.startTime + delta, 0), outputDuration)
             moved.endTime = min(max(clip.endTime + delta, moved.startTime), outputDuration)
             moved.enterDuration = min(moved.enterDuration, moved.duration)
@@ -1034,13 +987,46 @@ extension ProjectTimelineEditing {
                 throw ProjectTimelineEditingError.invalidSourceSequence
             }
         }
-        let sourceOrdered = segments.sorted {
-            if $0.sourceStart != $1.sourceStart { return $0.sourceStart < $1.sourceStart }
-            return $0.id.uuidString < $1.id.uuidString
+        for current in segments {
+            if segments.contains(where: {
+                $0.id != current.id
+                    && current.sourceStart < $0.sourceEnd - epsilon
+                    && current.sourceEnd > $0.sourceStart + epsilon
+            }) {
+                throw ProjectTimelineEditingError.invalidSourceSequence
+            }
         }
-        for (previous, current) in zip(sourceOrdered, sourceOrdered.dropFirst())
-            where current.sourceStart < previous.sourceEnd - epsilon {
-            throw ProjectTimelineEditingError.invalidSourceSequence
+    }
+
+    static func primarySegmentIDs(in sequence: SourceSequence) -> Set<UUID> {
+        switch sequence {
+        case .fullRecording:
+            return [TimelineMap.fullRecordingSegmentID]
+        case let .edited(segments):
+            return Set(segments.map(\.id))
+        }
+    }
+
+    static func prunedPrimarySegmentAudioOverrides(
+        _ overrides: [UUID: PrimarySegmentAudioOverrides],
+        sourceSequence: SourceSequence
+    ) -> [UUID: PrimarySegmentAudioOverrides] {
+        let validIDs = primarySegmentIDs(in: sourceSequence)
+        return overrides.filter { validIDs.contains($0.key) && !$0.value.isEmpty }
+    }
+
+    static func validatePrimarySegmentAudioOverrides(
+        _ overrides: [UUID: PrimarySegmentAudioOverrides],
+        sourceSequence: SourceSequence
+    ) throws {
+        let validIDs = primarySegmentIDs(in: sourceSequence)
+        for (id, value) in overrides {
+            let volumes = [value.systemVolume, value.microphoneVolume]
+                .compactMap { $0 }
+            guard validIDs.contains(id), !value.isEmpty,
+                  volumes.allSatisfy({ $0.isFinite && (0...1).contains($0) }) else {
+                throw ProjectTimelineEditingError.invalidPrimarySegmentAudioOverrides(id)
+            }
         }
     }
 
@@ -1064,9 +1050,12 @@ extension ProjectTimelineEditing {
                   clip.exitProgressOffset.isFinite,
                   (0...5).contains(clip.enterDuration),
                   (0...5).contains(clip.exitDuration),
+                  clip.preferredEnterDuration.map({ $0.isFinite && (0...5).contains($0) }) ?? true,
+                  clip.preferredExitDuration.map({ $0.isFinite && (0...5).contains($0) }) ?? true,
                   (0...1).contains(clip.enterProgressOffset),
                   (0...1).contains(clip.exitProgressOffset),
-                  valid(clip.customCurve) else {
+                  valid(clip.customCurve),
+                  clip.focusEffect?.isValid ?? true else {
                 throw ProjectTimelineEditingError.invalidClip(track: .zoom, id: clip.id)
             }
             if let previous, !EditorTimelineMath.zoomSequenceIsValid(
@@ -1099,7 +1088,8 @@ extension ProjectTimelineEditing {
                   target.rotationY.isFinite,
                   target.rotationZ.isFinite,
                   target.perspective.isFinite,
-                  target.perspective >= 0 else {
+                  target.perspective >= 0,
+                  clip.focusEffect?.isValid ?? true else {
                 throw ProjectTimelineEditingError.invalidClip(track: .screenMotion, id: clip.id)
             }
             if let previous {
@@ -1215,42 +1205,6 @@ extension ProjectTimelineEditing {
                   clip.backdropBlur.isFinite,
                   (0...96).contains(clip.backdropBlur) else {
                 throw ProjectTimelineEditingError.invalidClip(track: .sticker, id: clip.id)
-            }
-        }
-    }
-
-    static func validateProgressOverlay(_ overlay: ProgressOverlay?) throws {
-        guard let overlay else { return }
-        guard normalized(overlay.position),
-              overlay.width.isFinite,
-              (0.05...1).contains(overlay.width),
-              overlay.bandHeight.isFinite,
-              (28...180).contains(overlay.bandHeight),
-              overlay.textSize.isFinite,
-              (10...72).contains(overlay.textSize),
-              overlay.thickness.isFinite,
-              (1...40).contains(overlay.thickness),
-              overlay.backgroundOpacity.isFinite,
-              (0...1).contains(overlay.backgroundOpacity) else {
-            throw ProjectTimelineEditingError.invalidClip(
-                track: .progress,
-                id: UUID()
-            )
-        }
-        var identifiers = Set<UUID>()
-        for chapter in overlay.chapters {
-            guard identifiers.insert(chapter.id).inserted else {
-                throw ProjectTimelineEditingError.duplicateClipID(
-                    track: .progress,
-                    id: chapter.id
-                )
-            }
-            guard chapter.time.isFinite,
-                  chapter.time >= 0 else {
-                throw ProjectTimelineEditingError.invalidClip(
-                    track: .progress,
-                    id: chapter.id
-                )
             }
         }
     }

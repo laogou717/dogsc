@@ -26,11 +26,65 @@ struct ProjectOpenSnapshot: Sendable {
         let wasInterrupted = ProjectStore.isRecoverableProject(at: normalizedURL)
         let loaded = try ProjectStore.loadProject(at: normalizedURL)
         var project = loaded.project
-        try Task.checkCancellation()
-        if case let .bundledImage(relativePath) = project.canvas.backgroundSource,
-           BundledWallpaperLibrary.resolve(relativePath: relativePath) == nil {
-            project.canvas.backgroundSource = .defaultBundledImage
+        var relocatedDeclarations = Set<String>()
+        func relocated(
+            _ path: String,
+            directories: [String]
+        ) -> String {
+            guard ProjectStore.resolve(relativePath: path, session: loaded.session) == nil,
+                  let repaired = ProjectStore.relocatedRelativePath(
+                    for: path,
+                    session: loaded.session,
+                    allowedDirectories: directories
+                  ) else { return path }
+            relocatedDeclarations.insert("\(path) → \(repaired)")
+            return repaired
         }
+
+        if var media = project.media {
+            media.screen.relativePath = relocated(
+                media.screen.relativePath,
+                directories: ["media"]
+            )
+            if var camera = media.camera {
+                camera.relativePath = relocated(camera.relativePath, directories: ["media"])
+                media.camera = camera
+            }
+            if var microphone = media.microphone {
+                microphone.relativePath = relocated(
+                    microphone.relativePath,
+                    directories: ["media"]
+                )
+                media.microphone = microphone
+            }
+            if var pointerEvents = media.pointerEvents {
+                pointerEvents.relativePath = relocated(
+                    pointerEvents.relativePath,
+                    directories: ["events"]
+                )
+                media.pointerEvents = pointerEvents
+            }
+            project.media = media
+        }
+        switch project.canvas.backgroundSource {
+        case let .projectImage(relativePath):
+            project.canvas.backgroundSource = .projectImage(
+                relativePath: relocated(relativePath, directories: ["assets"])
+            )
+        case let .projectVideo(relativePath):
+            project.canvas.backgroundSource = .projectVideo(
+                relativePath: relocated(relativePath, directories: ["assets"])
+            )
+        default:
+            break
+        }
+        for index in project.timeline.stickerClips.indices {
+            project.timeline.stickerClips[index].relativePath = relocated(
+                project.timeline.stickerClips[index].relativePath,
+                directories: ["assets"]
+            )
+        }
+        try Task.checkCancellation()
 
         let recordingURL = ProjectStore.resolve(
             relativePath: project.media?.screen.relativePath,
@@ -65,6 +119,12 @@ struct ProjectOpenSnapshot: Sendable {
         )
 
         var warnings: [String] = []
+        if loaded.recoveredFromPreviousRevision {
+            warnings.append("项目主文件损坏，已恢复到上一个完整保存版本。")
+        }
+        if !relocatedDeclarations.isEmpty {
+            warnings.append("已在项目包内安全重新定位 \(relocatedDeclarations.count) 项素材。")
+        }
         if project.media == nil {
             warnings.append("项目没有主录屏素材引用。")
         } else if recordingURL == nil {
@@ -76,7 +136,30 @@ struct ProjectOpenSnapshot: Sendable {
         if project.media?.microphone != nil, microphoneRecordingURL == nil {
             warnings.append("项目引用的麦克风素材不存在或路径无效。")
         }
-
+        switch project.canvas.backgroundSource {
+        case let .projectImage(relativePath), let .projectVideo(relativePath):
+            if ProjectStore.resolve(
+                relativePath: relativePath,
+                session: loaded.session
+            ) == nil {
+                warnings.append("项目引用的背景素材不存在或路径无效。")
+            }
+        case let .systemImage(absolutePath), let .systemVideo(absolutePath):
+            if !FileManager.default.fileExists(atPath: absolutePath) {
+                warnings.append("该系统背景在当前设备上不存在。")
+            }
+        default:
+            break
+        }
+        let missingStickerCount = Set(project.timeline.stickerClips.compactMap { clip in
+            ProjectStore.resolve(
+                relativePath: clip.relativePath,
+                session: loaded.session
+            ) == nil ? clip.relativePath : nil
+        }).count
+        if missingStickerCount > 0 {
+            warnings.append("有 \(missingStickerCount) 项贴图素材不存在或路径无效。")
+        }
         let pointerEvents: [PointerEventRecord]
         do {
             pointerEvents = try ProjectStore.loadPointerEvents(

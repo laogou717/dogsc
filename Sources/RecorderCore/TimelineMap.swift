@@ -136,13 +136,18 @@ public struct TimelineMap: Equatable, Sendable {
                   segment.sourceEnd.isFinite else {
                 throw TimelineMapError.invalidSegment(segment.id)
             }
-            guard segment.sourceEnd <= fullSourceDuration + epsilon else {
+            let availableDuration = fullSourceDuration
+            guard segment.sourceStart < availableDuration,
+                  segment.sourceEnd <= availableDuration + epsilon else {
                 throw TimelineMapError.segmentOutsideSource(segment.id)
             }
             let resolvedDuration = min(
                 segment.sourceDuration,
-                fullSourceDuration - segment.sourceStart
+                availableDuration - segment.sourceStart
             )
+            guard resolvedDuration > 0 else {
+                throw TimelineMapError.segmentOutsideSource(segment.id)
+            }
             resolved.append(
                 ResolvedRecordingSegment(
                     id: segment.id,
@@ -154,16 +159,24 @@ public struct TimelineMap: Equatable, Sendable {
             )
             outputStart += resolvedDuration / segment.playbackRate
         }
-        let sourceOrdered = authored.sorted {
-            if $0.sourceStart != $1.sourceStart { return $0.sourceStart < $1.sourceStart }
-            return $0.id.uuidString < $1.id.uuidString
-        }
-        for (previous, current) in zip(sourceOrdered, sourceOrdered.dropFirst())
-            where current.sourceStart < previous.sourceEnd - epsilon {
-            throw TimelineMapError.nonMonotonicSegments(
-                previous: previous.id,
-                current: current.id
-            )
+        for current in authored {
+            if let previous = authored
+                .filter({ candidate in
+                    candidate.id != current.id
+                        && candidate.sourceStart <= current.sourceStart
+                })
+                .max(by: { lhs, rhs in
+                    if lhs.sourceStart != rhs.sourceStart {
+                        return lhs.sourceStart < rhs.sourceStart
+                    }
+                    return lhs.id.uuidString < rhs.id.uuidString
+                }),
+               current.sourceStart < previous.sourceEnd - epsilon {
+                throw TimelineMapError.nonMonotonicSegments(
+                    previous: previous.id,
+                    current: current.id
+                )
+            }
         }
         segments = resolved
     }
@@ -288,4 +301,5 @@ public struct TimelineMap: Equatable, Sendable {
         }
         return lower
     }
+
 }

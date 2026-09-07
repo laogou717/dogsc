@@ -2,21 +2,19 @@ import CoreMedia
 import Foundation
 import RecorderCore
 
-/// REC-001/REC-002/REC-004: a display stream and an independent-window stream
-/// have different producers. Asking a 120 Hz display compositor for unlimited
-/// 5K updates made WindowServer deliver only ~27-29 complete fps, while the
-/// nearly identical 5K independent window sustained ~60. Request at most 60
-/// updates for display/area capture so the compositor does not attempt a 120 Hz
-/// workload that the recording never exports. This remains VFR: no frames are
-/// synthesized or callback-filtered, and every delivered frame keeps its PTS.
-/// Independent windows retain native cadence because their producer already
-/// sustains the current workload.
+/// REC-001/REC-002/REC-004: product recording is authored for at most 60 FPS.
+/// Asking a 120 Hz compositor or independent window for unlimited updates adds
+/// frames the 60 FPS export cannot retain and divides the same real-time HEVC
+/// budget across up to twice as many screen images. Ask ScreenCaptureKit for at
+/// most 60 updates for every Mac screen source. This remains VFR: no frames are
+/// synthesized or callback-filtered, and every frame ScreenCaptureKit chooses
+/// to deliver keeps its original PTS.
 enum CaptureStreamTimingPolicy {
     static func minimumFrameInterval(for source: CaptureSource) -> CMTime {
         switch source {
-        case .display, .area:
+        case .display, .window, .area:
             CMTime(value: 1, timescale: 60)
-        case .window, .device:
+        case .device:
             .zero
         }
     }

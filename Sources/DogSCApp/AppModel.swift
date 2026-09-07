@@ -42,18 +42,18 @@ enum RecorderTransitionStage: Equatable, Sendable {
 
     var title: String {
         switch self {
-        case .idle: "正在处理…"
-        case .checkingPermissions: "正在检查设备与权限…"
-        case .creatingProject: "正在创建录制项目…"
-        case .startingCamera: "正在启动摄像头…"
-        case .startingMicrophone: "正在启动麦克风…"
-        case .startingPrimaryCapture: "正在等待首个屏幕帧…"
-        case .aligningTimeline: "正在对齐各轨时间轴…"
-        case .finalizingTracks: "正在结束所有录制轨道…"
-        case .validatingRecording: "正在校验录制素材…"
-        case .savingProject: "正在保存项目…"
-        case .discardingRecording: "正在安全丢弃录制…"
-        case .openingEditor: "正在打开编辑器…"
+        case .idle: appLocalized("正在处理…")
+        case .checkingPermissions: appLocalized("正在检查设备与权限…")
+        case .creatingProject: appLocalized("正在创建录制项目…")
+        case .startingCamera: appLocalized("正在启动摄像头…")
+        case .startingMicrophone: appLocalized("正在启动麦克风…")
+        case .startingPrimaryCapture: appLocalized("正在等待首个屏幕帧…")
+        case .aligningTimeline: appLocalized("正在对齐各轨时间轴…")
+        case .finalizingTracks: appLocalized("正在结束所有录制轨道…")
+        case .validatingRecording: appLocalized("正在校验录制素材…")
+        case .savingProject: appLocalized("正在保存项目…")
+        case .discardingRecording: appLocalized("正在安全丢弃录制…")
+        case .openingEditor: appLocalized("正在打开编辑器…")
         }
     }
 }
@@ -75,25 +75,9 @@ enum DeviceScreenFrameRecommendation {
         width: Int? = nil,
         height: Int? = nil
     ) -> ScreenFrameStyle {
-        let normalizedName = deviceName?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased() ?? ""
-        let isTablet = normalizedName.contains("ipad")
-            || normalizedName.contains("平板")
-            || normalizedName.contains("tablet")
-        let isLandscape: Bool
-        if let width, let height, width > 0, height > 0 {
-            isLandscape = width >= height
-        } else {
-            // Until the first real device frame arrives, portrait is the least
-            // surprising phone/tablet fallback. It is replaced immediately
-            // after capture starts and verified again from the finished file.
-            isLandscape = false
-        }
-        if isTablet {
-            return isLandscape ? .deviceTabletLandscape : .deviceTabletPortrait
-        }
-        return isLandscape ? .devicePhoneLandscape : .devicePhonePortrait
+        // The authored shell follows the actual source dimensions; separate
+        // phone/tablet and orientation choices duplicate the same frame.
+        .devicePhone
     }
 }
 
@@ -234,6 +218,15 @@ final class AppModel: ObservableObject {
     @Published var isRecordingPaused = false
     @Published var isPauseTransitioning = false
     let microphoneInputLevel = LiveMicrophoneLevelState()
+    let configurationCameraFrameSink = ImmediateCameraPreviewFrameSink()
+    @Published var recordingDestinationName = ProjectStore.savedProjectsFolder.lastPathComponent
+    @Published var recordingTitleDraft = ""
+    @Published var recordingCameraMirrored = UserDefaults.standard.object(forKey: "recording.camera-mirrored") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(recordingCameraMirrored, forKey: "recording.camera-mirrored")
+            cameraPreviewController.setMirrored(recordingCameraMirrored)
+        }
+    }
     @Published var editorSessionID = UUID()
     @Published var editorContextRevision: UInt64 = 0
     @Published var isMediaExchangeRunning = false
@@ -300,13 +293,16 @@ final class AppModel: ObservableObject {
     let recordingRecoveryJournal = RecordingRecoveryJournal()
     var recordingPerformanceMonitor: RecordingPerformanceMonitor?
     var surfaceVisibilityTask: Task<Void, Never>?
+    var captureCatalogTask: Task<Void, Never>?
+    var cameraResolutionTask: Task<Void, Never>?
+    var cameraResolutionDeviceID: String?
     var cameraPreviewTask: Task<Void, Never>?
     var microphoneMeterTask: Task<Void, Never>?
     var recordingRuns = RecordingRunState()
     var preparationTask: Task<Void, Never>?
     var finishingTask: Task<Void, Never>?
     lazy var captureDeviceLifecycle = CaptureDeviceLifecycle { [weak self] in
-        self?.refreshCaptureDevices()
+        self?.refreshCaptureDevicesInBackground()
     }
     var stopRequestedDuringPauseTransition = false
     var pauseStartedAt: Date?
@@ -317,7 +313,7 @@ final class AppModel: ObservableObject {
             captureSetup: CaptureSetupController()
         )
         project = EditorStylePresetStore.applyingLastUsedStyle(to: project)
-        if project.canvas.backgroundSource == .defaultBundledImage,
+        if EditorStylePresetStore.defaultPresetID == nil,
            let currentDesktop = SystemWallpaperLibrary.currentBackgroundSource() {
             project.canvas.backgroundSource = currentDesktop
         }
@@ -372,8 +368,10 @@ final class AppModel: ObservableObject {
         // is thread-safe and intentionally receives samples on the capture
         // queue, avoiding a per-frame MainActor task that could itself backlog.
         let cameraPreviewFrameSink = cameraPreviewController.frameSink
+        let configurationFrameSink = configurationCameraFrameSink
         cameraRecorder.onPreviewSampleBuffer = { sampleBuffer in
             cameraPreviewFrameSink.enqueue(sampleBuffer)
+            configurationFrameSink.enqueue(sampleBuffer)
         }
         self.captureSetup.onError = { [weak self] message in self?.errorMessage = message }
         self.captureSetup.onStartRequested = { [weak self] in self?.startRecording() }
@@ -535,7 +533,9 @@ final class AppModel: ObservableObject {
                 // 只做上面的权限/设备预检，运行期错误由录制状态机即时上报。
                 // Start every new project from the intentionally chosen motion
                 // defaults without inheriting the previous project's edits.
-                project.motion = project.motion.preparedForNewRecording()
+                if EditorStylePresetStore.defaultPresetID == nil {
+                    project.motion = project.motion.preparedForNewRecording()
+                }
                 recorderTransitionStage = .creatingProject
                 let recordingCreatedAt = Date()
                 project.createdAt = recordingCreatedAt
@@ -544,6 +544,9 @@ final class AppModel: ObservableObject {
                     for: plan.configuration,
                     createdAt: recordingCreatedAt
                 )
+                let customTitle = recordingTitleDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !customTitle.isEmpty { project.title = String(customTitle.prefix(120)) }
+                project.camera.isMirrored = recordingCameraMirrored
                 let session = try ProjectStore.createSession(
                     preferredTitle: project.title,
                     createdAt: recordingCreatedAt
@@ -553,9 +556,9 @@ final class AppModel: ObservableObject {
                     volumeURL: session.packageURL
                 )
                 if plan.configuration.source == .device {
-                    project.canvas.screenFrame = DeviceScreenFrameRecommendation.style(
+                    project.canvas.applyScreenFrameStyle(DeviceScreenFrameRecommendation.style(
                         deviceName: plan.configuration.deviceName
-                    )
+                    ))
                 }
                 project.media = plan.initialMediaManifest
                 _ = try await workspace.flush(project)
@@ -636,11 +639,11 @@ final class AppModel: ObservableObject {
                         guard recordingRuns.isCurrent(run.id) else { return }
                         recordingRuns.markStarted(.device, for: run.id)
                         let dimensions = deviceRecorder.configuredVideoDimensions
-                        project.canvas.screenFrame = DeviceScreenFrameRecommendation.style(
+                        project.canvas.applyScreenFrameStyle(DeviceScreenFrameRecommendation.style(
                             deviceName: plan.configuration.deviceName,
                             width: dimensions?.width,
                             height: dimensions?.height
-                        )
+                        ))
                     } else {
                         try await recorder.start(
                             runID: run.id, configuration: plan.configuration,
@@ -906,11 +909,11 @@ final class AppModel: ObservableObject {
                let recordingURL,
                let displayedSize = await displayedVideoSize(at: recordingURL) {
                 guard recordingRuns.isCurrent(run.id) else { return }
-                project.canvas.screenFrame = DeviceScreenFrameRecommendation.style(
+                project.canvas.applyScreenFrameStyle(DeviceScreenFrameRecommendation.style(
                     deviceName: run.plan.configuration.deviceName,
                     width: Int(displayedSize.width.rounded()),
                     height: Int(displayedSize.height.rounded())
-                )
+                ))
             }
             if var media = project.media {
                 if cameraRecordingURL.map(isNonemptyFile) != true {
@@ -967,6 +970,7 @@ final class AppModel: ObservableObject {
                     // the configured project folder without another save
                     // panel. The first editor session can still explicitly
                     // delete an untouched take.
+                    var completedProjectURL = currentSession.packageURL
                     if recordingIsUsable,
                        ProjectStore.isWorkingProject(currentSession.packageURL) {
                         let destination = try ProjectStore.automaticSaveDestination(
@@ -991,7 +995,10 @@ final class AppModel: ObservableObject {
                             relativePath: project.media?.microphone?.relativePath,
                             session: moved.session
                         )
-                        ProjectStore.registerRecentProject(moved.session.packageURL)
+                        completedProjectURL = moved.session.packageURL
+                    }
+                    if recordingIsUsable {
+                        ProjectStore.registerRecentProject(completedProjectURL)
                         refreshRecentProjects()
                     }
                 } catch {

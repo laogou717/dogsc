@@ -3,6 +3,28 @@ import RecorderCore
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// Output-lane geometry for one primary segment. A segment's source duration
+/// is media time; every pointer and pixel decision on the edited timeline must
+/// instead use its rate-adjusted output duration.
+enum EditorPrimarySegmentGeometry {
+    static func outputTime(
+        in segment: ResolvedRecordingSegment,
+        atFraction fraction: TimeInterval
+    ) -> TimeInterval {
+        let clampedFraction = min(max(fraction, 0), 1)
+        return segment.outputStart + clampedFraction * segment.outputDuration
+    }
+
+    static func centerX(
+        of segment: ResolvedRecordingSegment,
+        laneWidth: CGFloat,
+        timelineDuration: TimeInterval
+    ) -> CGFloat {
+        let centerTime = segment.outputStart + segment.outputDuration / 2
+        return CGFloat(centerTime / timelineDuration) * laneWidth
+    }
+}
+
 extension EditorTimelineView {
 var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
         guard let timelineMap else { return [] }
@@ -31,7 +53,7 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
         Divider()
 
         Menu {
-            ForEach([1.0, 1.5, 2.0, 4.0, 8.0, 12.0, 16.0, 20.0], id: \.self) { rate in
+            ForEach([1.0, 1.5, 2.0, 4.0, 8.0, 12.0, 20.0, 50.0, 100.0], id: \.self) { rate in
                 Button {
                     setPrimarySegmentPlaybackRate(segment.id, rate: rate)
                 } label: {
@@ -142,7 +164,7 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
                 fullSourceDuration: fullSourceDuration,
                 actionName: "调整片段速度"
             )
-            editorStore.selection = .primarySegment(id)
+            selectPrimarySegment(id)
         } catch {
             onError(error.localizedDescription)
         }
@@ -169,11 +191,11 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
                 Circle()
                     .fill(Color.black.opacity(0.9))
                 Circle()
-                    .stroke(editorAccent.opacity(0.95), lineWidth: 1)
+                    .stroke(EditorTheme.mediaAccent.opacity(0.95), lineWidth: 1)
                 Image(systemName: junction.hasRemovedSourceGap
                     ? "arrow.uturn.backward"
                     : "link")
-                    .font(.system(size: 8, weight: .bold))
+                    .font(.appUI(size: 8, weight: .bold))
                     .foregroundStyle(.white)
             }
             .frame(width: 17, height: 17)
@@ -206,9 +228,9 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
         } label: {
             ZStack {
                 Circle().fill(Color.black.opacity(0.9))
-                Circle().stroke(editorAccent.opacity(0.95), lineWidth: 1)
+                Circle().stroke(EditorTheme.mediaAccent.opacity(0.95), lineWidth: 1)
                 Image(systemName: "arrow.uturn.backward")
-                    .font(.system(size: 8, weight: .bold))
+                    .font(.appUI(size: 8, weight: .bold))
                     .foregroundStyle(.white)
             }
             .frame(width: 17, height: 17)
@@ -228,9 +250,9 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
         } label: {
             ZStack {
                 Circle().fill(Color.black.opacity(0.9))
-                Circle().stroke(editorAccent.opacity(0.95), lineWidth: 1)
+                Circle().stroke(EditorTheme.mediaAccent.opacity(0.95), lineWidth: 1)
                 Image(systemName: "arrow.uturn.backward")
-                    .font(.system(size: 8, weight: .bold))
+                    .font(.appUI(size: 8, weight: .bold))
                     .foregroundStyle(.white)
             }
             .frame(width: 17, height: 17)
@@ -328,42 +350,60 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
             visibleRange: clampedTimelineVisibleDocumentRange(width: width)
         )
         return ZStack(alignment: .leading) {
-            clipWaveforms(
-                width: visibleWindow.width,
-                outputStart: visibleWindow.outputStart,
-                outputDuration: visibleWindow.outputDuration
-            )
-            .mask {
-                Canvas { context, size in
-                    var retainedSegments = Path()
-                    let safeDuration = max(duration, 0.001)
-                    let windowStart = visibleWindow.documentOriginX
-                    let windowEnd = windowStart + visibleWindow.width
-                    for segment in primaryDisplaySegments {
-                        let segmentStart = CGFloat(segment.outputStart / safeDuration) * width
-                        let segmentEnd = segmentStart
-                            + max(CGFloat(segment.sourceDuration / safeDuration) * width, 1)
-                        guard segmentEnd >= windowStart, segmentStart <= windowEnd else {
-                            continue
-                        }
-                        let localStart = max(segmentStart - windowStart, 0)
-                        let localEnd = min(segmentEnd - windowStart, size.width)
-                        retainedSegments.addRoundedRect(
-                            in: CGRect(
-                                x: localStart,
-                                y: 0,
-                                width: max(localEnd - localStart, 1),
-                                height: size.height
-                            ),
-                            cornerSize: CGSize(width: 7, height: 7)
-                        )
-                    }
-                    context.fill(retainedSegments, with: .color(.white))
+            if let draggedPrimarySegmentID,
+               abs(primarySegmentDragTranslation) > 0.01 {
+                clipWaveforms(
+                    width: visibleWindow.width,
+                    outputStart: visibleWindow.outputStart,
+                    outputDuration: visibleWindow.outputDuration
+                )
+                .mask {
+                    clipWaveformMask(
+                        width: width,
+                        duration: duration,
+                        visibleWindow: visibleWindow,
+                        including: { $0.id != draggedPrimarySegmentID }
+                    )
                 }
+                .offset(x: visibleWindow.documentOriginX)
+
+                // The dragged clip owns its waveform pixels. Move the source
+                // and its mask together so the audio preview never appears to
+                // stay behind and then snap back when the drop commits.
+                clipWaveforms(
+                    width: visibleWindow.width,
+                    outputStart: visibleWindow.outputStart,
+                    outputDuration: visibleWindow.outputDuration
+                )
+                .mask {
+                    clipWaveformMask(
+                        width: width,
+                        duration: duration,
+                        visibleWindow: visibleWindow,
+                        including: { $0.id == draggedPrimarySegmentID }
+                    )
+                }
+                .offset(
+                    x: visibleWindow.documentOriginX + primarySegmentDragTranslation
+                )
+            } else {
+                clipWaveforms(
+                    width: visibleWindow.width,
+                    outputStart: visibleWindow.outputStart,
+                    outputDuration: visibleWindow.outputDuration
+                )
+                .mask {
+                    clipWaveformMask(
+                        width: width,
+                        duration: duration,
+                        visibleWindow: visibleWindow,
+                        including: { _ in true }
+                    )
+                }
+                .offset(x: visibleWindow.documentOriginX)
             }
-            .offset(x: visibleWindow.documentOriginX)
         }
-        .frame(width: width, height: primaryClipContentHeight, alignment: .leading)
+        .frame(width: width, height: waveformContentHeight, alignment: .leading)
         .clipped()
         // The waveform is a non-interactive visual preview inside the primary
         // clips. Exposing its container and two canvases creates three dead
@@ -371,67 +411,100 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
         .accessibilityHidden(true)
     }
 
+    func clipWaveformMask(
+        width: CGFloat,
+        duration: TimeInterval,
+        visibleWindow: EditorTimelineWaveformPresentation.VisibleWindow,
+        including: @escaping (ResolvedRecordingSegment) -> Bool
+    ) -> some View {
+        Canvas { context, size in
+            var retainedSegments = Path()
+            let safeDuration = max(duration, 0.001)
+            let windowStart = visibleWindow.documentOriginX
+            let windowEnd = windowStart + visibleWindow.width
+            for segment in primaryDisplaySegments where including(segment) {
+                let segmentStart = CGFloat(segment.outputStart / safeDuration) * width
+                let segmentEnd = segmentStart
+                    + max(CGFloat(segment.outputDuration / safeDuration) * width, 1)
+                guard segmentEnd >= windowStart, segmentStart <= windowEnd else {
+                    continue
+                }
+                let localStart = max(segmentStart - windowStart, 0)
+                let localEnd = min(segmentEnd - windowStart, size.width)
+                // Keep the trim boundary and the compact title badge visually
+                // clear. The waveform previously painted over both, making a
+                // highly zoomed edit paradoxically harder to read at the exact
+                // frame edge the user was trying to trim.
+                let localWidth = max(localEnd - localStart, 1)
+                let edgeInset = min(CGFloat(5), localWidth * 0.22)
+                let waveformTopInset: CGFloat = 3
+                retainedSegments.addRoundedRect(
+                    in: CGRect(
+                        x: localStart + edgeInset,
+                        y: waveformTopInset,
+                        width: max(localWidth - edgeInset * 2, 1),
+                        height: max(size.height - waveformTopInset - 2, 1)
+                    ),
+                    cornerSize: CGSize(width: 4, height: 4)
+                )
+            }
+            context.fill(retainedSegments, with: .color(.white))
+        }
+    }
+
     func clipWaveforms(
         width: CGFloat,
         outputStart: TimeInterval,
         outputDuration: TimeInterval
     ) -> some View {
-        // EDT-WAVE-003: 系统声与麦克风波形叠放在同一全高条带（系统声紫色
-        // 半透明、只画上半截贴底；麦克风近白色中线对称），各自按自身峰值
-        // 自适应增益。分栏拖动全程实时跟随车道高度重绘（EDT-WAVE-003 用户
-        // 明确要求实时自适应；拖动抖动已由 PRE-033 的全局坐标系修复根治，
-        // 不再需要冻结波形高度）。
-        let contentHeight = primaryClipContentHeight
-        return ZStack {
-            if showsSystemWaveform,
-               let systemWaveform,
-               let plan = mediaSession.mediaPlan?.systemAudio {
-                waveformStrip(
-                    lane: .system,
-                    waveform: systemWaveform,
-                    plan: plan,
-                    width: width,
-                    height: contentHeight,
-                    outputStart: outputStart,
-                    outputDuration: outputDuration
-                )
-            }
-            if showsMicrophoneWaveform,
-               let microphoneWaveform,
-               let plan = mediaSession.mediaPlan?.microphone {
-                waveformStrip(
-                    lane: .microphone,
-                    waveform: microphoneWaveform,
-                    plan: plan,
-                    width: width,
-                    height: contentHeight,
-                    outputStart: outputStart,
-                    outputDuration: outputDuration
-                )
-            }
-        }
-        .frame(width: width, height: primaryClipContentHeight)
+        let plan = waveformMediaPlan
+        return EditorTimelineMergedWaveform(
+            system: showsSystemWaveform ? systemWaveform : nil,
+            microphone: showsMicrophoneWaveform ? microphoneWaveform : nil,
+            systemPlan: plan?.systemAudio,
+            microphonePlan: plan?.microphone,
+            systemGains: waveformGainRanges(for: .system),
+            microphoneGains: waveformGainRanges(for: .microphone),
+            width: width, height: waveformContentHeight,
+            outputStart: outputStart, outputDuration: outputDuration,
+            expanded: usesWaveformClips)
     }
 
-    func waveformStrip(
-        lane: EditorTimelineWaveformLane,
-        waveform: EditorTimelineWaveformData,
-        plan: TimelineMediaPlan,
-        width: CGFloat,
-        height: CGFloat,
-        outputStart: TimeInterval,
-        outputDuration: TimeInterval
-    ) -> some View {
-        EditorTimelineWaveformStripView(
-            lane: lane,
-            waveform: waveform,
-            plan: plan,
-            width: width,
-            height: height,
-            outputStart: outputStart,
-            outputDuration: outputDuration
-        )
-        .equatable()
+    var waveformMediaPlan: ProjectTimelineMediaPlan? {
+        guard primaryTrimDraft != nil || primaryRetimeDraft != nil,
+              let video = mediaSession.inventories.source.videoTimeRange else {
+            return mediaSession.mediaPlan
+        }
+        return derivedPresentationCache.waveformPlan(segments: primaryDisplaySegments,
+            manifest: editorStore.project.media, video: video,
+            system: mediaSession.inventories.source.audioTimeRange,
+            microphone: mediaSession.inventories.microphone.audioTimeRange)
+    }
+
+    func waveformGainRanges(
+        for lane: EditorTimelineWaveformLane
+    ) -> [EditorTimelineWaveformGainRange] {
+        let project = editorStore.previewProject
+        return primaryDisplaySegments.compactMap { segment in
+            let overrides = project.timeline.primarySegmentAudioOverrides[segment.id]
+                ?? PrimarySegmentAudioOverrides()
+            let gain: Double
+            switch lane {
+            case .system:
+                gain = (overrides.isSystemMuted ?? project.audio.isSystemMuted)
+                    ? 0
+                    : overrides.systemVolume ?? project.audio.systemVolume
+            case .microphone:
+                gain = (overrides.isMicrophoneMuted ?? project.audio.isMicrophoneMuted)
+                    ? 0
+                    : overrides.microphoneVolume ?? project.audio.microphoneVolume
+            }
+            return EditorTimelineWaveformGainRange(
+                startTime: segment.outputStart,
+                endTime: segment.outputEnd,
+                gain: gain
+            )
+        }
     }
 
     @MainActor
@@ -504,12 +577,12 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
     ) -> some View {
         let intent = EditorTimelineGestureIntent.primaryTrim(segment.id, edge)
         return Capsule(style: .continuous)
-            .fill(Color.white.opacity(0.95))
+            .fill(EditorTheme.chrome(0.95))
             .frame(
                 width: 3,
-                height: min(max(primaryClipContentHeight - 18, 34), 72)
+                height: min(max(primaryVideoHeight - 20, 24), 44)
             )
-            .frame(width: 10, height: primaryClipContentHeight)
+            .frame(width: 12, height: primaryVideoHeight)
             .contentShape(Rectangle())
             .highPriorityGesture(
                 DragGesture(
@@ -526,25 +599,32 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
                             ? .primaryRetime(segment.id)
                             : intent
                         guard beginTimelineGesture(activeIntent) else { return }
-                        selectPrimarySegment(segment.id)
+                        if primaryTrimDraft == nil && primaryRetimeDraft == nil {
+                            selectPrimarySegment(segment.id)
+                        }
                         if isRetime {
-                            let rawEndTime = TimeInterval(
-                                value.location.x / max(laneWidth, 1)
+                            let original = primaryRetimeDraft?.original ?? segment
+                            let rawEndTime = original.outputEnd + TimeInterval(
+                                value.translation.width / max(laneWidth, 1)
                             ) * duration
-                            let minimumDuration = segment.sourceDuration / 20
+                            let minimumDuration = original.sourceDuration
+                                / RecordingSegment.maximumPlaybackRate
                             let proposedDuration = min(
-                                max(rawEndTime - segment.outputStart, minimumDuration),
+                                max(magneticTime(rawEndTime, width: laneWidth, duration: duration) - segment.outputStart, minimumDuration),
                                 segment.sourceDuration
                             )
+                            timelineSnap.validate(edges: [segment.outputStart + proposedDuration])
                             let proposedRate = min(max(
                                 segment.sourceDuration / max(proposedDuration, 0.000_1),
                                 1
-                            ), 20)
-                            primaryRetimeDraft = PrimarySegmentRetimeDraft(
+                            ), RecordingSegment.maximumPlaybackRate)
+                            let retimeDraft = PrimarySegmentRetimeDraft(
                                 segmentID: segment.id,
-                                original: segment,
+                                original: original,
                                 proposedRate: proposedRate
                             )
+                            guard primaryRetimeDraft != retimeDraft else { return }
+                            primaryRetimeDraft = retimeDraft
                             playbackController.beginScrubbing()
                             playbackController.updateScrubbing(
                                 to: segment.outputStart + proposedDuration
@@ -569,18 +649,22 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
                         let rawOutputTime = EditorPrimaryTimelinePresentation.trimOutputTime(
                             for: origin.original,
                             edge: edge,
-                            pointerX: value.location.x,
+                            translation: value.translation.width,
                             laneWidth: laneWidth,
                             outputDuration: duration,
                             minimumSegmentDuration: minimumPrimarySegmentDuration,
                             minimumOutputTime: origin.minimumOutputTime,
                             maximumOutputTime: origin.maximumOutputTime
                         )
-                        let outputTime = snappedEditableTime(
+                        let frameTime = snappedEditableTime(
                             rawOutputTime,
                             lowerBound: origin.minimumOutputTime,
                             upperBound: origin.maximumOutputTime
                         )
+                        let outputTime = min(max(magneticTime(frameTime, width: laneWidth, duration: duration,
+                            initial: [edge == .left ? origin.original.outputStart : origin.original.outputEnd]),
+                            origin.minimumOutputTime), origin.maximumOutputTime)
+                        timelineSnap.validate(edges: [outputTime])
                         let draft = PrimarySegmentTrimDraft(
                             segmentID: segment.id,
                             edge: edge,
@@ -589,6 +673,7 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
                             maximumOutputTime: origin.maximumOutputTime,
                             proposedOutputTime: outputTime
                         )
+                        guard primaryTrimDraft != draft else { return }
                         primaryTrimDraft = draft
                         playbackController.beginScrubbing()
                         playbackController.updateScrubbing(
@@ -665,7 +750,55 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
     }
 
     func selectPrimarySegment(_ id: UUID) {
+        selectedPrimarySegmentIDs = [id]
         editorStore.selection = .primarySegment(id)
+    }
+
+    func selectPrimarySegment(
+        _ id: UUID,
+        extendingWith modifiers: NSEvent.ModifierFlags
+    ) {
+        if modifiers.contains(.shift),
+           let anchorID = selectedPrimarySegmentID,
+           let segments = timelineMap?.segments,
+           let anchorIndex = segments.firstIndex(where: { $0.id == anchorID }),
+           let targetIndex = segments.firstIndex(where: { $0.id == id }) {
+            let lower = min(anchorIndex, targetIndex)
+            let upper = max(anchorIndex, targetIndex)
+            selectedPrimarySegmentIDs = Set(segments[lower...upper].map(\.id))
+            editorStore.selection = .primarySegment(id)
+            return
+        }
+        if modifiers.contains(.command) {
+            if selectedPrimarySegmentIDs.contains(id) {
+                selectedPrimarySegmentIDs.remove(id)
+                if selectedPrimarySegmentIDs.isEmpty {
+                    editorStore.selection = .canvas
+                } else if selectedPrimarySegmentID == id {
+                    let nextID = timelineMap?.segments.first(where: {
+                        selectedPrimarySegmentIDs.contains($0.id)
+                    })?.id
+                    editorStore.selection = nextID.map(EditorSelection.primarySegment)
+                        ?? .canvas
+                }
+            } else {
+                selectedPrimarySegmentIDs.insert(id)
+                editorStore.selection = .primarySegment(id)
+            }
+            return
+        }
+        selectedPrimarySegmentIDs = [id]
+        editorStore.selection = .primarySegment(id)
+    }
+
+    func prepareEmptyTimelineClick() {
+        switch editorStore.selection {
+        case .primarySegment, .zoom, .screenMotion, .cameraMotion, .mosaic, .sticker:
+            emptyClickClearsSelection = true
+        default:
+            emptyClickClearsSelection = !selectedPrimarySegmentIDs.isEmpty || selectedCameraSyncAnchorID != nil
+        }
+        clearTimelineSelection()
     }
 
     func clearTimelineSelection() {
@@ -673,7 +806,12 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
         primaryRetimeDraft = nil
         hoveredPrimarySegmentID = nil
         hoveredZoomID = nil
-        editorStore.selection = .canvas
+        hoveredMotionClip = nil
+        hoveredOverlaySelection = nil
+        selectedCameraSyncAnchorID = nil
+        selectedPrimarySegmentIDs.removeAll()
+        editorStore.selection = nil
+        playbackController.endHoverPreview()
     }
 
     func splitPrimarySegmentAtPlayhead() {
@@ -705,8 +843,10 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
     ) {
         guard NSEvent.modifierFlags.contains(.option) else { return }
         let fraction = TimeInterval(min(max(location.x / max(segmentWidth, 1), 0), 1))
-        var outputTime = segment.outputStart
-            + min(max(fraction, 0), 1) * segment.sourceDuration
+        var outputTime = EditorPrimarySegmentGeometry.outputTime(
+            in: segment,
+            atFraction: fraction
+        )
         // 磁吸：落点在片段端点或播放头附近（与剪刀提示同一 7pt 容差）时对齐。
         let laneWidth = max(timelineContentWidth, 1)
         let outputX = CGFloat(outputTime / max(timelineDuration, 0.001)) * laneWidth
@@ -795,14 +935,22 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
     func updatePrimarySegmentDrag(
         segmentID: UUID,
         translation: CGFloat,
-        documentX: CGFloat
+        documentX: CGFloat,
+        laneWidth: CGFloat,
+        duration: TimeInterval
     ) {
         if draggedPrimarySegmentID == nil {
+            timelineSnap.reset()
             draggedPrimarySegmentID = segmentID
         }
         guard draggedPrimarySegmentID == segmentID else { return }
-        primarySegmentDragTranslation = translation
-        primarySegmentDragDocumentX = documentX
+        guard let segment = primaryDisplaySegments.first(where: { $0.id == segmentID }) else { return }
+        let rawDelta = Double(translation / max(laneWidth, 1)) * duration
+        let delta = magneticDelta(rawDelta, start: segment.outputStart,
+            end: segment.outputStart + segment.outputDuration, mode: .move,
+            width: laneWidth, duration: duration)
+        primarySegmentDragTranslation = CGFloat(delta / max(duration, 0.001)) * laneWidth
+        primarySegmentDragDocumentX = documentX + primarySegmentDragTranslation - translation
     }
 
     func finishPrimarySegmentDrag(
@@ -816,21 +964,27 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
               laneWidth > 0,
               duration > 0 else { return }
 
-        let x = min(max(documentX, 0), laneWidth)
+        let x = min(max(primarySegmentDragDocumentX ?? documentX, 0), laneWidth)
         let segments = primaryDisplaySegments
         guard let target = segments.min(by: { lhs, rhs in
-            let lhsCenter = CGFloat(
-                (lhs.outputStart + lhs.sourceDuration / 2) / duration
-            ) * laneWidth
-            let rhsCenter = CGFloat(
-                (rhs.outputStart + rhs.sourceDuration / 2) / duration
-            ) * laneWidth
+            let lhsCenter = EditorPrimarySegmentGeometry.centerX(
+                of: lhs,
+                laneWidth: laneWidth,
+                timelineDuration: duration
+            )
+            let rhsCenter = EditorPrimarySegmentGeometry.centerX(
+                of: rhs,
+                laneWidth: laneWidth,
+                timelineDuration: duration
+            )
             return abs(lhsCenter - x) < abs(rhsCenter - x)
         }), target.id != segmentID else { return }
 
-        let targetCenter = CGFloat(
-            (target.outputStart + target.sourceDuration / 2) / duration
-        ) * laneWidth
+        let targetCenter = EditorPrimarySegmentGeometry.centerX(
+            of: target,
+            laneWidth: laneWidth,
+            timelineDuration: duration
+        )
         movePrimarySegment(
             segmentID,
             relativeTo: target.id,

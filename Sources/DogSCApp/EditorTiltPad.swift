@@ -21,11 +21,11 @@ struct EditorTiltPad: View {
             HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("3D 倾斜")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(Color.white.opacity(0.84))
+                        .font(.appUI(.caption, weight: .semibold))
+                        .foregroundStyle(EditorTheme.chrome(0.84))
                     Text("上下控制 X · 左右控制 Y")
-                        .font(.system(size: 9.5, weight: .medium))
-                        .foregroundStyle(Color.white.opacity(0.38))
+                        .font(.appUI(size: 9.5, weight: .medium))
+                        .foregroundStyle(EditorTheme.chrome(0.38))
                 }
 
                 Spacer(minLength: 8)
@@ -37,7 +37,7 @@ struct EditorTiltPad: View {
                     }
                 } label: {
                     Label("归零", systemImage: "scope")
-                        .font(.caption2.weight(.semibold))
+                        .font(.appUI(.caption2, weight: .semibold))
                 }
                 .buttonStyle(.editorGhost)
                 .controlSize(.small)
@@ -93,7 +93,7 @@ struct EditorTiltPad: View {
                             .stroke(
                                 active
                                     ? EditorTheme.platinumAccent.opacity(0.22)
-                                    : Color.white.opacity(0.075),
+                                    : EditorTheme.chrome(0.075),
                                 lineWidth: 0.75
                             )
                     }
@@ -103,7 +103,7 @@ struct EditorTiltPad: View {
                         LinearGradient(
                             colors: [
                                 EditorTheme.platinumAccent.opacity(0.11),
-                                Color.white.opacity(0.025),
+                                EditorTheme.chrome(0.025),
                             ],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
@@ -114,7 +114,7 @@ struct EditorTiltPad: View {
                             .stroke(
                                 LinearGradient(
                                     colors: [
-                                        Color.white.opacity(0.34),
+                                        EditorTheme.chrome(0.34),
                                         EditorTheme.platinumAccent.opacity(0.10),
                                     ],
                                     startPoint: .top,
@@ -170,14 +170,14 @@ struct EditorTiltPad: View {
                     Circle()
                         .fill(
                             LinearGradient(
-                                colors: [Color.white, EditorTheme.platinumAccent],
+                                colors: [EditorTheme.platinumAccent, EditorTheme.platinumAccent],
                                 startPoint: .top,
                                 endPoint: .bottom
                             )
                         )
                         .frame(width: active ? 16 : 14, height: active ? 16 : 14)
                         .overlay {
-                            Circle().stroke(Color.white.opacity(0.78), lineWidth: 0.75)
+                            Circle().stroke(EditorTheme.chrome(0.78), lineWidth: 0.75)
                         }
                         .shadow(color: Color.black.opacity(0.42), radius: 3, y: 1.5)
                 }

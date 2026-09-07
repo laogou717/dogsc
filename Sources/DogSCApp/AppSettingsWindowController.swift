@@ -7,27 +7,49 @@ import SwiftUI
 /// disabled while the editor's AppKit window is key.
 @MainActor
 final class AppSettingsWindowController {
-    private static let contentWidth: CGFloat = 620
-    private static let initialContentHeight: CGFloat = 370
+    private static let contentWidth: CGFloat = 780
+    private static let initialContentHeight: CGFloat = 640
 
     static let windowIdentifier = NSUserInterfaceItemIdentifier(
         "cn.laogou.dogsc.settings-window"
     )
 
+    static let shared = AppSettingsWindowController()
+
     private var controller: NSWindowController?
 
     func show() {
+        let screen = NSApp.keyWindow?.screen ?? NSScreen.main
         let controller = controller ?? makeController()
+        let isOpening = controller.window?.isVisible != true
+        if let window = controller.window, !window.isVisible, let screen {
+            let height = min(Self.initialContentHeight, max(screen.visibleFrame.height - 100, 400))
+            (window.contentViewController as? NSHostingController<AppSettingsView>)?.rootView = AppSettingsView(contentHeight: height)
+            window.setContentSize(NSSize(width: Self.contentWidth, height: height))
+            window.contentView?.layoutSubtreeIfNeeded()
+            let bounds = screen.visibleFrame
+            window.setFrameOrigin(NSPoint(x: bounds.midX - window.frame.width / 2,
+                                          y: bounds.midY - window.frame.height / 2))
+        }
         self.controller = controller
         NSApplication.shared.activate(ignoringOtherApps: true)
         controller.showWindow(nil)
+        if isOpening { controller.window?.makeFirstResponder(nil) }
         // A menu command closes its NSMenu after the action returns, and that
         // dismissal can immediately hand key status back to the recorder bar.
         // Promote settings on the next main-loop turn so the requested window,
         // not the tiny source panel, is ready for typing and keyboard control.
         DispatchQueue.main.async { [weak controller] in
-            controller?.window?.makeKeyAndOrderFront(nil)
+            guard let window = controller?.window, window.isVisible else { return }
+            window.makeKeyAndOrderFront(nil)
+            // Clear only the opening-time automatic first button proposal.
+            // Reopening an already visible window must preserve text/Tab focus.
+            if isOpening { window.makeFirstResponder(nil) }
         }
+    }
+
+    func hideForFirstLaunchGuide() {
+        controller?.window?.orderOut(nil)
     }
 
     private func makeController() -> NSWindowController {
@@ -44,20 +66,13 @@ final class AppSettingsWindowController {
             defer: false
         )
         let hostingController = NSHostingController(
-            rootView: AppSettingsView { [weak window] preferredHeight in
-                Self.resize(window, toContentHeight: preferredHeight)
-            }
+            rootView: AppSettingsView()
         )
         window.identifier = Self.windowIdentifier
-        window.title = "\(applicationName) 设置"
+        window.title = "\(applicationName) \(appLocalized("设置"))"
         window.contentViewController = hostingController
-        window.appearance = NSAppearance(named: .darkAqua)
-        window.backgroundColor = NSColor(
-            calibratedRed: 0.071,
-            green: 0.074,
-            blue: 0.079,
-            alpha: 1
-        )
+        window.appearance = AppPreferences.appearancePreference.appKitAppearance
+        window.backgroundColor = .windowBackgroundColor
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
         window.isReleasedWhenClosed = false
@@ -69,24 +84,11 @@ final class AppSettingsWindowController {
         // the deferred order-front in show() then places the requested window
         // above the idle recorder without outranking active recording controls.
         window.level = .floating
-        window.contentMinSize = NSSize(width: Self.contentWidth, height: 330)
-        window.contentMaxSize = NSSize(width: Self.contentWidth, height: 440)
+        window.contentMinSize = NSSize(width: Self.contentWidth, height: 400)
+        window.contentMaxSize = NSSize(width: Self.contentWidth, height: 640)
         window.standardWindowButton(.zoomButton)?.isEnabled = false
         window.center()
         return NSWindowController(window: window)
     }
 
-    private static func resize(_ window: NSWindow?, toContentHeight height: CGFloat) {
-        guard let window else { return }
-        let clampedHeight = min(max(height, 330), 440)
-        let currentFrame = window.frame
-        var contentRect = window.contentRect(forFrameRect: currentFrame)
-        contentRect.size = NSSize(width: contentWidth, height: clampedHeight)
-
-        var targetFrame = window.frameRect(forContentRect: contentRect)
-        targetFrame.origin.x = currentFrame.origin.x
-        targetFrame.origin.y = currentFrame.maxY - targetFrame.height
-        guard targetFrame != currentFrame else { return }
-        window.setFrame(targetFrame, display: true, animate: window.isVisible)
-    }
 }

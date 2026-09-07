@@ -12,11 +12,30 @@ public struct RequiredProjectMedia: Equatable, Sendable {
 
     public init(project: RecorderProject) {
         screenVideo = true
-        systemAudio = !project.audio.isSystemMuted && project.audio.systemVolume > 0
+        let recordingSegmentIDs: [UUID]
+        switch project.timeline.sourceSequence {
+        case .fullRecording:
+            recordingSegmentIDs = [TimelineMap.fullRecordingSegmentID]
+        case let .edited(segments):
+            recordingSegmentIDs = segments.map(\.id)
+        }
+        systemAudio = recordingSegmentIDs.contains { id in
+            let overrides = project.timeline.primarySegmentAudioOverrides[id]
+            let isMuted = overrides?.isSystemMuted ?? project.audio.isSystemMuted
+            let volume = overrides?.systemVolume
+                ?? project.audio.systemVolume
+            return !isMuted && volume > 0
+        }
         cameraVideo = project.media?.camera != nil && !project.camera.isHidden
         microphoneAudio = project.media?.microphone != nil
-            && !project.audio.isMicrophoneMuted
-            && project.audio.microphoneVolume > 0
+            && recordingSegmentIDs.contains { id in
+                let overrides = project.timeline.primarySegmentAudioOverrides[id]
+                let isMuted = overrides?.isMicrophoneMuted
+                    ?? project.audio.isMicrophoneMuted
+                let volume = overrides?.microphoneVolume
+                    ?? project.audio.microphoneVolume
+                return !isMuted && volume > 0
+            }
         backgroundImage = project.canvas.backgroundSource.isImage
         backgroundVideo = project.canvas.backgroundSource.isVideo
     }

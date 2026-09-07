@@ -34,12 +34,10 @@ struct CanvasPlaybackEvaluationContext: Equatable, Sendable {
     let cameraMotionTrack: CameraMotionTrack
 
     func frame(at presentationTime: TimeInterval) -> SharedPreviewPlaybackFrame {
-        let primaryRange = primaryPlan?
-            .slice(atOutputTime: presentationTime)
-            .flatMap { MediaTimeRange(start: $0.outputStart, duration: $0.duration) }
-        let cameraRange = cameraPlan?
-            .slice(atOutputTime: presentationTime)
-            .flatMap { MediaTimeRange(start: $0.outputStart, duration: $0.duration) }
+        let primarySlice = primaryPlan?.slice(atOutputTime: presentationTime)
+        let primaryRange = primarySlice.flatMap {
+            MediaTimeRange(start: $0.outputStart, duration: $0.duration)
+        }
         let plan = FrameSceneEvaluator.renderPlan(
             project: project,
             presentationTime: presentationTime,
@@ -55,7 +53,7 @@ struct CanvasPlaybackEvaluationContext: Equatable, Sendable {
             screenMotionTrack: screenMotionTrack,
             cameraMotionTrack: cameraMotionTrack,
             activePrimaryRange: primaryRange,
-            activeCameraRange: cameraRange
+            cameraTimeline: cameraPlan
         )
         // Reuse the already-evaluated presentation scene instead of running
         // the complete pointer/zoom/projection evaluator a second time.
@@ -75,8 +73,8 @@ enum EditorPreviewResolutionMode: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .low: return "低分辨率"
-        case .full: return "完整分辨率"
+        case .low: return appLocalized("低分辨率")
+        case .full: return appLocalized("完整分辨率")
         }
     }
 }
@@ -148,9 +146,11 @@ enum CanvasPreviewInteractionPolicy {
 /// actively-mutated AVFoundation object is generally Sendable.
 final class ImmutablePreviewAsset: @unchecked Sendable {
     let asset: AVAsset
+    let videoComposition: AVVideoComposition?
 
-    init(_ asset: AVAsset) {
+    init(_ asset: AVAsset, videoComposition: AVVideoComposition? = nil) {
         self.asset = asset
+        self.videoComposition = videoComposition
     }
 }
 
@@ -162,9 +162,13 @@ final class ImmutablePreviewAsset: @unchecked Sendable {
 final class PausedPreviewFrameRequest: @unchecked Sendable {
     private let generator: AVAssetImageGenerator
 
-    init(_ asset: AVAsset) {
+    init(_ asset: AVAsset, videoComposition: AVVideoComposition? = nil) {
         generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
+        generator.videoComposition = videoComposition
+        // Multi-source instructions already orient every layer into the
+        // canonical render size. Applying a track transform a second time can
+        // rotate imported portrait clips only in paused/thumbnail frames.
+        generator.appliesPreferredTrackTransform = videoComposition == nil
         generator.requestedTimeToleranceBefore = .zero
         generator.requestedTimeToleranceAfter = .zero
     }
@@ -183,7 +187,10 @@ enum PausedPreviewFrameLoader {
         from source: ImmutablePreviewAsset,
         at time: CMTime
     ) async throws -> CGImage {
-        let request = PausedPreviewFrameRequest(source.asset)
+        let request = PausedPreviewFrameRequest(
+            source.asset,
+            videoComposition: source.videoComposition
+        )
         return try await withTaskCancellationHandler {
             try await request.image(at: time)
         } onCancel: {

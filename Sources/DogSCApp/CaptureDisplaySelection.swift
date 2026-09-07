@@ -35,6 +35,7 @@ final class CaptureDisplaySelector {
             panel.onStart = { [weak self] in self?.startSelectedDisplay(token: token) }
             panel.onCancel = { [weak self] in self?.cancelSelection(token: token) }
             panel.orderFrontRegardless()
+            animateRecorderOverlayIn(panel)
             return panel
         }
         installRecorderMoveObservers()
@@ -168,12 +169,13 @@ private final class DisplaySelectionPanel: NSPanel {
             defer: false
         )
         setFrame(screen.frame, display: false)
+        appearance = NSAppearance(named: .aqua)
         isOpaque = false
         backgroundColor = .clear
         hasShadow = false
         level = CaptureWindowLevelPolicy.level(for: .selectionOverlay)
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
-        sharingType = CommandLine.arguments.contains("--design-review") ? .readOnly : .none
+        sharingType = .readOnly
         hostingView = NSHostingView(
             rootView: makeRoot(selected: false, anchorFrame: nil)
         )
@@ -211,6 +213,7 @@ private final class DisplaySelectionPanel: NSPanel {
 }
 
 private struct DisplaySelectionOverlay: View {
+    @State private var thumbnail: NSImage?
     let display: CaptureDisplay
     let selected: Bool
     let screenFrame: CGRect
@@ -221,7 +224,7 @@ private struct DisplaySelectionOverlay: View {
     let onCancel: () -> Void
 
     var body: some View {
-        let cardSize = CGSize(width: 490, height: 199)
+        let cardSize = CGSize(width: 350, height: 178)
         let cardCenter = CaptureSelectionCardPlacement.localCenter(
             anchorFrame: anchorFrame,
             cardSize: cardSize,
@@ -229,95 +232,54 @@ private struct DisplaySelectionOverlay: View {
             visibleFrame: visibleFrame
         )
         ZStack {
-            Color.black.opacity(selected ? 0.46 : 0.64)
+            Color.black.opacity(selected ? 0.16 : 0.24)
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(
-                    selected ? captureSelectionAccent : Color.white.opacity(0.11),
+                    selected ? captureSelectionAccent : Color.black.opacity(0.11),
                     lineWidth: selected ? 3 : 1
                 )
                 .padding(10)
 
-            VStack(alignment: .leading, spacing: 22) {
-                HStack(alignment: .center, spacing: 16) {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(spacing: 13) {
                     ZStack {
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .fill(Color.white.opacity(0.065))
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                    .stroke(Color.white.opacity(0.1))
-                            }
-                        Image(systemName: selected ? "display.and.arrow.down" : "display")
-                            .font(.system(size: 28, weight: .medium))
-                            .foregroundStyle(selected ? captureSelectionAccent : EditorTheme.platinumAccent)
-                            .symbolEffect(.bounce, value: selected)
-                    }
-                    .frame(width: 62, height: 62)
-                    .accessibilityHidden(true)
-
+                        if let thumbnail {
+                            Image(nsImage: thumbnail).resizable().aspectRatio(contentMode: .fit)
+                                .padding(4).clipShape(RoundedRectangle(cornerRadius: 8))
+                        } else {
+                            Image(systemName: "display").font(.appUI(size: 26, weight: .regular))
+                        }
+                    }.frame(width: 70, height: 50)
+                        .modifier(RecorderRaisedSurface(radius: 10, selected: selected))
                     VStack(alignment: .leading, spacing: 5) {
-                        Text("显示器")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(Color.white.opacity(0.48))
-                        Text(display.name)
-                            .font(.system(size: 23, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .lineLimit(1)
-                        Text("\(display.width) × \(display.height)  ·  \(display.refreshRate) Hz")
-                            .font(.system(.callout, design: .monospaced).weight(.medium))
-                            .foregroundStyle(Color.white.opacity(0.55))
+                        Text(display.name).font(.appUI(size: 15, weight: .medium)).lineLimit(1)
+                        Text("\(display.width) × \(display.height) · \(display.refreshRate) Hz")
+                            .font(.appUI(size: 11)).foregroundStyle(RecorderStyle.muted)
                     }
-
-                    Spacer(minLength: 12)
-
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(selected ? captureSelectionAccent : Color.white.opacity(0.34))
-                            .frame(width: 6, height: 6)
-                        Text(selected ? "已锁定" : "待选择")
-                            .font(.system(size: 11, weight: .semibold))
-                    }
-                    .foregroundStyle(selected ? captureSelectionAccent : Color.white.opacity(0.52))
-                    .padding(.horizontal, 11)
-                    .frame(height: 28)
-                    .background(Color.white.opacity(0.055), in: Capsule())
+                    Spacer(minLength: 0)
+                    if selected { Image(systemName: "checkmark.circle.fill").foregroundStyle(RecorderStyle.mint) }
                 }
-
-                Rectangle()
-                    .fill(Color.white.opacity(0.08))
-                    .frame(height: 1)
-
+                Divider()
                 HStack(spacing: 10) {
-                    Button(action: onCancel) {
-                        Label("取消", systemImage: "xmark")
-                            .font(.system(size: 14, weight: .semibold))
-                            .frame(width: 104, height: 44)
-                    }
-                    .buttonStyle(CaptureSelectionSecondaryButtonStyle())
-                    .focusEffectDisabled()
-                    .help("按 Esc 取消")
-
-                    Spacer()
-
+                    Button(action: onCancel) { Text("取消").frame(width: 74, height: 36) }
+                        .buttonStyle(RecorderButtonStyle()).help("按 Esc 取消")
+                    Spacer(minLength: 0)
                     Button(action: selected ? onStart : onSelect) {
-                        Label(
-                            selected ? "开始录制" : "选择此显示器",
-                            systemImage: selected ? "record.circle" : "checkmark"
-                        )
-                        .font(.system(size: 15, weight: .semibold))
-                        .frame(width: 190, height: 44)
-                    }
-                    .buttonStyle(CaptureSelectionPrimaryButtonStyle())
-                    .focusEffectDisabled()
-                }
+                        Text(selected ? "开始录制" : "选择此显示器").frame(width: 142, height: 36)
+                    }.buttonStyle(RecorderButtonStyle(primary: true))
+                }.font(.appUI(size: 12, weight: .medium)).focusEffectDisabled()
             }
-            .padding(24)
-            .frame(width: 490)
+            .foregroundStyle(RecorderStyle.ink)
+            .padding(18)
+            .frame(width: 350, height: 178)
             .captureSelectionCardSurface()
+            .modifier(RecorderSelectionEntrance())
             .position(cardCenter)
-            .scaleEffect(selected ? 1.01 : 1)
+
             .animation(SpringMotion.fluid, value: selected)
         }
         .ignoresSafeArea()
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(.light)
+        .task(id: display.id) { thumbnail = await RecorderSourceThumbnail.image(displayID: display.id) }
     }
 }

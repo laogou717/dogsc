@@ -60,13 +60,13 @@ extension CanvasPreview {
                                 .fill(Color(white: 0.055))
                                 .overlay {
                                     Circle().stroke(
-                                        editorAccent.opacity(isResizing ? 1 : 0.90),
+                                        EditorTheme.mediaAccent.opacity(isResizing ? 1 : 0.90),
                                         lineWidth: isResizing ? 2.5 : 2
                                     )
                                 }
                                 .shadow(
                                     color: isResizing
-                                        ? editorAccent.opacity(0.32)
+                                        ? EditorTheme.mediaAccent.opacity(0.32)
                                         : .black.opacity(0.7),
                                     radius: isResizing ? 5 : 2
                                 )
@@ -166,13 +166,13 @@ extension CanvasPreview {
                             .fill(Color(white: 0.055))
                             .overlay {
                                 Circle().stroke(
-                                    editorAccent.opacity(isResizing ? 1 : 0.90),
+                                    EditorTheme.mediaAccent.opacity(isResizing ? 1 : 0.90),
                                     lineWidth: isResizing ? 2.5 : 2
                                 )
                             }
                             .shadow(
                                 color: isResizing
-                                    ? editorAccent.opacity(0.32)
+                                    ? EditorTheme.mediaAccent.opacity(0.32)
                                     : .black.opacity(0.7),
                                 radius: isResizing ? 5 : 2
                             )
@@ -202,7 +202,7 @@ extension CanvasPreview {
                         path.addLine(to: rotationGeometry.handle)
                     }
                     .stroke(
-                        editorAccent.opacity(isRotating ? 0.92 : 0.62),
+                        EditorTheme.mediaAccent.opacity(isRotating ? 0.92 : 0.62),
                         style: StrokeStyle(lineWidth: isRotating ? 1.75 : 1.25)
                     )
                     .frame(width: canvasSize.width, height: canvasSize.height)
@@ -213,18 +213,18 @@ extension CanvasPreview {
                         .fill(Color(white: 0.055))
                         .overlay {
                             Circle().stroke(
-                                editorAccent.opacity(isRotating ? 1 : 0.90),
+                                EditorTheme.mediaAccent.opacity(isRotating ? 1 : 0.90),
                                 lineWidth: isRotating ? 2.5 : 2
                             )
                         }
                         .overlay {
                             Image(systemName: "arrow.triangle.2.circlepath")
-                                .font(.system(size: 8.5, weight: .bold))
-                                .foregroundStyle(editorAccent)
+                                .font(.appUI(size: 8.5, weight: .bold))
+                                .foregroundStyle(EditorTheme.mediaAccent)
                         }
                         .shadow(
                             color: isRotating
-                                ? editorAccent.opacity(0.34)
+                                ? EditorTheme.mediaAccent.opacity(0.34)
                                 : .black.opacity(0.7),
                             radius: isRotating ? 6 : 2
                         )
@@ -245,161 +245,6 @@ extension CanvasPreview {
                 }
             }
 
-            if let progress = scene.progress {
-                let width = canvasSize.width * CGFloat(
-                    min(max(progress.width, 0.05), 1)
-                )
-                let bandHeight = max(
-                    CGFloat(progress.bandHeight) * canvasSize.width / 1_920,
-                    24
-                )
-                let centerX = min(
-                    max(
-                        canvasSize.width * CGFloat(progress.position.x),
-                        width / 2
-                    ),
-                    canvasSize.width - width / 2
-                )
-                let center = CGPoint(
-                    x: centerX,
-                    y: progressCenterY(
-                        progress,
-                        canvasHeight: canvasSize.height,
-                        bandHeight: bandHeight
-                    )
-                )
-                let selection = EditorSelection.progress
-                let selected = editorStore.selection == selection
-                let chrome = canvasObjectChrome(for: selection)
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(
-                        chrome.phase == .idle
-                            ? Color.black.opacity(0.001)
-                            : chrome.fillColor
-                    )
-                    .contentShape(Rectangle())
-                    .overlay {
-                        if chrome.showsOutline {
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .stroke(chrome.strokeColor, lineWidth: chrome.lineWidth)
-                        }
-                    }
-                    .shadow(color: chrome.glowColor, radius: chrome.glowRadius)
-                    .frame(width: width, height: bandHeight)
-                    .position(center)
-                    .onTapGesture {
-                        onCanvasFocused()
-                        editorStore.selection = selection
-                    }
-                    .gesture(overlayMoveGesture(
-                        selection: selection,
-                        canvasSize: canvasSize,
-                        elementSize: CGSize(width: width, height: bandHeight)
-                    ))
-                    .onHover {
-                        updateCanvasHover(selection, hovering: $0)
-                    }
-                    .accessibilityLabel("成片进度条")
-                    .accessibilityHint("点击以选中，拖动以调整位置")
-                    .accessibilityAddTraits(
-                        selected ? [.isButton, .isSelected] : .isButton
-                    )
-                    .accessibilityAction {
-                        editorStore.selection = selection
-                    }
-                    .zIndex(100)
-                if selected {
-                    ForEach(
-                        [ProgressResizeEdge.leading, .trailing],
-                        id: \.self
-                    ) { edge in
-                        let active = progressResizeOrigin?.edge == edge
-                        let edgeX = edge == .leading
-                            ? center.x - width / 2
-                            : center.x + width / 2
-                        Capsule(style: .continuous)
-                            .fill(Color(white: 0.055))
-                            .overlay {
-                                Capsule(style: .continuous)
-                                    .stroke(
-                                        editorAccent.opacity(active ? 1 : 0.90),
-                                        lineWidth: active ? 2.5 : 2
-                                    )
-                            }
-                            .shadow(
-                                color: active
-                                    ? editorAccent.opacity(0.34)
-                                    : .black.opacity(0.7),
-                                radius: active ? 6 : 2
-                            )
-                            .frame(
-                                width: 8,
-                                height: min(max(bandHeight * 0.56, 14), 28)
-                            )
-                            .frame(width: 32, height: max(bandHeight, 34))
-                            .contentShape(Rectangle())
-                            .position(x: edgeX, y: center.y)
-                            .scaleEffect(active ? 1.10 : 1)
-                            .animation(SpringMotion.interactive, value: active)
-                            .highPriorityGesture(progressResizeGesture(
-                                edge: edge,
-                                leading: Double((center.x - width / 2) / canvasSize.width),
-                                trailing: Double((center.x + width / 2) / canvasSize.width),
-                                canvasSize: canvasSize
-                            ))
-                            .help(edge == .leading ? "拖动调整左边界" : "拖动调整右边界")
-                            .accessibilityHidden(true)
-                            .zIndex(101)
-                    }
-
-                    let heightEdge = progressHeightResizeEdge(
-                        for: progress.placement
-                    )
-                    let heightActive = progressHeightResizeOrigin?.edge == heightEdge
-                    let heightY = heightActive
-                        ? progressHeightDragHandleY ?? progressHeightHandleY(
-                            edge: heightEdge,
-                            centerY: center.y,
-                            bandHeight: bandHeight
-                        )
-                        : progressHeightHandleY(
-                            edge: heightEdge,
-                            centerY: center.y,
-                            bandHeight: bandHeight
-                        )
-                    Capsule(style: .continuous)
-                        .fill(Color(white: 0.055))
-                        .overlay {
-                            Capsule(style: .continuous)
-                                .stroke(
-                                    editorAccent.opacity(heightActive ? 1 : 0.90),
-                                    lineWidth: heightActive ? 2.5 : 2
-                                )
-                        }
-                        .shadow(
-                            color: heightActive
-                                ? editorAccent.opacity(0.34)
-                                : .black.opacity(0.7),
-                            radius: heightActive ? 6 : 2
-                        )
-                        .frame(width: 22, height: 6)
-                        .frame(width: 32, height: 26)
-                        .contentShape(Rectangle())
-                        .position(x: center.x, y: heightY)
-                        .scaleEffect(heightActive ? 1.06 : 1)
-                        .animation(SpringMotion.interactive, value: heightActive)
-                        .highPriorityGesture(progressHeightResizeGesture(
-                            edge: heightEdge,
-                            placement: progress.placement,
-                            centerY: center.y,
-                            visibleHeight: bandHeight,
-                            canvasSize: canvasSize
-                        ))
-                        .help("拖动调整条带高度")
-                        .accessibilityHidden(true)
-                        .zIndex(101)
-                }
-            }
         }
         .frame(width: canvasSize.width, height: canvasSize.height)
     }
@@ -449,26 +294,10 @@ extension CanvasPreview {
                 if overlayDragSelection != selection {
                     onCanvasFocused()
                     overlayDragSelection = selection
-                    if selection == .progress,
-                       let progress = editorStore.project.timeline.progressOverlay {
-                        let halfHeight = Double(
-                            (elementSize?.height ?? 0) / max(canvasSize.height, 1)
-                        ) / 2
-                        let effectiveY: Double = switch progress.placement {
-                        case .top: halfHeight
-                        case .bottom: 1 - halfHeight
-                        case .custom: progress.position.y
-                        }
-                        overlayDragOrigin = NormalizedPoint(
-                            x: progress.position.x,
-                            y: effectiveY
-                        )
-                    } else {
-                        overlayDragOrigin = overlayPosition(
-                            for: selection,
-                            in: editorStore.project
-                        )
-                    }
+                    overlayDragOrigin = overlayPosition(
+                        for: selection,
+                        in: editorStore.project
+                    )
                     editorStore.beginInteraction(
                         tool: .select,
                         selection: selection
@@ -498,43 +327,6 @@ extension CanvasPreview {
                         canvasSnapGuideX = snapped.guideX
                         canvasSnapGuideY = snapped.guideY
                         project.timeline.stickerClips[index].position = snapped.point
-                    case .progress:
-                        guard var progress = project.timeline.progressOverlay else { return }
-                        let size = elementSize ?? .zero
-                        let normalizedSize = CGSize(
-                            width: size.width / max(canvasSize.width, 1),
-                            height: size.height / max(canvasSize.height, 1)
-                        )
-                        let snapped = snappedOverlayCenter(
-                            rawPosition,
-                            normalizedSize: normalizedSize,
-                            canvasSize: canvasSize
-                        )
-                        let y = snapped.point.y
-                        canvasSnapGuideX = snapped.guideX
-                        if y <= max(Double(normalizedSize.height) / 2 + 0.04, 0.10) {
-                            progress.placement = .top
-                            progress.position = NormalizedPoint(
-                                x: snapped.point.x,
-                                y: Double(normalizedSize.height) / 2
-                            )
-                            canvasSnapGuideY = 0
-                        } else if y >= 1 - max(
-                            Double(normalizedSize.height) / 2 + 0.04,
-                            0.10
-                        ) {
-                            progress.placement = .bottom
-                            progress.position = NormalizedPoint(
-                                x: snapped.point.x,
-                                y: 1 - Double(normalizedSize.height) / 2
-                            )
-                            canvasSnapGuideY = 1
-                        } else {
-                            progress.placement = .custom
-                            progress.position = snapped.point
-                            canvasSnapGuideY = snapped.guideY
-                        }
-                        project.timeline.progressOverlay = progress
                     default:
                         break
                     }
@@ -556,252 +348,6 @@ extension CanvasPreview {
             }
     }
 
-    func progressCenterY(
-        _ progress: FrameProgressScene,
-        canvasHeight: CGFloat,
-        bandHeight: CGFloat
-    ) -> CGFloat {
-        switch progress.placement {
-        case .top: return bandHeight / 2
-        case .bottom: return canvasHeight - bandHeight / 2
-        case .custom:
-            return min(max(
-                canvasHeight * progress.position.y,
-                bandHeight / 2
-            ), canvasHeight - bandHeight / 2)
-        }
-    }
-
-    func progressResizeGesture(
-        edge: ProgressResizeEdge,
-        leading: Double,
-        trailing: Double,
-        canvasSize: CGSize
-    ) -> some Gesture {
-        DragGesture(minimumDistance: 0, coordinateSpace: .global)
-            .onChanged { value in
-                if progressResizeOrigin == nil {
-                    onCanvasFocused()
-                    progressResizeOrigin = ProgressResizeGestureOrigin(
-                        edge: edge,
-                        leading: min(max(leading, 0), 1),
-                        trailing: min(max(trailing, 0), 1)
-                    )
-                    editorStore.beginInteraction(
-                        tool: .select,
-                        selection: .progress
-                    )
-                }
-                guard let origin = progressResizeOrigin,
-                      origin.edge == edge else { return }
-                // Projects created before the current 20% inspector minimum
-                // may contain a narrower band. Preserve that width on pickup,
-                // but never let the gesture shrink it further.
-                let minimumWidth = min(
-                    0.20,
-                    max(origin.trailing - origin.leading, 0.05)
-                )
-                let delta = Double(
-                    value.translation.width / max(canvasSize.width, 1)
-                )
-                let threshold = CanvasSnapMath.normalizedThreshold(
-                    along: canvasSize.width
-                )
-                var leading = origin.leading
-                var trailing = origin.trailing
-                var guide: Double?
-                switch edge {
-                case .leading:
-                    leading = min(max(origin.leading + delta, 0), trailing - minimumWidth)
-                    if let anchor = [0.0, 0.5, 1.0].first(where: {
-                        abs(leading - $0) <= threshold
-                            && $0 <= trailing - minimumWidth
-                    }) {
-                        leading = anchor
-                        guide = anchor
-                    }
-                case .trailing:
-                    trailing = max(min(origin.trailing + delta, 1), leading + minimumWidth)
-                    if let anchor = [0.0, 0.5, 1.0].first(where: {
-                        abs(trailing - $0) <= threshold
-                            && $0 >= leading + minimumWidth
-                    }) {
-                        trailing = anchor
-                        guide = anchor
-                    }
-                }
-                canvasSnapGuideX = guide
-                editorStore.updateInteraction { project in
-                    guard var progress = project.timeline.progressOverlay else {
-                        return
-                    }
-                    progress.width = trailing - leading
-                    progress.position = NormalizedPoint(
-                        x: (leading + trailing) / 2,
-                        y: progress.position.y
-                    )
-                    project.timeline.progressOverlay = progress
-                }
-            }
-            .onEnded { _ in
-                defer {
-                    progressResizeOrigin = nil
-                    canvasSnapGuideX = nil
-                }
-                do {
-                    _ = try editorStore.commitInteraction(
-                        actionName: "调整进度条宽度"
-                    )
-                } catch {
-                    editorStore.cancelInteraction()
-                    onError(error.localizedDescription)
-                }
-            }
-    }
-
-    func progressHeightResizeGesture(
-        edge: ProgressHeightResizeEdge,
-        placement: ProgressOverlayPlacement,
-        centerY: CGFloat,
-        visibleHeight: CGFloat,
-        canvasSize: CGSize
-    ) -> some Gesture {
-        DragGesture(minimumDistance: 0, coordinateSpace: .global)
-            .onChanged { value in
-                if progressHeightResizeOrigin == nil {
-                    onCanvasFocused()
-                    guard let progress = editorStore.project.timeline
-                        .progressOverlay else { return }
-                    let fixedCanvasY = switch edge {
-                    case .top: centerY + visibleHeight / 2
-                    case .bottom: centerY - visibleHeight / 2
-                    }
-                    let handleCanvasY = progressHeightHandleY(
-                        edge: edge,
-                        centerY: centerY,
-                        bandHeight: visibleHeight
-                    )
-                    progressHeightResizeOrigin = ProgressHeightResizeGestureOrigin(
-                        edge: edge,
-                        bandHeight: progress.bandHeight,
-                        positionY: progress.position.y,
-                        fixedCanvasY: fixedCanvasY,
-                        handleCanvasY: handleCanvasY,
-                        placement: placement
-                    )
-                    progressHeightDragHandleY = handleCanvasY
-                    editorStore.beginInteraction(
-                        tool: .select,
-                        selection: .progress
-                    )
-                }
-                guard let origin = progressHeightResizeOrigin,
-                      origin.edge == edge else { return }
-                // Keep the visible grip attached to the pointer's original
-                // canvas-space edge. Re-evaluating it from the resized band
-                // makes SwiftUI's moving gesture surface jump toward the bar
-                // on the first drag tick.
-                progressHeightDragHandleY = origin.handleCanvasY
-                    + value.translation.height
-                let visualDelta = edge == .bottom
-                    ? value.translation.height
-                    : -value.translation.height
-                if abs(visualDelta) <= 0.01 {
-                    editorStore.updateInteraction { project in
-                        guard var progress = project.timeline.progressOverlay else {
-                            return
-                        }
-                        progress.bandHeight = origin.bandHeight
-                        if origin.placement == .custom {
-                            progress.position = NormalizedPoint(
-                                x: progress.position.x,
-                                y: origin.positionY
-                            )
-                        }
-                        project.timeline.progressOverlay = progress
-                    }
-                    return
-                }
-                let canvasScale = max(Double(canvasSize.width) / 1_920, 0.001)
-                let renderedFloor = 24 / canvasScale
-                let baseHeight = visualDelta > 0
-                    ? max(origin.bandHeight, renderedFloor)
-                    : origin.bandHeight
-                var maximumHeight = 180.0
-                if origin.placement == .custom {
-                    let availableHeight = switch edge {
-                    case .top: origin.fixedCanvasY
-                    case .bottom: canvasSize.height - origin.fixedCanvasY
-                    }
-                    maximumHeight = min(
-                        maximumHeight,
-                        max(Double(availableHeight) / canvasScale, 28)
-                    )
-                }
-                let bandHeight = min(max(
-                    baseHeight + Double(visualDelta) / canvasScale,
-                    28
-                ), maximumHeight)
-                let renderedHeight = min(
-                    max(CGFloat(bandHeight * canvasScale), 24),
-                    canvasSize.height
-                )
-                editorStore.updateInteraction { project in
-                    guard var progress = project.timeline.progressOverlay else {
-                        return
-                    }
-                    progress.bandHeight = bandHeight
-                    if origin.placement == .custom {
-                        let centerY = switch edge {
-                        case .top:
-                            origin.fixedCanvasY - renderedHeight / 2
-                        case .bottom:
-                            origin.fixedCanvasY + renderedHeight / 2
-                        }
-                        progress.position = NormalizedPoint(
-                            x: progress.position.x,
-                            y: min(max(
-                                Double(centerY / max(canvasSize.height, 1)),
-                                0
-                            ), 1)
-                        )
-                    }
-                    project.timeline.progressOverlay = progress
-                }
-            }
-            .onEnded { _ in
-                defer {
-                    progressHeightResizeOrigin = nil
-                    progressHeightDragHandleY = nil
-                }
-                do {
-                    _ = try editorStore.commitInteraction(
-                        actionName: "调整进度条高度"
-                    )
-                } catch {
-                    editorStore.cancelInteraction()
-                    onError(error.localizedDescription)
-                }
-            }
-    }
-
-    func progressHeightResizeEdge(
-        for placement: ProgressOverlayPlacement
-    ) -> ProgressHeightResizeEdge {
-        placement == .bottom ? .top : .bottom
-    }
-
-    func progressHeightHandleY(
-        edge: ProgressHeightResizeEdge,
-        centerY: CGFloat,
-        bandHeight: CGFloat
-    ) -> CGFloat {
-        switch edge {
-        case .top: centerY - bandHeight / 2
-        case .bottom: centerY + bandHeight / 2
-        }
-    }
-
     func overlayPosition(
         for selection: EditorSelection,
         in project: RecorderProject
@@ -809,8 +355,6 @@ extension CanvasPreview {
         switch selection {
         case let .sticker(id):
             return project.timeline.stickerClips.first { $0.id == id }?.position
-        case .progress:
-            return project.timeline.progressOverlay?.position
         default:
             return nil
         }

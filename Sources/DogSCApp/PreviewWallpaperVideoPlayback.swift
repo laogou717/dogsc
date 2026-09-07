@@ -94,6 +94,10 @@ final class PreviewWallpaperVideoPlayback {
 
     func synchronize(to tick: EditorPlaybackRenderTick?) {
         latestTick = tick
+        if tick == nil {
+            player?.pause()
+            return
+        }
         guard let tick, duration > 0, isPrimed else { return }
         applySynchronization(tick, force: false)
     }

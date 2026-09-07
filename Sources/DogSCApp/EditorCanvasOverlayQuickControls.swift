@@ -15,7 +15,7 @@ private struct CanvasQuickMenuLabel: View {
         HStack(spacing: 5) {
             Label(title, systemImage: systemImage)
             Image(systemName: "chevron.down")
-                .font(.system(size: 8, weight: .bold))
+                .font(.appUI(size: 8, weight: .bold))
                 .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 7)
@@ -38,39 +38,6 @@ private struct CanvasQuickMenuLabel: View {
                 isHovered = hovering
             }
         }
-    }
-}
-
-private struct CanvasQuickTextField: View {
-    let placeholder: String
-    @Binding var text: String
-    @FocusState private var isFocused: Bool
-
-    var body: some View {
-        TextField(placeholder, text: $text)
-            .textFieldStyle(.plain)
-            .focused($isFocused)
-            .frame(width: 118)
-            .padding(.horizontal, 8)
-            .frame(height: 30)
-            .background(
-                Color.black.opacity(isFocused ? 0.34 : 0.24),
-                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .stroke(
-                        isFocused
-                            ? EditorTheme.platinumAccent.opacity(0.46)
-                            : Color.white.opacity(0.10),
-                        lineWidth: isFocused ? 1 : 0.75
-                    )
-            }
-            .shadow(
-                color: EditorTheme.platinumAccent.opacity(isFocused ? 0.12 : 0),
-                radius: 5
-            )
-            .animation(SpringMotion.interactive, value: isFocused)
     }
 }
 
@@ -143,58 +110,6 @@ extension CanvasPreview {
                             quickEditorTransition(anchor: placement.transitionAnchor)
                         )
                 }
-            case .progress:
-                if let overlay = editorStore.previewProject.timeline.progressOverlay,
-                   let progress = scene.progress {
-                    let bandHeight = max(
-                        CGFloat(progress.bandHeight) * canvasSize.width / 1_920,
-                        24
-                    )
-                    let centerY = progressCenterY(
-                        progress,
-                        canvasHeight: canvasSize.height,
-                        bandHeight: bandHeight
-                    )
-                    let width = canvasSize.width * CGFloat(
-                        min(max(progress.width, 0.05), 1)
-                    )
-                    let centerX = min(
-                        max(
-                            canvasSize.width * CGFloat(progress.position.x),
-                            width / 2
-                        ),
-                        canvasSize.width - width / 2
-                    )
-                    let heightEdge = progressHeightResizeEdge(
-                        for: progress.placement
-                    )
-                    let heightHandleY = progressHeightHandleY(
-                        edge: heightEdge,
-                        centerY: centerY,
-                        bandHeight: bandHeight
-                    )
-                    let objectBounds = CGRect(
-                        x: centerX - width / 2,
-                        y: centerY - bandHeight / 2,
-                        width: width,
-                        height: bandHeight
-                    ).union(CGRect(
-                        x: centerX - 14,
-                        y: heightHandleY - 14,
-                        width: 28,
-                        height: 28
-                    ))
-                    let placement = quickEditorPlacement(
-                        bounds: objectBounds,
-                        canvasSize: canvasSize,
-                        width: 324
-                    )
-                    progressQuickEditor(overlay, time: time)
-                        .position(placement.point)
-                        .transition(
-                            quickEditorTransition(anchor: placement.transitionAnchor)
-                        )
-                }
             default:
                 EmptyView()
             }
@@ -233,7 +148,7 @@ extension CanvasPreview {
                     editsSpotlight ? "暗度" : "强度",
                     systemImage: "circle.lefthalf.filled"
                 )
-                    .font(.system(size: 10, weight: .medium))
+                    .font(.appUI(size: 10, weight: .medium))
                     .foregroundStyle(Color.white.opacity(0.68))
                 EditorSlider(
                     value: quickMosaicBinding(
@@ -263,7 +178,7 @@ extension CanvasPreview {
                 )
                 Divider().frame(height: 22)
                 Label("圆角", systemImage: "square")
-                    .font(.system(size: 10, weight: .medium))
+                    .font(.appUI(size: 10, weight: .medium))
                     .foregroundStyle(Color.white.opacity(0.68))
                 EditorSlider(
                     value: quickMosaicBinding(
@@ -290,28 +205,22 @@ extension CanvasPreview {
     func stickerQuickEditor(_ clip: StickerClip) -> some View {
         quickEditorCard {
             HStack(spacing: 9) {
-                Menu {
-                    ForEach(StickerAnimationPreset.allCases, id: \.self) { preset in
-                        Button(stickerAnimationTitle(preset)) {
-                            replaceSticker(id: clip.id, actionName: "选择贴图动画") {
-                                $0.animation = preset
-                            }
-                        }
+                EditorActionMenu(title: "贴图动画", items: StickerAnimationPreset.allCases.map { preset in
+                    .action(stickerAnimationTitle(preset), isOn: clip.animation == preset) {
+                        replaceSticker(id: clip.id, actionName: "选择贴图动画") { $0.animation = preset }
                     }
-                } label: {
+                }) {
                     CanvasQuickMenuLabel(
                         title: stickerAnimationTitle(clip.animation),
                         systemImage: "sparkles"
                     )
                 }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
                 .help("选择贴图动画")
                 .accessibilityLabel("贴图动画")
                 .accessibilityValue(stickerAnimationTitle(clip.animation))
                 Divider().frame(height: 22)
                 Label("虚化", systemImage: "drop.halffull")
-                    .font(.system(size: 10, weight: .medium))
+                    .font(.appUI(size: 10, weight: .medium))
                     .foregroundStyle(Color.white.opacity(clip.hidesScreen ? 0.30 : 0.68))
                 EditorSlider(
                     value: quickStickerBinding(
@@ -361,50 +270,11 @@ extension CanvasPreview {
         }
     }
 
-    func progressQuickEditor(
-        _ overlay: ProgressOverlay,
-        time: TimeInterval
-    ) -> some View {
-        let chapter = overlay.chapters
-            .filter { $0.time <= time }
-            .max { $0.time < $1.time }
-        return quickEditorCard {
-            HStack(spacing: 8) {
-                Label("当前看点", systemImage: "text.bubble")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(Color.white.opacity(0.68))
-                Divider().frame(height: 22)
-                if let chapter {
-                    CanvasQuickTextField(
-                        placeholder: "节点文字",
-                        text: quickProgressChapterTitleBinding(
-                            chapter.id,
-                            fallback: chapter.title
-                        )
-                    )
-                    .accessibilityLabel("当前看点文字")
-                } else {
-                    Text("尚无节点")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 118)
-                }
-                Button {
-                    addProgressChapter(at: time)
-                } label: {
-                    Label("新分段", systemImage: "plus")
-                }
-                .buttonStyle(.editorQuiet)
-                .help("在当前播放位置添加看点")
-            }
-        }
-    }
-
     func quickEditorCard<Content: View>(
         @ViewBuilder content: () -> Content
     ) -> some View {
         content()
-            .font(.system(size: 11, weight: .medium))
+            .font(.appUI(size: 11, weight: .medium))
             .padding(.horizontal, 11)
             .frame(height: 48)
             .foregroundStyle(Color.white.opacity(0.94))
@@ -622,53 +492,11 @@ extension CanvasPreview {
         editorStore.selection = .sticker(id)
     }
 
-    func replaceProgress(
-        actionName: String,
-        update: (inout ProgressOverlay) -> Void
-    ) {
-        var timeline = editorStore.project.timeline
-        guard var progress = timeline.progressOverlay else { return }
-        update(&progress)
-        timeline.progressOverlay = progress
-        replaceOverlayTimeline(timeline, actionName: actionName)
-        editorStore.selection = .progress
-    }
-
     func replaceOverlayTimeline(_ timeline: ProjectTimeline, actionName: String) {
         do {
             try editorStore.replaceTimeline(with: timeline, actionName: actionName)
         } catch {
             onError(error.localizedDescription)
-        }
-    }
-
-    func quickProgressChapterTitleBinding(
-        _ id: UUID,
-        fallback: String
-    ) -> Binding<String> {
-        Binding(
-            get: {
-                editorStore.previewProject.timeline.progressOverlay?.chapters
-                    .first(where: { $0.id == id })?.title ?? fallback
-            },
-            set: { title in
-                replaceProgress(actionName: "编辑进度节点") { progress in
-                    guard let index = progress.chapters.firstIndex(
-                        where: { $0.id == id }
-                    ) else { return }
-                    progress.chapters[index].title = title
-                }
-            }
-        )
-    }
-
-    func addProgressChapter(at time: TimeInterval) {
-        replaceProgress(actionName: "添加进度节点") { progress in
-            let nextNumber = progress.chapters.count + 1
-            progress.insertChapterIfNeeded(
-                at: max(time, 0),
-                title: "看点 \(nextNumber)"
-            )
         }
     }
 

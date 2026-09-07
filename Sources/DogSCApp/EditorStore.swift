@@ -35,7 +35,6 @@ enum EditorSelection: Equatable, Hashable, Sendable {
     case audio(EditorAudioTrack)
     case mosaic(UUID)
     case sticker(UUID)
-    case progress
 }
 
 enum EditorTool: String, CaseIterable, Codable, Sendable {
@@ -257,6 +256,7 @@ enum ProjectCommand: Equatable, Sendable {
     case replaceAudio(before: AudioStyle, after: AudioStyle)
     case replaceCursor(before: CursorStyle, after: CursorStyle)
     case replaceMotion(before: MotionStyle, after: MotionStyle)
+    case replaceOpening(before: OpeningSequence, after: OpeningSequence)
     case replaceExportSettings(before: ExportSettings, after: ExportSettings)
     case replaceTimeline(before: ProjectTimeline, after: ProjectTimeline)
     case replaceProject(before: RecorderProject, after: RecorderProject)
@@ -277,6 +277,8 @@ enum ProjectCommand: Equatable, Sendable {
             return .replaceCursor(before: after, after: before)
         case let .replaceMotion(before, after):
             return .replaceMotion(before: after, after: before)
+        case let .replaceOpening(before, after):
+            return .replaceOpening(before: after, after: before)
         case let .replaceExportSettings(before, after):
             return .replaceExportSettings(before: after, after: before)
         case let .replaceTimeline(before, after):
@@ -306,6 +308,8 @@ enum ProjectCommand: Equatable, Sendable {
             return "调整光标"
         case .replaceMotion:
             return "调整动画手感"
+        case .replaceOpening:
+            return "调整开场"
         case .replaceExportSettings:
             return "调整导出设置"
         case .replaceTimeline:
@@ -479,9 +483,9 @@ enum ProjectCommand: Equatable, Sendable {
             return replacingAudio(in: before, with: after.audio)
         case .cursor:
             return replacingCursor(in: before, with: after.cursorStyle)
-        case .primarySegment, .zoomTrack, .screenMotionTrack:
+        case .zoomTrack, .screenMotionTrack:
             return nil
-        case .mosaic, .sticker, .progress:
+        case .primarySegment, .mosaic, .sticker:
             return replacingTimeline(in: before, with: after.timeline)
         case .zoom:
             // 缩放手势可能同时改动相邻片段（相接修复/回落时长归一），按整段
@@ -583,6 +587,15 @@ enum ProjectReducer {
             }
             try validateDomain { try ProjectValidator.validate(after) }
             project.motion = after
+
+        case let .replaceOpening(before, after):
+            guard project.openingSequence == before else {
+                throw ProjectCommandError.staleState(domain: "开场")
+            }
+            var candidate = project
+            candidate.openingSequence = after
+            try validateDomain { try ProjectValidator.validate(candidate) }
+            project.openingSequence = after
 
         case let .replaceExportSettings(before, after):
             guard project.exportSettings == before else {
@@ -875,14 +888,19 @@ final class EditorStore: ObservableObject {
     }
 
     /// Resolves transient editor state before work outside the current gesture
-    /// lifecycle (for example export or window deactivation). Drafts are
-    /// deliberately cancelled in this first pass; callers can proceed knowing
-    /// `previewProject == project`.
+    /// lifecycle (for example export or window deactivation). Autosaving text
+    /// and color inputs commit; interrupted positional gestures cancel.
     @discardableResult
     func prepareForExternalAction(
         _ action: EditorExternalAction
     ) -> EditorExternalActionPreparation {
-        guard interaction != nil else { return .ready }
+        guard let interaction else { return .ready }
+        // Text/color edits already promise autosave when focus moves. Apply
+        // that same policy before sleep/export; only unfinished drags cancel.
+        if case .commit = interaction.replacementPolicy {
+            resolveInteractionBeforeReplacement()
+            return .committedDraft
+        }
         switch action.interactionPolicy {
         case .cancel:
             endInteraction()
@@ -1018,6 +1036,7 @@ final class EditorStore: ObservableObject {
     @discardableResult
     func addSticker(
         relativePath: String,
+        preferredDuration: TimeInterval? = nil,
         at time: TimeInterval,
         outputDuration: TimeInterval,
         actionName: String = "添加贴图"
@@ -1058,7 +1077,10 @@ final class EditorStore: ObservableObject {
             timing: OverlayTiming(
                 startTime: safeStart,
                 duration: max(
-                    min(3, outputDuration - safeStart),
+                    min(
+                        preferredDuration ?? 3,
+                        outputDuration - safeStart
+                    ),
                     min(0.25, max(outputDuration, 0))
                 )
             ),
@@ -1075,17 +1097,6 @@ final class EditorStore: ObservableObject {
         return clip.id
     }
 
-    func enableProgressOverlay(actionName: String = "添加进度条") throws {
-        var timeline = project.timeline
-        guard timeline.progressOverlay == nil else {
-            selection = .progress
-            return
-        }
-        timeline.progressOverlay = ProgressOverlay()
-        try replaceTimeline(with: timeline, actionName: actionName)
-        selection = .progress
-    }
-
     func removeSelectedOverlay(actionName: String = "删除叠加内容") throws {
         var timeline = project.timeline
         switch selection {
@@ -1093,8 +1104,6 @@ final class EditorStore: ObservableObject {
             timeline.mosaicClips.removeAll { $0.id == id }
         case let .sticker(id):
             timeline.stickerClips.removeAll { $0.id == id }
-        case .progress:
-            timeline.progressOverlay = nil
         default:
             return
         }
@@ -1277,7 +1286,11 @@ final class EditorStore: ObservableObject {
         restoresSelection: Bool = false,
         restoredSelection: EditorSelection? = nil
     ) throws {
-        let selectionBeforeApply = selection
+        // Crop is a transient tool, not a restorable document selection.
+        // Undoing its command must return to screen settings without leaving
+        // a stale crop header or hiding the frame subnavigation.
+        let selectionBeforeApply: EditorSelection? = selection == .crop ? .screen : selection
+        var appliedCommand = command
         var nextProject = project
         try ProjectReducer.apply(command, to: &nextProject)
 
@@ -1294,6 +1307,24 @@ final class EditorStore: ObservableObject {
             )
         }
 
+        if !restoresSelection,
+           case let .zoom(id) = selectionBeforeApply,
+           let previousZoom = project.zoomAnimations.first(where: { $0.id == id }),
+           let updatedZoom = nextProject.zoomAnimations.first(where: { $0.id == id }),
+           abs(previousZoom.scale - updatedZoom.scale) > 0.000_001 {
+            // The creation default is part of the same reversible edit. Undo
+            // replays this command without remembering a fresh global value.
+            let beforeMotion = nextProject.motion
+            if beforeMotion.defaultZoomScale != updatedZoom.scale {
+                var afterMotion = beforeMotion
+                afterMotion.defaultZoomScale = updatedZoom.scale
+                let defaults = ProjectCommand.replaceMotion(before: beforeMotion, after: afterMotion)
+                try ProjectReducer.apply(defaults, to: &nextProject)
+                appliedCommand = .batch([command, defaults])
+            }
+            AppPreferences.rememberZoomCreationScale(updatedZoom.scale)
+        }
+
         // End the preview transaction before publishing the persisted snapshot,
         // so observers can never render a new project through an old draft.
         endInteraction()
@@ -1305,7 +1336,7 @@ final class EditorStore: ObservableObject {
         }
 
         guard registersUndo, let undoManager else { return }
-        let inverse = command.inverse
+        let inverse = appliedCommand.inverse
         undoManager.registerUndo(withTarget: self) { store in
             store.performFromUndo(
                 inverse,

@@ -43,6 +43,7 @@ final class IOSDeviceCaptureSelector {
         installKeyMonitor()
         NSApplication.shared.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
+        animateRecorderOverlayIn(panel)
         DispatchQueue.main.async { [weak panel] in
             panel?.makeFirstResponder(nil)
         }
@@ -197,12 +198,13 @@ private final class IOSDeviceSelectionPanel: NSPanel {
             defer: false
         )
         setFrame(screen.frame, display: false)
+        appearance = NSAppearance(named: .aqua)
         isOpaque = false
         backgroundColor = .clear
         hasShadow = false
         level = CaptureWindowLevelPolicy.level(for: .selectionOverlay)
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
-        sharingType = CommandLine.arguments.contains("--design-review") ? .readOnly : .none
+        sharingType = .readOnly
         hostingView = NSHostingView(
             rootView: makeRoot(
                 devices: [],
@@ -280,18 +282,18 @@ private struct IOSDeviceSelectionOverlay: View {
             visibleFrame: visibleFrame
         )
         ZStack {
-            Color.black.opacity(0.64)
+            Color.black.opacity(0.24)
             VStack(alignment: .leading, spacing: 20) {
                 HStack(spacing: 16) {
                     ZStack {
                         RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .fill(Color.white.opacity(0.065))
+                            .fill(Color.black.opacity(0.065))
                             .overlay {
                                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                    .stroke(Color.white.opacity(0.1))
+                                    .stroke(Color.black.opacity(0.1))
                             }
                         Image(systemName: "ipad.and.iphone")
-                            .font(.system(size: 27, weight: .medium))
+                            .font(.appUI(size: 27, weight: .medium))
                             .foregroundStyle(EditorTheme.platinumAccent)
                             .symbolEffect(.bounce, value: selectedDeviceID)
                     }
@@ -300,14 +302,14 @@ private struct IOSDeviceSelectionOverlay: View {
 
                     VStack(alignment: .leading, spacing: 5) {
                         Text("外接设备")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(Color.white.opacity(0.48))
+                            .font(.appUI(size: 12, weight: .semibold))
+                            .foregroundStyle(Color.black.opacity(0.48))
                         Text("选择要录制的设备")
-                            .font(.system(size: 23, weight: .semibold))
-                            .foregroundStyle(.white)
+                            .font(.appUI(size: 20, weight: .medium))
+                            .foregroundStyle(Color(white: 0.18))
                         Text("连接数据线，并在设备上完成解锁与信任")
-                            .font(.callout)
-                            .foregroundStyle(Color.white.opacity(0.55))
+                            .font(.appUI(.callout))
+                            .foregroundStyle(Color.black.opacity(0.55))
                     }
                     Spacer()
                 }
@@ -315,26 +317,26 @@ private struct IOSDeviceSelectionOverlay: View {
                 if devices.isEmpty {
                     HStack(spacing: 16) {
                         Image(systemName: "cable.connector.slash")
-                            .font(.system(size: 25, weight: .medium))
-                            .foregroundStyle(Color.white.opacity(0.48))
+                            .font(.appUI(size: 25, weight: .medium))
+                            .foregroundStyle(Color.black.opacity(0.48))
                             .frame(width: 46, height: 46)
-                            .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 13))
+                            .background(Color.black.opacity(0.055), in: RoundedRectangle(cornerRadius: 13))
                         VStack(alignment: .leading, spacing: 4) {
                             Text("未发现可录制设备")
-                                .font(.body.weight(.semibold))
-                                .foregroundStyle(Color.white.opacity(0.86))
+                                .font(.appUI(.body, weight: .semibold))
+                                .foregroundStyle(Color.black.opacity(0.86))
                             Text("连接后可直接重新扫描，无需退出当前界面")
-                                .font(.callout)
-                                .foregroundStyle(Color.white.opacity(0.46))
+                                .font(.appUI(.callout))
+                                .foregroundStyle(Color.black.opacity(0.46))
                         }
                         Spacer()
                     }
                     .padding(.horizontal, 16)
                     .frame(height: 84)
-                    .background(Color.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 16))
+                    .background(RecorderStyle.mintWash.opacity(0.4), in: RoundedRectangle(cornerRadius: 16))
                     .overlay {
                         RoundedRectangle(cornerRadius: 16)
-                            .stroke(Color.white.opacity(0.075))
+                            .stroke(Color.black.opacity(0.075))
                     }
                 } else {
                     VStack(spacing: 9) {
@@ -356,13 +358,13 @@ private struct IOSDeviceSelectionOverlay: View {
                 }
 
                 Rectangle()
-                    .fill(Color.white.opacity(0.08))
+                    .fill(Color.black.opacity(0.08))
                     .frame(height: 1)
 
                 HStack(spacing: 10) {
                     Button(action: onCancel) {
                         Label("取消", systemImage: "xmark")
-                            .font(.system(size: 14, weight: .semibold))
+                            .font(.appUI(size: 14, weight: .semibold))
                             .frame(width: 100, height: 44)
                     }
                     .buttonStyle(CaptureSelectionSecondaryButtonStyle())
@@ -371,7 +373,7 @@ private struct IOSDeviceSelectionOverlay: View {
 
                     Button(action: onRefresh) {
                         Label("重新扫描", systemImage: "arrow.clockwise")
-                            .font(.system(size: 14, weight: .semibold))
+                            .font(.appUI(size: 14, weight: .semibold))
                             .frame(width: 124, height: 44)
                     }
                     .buttonStyle(CaptureSelectionSecondaryButtonStyle())
@@ -381,7 +383,7 @@ private struct IOSDeviceSelectionOverlay: View {
 
                     Button(action: onStart) {
                         Label("开始录制", systemImage: "record.circle")
-                            .font(.system(size: 15, weight: .semibold))
+                            .font(.appUI(size: 15, weight: .semibold))
                             .frame(width: 156, height: 44)
                     }
                     .buttonStyle(CaptureSelectionPrimaryButtonStyle())
@@ -392,10 +394,11 @@ private struct IOSDeviceSelectionOverlay: View {
             .padding(24)
             .frame(width: 520)
             .captureSelectionCardSurface()
+            .modifier(RecorderSelectionEntrance())
             .position(cardCenter)
         }
         .ignoresSafeArea()
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(.light)
     }
 }
 
@@ -410,30 +413,30 @@ private struct DeviceSelectionRow: View {
         Button(action: onSelect) {
             HStack(spacing: 13) {
                 Image(systemName: "ipad")
-                    .font(.system(size: 19, weight: .medium))
+                    .font(.appUI(size: 19, weight: .medium))
                     .foregroundStyle(selected ? captureSelectionAccent : EditorTheme.platinumMuted)
                     .frame(width: 38, height: 38)
-                    .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 11))
+                    .background(Color.black.opacity(0.055), in: RoundedRectangle(cornerRadius: 11))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(device.name)
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(.white)
+                        .font(.appUI(.body, weight: .semibold))
+                        .foregroundStyle(Color(white: 0.18))
                         .lineLimit(1)
                     Text(selected ? "已选为录制来源" : "已连接")
-                        .font(.caption)
-                        .foregroundStyle(selected ? captureSelectionAccent : Color.white.opacity(0.42))
+                        .font(.appUI(.caption))
+                        .foregroundStyle(selected ? captureSelectionAccent : Color.black.opacity(0.42))
                 }
                 Spacer()
                 Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(selected ? captureSelectionAccent : Color.white.opacity(0.26))
+                    .font(.appUI(size: 18, weight: .semibold))
+                    .foregroundStyle(selected ? captureSelectionAccent : Color.black.opacity(0.26))
             }
             .padding(.horizontal, 12)
             .frame(height: 62)
             .background(
                 selected
                     ? captureSelectionAccent.opacity(0.13)
-                    : Color.white.opacity(hovering ? 0.075 : 0.045),
+                    : Color.black.opacity(hovering ? 0.075 : 0.045),
                 in: RoundedRectangle(cornerRadius: 15)
             )
             .overlay {
@@ -441,12 +444,12 @@ private struct DeviceSelectionRow: View {
                     .stroke(
                         selected
                             ? captureSelectionAccent.opacity(0.72)
-                            : Color.white.opacity(hovering ? 0.14 : 0.075),
+                            : Color.black.opacity(hovering ? 0.14 : 0.075),
                         lineWidth: 1
                     )
             }
         }
-        .buttonStyle(.editorToolbarPress)
+        .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 15, cornerStyle: .circular, showsHover: false))
         .focusEffectDisabled()
         .onHover { hovering = $0 }
         .scaleEffect(hovering && !selected ? 1.006 : 1)

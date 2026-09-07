@@ -1,0 +1,5 @@
+"CFBundleDisplayName" = "DogSC";
+"CFBundleName" = "DogSC";
+"CFBundleTypeName" = "DogSC Project";
+"NSCameraUsageDescription" = "Add camera video to screen recordings, including connected Continuity Cameras.";
+"NSMicrophoneUsageDescription" = "Record microphone audio with screen recordings.";

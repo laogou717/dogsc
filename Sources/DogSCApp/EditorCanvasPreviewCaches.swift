@@ -20,6 +20,7 @@ final class EditorCanvasPlaybackTrackCache {
     private var screenClips: [ScreenMotionClip]
     private var cameraClips: [CameraMotionClip]
     private var zoomTrack: ZoomAnimationTrack
+    private var outputDuration: TimeInterval?
     private var screenMotionTrack: ScreenMotionTrack
     private var cameraMotionTrack: CameraMotionTrack
 
@@ -32,10 +33,11 @@ final class EditorCanvasPlaybackTrackCache {
         cameraMotionTrack = CameraMotionTrack(cameraClips)
     }
 
-    func tracks(for project: RecorderProject) -> EditorCanvasPlaybackTracks {
-        if zoomClips != project.zoomAnimations {
+    func tracks(for project: RecorderProject, outputDuration: TimeInterval) -> EditorCanvasPlaybackTracks {
+        if zoomClips != project.zoomAnimations || self.outputDuration != outputDuration {
+            self.outputDuration = outputDuration
             zoomClips = project.zoomAnimations
-            zoomTrack = ZoomAnimationTrack(zoomClips)
+            zoomTrack = ZoomAnimationTrack(zoomClips, outputDuration: outputDuration)
         }
         if screenClips != project.timeline.screenMotionClips {
             screenClips = project.timeline.screenMotionClips

@@ -5,8 +5,8 @@ import SwiftUI
 let editorTimelineDocumentCoordinateSpace = "editor.timeline.document"
 
 enum EditorTimelineSizing {
-    static let defaultPrimaryLaneHeight: CGFloat = 64
-    static let minimumPrimaryLaneHeight: CGFloat = 56
+    static let defaultPrimaryLaneHeight: CGFloat = 132
+    static let minimumPrimaryLaneHeight: CGFloat = 124
     static let maximumPrimaryLaneHeight: CGFloat = 280
 
     static func clampedPrimaryLaneHeight(_ proposed: CGFloat) -> CGFloat {
@@ -329,11 +329,86 @@ enum EditorTimelineRulerPresentation {
 /// 桥接 SwiftUI ScrollView 与底层 NSScrollView：滚轮缩放需要读/写真实滚动
 /// 偏移，macOS 14 没有 scrollPosition API 可用，只能从 enclosingScrollView 取。
 struct TimelineScrollViewBridge: NSViewRepresentable {
+    let playbackController: EditorPlaybackController
     let onResolve: (NSScrollView?) -> Void
 
-    final class Coordinator {
+    @MainActor
+    final class Coordinator: NSObject, EditorPlaybackTimelineObserver {
         weak var resolvedScrollView: NSScrollView?
+        weak var playbackController: EditorPlaybackController?
         var resolutionIsScheduled = false
+        private var previousIsPlaying: Bool?
+
+        func configure(playbackController: EditorPlaybackController) {
+            guard self.playbackController !== playbackController else { return }
+            self.playbackController?.removeNativeTimelineObserver(self)
+            previousIsPlaying = nil
+            self.playbackController = playbackController
+            playbackController.addNativeTimelineObserver(self)
+        }
+
+        func resolve(_ scrollView: NSScrollView?) {
+            resolvedScrollView = scrollView
+        }
+
+        func invalidate() {
+            playbackController?.removeNativeTimelineObserver(self)
+            playbackController = nil
+            resolvedScrollView = nil
+            previousIsPlaying = nil
+        }
+
+        func editorPlaybackTimelineDidUpdate(
+            _ snapshot: EditorPlaybackTimelineSnapshot
+        ) {
+            let previous = previousIsPlaying
+            previousIsPlaying = snapshot.isPlaying
+            // Initial attachment and ordinary clock ticks never move the
+            // viewport. Only a real play/pause transition may reveal it.
+            guard let previous, previous != snapshot.isPlaying,
+                  let playbackController else { return }
+            // Pause publishes its state before the final sampled time. Wait
+            // until that synchronous operation finishes, then use the actual
+            // stopped position rather than the preceding display refresh.
+            DispatchQueue.main.async { [weak self, weak playbackController] in
+                guard let self, let playbackController,
+                      self.playbackController === playbackController else { return }
+                self.revealPlayheadIfOutsideViewport(
+                    outputTime: playbackController.outputTime,
+                    duration: playbackController.duration
+                )
+            }
+        }
+
+        private func revealPlayheadIfOutsideViewport(
+            outputTime: TimeInterval,
+            duration: TimeInterval
+        ) {
+            guard let scrollView = resolvedScrollView,
+                  outputTime.isFinite,
+                  duration.isFinite,
+                  duration > 0 else { return }
+            let clipView = scrollView.contentView
+            let viewportWidth = max(clipView.bounds.width, 1)
+            let documentWidth = max(
+                scrollView.documentView?.bounds.width ?? viewportWidth,
+                viewportWidth
+            )
+            let progress = min(max(outputTime / duration, 0), 1)
+            let playheadX = documentWidth * CGFloat(progress)
+            guard playheadX < clipView.bounds.minX ||
+                  playheadX > clipView.bounds.maxX else { return }
+            let maximumOffset = max(documentWidth - viewportWidth, 0)
+            let targetOffset = min(
+                max(playheadX - viewportWidth / 2, 0),
+                maximumOffset
+            )
+            guard abs(clipView.bounds.origin.x - targetOffset) > 0.5 else { return }
+            clipView.scroll(
+                to: NSPoint(x: targetOffset, y: clipView.bounds.origin.y)
+            )
+            scrollView.reflectScrolledClipView(clipView)
+        }
     }
 
     func makeCoordinator() -> Coordinator {
@@ -342,12 +417,18 @@ struct TimelineScrollViewBridge: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView(frame: .zero)
+        context.coordinator.configure(playbackController: playbackController)
         resolveScrollView(for: view, coordinator: context.coordinator)
         return view
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.configure(playbackController: playbackController)
         resolveScrollView(for: nsView, coordinator: context.coordinator)
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.invalidate()
     }
 
     func resolveScrollView(for view: NSView, coordinator: Coordinator) {
@@ -357,7 +438,7 @@ struct TimelineScrollViewBridge: NSViewRepresentable {
             coordinator.resolutionIsScheduled = false
             let resolved = view.enclosingScrollView
             guard coordinator.resolvedScrollView !== resolved else { return }
-            coordinator.resolvedScrollView = resolved
+            coordinator.resolve(resolved)
             // The timeline document owns the complete 0...duration range.
             // Native content/scroller insets create unreachable-looking air
             // at both ends when the document is highly zoomed.
@@ -571,15 +652,44 @@ struct EditorTimelineWaveformPresentation {
         return samples[index]
     }
 
-    /// EDT-WAVE-003 自适应振幅增益：样本是 `pow(peak, 0.72)` 的绝对响度曲
-    /// 线，语音等中等响度内容的峰值只有 0.3 左右，车道（尤其分栏放大后）
-    /// 里波形只占条带约三成高度、上方大片空白。以整条波形自身峰值为基准
-    /// 把最大峰值映射到约 92% 条带高度；近静音轨（峰值 < 0.03）不放大底
-    /// 噪，已经很热的轨不缩小，增益封顶 5× 避免把轻微内容拉成满幅假象。
-    /// 波形条始终垂直居中，本增益只放大振幅。
+    /// Normalize typical audible peaks instead of a single transient outlier.
+    /// This affects only display; mute and authored segment gains still apply afterwards.
     static func displayAmplitudeGain(samples: [Double]) -> Double {
-        guard let maxPeak = samples.max(), maxPeak >= 0.03 else { return 1 }
-        return min(max(0.92 / maxPeak, 1), 5)
+        var histogram = [Int](repeating: 0, count: 256)
+        var audibleCount = 0
+        for sample in samples where sample.isFinite && sample >= 0.03 {
+            histogram[min(Int(min(sample, 1) * 255), 255)] += 1
+            audibleCount += 1
+        }
+        guard audibleCount > 0 else { return 1 }
+        let target = max(Int(Double(audibleCount) * 0.90), 1)
+        var accumulated = 0
+        for index in histogram.indices {
+            accumulated += histogram[index]
+            if accumulated >= target {
+                return min(max(0.90 / max(Double(index) / 255, 0.03), 1), 12)
+            }
+        }
+        return 1
+    }
+
+    static func volumeGain(
+        at outputTime: TimeInterval,
+        ranges: [EditorTimelineWaveformGainRange]
+    ) -> Double {
+        var lower = ranges.startIndex
+        var upper = ranges.endIndex
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2
+            if ranges[middle].endTime <= outputTime {
+                lower = middle + 1
+            } else {
+                upper = middle
+            }
+        }
+        guard lower < ranges.endIndex,
+              outputTime >= ranges[lower].startTime else { return 0 }
+        return ranges[lower].gain
     }
 }
 
@@ -587,6 +697,14 @@ struct EditorTimelineWaveformData: Equatable, Sendable {
     let version: EditorMediaFileVersion
     let sourceRange: MediaTimeRange
     let samples: [Double]
+    let displayGain: Double
+
+    init(version: EditorMediaFileVersion, sourceRange: MediaTimeRange, samples: [Double]) {
+        self.version = version
+        self.sourceRange = sourceRange
+        self.samples = samples
+        self.displayGain = EditorTimelineWaveformPresentation.displayAmplitudeGain(samples: samples)
+    }
 }
 
 struct CameraSyncAnchorDrag {
@@ -600,144 +718,23 @@ enum EditorTimelineWaveformLane: Equatable {
 
     var title: String {
         switch self {
-        case .system: "系统"
-        case .microphone: "麦克风"
+        case .system: appLocalized("系统")
+        case .microphone: appLocalized("麦克风")
         }
     }
 
-    var gradientColors: [Color] {
-        switch self {
-        case .microphone:
-            [
-                Color(white: 1.0),
-                Color(white: 0.94)
-            ]
-        case .system:
-            [
-                Color(white: 0.90).opacity(0.65),
-                Color(white: 0.76).opacity(0.50)
-            ]
-        }
-    }
 
-    var color: Color {
-        switch self {
-        case .system: Color(white: 0.85).opacity(0.65)
-        case .microphone: Color.white
-        }
-    }
-
-    /// 系统声略微透明，叠在麦克风下层时不喧宾夺主。
-    var barOpacity: Double {
-        switch self {
-        case .system: 0.65
-        case .microphone: 0.98
-        }
-    }
-
-    /// 系统声振幅再收小一点，保持陪衬层级。
-    var amplitudeFactor: Double {
-        switch self {
-        case .system: 0.72
-        case .microphone: 1.0
-        }
-    }
-
-    /// 系统声只画对称波形的上半截并贴条带底部；麦克风保持中线对称全幅。
-    var drawsBottomRiseOnly: Bool {
-        self == .system
-    }
 }
 
-/// Expensive waveform sampling is isolated behind EquatableView. During a
-/// trim, its width and media clock stay unchanged; only the cheap segment mask
-/// moves, so pointer events never queue thousands of new Canvas bar samples.
-struct EditorTimelineWaveformStripView: View, Equatable {
-    let lane: EditorTimelineWaveformLane
-    let waveform: EditorTimelineWaveformData
-    let plan: TimelineMediaPlan
-    let width: CGFloat
-    let height: CGFloat
-    let outputStart: TimeInterval
-    let outputDuration: TimeInterval
+struct EditorTimelineWaveformGainRange: Equatable, Sendable {
+    let startTime: TimeInterval
+    let endTime: TimeInterval
+    let gain: Double
 
-    nonisolated static func == (
-        lhs: EditorTimelineWaveformStripView,
-        rhs: EditorTimelineWaveformStripView
-    ) -> Bool {
-        lhs.lane == rhs.lane
-            && lhs.waveform.version == rhs.waveform.version
-            && lhs.waveform.sourceRange == rhs.waveform.sourceRange
-            && lhs.plan == rhs.plan
-            && lhs.width == rhs.width
-            && lhs.height == rhs.height
-            && lhs.outputStart == rhs.outputStart
-            && lhs.outputDuration == rhs.outputDuration
-    }
-
-    var body: some View {
-        let amplitudeGain = EditorTimelineWaveformPresentation.displayAmplitudeGain(
-            samples: waveform.samples
-        )
-        Canvas(rendersAsynchronously: true) { context, size in
-            let centerY = size.height / 2
-            // 贴底半截波形不画中位线，底部边缘即基线。
-            if !lane.drawsBottomRiseOnly {
-                var centerLine = Path()
-                centerLine.move(to: CGPoint(x: 0, y: centerY))
-                centerLine.addLine(to: CGPoint(x: size.width, y: centerY))
-                context.stroke(
-                    centerLine,
-                    with: .color(Color.white.opacity(0.18)),
-                    lineWidth: 0.5
-                )
-            }
-
-            let spacing: CGFloat = 1.4
-            let barCount = max(Int(ceil(size.width / spacing)), 1)
-            var bars = Path()
-            for index in 0..<barCount {
-                let x = min((CGFloat(index) + 0.5) * spacing, size.width)
-                let outputTime = outputStart
-                    + outputDuration * Double(x / max(size.width, 1))
-                let peak = EditorTimelineWaveformPresentation.peak(
-                    samples: waveform.samples,
-                    sourceRange: waveform.sourceRange,
-                    plan: plan,
-                    atOutputTime: outputTime
-                )
-                guard peak > 0 else { continue }
-                let amplified = min(peak * amplitudeGain * lane.amplitudeFactor, 1.0)
-                if lane.drawsBottomRiseOnly {
-                    // 只保留对称波形的上半截，贴条带底部向上升起。
-                    let barHeight = max(
-                        CGFloat(amplified) * max(size.height - 6, 1) / 2,
-                        0.6
-                    )
-                    bars.move(to: CGPoint(x: x, y: size.height - 3))
-                    bars.addLine(to: CGPoint(x: x, y: size.height - 3 - barHeight * 1.3))
-                } else {
-                    let halfHeight = max(
-                        CGFloat(amplified) * max(size.height - 6, 1) / 2,
-                        0.6
-                    )
-                    bars.move(to: CGPoint(x: x, y: centerY - halfHeight))
-                    bars.addLine(to: CGPoint(x: x, y: centerY + halfHeight))
-                }
-            }
-
-            let gradient = Gradient(colors: lane.gradientColors)
-            context.stroke(
-                bars,
-                with: .linearGradient(
-                    gradient,
-                    startPoint: CGPoint(x: 0, y: 0),
-                    endPoint: CGPoint(x: 0, y: size.height)
-                ),
-                style: StrokeStyle(lineWidth: 1.0, lineCap: .round)
-            )
-        }
-        .frame(width: width, height: height)
+    init(startTime: TimeInterval, endTime: TimeInterval, gain: Double) {
+        self.startTime = startTime
+        self.endTime = endTime
+        self.gain = min(max(gain.isFinite ? gain : 0, 0), 1)
     }
 }
 
@@ -797,16 +794,21 @@ struct EditorTimelineView: View {
     /// Parent-window key-loss epoch. It changes even when the app itself stays
     /// active, for example when a system notification covers the editor.
     let windowDeactivationRevision: UInt64
-    let primaryLaneHeight: CGFloat
+    let panelHeight: CGFloat
+    let onPreferredHeightChange: (CGFloat) -> Void
+    let isLayoutTransitioning: Bool
     @Binding var visibleTracks: EditorTimelineTrackVisibility
+    @Binding var selectedPrimarySegmentIDs: Set<UUID>
     let onError: (String) -> Void
 
     @State var derivedPresentationCache: EditorTimelineDerivedPresentationCache
-    @State var timelineZoom: Double = 1
+    @State var timelineZoom: Double
+    @State var timelineZoomPersistenceTask: Task<Void, Never>?
     @State var timelineContentWidth: CGFloat = 1
     @State var timelineScrollView: NSScrollView?
     @State var timelineVisibleDocumentRange: ClosedRange<CGFloat> = 0...1
     @State var timelineBoundsObservation: NSObjectProtocol?
+    @State var isTimelineTrackManagerPresented = false
     @State var hoveredTimelineViewportX: CGFloat?
     @State var hoveredTimelineViewportY: CGFloat?
     @State var timelineZoomInputCoalescer = EditorTimelineZoomInputCoalescer()
@@ -824,9 +826,12 @@ struct EditorTimelineView: View {
     @State var primaryTrimDraft: PrimarySegmentTrimDraft?
     @State var primaryRetimeDraft: PrimarySegmentRetimeDraft?
     @State var isRestoreCutMode = false
+    @State var usesWaveformClips: Bool
+    @Namespace var displayModeSelection
     /// 时间轴悬浮预览轴开关（Skimming）：默认开启；关闭后恢复传统固定播放头模式。
     @AppStorage(AppPreferences.editorTimelineHoverPreviewEnabledKey)
     var isHoverPreviewEnabled = true
+    @AppStorage("editorTimelineSnappingEnabled") var isSnappingEnabled = true
     @State var manualZoomDragStart: TimeInterval?
     @State var manualZoomDragEnd: TimeInterval?
     @State var hoveredZoomTrackLocation: CGPoint?
@@ -840,6 +845,11 @@ struct EditorTimelineView: View {
     @State var motionTrackHover: [EditorMotionTimelineTrack: CGPoint] = [:]
     @State var hoveredOverlaySelection: EditorSelection?
     @State var overlayTimelineDrag: EditorOverlayTimelineDrag?
+    @State var overlayCreateStart: TimeInterval?
+    @State var overlayCreateRange: ClosedRange<TimeInterval>?
+    @State var timelineInteractionID: UUID?
+    @State var emptyClickClearsSelection = false
+    @StateObject var timelineSnap = EditorTimelineMagneticSnap()
     @State var gestureOwnership = EditorTimelineGestureOwnership()
     @State var deleteKeyMonitor: Any?
     @State var systemWaveform: EditorTimelineWaveformData?
@@ -853,20 +863,29 @@ struct EditorTimelineView: View {
         playbackController: EditorPlaybackController,
         isCameraSyncEditing: Bool,
         windowDeactivationRevision: UInt64 = 0,
-        primaryLaneHeight: CGFloat = EditorTimelineSizing.defaultPrimaryLaneHeight,
+        panelHeight: CGFloat = 320,
         visibleTracks: Binding<EditorTimelineTrackVisibility>,
-        onError: @escaping (String) -> Void
+        selectedPrimarySegmentIDs: Binding<Set<UUID>>,
+        onError: @escaping (String) -> Void,
+        isLayoutTransitioning: Bool = false,
+        onPreferredHeightChange: @escaping (CGFloat) -> Void = { _ in }
     ) {
+        self.isLayoutTransitioning = isLayoutTransitioning
+        _usesWaveformClips = State(initialValue: UserDefaults.standard.bool(forKey: "cn.laogou.dogsc.editor.waveform-clips"))
         _editorStore = ObservedObject(wrappedValue: editorStore)
         _mediaSession = ObservedObject(wrappedValue: mediaSession)
         _playbackController = ObservedObject(wrappedValue: playbackController)
         self.isCameraSyncEditing = isCameraSyncEditing
         self.windowDeactivationRevision = windowDeactivationRevision
-        self.primaryLaneHeight = EditorTimelineSizing.clampedPrimaryLaneHeight(
-            primaryLaneHeight
-        )
+        self.panelHeight = panelHeight
+        self.onPreferredHeightChange = onPreferredHeightChange
         _visibleTracks = visibleTracks
+        _selectedPrimarySegmentIDs = selectedPrimarySegmentIDs
         self.onError = onError
+        _timelineZoom = State(
+            initialValue: AppPreferences.timelineZoom(for: editorStore.project)
+        )
+        _timelineZoomPersistenceTask = State(initialValue: nil)
         _derivedPresentationCache = State(
             initialValue: EditorTimelineDerivedPresentationCache()
         )
@@ -893,10 +912,26 @@ struct EditorTimelineView: View {
     }
 
     var timelineMap: TimelineMap? {
-        mediaSession.mediaPlan?.timelineMap
+        // Structural edits are committed to the project before AVFoundation
+        // finishes rebuilding preview media. Derive lane geometry and the
+        // displayed total immediately from that committed sequence; otherwise
+        // clips move first while the clock keeps the previous duration and
+        // then visibly snaps into place when preparation completes.
+        if fullSourceDuration > 0,
+           let current = derivedPresentationCache.timelineMap(
+               sourceSequence: editorStore.project.timeline.sourceSequence,
+               fullSourceDuration: fullSourceDuration
+           ) {
+            return current
+        }
+        return mediaSession.mediaPlan?.timelineMap
     }
 
     var timelineDuration: TimeInterval {
+        if let currentDuration = timelineMap?.outputDuration,
+           currentDuration > 0 {
+            return currentDuration
+        }
         if mediaSession.outputDuration > 0 {
             return mediaSession.outputDuration
         }
@@ -977,7 +1012,8 @@ struct EditorTimelineView: View {
         guard let revealTime = EditorTimelineSelectionReveal.time(
             for: selection,
             in: editorStore.project,
-            currentTime: playbackTime
+            currentTime: playbackTime,
+            outputDuration: timelineDuration
         ) else { return }
         playbackController.seek(to: revealTime, pausing: true)
     }
@@ -995,16 +1031,13 @@ struct EditorTimelineView: View {
     var showsOverlayTimeline: Bool {
         !visibleTracks.intersection(.overlays).isEmpty
     }
-    var showsProgressTimeline: Bool { visibleTracks.contains(.progress) }
 
     var showsSystemWaveform: Bool {
         mediaSession.inventories.source.hasAudio
-            && !editorStore.project.audio.isSystemMuted
     }
 
     var showsMicrophoneWaveform: Bool {
         mediaSession.inventories.microphone.hasAudio
-            && !editorStore.project.audio.isMicrophoneMuted
     }
 
     var showsClipWaveforms: Bool {
@@ -1044,6 +1077,45 @@ struct EditorTimelineView: View {
             Divider()
                 .overlay(dividerColor)
                 .frame(height: timelineDividerHeight)
+            GeometryReader { geometry in
+                let viewportWidth = max(geometry.size.width - timelineLabelWidth, 1)
+                let contentWidth = viewportWidth * CGFloat(timelineZoom)
+
+                ScrollView(.vertical, showsIndicators: true) {
+                HStack(alignment: .top, spacing: 0) {
+                    timelineLabels
+                        .frame(width: timelineLabelWidth)
+
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        timelineCanvas(width: contentWidth, duration: duration)
+                            .allowsHitTesting(!isLayoutTransitioning)
+                            .background {
+                                TimelineScrollViewBridge(
+                                    playbackController: playbackController
+                                ) { resolved in
+                                    guard timelineScrollView !== resolved else { return }
+                                    timelineScrollView = resolved
+                                    installTimelineBoundsObservation(on: resolved)
+                                }
+                                .frame(width: 0, height: 0)
+                            }
+                    }
+                    .onContinuousHover(coordinateSpace: .local) { phase in
+                        if case .ended = phase {
+                            clearTimelineHoverLocation()
+                        }
+                    }
+                }
+                .frame(height: timelineDocumentHeight, alignment: .top)
+                .background { timelineRowGrid }
+                .background { Color.clear.contentShape(Rectangle()).onTapGesture { clearTimelineSelection() } }
+                }
+                .onAppear { timelineContentWidth = contentWidth }
+                .onChange(of: contentWidth) { _, newValue in
+                    timelineContentWidth = newValue
+                }
+            }
+            .frame(height: timelineViewportHeight)
             HStack(spacing: 0) {
                 Color.clear.frame(width: timelineLabelWidth)
                 NativeTimelineOverviewView(
@@ -1058,58 +1130,22 @@ struct EditorTimelineView: View {
                 .help("拖动总览快速定位播放头和当前可视范围")
             }
             .frame(height: timelineOverviewHeight)
-            .background(Color.black.opacity(0.10))
+            .overlay(alignment: .top) {
+                Rectangle().fill(EditorTheme.chrome(0.085)).frame(height: 0.5)
+            }
+            .background(Color.clear)
             Divider()
                 .overlay(dividerColor)
                 .frame(height: timelineDividerHeight)
-            GeometryReader { geometry in
-                let viewportWidth = max(geometry.size.width - timelineLabelWidth, 1)
-                let contentWidth = viewportWidth * CGFloat(timelineZoom)
 
-                HStack(spacing: 0) {
-                    timelineLabels
-                        .frame(width: timelineLabelWidth)
-
-                    ScrollView(.horizontal, showsIndicators: timelineZoom > 1.01) {
-                        timelineCanvas(width: contentWidth, duration: duration)
-                            .background {
-                                TimelineScrollViewBridge { resolved in
-                                    guard timelineScrollView !== resolved else { return }
-                                    timelineScrollView = resolved
-                                    installTimelineBoundsObservation(on: resolved)
-                                }
-                                .frame(width: 0, height: 0)
-                            }
-                    }
-                    // PRE-005: keep hover in viewport coordinates. Attaching
-                    // it to the moving document made a stationary pointer
-                    // publish new SwiftUI state on every horizontal scroll
-                    // tick, rebuilding all clips and waveform canvases.
-                    // EDT-030: 具体位置由窗口级 mouseMoved 监视器提供（子视图的
-                    // tracking area 会吞掉容器 onContinuousHover 的移动事件）；
-                    // 这里只保留离开回调，兜底指针直接移出窗口时的清理。
-                    .onContinuousHover(coordinateSpace: .local) { phase in
-                        if case .ended = phase {
-                            clearTimelineHoverLocation()
-                        }
-                    }
-                }
-                .onAppear { timelineContentWidth = contentWidth }
-                .onChange(of: contentWidth) { _, newValue in
-                    timelineContentWidth = newValue
-                }
-            }
-            .frame(height: timelineCanvasHeight)
         }
         .frame(height: timelineHeight)
-        .background(Color(red: 0.045, green: 0.047, blue: 0.055))
-        // 运动/同步轨随选择显隐时，用短高度过渡代替瞬间跳动；分栏拖动改的
-        // 是 primaryLaneHeight，不经过这些布尔值，拖高手感保持直连。
-        .animation(SpringMotion.fluid, value: showsScreenMotionTimeline)
-        .animation(SpringMotion.fluid, value: showsCameraMotionTimeline)
-        .animation(SpringMotion.fluid, value: showsOverlayTimeline)
-        .animation(SpringMotion.fluid, value: showsProgressTimeline)
-        .animation(SpringMotion.fluid, value: showsCameraSyncTimeline)
+        .onChange(of: preferredPanelHeight, initial: true) { _, height in
+            onPreferredHeightChange(height)
+        }
+        .background(EditorTheme.panelSurface)
+        // The parent freezes the preview raster during workspace reflow; the
+        // timeline may animate its layout without issuing intermediate renders.
         .onChange(of: editorStore.project.timeline) { _, _ in
             // A ripple edit can remove the SwiftUI view that owned the current
             // mouse sequence before `onEnded` arrives. End every local gesture
@@ -1141,8 +1177,6 @@ struct EditorTimelineView: View {
             case let .sticker(id)
                 where !editorStore.project.timeline.stickerClips.contains(where: { $0.id == id }):
                 editorStore.selection = .canvas
-            case .progress where editorStore.project.timeline.progressOverlay == nil:
-                editorStore.selection = .canvas
             default:
                 break
             }
@@ -1164,6 +1198,9 @@ struct EditorTimelineView: View {
                 }
                 if !stillExists { self.hoveredMotionClip = nil }
             }
+        }
+        .onChange(of: editorStore.interaction?.id) { _, id in
+            if let owned = timelineInteractionID, owned != id { cancelActiveTimelineGesture() }
         }
         .onChange(of: editorStore.selection) { _, selection in
             if selectedCameraSyncAnchorID != nil {
@@ -1188,6 +1225,7 @@ struct EditorTimelineView: View {
         .onChange(of: isCameraSyncEditing) { _, isEditing in
             if !isEditing { dismissCameraSyncSelection() }
         }
+        .onChange(of: isSnappingEnabled) { _, _ in timelineSnap.reset() }
         .onChange(of: isHoverPreviewEnabled) { _, isEnabled in
             hoverPreviewGate.isEnabled = isEnabled
             if !isEnabled {
@@ -1228,7 +1266,14 @@ struct EditorTimelineView: View {
         .task(id: mediaSession.prepared?.generation) {
             await loadAudioWaveforms()
         }
+        .task(id: usesWaveformClips) {
+            // Persist only the settled preference; rapid reversals stay local to the timeline.
+            do { try await Task.sleep(for: .milliseconds(350)) } catch { return }
+            UserDefaults.standard.set(usesWaveformClips, forKey: "cn.laogou.dogsc.editor.waveform-clips")
+        }
         .onDisappear {
+            UserDefaults.standard.set(usesWaveformClips, forKey: "cn.laogou.dogsc.editor.waveform-clips")
+            persistTimelineZoomImmediately()
             cancelActiveTimelineGesture()
             endPrimarySegmentDrag()
             playbackController.cancelCameraSyncAudition()

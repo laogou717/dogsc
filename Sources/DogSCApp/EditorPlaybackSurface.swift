@@ -27,13 +27,13 @@ struct NativePlaybackTimeView: NSViewRepresentable {
 @MainActor
 final class NativePlaybackTimeNSView: NSView {
     private weak var playbackController: EditorPlaybackController?
-    private let textField = NSTextField(labelWithString: "0:00.00")
+    private let textField = NSTextField(labelWithString: "00:00.00")
     private var lastDisplayedCentiseconds: Int?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        textField.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-        textField.textColor = .secondaryLabelColor
+        textField.font = .monospacedDigitSystemFont(ofSize: 13, weight: .medium)
+        textField.textColor = .labelColor
         textField.alignment = .right
         textField.isBezeled = false
         textField.drawsBackground = false
@@ -46,7 +46,21 @@ final class NativePlaybackTimeNSView: NSView {
 
     override func layout() {
         super.layout()
-        textField.frame = bounds
+        // An NSTextField label aligns its glyphs near the top when stretched
+        // to the full 28-point transport slot. The duration on the other side
+        // is a vertically centred SwiftUI Text, which made the two clocks look
+        // like different rows. Lay out the native label at its intrinsic
+        // height and centre that rect instead.
+        let intrinsicHeight = min(
+            ceil(textField.intrinsicContentSize.height),
+            bounds.height
+        )
+        textField.frame = CGRect(
+            x: 0,
+            y: floor((bounds.height - intrinsicHeight) / 2),
+            width: bounds.width,
+            height: intrinsicHeight
+        )
     }
 
     func configure(_ playbackController: EditorPlaybackController) {
@@ -83,7 +97,7 @@ final class NativePlaybackTimeNSView: NSView {
         let seconds = (centiseconds / 100) % 60
         let fraction = centiseconds % 100
         textField.stringValue = String(
-            format: "%d:%02d.%02d",
+            format: "%02d:%02d.%02d",
             minutes,
             seconds,
             fraction
@@ -125,18 +139,10 @@ final class NativeTimelinePlayheadNSView: NSView {
     private var duration: TimeInterval = 0
     private let lineLayer = CALayer()
     private let knobLayer = CAShapeLayer()
-    // 雾白极简：播放头是界面 chrome 而非内容，用米白而不是紫色。
-    private let accentColor = NSColor(
-        calibratedWhite: 0.92,
-        alpha: 1
-    )
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        lineLayer.backgroundColor = accentColor.cgColor
-        knobLayer.fillColor = accentColor.cgColor
-        knobLayer.strokeColor = NSColor.white.withAlphaComponent(0.8).cgColor
         knobLayer.lineWidth = 1
         knobLayer.path = CGPath(
             ellipseIn: CGRect(x: 0, y: 0, width: 10, height: 10),
@@ -144,9 +150,25 @@ final class NativeTimelinePlayheadNSView: NSView {
         )
         layer?.addSublayer(lineLayer)
         layer?.addSublayer(knobLayer)
+        updateAppearanceColors()
     }
 
     required init?(coder: NSCoder) { nil }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateAppearanceColors()
+    }
+
+    private func updateAppearanceColors() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            lineLayer.backgroundColor = NSColor.labelColor.cgColor
+            knobLayer.fillColor = NSColor.labelColor.cgColor
+            knobLayer.strokeColor = NSColor.windowBackgroundColor
+                .withAlphaComponent(0.85)
+                .cgColor
+        }
+    }
 
     override func layout() {
         super.layout()
@@ -233,13 +255,9 @@ final class NativeTimelineOverviewNSView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        trackLayer.backgroundColor = NSColor.white.withAlphaComponent(0.065).cgColor
-        trackLayer.borderColor = NSColor.white.withAlphaComponent(0.06).cgColor
-        trackLayer.borderWidth = 0.5
+        trackLayer.borderWidth = 0
         trackLayer.cornerRadius = 4
-        viewportLayer.backgroundColor = NSColor.white.withAlphaComponent(0.14).cgColor
-        viewportLayer.borderColor = NSColor.white.withAlphaComponent(0.48).cgColor
-        viewportLayer.borderWidth = 1
+        viewportLayer.borderWidth = 0
         viewportLayer.cornerRadius = 4
         playheadLayer.backgroundColor = NSColor(
             calibratedRed: 0.90,
@@ -249,14 +267,20 @@ final class NativeTimelineOverviewNSView: NSView {
         ).cgColor
         playheadLayer.cornerRadius = 1
         playheadLayer.shadowColor = NSColor.black.cgColor
-        playheadLayer.shadowOpacity = 0.35
+        playheadLayer.shadowOpacity = 0
         playheadLayer.shadowRadius = 2
         layer?.addSublayer(trackLayer)
         layer?.addSublayer(viewportLayer)
         layer?.addSublayer(playheadLayer)
+        updateInteractionAppearance(animated: false)
     }
 
     required init?(coder: NSCoder) { nil }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateInteractionAppearance(animated: false)
+    }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -327,7 +351,7 @@ final class NativeTimelineOverviewNSView: NSView {
     }
 
     private func updateLayers() {
-        let inset: CGFloat = 8
+        let inset: CGFloat = 0
         let track = CGRect(
             x: inset,
             y: max((bounds.height - 8) / 2, 0),
@@ -410,15 +434,19 @@ final class NativeTimelineOverviewNSView: NSView {
     private func updateInteractionAppearance(animated: Bool) {
         CATransaction.begin()
         CATransaction.setAnimationDuration(animated ? 0.16 : 0)
-        trackLayer.backgroundColor = NSColor.white.withAlphaComponent(
-            isPointerInside ? 0.09 : 0.065
-        ).cgColor
-        viewportLayer.backgroundColor = NSColor.white.withAlphaComponent(
-            isPointerDown ? 0.28 : isPointerInside ? 0.20 : 0.14
-        ).cgColor
-        viewportLayer.borderColor = NSColor.white.withAlphaComponent(
-            isPointerDown ? 0.82 : isPointerInside ? 0.64 : 0.48
-        ).cgColor
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            let chrome = NSColor.labelColor
+            trackLayer.backgroundColor = chrome.withAlphaComponent(
+                isPointerInside ? 0.075 : 0.045
+            ).cgColor
+            trackLayer.borderColor = chrome.withAlphaComponent(0.06).cgColor
+            viewportLayer.backgroundColor = chrome.withAlphaComponent(
+                isPointerDown ? 0.22 : isPointerInside ? 0.15 : 0.095
+            ).cgColor
+            viewportLayer.borderColor = chrome.withAlphaComponent(
+                isPointerDown ? 0.82 : isPointerInside ? 0.64 : 0.48
+            ).cgColor
+        }
         CATransaction.commit()
     }
 

@@ -189,7 +189,6 @@ extension AppModel {
             return
         }
         captureSetup.stopPresentation()
-        let nextRecordingStyle = EditorStylePreset(name: "上次使用", project: project)
         EditorStylePresetStore.rememberLastUsedStyle(from: project)
         let previousAudio = project.audio
         let previousExportSettings = project.exportSettings
@@ -211,11 +210,9 @@ extension AppModel {
             audio: previousAudio,
             exportSettings: previousExportSettings
         )
-        // Use the same source-safe style boundary as a cold launch. Directly
-        // copying the previous CanvasStyle carried that episode's crop (and a
-        // project-relative background image) into the next recording even
-        // though saved presets correctly exclude both.
-        project = nextRecordingStyle.applying(to: nextRecordingBaseline)
+        // An explicit scene default includes crop. Implicit last-used styling
+        // remains source-safe, matching the cold-launch choice.
+        project = EditorStylePresetStore.applyingLastUsedStyle(to: nextRecordingBaseline)
         captureSetup.reset()
         resumeLiveInputIndicatorsForSetup()
         phase = .setup
@@ -285,6 +282,22 @@ extension AppModel {
                 from: sourceURL,
                 session: currentSession
             )
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
+    func importOverlayImageAsset(from sourceURL: URL) -> String? {
+        guard let currentSession else {
+            errorMessage = "请先打开一个可编辑项目。"
+            return nil
+        }
+        do {
+            return try ProjectStore.importOverlayImage(
+                from: sourceURL,
+                session: currentSession
+            ).relativePath
         } catch {
             errorMessage = error.localizedDescription
             return nil
@@ -501,6 +514,7 @@ extension AppModel {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             try ProjectStore.setSavedProjectsFolder(url)
+            recordingDestinationName = ProjectStore.savedProjectsFolder.lastPathComponent
             refreshRecentProjects()
         } catch {
             errorMessage = "无法设置项目保存位置：\(error.localizedDescription)"
@@ -734,6 +748,7 @@ extension AppModel {
 
     func selectCaptureSource(_ source: CaptureSource) {
         guard phase == .setup else { return }
+        RecorderPopoverPresenter.shared.dismiss()
         guard hasRequiredRecordingPermissions else {
             captureSetup.stopPresentation()
             beginRequiredPermissionOnboardingIfNeeded()
@@ -864,10 +879,30 @@ extension AppModel {
         )
     }
 
+    func refreshCaptureDevicesInBackground() {
+        captureCatalogTask?.cancel()
+        captureCatalogTask = Task { @MainActor [weak self] in
+            let snapshot = await CaptureDeviceCatalog.snapshotForUI()
+            guard !Task.isCancelled, let self else { return }
+            self.applyCaptureDeviceCatalog(snapshot)
+        }
+    }
+
+    // The recording-plan boundary keeps its synchronous identity validation.
+    // Toolbar presentation and connection notifications use the async path.
     func refreshCaptureDevices() {
-        let screenDevices = CaptureDeviceCatalog.screenDevices()
-        let cameras = CaptureDeviceCatalog.videoDevices()
-        let microphones = CaptureDeviceCatalog.audioDevices()
+        captureCatalogTask?.cancel()
+        applyCaptureDeviceCatalog(CaptureDeviceCatalog.Snapshot(
+            screenDevices: CaptureDeviceCatalog.screenDevices(),
+            cameras: CaptureDeviceCatalog.videoDevices(),
+            microphones: CaptureDeviceCatalog.audioDevices()
+        ))
+    }
+
+    private func applyCaptureDeviceCatalog(_ snapshot: CaptureDeviceCatalog.Snapshot) {
+        let screenDevices = snapshot.screenDevices
+        let cameras = snapshot.cameras
+        let microphones = snapshot.microphones
         if availableCameras != cameras { availableCameras = cameras }
         if availableMicrophones != microphones { availableMicrophones = microphones }
         if captureSetup.updateScreenDevices(screenDevices) != nil {
@@ -998,7 +1033,7 @@ extension AppModel {
         )
         if let scope {
             defaults.set(
-                scope.rawValue,
+                appLocalized(scope.rawValue),
                 forKey: CaptureDevicePreferenceKey.systemAudioScope
             )
         }
@@ -1086,11 +1121,21 @@ extension AppModel {
     }
 
     private func refreshAvailableCameraResolutions(deviceUniqueID: String?) {
-        let resolutions = deviceUniqueID.map {
-            CaptureDeviceCatalog.cameraResolutions(deviceUniqueID: $0)
-        } ?? []
-        if availableCameraResolutions != resolutions {
-            availableCameraResolutions = resolutions
+        cameraResolutionTask?.cancel()
+        cameraResolutionTask = nil
+        if cameraResolutionDeviceID != deviceUniqueID {
+            cameraResolutionDeviceID = deviceUniqueID
+            availableCameraResolutions = []
+        }
+        guard let deviceUniqueID else { return }
+        cameraResolutionTask = Task { @MainActor [weak self] in
+            let resolutions = await CaptureDeviceCatalog.resolutionsForUI(deviceUniqueID: deviceUniqueID)
+            guard !Task.isCancelled, let self,
+                  self.configuration.recordsCamera,
+                  self.configuration.cameraDeviceID == deviceUniqueID else { return }
+            if self.availableCameraResolutions != resolutions {
+                self.availableCameraResolutions = resolutions
+            }
         }
     }
 }

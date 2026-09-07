@@ -7,6 +7,7 @@ import Foundation
 /// exclusively owned by the recorded system/microphone tracks.
 final class ExportLoopingWallpaperVideoReader: @unchecked Sendable {
     private let source: LoadedVideoAsset
+    private let role: ExportAssetRole
     private let duration: TimeInterval
     private var reader: AVAssetReader?
     private var output: AVAssetReaderTrackOutput?
@@ -15,11 +16,12 @@ final class ExportLoopingWallpaperVideoReader: @unchecked Sendable {
     private var loopIndex: Int = -1
     private var currentLocalTime: TimeInterval = -1
 
-    init(source: LoadedVideoAsset) throws {
+    init(source: LoadedVideoAsset, role: ExportAssetRole = .wallpaper) throws {
         self.source = source
+        self.role = role
         duration = source.timeRange.duration.seconds
         guard duration.isFinite, duration > 0 else {
-            throw VideoExporterError.unusableMediaRange(.wallpaper)
+            throw VideoExporterError.unusableMediaRange(role)
         }
     }
 
@@ -46,7 +48,7 @@ final class ExportLoopingWallpaperVideoReader: @unchecked Sendable {
         if reader?.status == .failed {
             throw reader?.error
                 ?? VideoExporterError.cannotReadMediaTrack(
-                    role: .wallpaper,
+                    role: role,
                     media: .video
                 )
         }
@@ -69,7 +71,7 @@ final class ExportLoopingWallpaperVideoReader: @unchecked Sendable {
         output.alwaysCopiesSampleData = false
         guard reader.canAdd(output) else {
             throw VideoExporterError.cannotReadMediaTrack(
-                role: .wallpaper,
+                role: role,
                 media: .video
             )
         }
@@ -77,7 +79,7 @@ final class ExportLoopingWallpaperVideoReader: @unchecked Sendable {
         guard reader.startReading() else {
             throw reader.error
                 ?? VideoExporterError.cannotReadMediaTrack(
-                    role: .wallpaper,
+                    role: role,
                     media: .video
                 )
         }

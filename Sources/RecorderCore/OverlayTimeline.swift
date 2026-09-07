@@ -218,6 +218,9 @@ public struct StickerClip: Codable, Equatable, Identifiable, Sendable {
     public var shadowOffsetX: Double
     public var shadowOffsetY: Double
     public var animation: StickerAnimationPreset
+    /// Shared non-linear timing used by both entry and exit. The visual path
+    /// remains independently selectable through `animation`/`exitAnimation`.
+    public var animationCurve: ElementMotionCurve
     /// `nil` follows the complementary direction of `animation`.
     public var exitAnimation: StickerAnimationPreset?
     public var enterDuration: TimeInterval
@@ -249,6 +252,7 @@ public struct StickerClip: Codable, Equatable, Identifiable, Sendable {
         shadowOffsetX: Double = 0,
         shadowOffsetY: Double = 10,
         animation: StickerAnimationPreset = .pop,
+        animationCurve: ElementMotionCurve = .swift,
         exitAnimation: StickerAnimationPreset? = nil,
         enterDuration: TimeInterval = 0.7,
         exitDuration: TimeInterval = 0.22,
@@ -273,6 +277,7 @@ public struct StickerClip: Codable, Equatable, Identifiable, Sendable {
         self.shadowOffsetX = shadowOffsetX
         self.shadowOffsetY = shadowOffsetY
         self.animation = animation
+        self.animationCurve = animationCurve
         self.exitAnimation = exitAnimation
         self.enterDuration = enterDuration
         self.exitDuration = exitDuration
@@ -299,6 +304,7 @@ public struct StickerClip: Codable, Equatable, Identifiable, Sendable {
         case shadowOffsetX
         case shadowOffsetY
         case animation
+        case animationCurve
         case exitAnimation
         case enterDuration
         case exitDuration
@@ -327,6 +333,10 @@ public struct StickerClip: Codable, Equatable, Identifiable, Sendable {
             shadowOffsetX: try container.decode(Double.self, forKey: .shadowOffsetX),
             shadowOffsetY: try container.decode(Double.self, forKey: .shadowOffsetY),
             animation: try container.decode(StickerAnimationPreset.self, forKey: .animation),
+            animationCurve: try container.decodeIfPresent(
+                ElementMotionCurve.self,
+                forKey: .animationCurve
+            ) ?? .swift,
             exitAnimation: try container.decodeIfPresent(
                 StickerAnimationPreset.self,
                 forKey: .exitAnimation
@@ -367,6 +377,7 @@ public struct StickerClip: Codable, Equatable, Identifiable, Sendable {
         try container.encode(shadowOffsetX, forKey: .shadowOffsetX)
         try container.encode(shadowOffsetY, forKey: .shadowOffsetY)
         try container.encode(animation, forKey: .animation)
+        try container.encode(animationCurve, forKey: .animationCurve)
         try container.encodeIfPresent(exitAnimation, forKey: .exitAnimation)
         try container.encode(enterDuration, forKey: .enterDuration)
         try container.encode(exitDuration, forKey: .exitDuration)
@@ -378,159 +389,5 @@ public struct StickerClip: Codable, Equatable, Identifiable, Sendable {
         try container.encode(hidesScreen, forKey: .hidesScreen)
         try container.encode(hidesCamera, forKey: .hidesCamera)
         try container.encode(layerIndex, forKey: .layerIndex)
-    }
-}
-
-public enum ProgressOverlayPlacement: String, CaseIterable, Codable, Sendable {
-    case top
-    case custom
-    case bottom
-}
-
-public struct ProgressChapter: Codable, Equatable, Identifiable, Sendable {
-    public var id: UUID
-    public var time: TimeInterval
-    public var title: String
-
-    public init(id: UUID = UUID(), time: TimeInterval, title: String) {
-        self.id = id
-        self.time = time
-        self.title = title
-    }
-}
-
-/// One project-wide authored playback indicator. Chapter times live on the
-/// same ripple output clock as every other visual track.
-public struct ProgressOverlay: Codable, Equatable, Sendable {
-    /// Warm content accent used only when the user has not chosen a fill.
-    /// Stored project colors remain authoritative after decoding.
-    public static let defaultFillColor = HexColor(rgb24: 0xD6_A1_5C)
-
-    public var placement: ProgressOverlayPlacement
-    public var position: NormalizedPoint
-    public var width: Double
-    public var bandHeight: Double
-    public var textSize: Double
-    public var thickness: Double
-    public var backgroundColor: HexColor
-    public var backgroundOpacity: Double
-    public var trackColor: HexColor
-    public var fillColor: HexColor
-    public var nodeColor: HexColor
-    public var textColor: HexColor
-    public var chapters: [ProgressChapter]
-
-    public init(
-        placement: ProgressOverlayPlacement = .top,
-        position: NormalizedPoint = NormalizedPoint(x: 0.5, y: 0.05),
-        width: Double = 1,
-        bandHeight: Double = 58,
-        textSize: Double = 30,
-        thickness: Double = 3,
-        backgroundColor: HexColor = HexColor(rgb24: 0x18_19_1F),
-        backgroundOpacity: Double = 0.88,
-        trackColor: HexColor = HexColor(rgb24: 0xFF_FF_FF),
-        fillColor: HexColor = ProgressOverlay.defaultFillColor,
-        nodeColor: HexColor = .white,
-        textColor: HexColor = .white,
-        chapters: [ProgressChapter] = [ProgressChapter(time: 0, title: "开场介绍")]
-    ) {
-        self.placement = placement
-        self.position = position
-        self.width = width
-        self.bandHeight = bandHeight
-        self.textSize = textSize
-        self.thickness = thickness
-        self.backgroundColor = backgroundColor
-        self.backgroundOpacity = backgroundOpacity
-        self.trackColor = trackColor
-        self.fillColor = fillColor
-        self.nodeColor = nodeColor
-        self.textColor = textColor
-        self.chapters = chapters
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case placement, position, width, bandHeight, textSize, thickness
-        case backgroundColor, backgroundOpacity
-        case trackColor, fillColor, nodeColor, textColor, chapters
-    }
-
-    public init(from decoder: Decoder) throws {
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        let decodedPosition = try values.decodeIfPresent(
-            NormalizedPoint.self,
-            forKey: .position
-        ) ?? NormalizedPoint(x: 0.5, y: 0.05)
-        placement = try values.decodeIfPresent(
-            ProgressOverlayPlacement.self,
-            forKey: .placement
-        ) ?? .custom
-        position = decodedPosition
-        width = try values.decodeIfPresent(Double.self, forKey: .width) ?? 1
-        bandHeight = try values.decodeIfPresent(Double.self, forKey: .bandHeight) ?? 58
-        textSize = try values.decodeIfPresent(Double.self, forKey: .textSize) ?? 30
-        thickness = try values.decodeIfPresent(Double.self, forKey: .thickness) ?? 3
-        backgroundColor = try values.decodeIfPresent(
-            HexColor.self,
-            forKey: .backgroundColor
-        ) ?? HexColor(rgb24: 0x18_19_1F)
-        backgroundOpacity = try values.decodeIfPresent(
-            Double.self,
-            forKey: .backgroundOpacity
-        ) ?? 0.88
-        trackColor = try values.decodeIfPresent(HexColor.self, forKey: .trackColor)
-            ?? HexColor(rgb24: 0xFF_FF_FF)
-        fillColor = try values.decodeIfPresent(HexColor.self, forKey: .fillColor)
-            ?? ProgressOverlay.defaultFillColor
-        nodeColor = try values.decodeIfPresent(HexColor.self, forKey: .nodeColor)
-            ?? .white
-        textColor = try values.decodeIfPresent(HexColor.self, forKey: .textColor)
-            ?? .white
-        chapters = try values.decodeIfPresent(
-            [ProgressChapter].self,
-            forKey: .chapters
-        ) ?? [ProgressChapter(time: 0, title: "开场介绍")]
-        ensureOpeningChapter()
-    }
-
-    /// The bar always owns an editable first section beginning at the first
-    /// video frame. Later chapters only divide that existing bar; they are not
-    /// required in order to enter the opening text.
-    public mutating func ensureOpeningChapter() {
-        let tolerance = 1.0 / 120.0
-        if let index = chapters.firstIndex(where: { abs($0.time) <= tolerance }) {
-            chapters[index].time = 0
-        } else {
-            chapters.append(ProgressChapter(time: 0, title: "开场介绍"))
-        }
-        chapters.sort {
-            if $0.time != $1.time { return $0.time < $1.time }
-            return $0.id.uuidString < $1.id.uuidString
-        }
-    }
-
-    /// A repeated click at the same playhead edits the existing chapter rather
-    /// than creating a zero-width segment that cannot be selected reliably.
-    @discardableResult
-    public mutating func insertChapterIfNeeded(
-        at time: TimeInterval,
-        title: String,
-        tolerance: TimeInterval = 1.0 / 30.0
-    ) -> UUID {
-        ensureOpeningChapter()
-        let safeTime = max(time.isFinite ? time : 0, 0)
-        if let existing = chapters.min(by: {
-            abs($0.time - safeTime) < abs($1.time - safeTime)
-        }), abs(existing.time - safeTime) <= max(tolerance, 0) {
-            return existing.id
-        }
-        let chapter = ProgressChapter(time: safeTime, title: title)
-        chapters.append(chapter)
-        chapters.sort {
-            if $0.time != $1.time { return $0.time < $1.time }
-            return $0.id.uuidString < $1.id.uuidString
-        }
-        return chapter.id
     }
 }

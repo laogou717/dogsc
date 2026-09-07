@@ -221,8 +221,7 @@ public struct PointerTrack: Equatable, Sendable {
         motion: MotionStyle,
         strength: Double
     ) -> Double {
-        let boundedStrength = min(max(strength, 0), 2)
-        guard boundedStrength > 0.000_1 else { return 0 }
+        let boundedStrength = min(max(strength, 2), 4)
 
         let sampleWindow: TimeInterval
         let maximumDegrees: Double

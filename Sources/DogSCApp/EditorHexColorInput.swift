@@ -71,7 +71,7 @@ struct EditorHexColorInput: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(title)
-                .font(.caption)
+                .font(.appUI(.caption))
                 // Both actual controls below already carry this context:
                 // "选择\(title)" and "\(title)十六进制值". Keep the
                 // visual heading without adding a third, non-actionable stop.
@@ -87,7 +87,7 @@ struct EditorHexColorInput: View {
                         .frame(width: 32, height: 26)
                         .overlay(
                             RoundedRectangle(cornerRadius: 5)
-                                .stroke(Color.white.opacity(0.24), lineWidth: 1)
+                                .stroke(EditorTheme.chrome(0.24), lineWidth: 1)
                         )
                         .frame(width: 36, height: 30)
                         .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
@@ -107,17 +107,17 @@ struct EditorHexColorInput: View {
                     )
                 )
                 .textFieldStyle(.plain)
-                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .font(.appUI(size: 12, weight: .medium, design: .monospaced))
                 .padding(.horizontal, 9)
                 .frame(height: 30)
                 .background(
-                    Color.black.opacity(textIsFocused ? 0.32 : 0.24),
+                    textIsFocused ? EditorTheme.cardElevated : EditorTheme.chrome(0.035),
                     in: RoundedRectangle(cornerRadius: 7, style: .continuous)
                 )
                 .overlay {
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
                         .stroke(
-                            Color.white.opacity(textIsFocused ? 0.24 : 0.085),
+                            EditorTheme.chrome(textIsFocused ? 0.24 : 0.085),
                             lineWidth: textIsFocused ? 1 : 0.75
                         )
                 }
@@ -143,7 +143,7 @@ struct EditorHexColorInput: View {
 
             if draft.isDirty, !draft.isValid {
                 Text("请输入 6 位十六进制颜色，例如 #D8B26A")
-                    .font(.caption2)
+                    .font(.appUI(.caption2))
                     .foregroundStyle(.red)
                     .accessibilityLabel("\(title)格式无效")
             }
@@ -167,46 +167,7 @@ struct EditorHexColorInput: View {
     }
 
     private var pickerPopover: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color(hex: pickerDraft))
-                    .frame(width: 38, height: 38)
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .stroke(Color.white.opacity(0.20), lineWidth: 1)
-                    }
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.headline)
-                    Text(pickerDraft.hexString)
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer(minLength: 8)
-
-                ColorPicker(
-                    title,
-                    selection: Binding(
-                        get: { Color(hex: pickerDraft) },
-                        set: { previewPickerColor($0.hexColor) }
-                    ),
-                    supportsOpacity: false
-                )
-                .labelsHidden()
-                .controlSize(.large)
-                .accessibilityLabel("调整\(title)")
-            }
-
-            Text("拖动取色器时会直接更新画面，关闭后自动保存。")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(16)
-        .frame(width: 260)
+        EditorColorPalette(title: title, value: pickerDraft, onPreview: previewPickerColor)
     }
 
     private func submitTextDraft() {
@@ -265,15 +226,26 @@ struct EditorTransactionalColorInput: View {
     var selection: EditorSelection? = nil
     let actionName: String
     let onError: (String) -> Void
+    var presentsPalette = false
     @State private var ownedInteractionID: UUID?
 
     var body: some View {
-        EditorHexColorInput(
-            title: title,
-            value: value.wrappedValue,
-            onEditingChanged: updateInteraction
-        ) { color in
-            value.wrappedValue = color
+        Group {
+            if presentsPalette {
+                EditorColorPalette(title: title, value: value.wrappedValue) { color in
+                    value.wrappedValue = color
+                }
+                .onAppear { updateInteraction(true) }
+                .onDisappear { updateInteraction(false) }
+            } else {
+                EditorHexColorInput(
+                    title: title,
+                    value: value.wrappedValue,
+                    onEditingChanged: updateInteraction
+                ) { color in
+                    value.wrappedValue = color
+                }
+            }
         }
     }
 

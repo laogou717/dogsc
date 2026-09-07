@@ -7,6 +7,7 @@ struct ZoomFocusMap: View {
     let outputTime: TimeInterval
     let sourcePixelSize: CGSize
     @Binding var focus: NormalizedPoint
+    var allowsEditing = true
     var onEditingChanged: (Bool) -> Void = { _ in }
     var onEditingCancelled: () -> Void = { }
 
@@ -17,31 +18,10 @@ struct ZoomFocusMap: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
-            HStack(spacing: 8) {
-                Text("焦点位置")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.white.opacity(0.84))
-
-                Spacer(minLength: 8)
-
-                Button {
-                    withAnimation(SpringMotion.snappy) {
-                        beginFocusEditingIfNeeded()
-                        focus = NormalizedPoint(x: 0.5, y: 0.5)
-                        endFocusEditing()
-                    }
-                } label: {
-                    Label("居中", systemImage: "scope")
-                        .font(.caption2.weight(.semibold))
-                }
-                .buttonStyle(.editorGhost)
-                .controlSize(.small)
-                .disabled(isCentered)
-                .accessibilityLabel("居中缩放焦点")
-            }
-
             focusSurface
 
+            HStack(spacing: 8) {
+            if allowsEditing {
             EditorPairedParameterReadouts(
                 first: EditorPairedParameterValue(
                     title: "X",
@@ -65,6 +45,17 @@ struct ZoomFocusMap: View {
                 onCancelled: cancelFocusEditing,
                 onEditingChanged: { isCoordinateEditing = $0 }
             )
+            Button {
+                beginFocusEditingIfNeeded()
+                focus = NormalizedPoint(x: 0.5, y: 0.5)
+                endFocusEditing()
+            } label: {
+                Image(systemName: "scope").font(.appUI(size: 14)).frame(width: 32, height: 30)
+            }
+            .buttonStyle(EditorSoftRaisedButtonStyle()).disabled(isCentered)
+            .help("焦点居中").accessibilityLabel("居中缩放焦点")
+            }
+            }
         }
         .task(id: thumbnailRequestID) {
             await loadThumbnail()
@@ -87,7 +78,7 @@ struct ZoomFocusMap: View {
             let isActive = isEditingFocus || isCoordinateEditing
 
             ZStack {
-                Color.black.opacity(0.48)
+                EditorTheme.chrome(0.025)
 
                 if let thumbnail {
                     Image(nsImage: thumbnail)
@@ -98,7 +89,7 @@ struct ZoomFocusMap: View {
                         .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                 } else {
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(Color.black.opacity(0.36))
+                        .fill(EditorTheme.chrome(0.035))
                         .frame(width: mapRect.width, height: mapRect.height)
                         .position(x: mapRect.midX, y: mapRect.midY)
 
@@ -107,11 +98,11 @@ struct ZoomFocusMap: View {
                         .position(x: mapRect.midX, y: mapRect.midY)
                 }
 
-                Color.black.opacity(isActive ? 0.025 : 0.075)
+                Color.clear
 
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .stroke(
-                        EditorTheme.platinumAccent.opacity(isActive ? 0.28 : 0.17),
+                        Color.white.opacity(0.65),
                         style: StrokeStyle(lineWidth: 0.75, dash: [4, 4])
                     )
                     .frame(
@@ -135,26 +126,16 @@ struct ZoomFocusMap: View {
                     .allowsHitTesting(false)
                 }
 
-                ZStack {
-                    Circle()
-                        .fill(EditorTheme.platinumAccent.opacity(isActive ? 0.21 : 0.10))
-                        .frame(width: isActive ? 34 : 30, height: isActive ? 34 : 30)
-                    Circle()
-                        .fill(Color.black.opacity(0.38))
-                        .frame(width: isActive ? 24 : 22, height: isActive ? 24 : 22)
-                        .overlay {
-                            Circle()
-                                .stroke(EditorTheme.platinumAccent.opacity(0.92), lineWidth: 1.5)
-                        }
-                        .overlay {
-                            Circle()
-                                .fill(Color.white.opacity(0.92))
-                                .frame(width: 5, height: 5)
-                        }
-                        .shadow(color: Color.black.opacity(0.50), radius: 5, y: 2)
-                }
+                if allowsEditing {
+                Image(systemName: "plus")
+                    .font(.appUI(size: 24, weight: .ultraLight))
+                    .foregroundStyle(EditorTheme.selectionTint)
+                    .frame(width: 28, height: 28)
+                    .background(.white.opacity(0.9), in: Circle())
+                    .shadow(color: .black.opacity(0.12), radius: 3, y: 1)
                 .position(point)
                 .transaction { $0.animation = nil }
+                }
             }
             .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
             .overlay {
@@ -162,7 +143,7 @@ struct ZoomFocusMap: View {
                     .stroke(
                         isActive
                             ? EditorTheme.platinumAccent.opacity(0.28)
-                            : Color.white.opacity(isMapHovered ? 0.18 : 0.11),
+                            : EditorTheme.chrome(isMapHovered ? 0.18 : 0.11),
                         lineWidth: isActive ? 1 : 0.75
                     )
             }
@@ -175,7 +156,7 @@ struct ZoomFocusMap: View {
                     }
                     .onEnded { _ in endFocusEditing() }
             )
-            .allowsHitTesting(!isCoordinateEditing)
+            .allowsHitTesting(allowsEditing && !isCoordinateEditing)
             .onHover { hovering in
                 withAnimation(SpringMotion.interactive) {
                     isMapHovered = hovering
@@ -183,12 +164,12 @@ struct ZoomFocusMap: View {
             }
             .accessibilityHidden(true)
         }
-        .frame(height: 148)
+        .frame(height: min(max(312 / max(sourcePixelSize.width / max(sourcePixelSize.height, 1), 0.5), 150), 200))
         .accessibilityIdentifier("zoom.focus-map")
     }
 
     private func focusMapRect(in size: CGSize) -> CGRect {
-        let padded = CGRect(origin: .zero, size: size).insetBy(dx: 18, dy: 12)
+        let padded = CGRect(origin: .zero, size: size).insetBy(dx: 8, dy: 8)
         let sourceAspect = max(sourcePixelSize.width / max(sourcePixelSize.height, 1), 0.01)
         let widthFromHeight = padded.height * sourceAspect
         if widthFromHeight <= padded.width {

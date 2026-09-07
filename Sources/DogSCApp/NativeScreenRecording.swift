@@ -5,15 +5,22 @@ import RecorderCore
 import ScreenCaptureKit
 
 enum NativeScreenRecordingBackendPolicy {
-    /// REC-003: Apple defines `.nominal` as one logical point to one captured
-    /// pixel. That is correct for display/area surfaces whose dimensions come
-    /// from the active display mode, but it destroys Retina detail for a
-    /// desktop-independent window and merely scales the low-detail result into
-    /// our larger writer surface. `.best` is specifically documented for
-    /// independent-window capture and preserves the highest available backing
-    /// resolution through macOS scaled display modes.
+    /// REC-002/REC-003: Apple defines `.nominal` as one logical point to one
+    /// captured pixel. A cropped area and an independent window both request
+    /// `contentRect * pointPixelScale` output pixels; using `.nominal` there can
+    /// first rasterize at point resolution and then enlarge that softer image
+    /// into the requested Retina-sized surface. Keep those focused sources at
+    /// `.best`. Full-display recording deliberately remains `.nominal`: its
+    /// 5K HEVC path is already the dominant WindowServer workload and uses
+    /// Apple's direct writer, while the user has not reported full-display
+    /// softness.
     static func captureResolution(for source: CaptureSource) -> SCCaptureResolutionType {
-        source == .window ? .best : .nominal
+        switch source {
+        case .window, .area:
+            .best
+        case .display, .device:
+            .nominal
+        }
     }
 
     /// REC-001/REC-004/NAT-001: full-display HEVC is the expensive path where

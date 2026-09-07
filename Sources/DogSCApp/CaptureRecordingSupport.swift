@@ -28,8 +28,8 @@ enum MovieCaptureRole: Sendable {
 
     var displayName: String {
         switch self {
-        case .camera: "摄像头"
-        case .iosDevice: "iPhone/iPad 屏幕"
+        case .camera: appLocalized("摄像头")
+        case .iosDevice: appLocalized("iPhone/iPad 屏幕")
         }
     }
 

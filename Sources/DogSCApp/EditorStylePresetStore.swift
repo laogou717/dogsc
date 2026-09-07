@@ -1,10 +1,10 @@
 import Foundation
 import RecorderCore
 
-/// A reusable visual setup, deliberately excluding source-specific edits and
-/// timeline content. Applying a style never replaces media, cuts, animations,
-/// audio levels, or export settings.
-struct EditorStylePreset: Codable, Equatable, Identifiable {
+/// A reusable scene configuration. Media, cuts, timed animations and recording
+/// clock corrections stay with the project; all static presentation defaults
+/// travel together, including crop and camera visibility.
+struct EditorStylePreset: Codable, Equatable, Identifiable, Sendable {
     var id: UUID
     var name: String
     var canvas: CanvasStyle
@@ -12,75 +12,97 @@ struct EditorStylePreset: Codable, Equatable, Identifiable {
     var motion: MotionStyle
     var cursor: CursorStyle
     var includesBackground: Bool
+    // Optional additions distinguish old, deliberately partial presets from
+    // complete snapshots. Missing fields must not overwrite the target.
+    var formatVersion: Int?
+    var sourceDimensions: CanvasDimensions?
+    var audio: AudioStyle?
+    var opening: OpeningSequence?
+    var backgroundAsset: ScenePresetBackgroundAsset?
 
-    init(id: UUID = UUID(), name: String, project: RecorderProject) {
+    var includesCrop: Bool { (formatVersion ?? 1) >= 2 }
+
+    init(
+        id: UUID = UUID(),
+        name: String,
+        project: RecorderProject,
+        sourceDimensions: CanvasDimensions? = nil,
+        zoomCreationScale: Double? = nil
+    ) {
         self.id = id
         self.name = name
-
-        var canvas = project.canvas
-        // Crop belongs to one source recording. Reusing it on another episode
-        // can silently cut off content, so presets retain the target crop.
-        canvas.crop = .full
-        self.canvas = canvas
-
-        var camera = project.camera
-        // Visibility is an editing decision, not an appearance preset.
-        camera.isHidden = false
-        self.camera = camera
+        canvas = project.canvas
+        camera = project.camera
         motion = project.motion
+        motion.defaultZoomScale = project.motion.defaultZoomScale ?? zoomCreationScale
         cursor = project.cursorStyle
-
-        // A project-relative image only exists inside the current package.
-        // Keep the rest of the look reusable and leave the next project's
-        // current background untouched instead of saving a broken reference.
-        if case .projectImage = project.canvas.backgroundSource {
-            includesBackground = false
-        } else if case .projectVideo = project.canvas.backgroundSource {
-            includesBackground = false
-        } else {
-            includesBackground = true
+        audio = project.audio
+        opening = project.openingSequence
+        formatVersion = 2
+        self.sourceDimensions = sourceDimensions
+        switch canvas.backgroundSource {
+        case .projectImage, .projectVideo: includesBackground = false
+        default: includesBackground = true
         }
     }
 
-    func applying(to baseline: RecorderProject) -> RecorderProject {
+    /// `backgroundOverride` is a project-owned copy made before committing the
+    /// command. Callers surface unavailable resources; no broken path is applied.
+    func applying(
+        to baseline: RecorderProject,
+        backgroundOverride: BackgroundSource? = nil
+    ) -> RecorderProject {
         var result = baseline
-
         var appliedCanvas = canvas
-        appliedCanvas.crop = baseline.canvas.crop
-        if !includesBackground || !backgroundIsAvailable(appliedCanvas.backgroundSource) {
+        if !includesCrop { appliedCanvas.crop = baseline.canvas.crop }
+        if let backgroundOverride {
+            appliedCanvas.backgroundSource = backgroundOverride
+        } else if !includesBackground || backgroundAsset != nil
+                    || !backgroundIsAvailable(appliedCanvas.backgroundSource) {
             appliedCanvas.backgroundSource = baseline.canvas.backgroundSource
         }
         result.canvas = appliedCanvas
-
-        var appliedCamera = camera
-        appliedCamera.isHidden = baseline.camera.isHidden
-        result.camera = appliedCamera
+        result.camera = camera
+        if !includesCrop { result.camera.isHidden = baseline.camera.isHidden }
         result.motion = motion
+        if motion.defaultZoomScale == nil {
+            result.motion.defaultZoomScale = baseline.motion.defaultZoomScale
+        }
         result.cursorStyle = cursor
+        if let audio { result.audio = audio }
+        if let opening { result.openingSequence = opening }
         return result
+    }
+
+    func matchesConfiguration(of project: RecorderProject, zoomCreationScale: Double? = nil) -> Bool {
+        let current = EditorStylePreset(name: name, project: project, zoomCreationScale: zoomCreationScale)
+        return canvas == current.canvas && camera == current.camera
+            && motion == current.motion && cursor == current.cursor
+            && audio == current.audio && opening == current.opening
+    }
+
+    var hasAvailableBackground: Bool {
+        if let backgroundAsset { return backgroundAsset.isAvailable }
+        return includesBackground && backgroundIsAvailable(canvas.backgroundSource)
     }
 
     private func backgroundIsAvailable(_ source: BackgroundSource) -> Bool {
         switch source {
-        case let .systemImage(absolutePath):
-            return FileManager.default.fileExists(atPath: absolutePath)
-        case let .systemVideo(absolutePath):
-            return FileManager.default.fileExists(atPath: absolutePath)
-        case .projectImage, .projectVideo:
-            return false
-        case .gradient, .solidColor, .bundledImage, .pattern, .dynamicFlow:
-            return true
+        case let .systemImage(path), let .systemVideo(path):
+            return FileManager.default.fileExists(atPath: path)
+        case .projectImage, .projectVideo: return false
+        case .pattern, .dynamicFlow: return true
         }
     }
 }
 
 @MainActor
 enum EditorStylePresetStore {
+    // Keep the existing key so the user's presets survive the coverage upgrade.
     private static let key = "editor-style-presets-v1"
     private static let lastUsedKey = "editor-last-used-style-v1"
+    private static let defaultIDKey = "editor-scene-preset.default-id"
     private static var defaults: UserDefaults {
-        // The suite is shared by DogSC Dev and the eventual signed release, so
-        // a user's local presets survive the transition without sharing TCC.
         UserDefaults(suiteName: "cn.laogou.dogsc") ?? .standard
     }
 
@@ -91,21 +113,31 @@ enum EditorStylePresetStore {
         return presets
     }
 
-    static func save(_ presets: [EditorStylePreset]) {
-        guard let data = try? JSONEncoder().encode(presets) else { return }
-        defaults.set(data, forKey: key)
+    static func save(_ presets: [EditorStylePreset]) throws {
+        defaults.set(try JSONEncoder().encode(presets), forKey: key)
     }
 
-    /// Remembers the visual setup from the most recently finished editing
-    /// session. A fresh recording can therefore start from the user's actual
-    /// working layout without requiring a preset click every episode.
+    static var defaultPresetID: UUID? {
+        get { defaults.string(forKey: defaultIDKey).flatMap(UUID.init(uuidString:)) }
+        set { defaults.set(newValue?.uuidString, forKey: defaultIDKey) }
+    }
+
+    /// Implicit "last used" inheritance remains source-safe. Crop travels only
+    /// through an explicitly chosen scene preset, including an explicit default.
     static func rememberLastUsedStyle(from project: RecorderProject) {
-        let snapshot = EditorStylePreset(name: "上次使用", project: project)
+        var snapshot = EditorStylePreset(name: "上次使用", project: project)
+        snapshot.formatVersion = 1
         guard let data = try? JSONEncoder().encode(snapshot) else { return }
         defaults.set(data, forKey: lastUsedKey)
     }
 
     static func applyingLastUsedStyle(to project: RecorderProject) -> RecorderProject {
+        if let selected = load().first(where: { $0.id == defaultPresetID }) {
+            return selected.applying(
+                to: project,
+                backgroundOverride: selected.backgroundAsset?.availableSource
+            )
+        }
         guard let data = defaults.data(forKey: lastUsedKey),
               let snapshot = try? JSONDecoder().decode(EditorStylePreset.self, from: data)
         else { return project }

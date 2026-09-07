@@ -40,18 +40,16 @@ final class AreaPresetButton: CaptureSelectionNativeButton {
     }
 
     private func updateAppearance() {
-        let tint = selectedState
-            ? captureSelectionAccentNSColor.blended(withFraction: 0.2, of: .white)
-            : NSColor.white.withAlphaComponent(0.66)
+        let tint = captureSelectionInkNSColor.withAlphaComponent(selectedState ? 1 : 0.65)
         symbolView.contentTintColor = tint
         captionLabel.textColor = tint
-        layer?.backgroundColor = selectedState
-            ? captureSelectionAccentNSColor.withAlphaComponent(0.2).cgColor
-            : NSColor.white.withAlphaComponent(isPointerInside ? 0.07 : 0).cgColor
-        layer?.borderWidth = selectedState || isPointerInside ? 1 : 0
-        layer?.borderColor = selectedState
-            ? captureSelectionAccentNSColor.withAlphaComponent(0.72).cgColor
-            : NSColor.white.withAlphaComponent(0.1).cgColor
+        layer?.backgroundColor = selectedState ? NSColor(calibratedRed: 0.86, green: 0.96, blue: 0.91, alpha: 1).cgColor : NSColor.clear.cgColor
+        layer?.borderWidth = selectedState ? 0.75 : 0
+        layer?.borderColor = NSColor.black.withAlphaComponent(0.06).cgColor
+        layer?.shadowColor = NSColor.black.cgColor
+        layer?.shadowOpacity = selectedState ? 0.12 : 0
+        layer?.shadowRadius = 4
+        layer?.shadowOffset = CGSize(width: 0, height: -2)
     }
 
     override func captureInteractionDidChange(hovering: Bool, pressed: Bool) {
@@ -65,7 +63,7 @@ final class AreaPresetButton: CaptureSelectionNativeButton {
             systemSymbolName: areaSymbolName,
             accessibilityDescription: captionLabel.stringValue
         )?.withSymbolConfiguration(NSImage.SymbolConfiguration(
-            pointSize: 23 * scale,
+            pointSize: 21 * scale,
             weight: .regular
         ))
         layer?.cornerRadius = 10 * scale
@@ -75,16 +73,16 @@ final class AreaPresetButton: CaptureSelectionNativeButton {
     override func layout() {
         super.layout()
         let scale = layoutScale
-        let iconSize = 28 * scale
+        let iconSize = 22 * scale
         symbolView.frame = CGRect(
             x: bounds.midX - iconSize / 2,
-            y: 35 * scale,
+            y: bounds.height - 30 * scale,
             width: iconSize,
             height: iconSize
         )
         captionLabel.frame = CGRect(
             x: 2 * scale,
-            y: 10 * scale,
+            y: 5 * scale,
             width: bounds.width - 4 * scale,
             height: 17 * scale
         )
@@ -118,7 +116,7 @@ final class AreaActionButton: CaptureSelectionNativeButton {
         layer?.cornerRadius = 10
         layer?.backgroundColor = primary
             ? captureSelectionPlatinumNSColor.cgColor
-            : NSColor.white.withAlphaComponent(0.075).cgColor
+            : captureSelectionRaisedNSColor.cgColor
         layer?.borderWidth = primary ? 0 : 1
         layer?.borderColor = NSColor.white.withAlphaComponent(0.08).cgColor
         setAccessibilityLabel(title)
@@ -126,15 +124,15 @@ final class AreaActionButton: CaptureSelectionNativeButton {
         buttonTitleLabel.stringValue = title
         buttonTitleLabel.alignment = .center
         buttonTitleLabel.textColor = primary
-            ? NSColor.black.withAlphaComponent(0.88)
-            : NSColor.white.withAlphaComponent(0.88)
+            ? NSColor.white
+            : captureSelectionInkNSColor
         addSubview(buttonTitleLabel)
 
         shortcutLabel.stringValue = shortcut ?? ""
         shortcutLabel.alignment = .center
         shortcutLabel.textColor = primary
-            ? NSColor.black.withAlphaComponent(0.52)
-            : NSColor.white.withAlphaComponent(0.56)
+            ? NSColor.white.withAlphaComponent(0.65)
+            : captureSelectionInkNSColor.withAlphaComponent(0.6)
         shortcutLabel.isHidden = shortcut == nil
         addSubview(shortcutLabel)
     }
@@ -145,7 +143,7 @@ final class AreaActionButton: CaptureSelectionNativeButton {
 
     func updateScale(_ scale: CGFloat) {
         layoutScale = scale
-        buttonTitleLabel.font = .systemFont(ofSize: 14 * scale, weight: .semibold)
+        buttonTitleLabel.font = .systemFont(ofSize: 12 * scale, weight: .medium)
         shortcutLabel.font = .systemFont(ofSize: 10.5 * scale, weight: .medium)
         layer?.cornerRadius = 10 * scale
         needsLayout = true
@@ -156,9 +154,7 @@ final class AreaActionButton: CaptureSelectionNativeButton {
             ? captureSelectionPlatinumNSColor.withAlphaComponent(
                 pressed ? 0.84 : hovering ? 0.92 : 1
             ).cgColor
-            : NSColor.white.withAlphaComponent(
-                pressed ? 0.15 : hovering ? 0.12 : 0.075
-            ).cgColor
+            : NSColor(calibratedWhite: pressed ? 0.92 : hovering ? 0.97 : 0.995, alpha: 1).cgColor
     }
 
     override func layout() {
@@ -175,7 +171,7 @@ final class AreaActionButton: CaptureSelectionNativeButton {
         } else {
             buttonTitleLabel.frame = CGRect(
                 x: 4 * scale,
-                y: bounds.midY + 2 * scale,
+                y: bounds.midY - 1 * scale,
                 width: bounds.width - 8 * scale,
                 height: 20 * scale
             )
@@ -220,20 +216,20 @@ final class EscapeHintContentView: NSView {
         super.init(frame: frameRect)
         setAccessibilityElement(true)
         setAccessibilityRole(.staticText)
-        setAccessibilityLabel("按 Esc 取消选择")
+        setAccessibilityLabel("拖拽绘制录制区域，按 Esc 取消选择")
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         setAccessibilityElement(true)
         setAccessibilityRole(.staticText)
-        setAccessibilityLabel("按 Esc 取消选择")
+        setAccessibilityLabel("拖拽绘制录制区域，按 Esc 取消选择")
     }
 
     func preferredWidth(for scale: CGFloat) -> CGFloat {
         let bodyFont = NSFont.systemFont(ofSize: 12.5 * scale, weight: .medium)
         let keyFont = NSFont.monospacedSystemFont(ofSize: 11.5 * scale, weight: .semibold)
-        let prefix = makeLine("按", font: bodyFont, color: .white)
+        let prefix = makeLine("拖拽绘制录制区域 · 按", font: bodyFont, color: .white)
         let suffix = makeLine("取消选择", font: bodyFont, color: .white)
         let key = makeLine("Esc", font: keyFont, color: .white)
         let contentWidth = lineMetrics(prefix).width
@@ -249,10 +245,10 @@ final class EscapeHintContentView: NSView {
         let scale = interfaceScale
         let bodyFont = NSFont.systemFont(ofSize: 12.5 * scale, weight: .medium)
         let keyFont = NSFont.monospacedSystemFont(ofSize: 11.5 * scale, weight: .semibold)
-        let bodyColor = NSColor.white.withAlphaComponent(0.78)
-        let keyColor = NSColor.white.withAlphaComponent(0.86)
+        let bodyColor = captureSelectionInkNSColor.withAlphaComponent(0.78)
+        let keyColor = captureSelectionInkNSColor.withAlphaComponent(0.86)
 
-        let prefix = makeLine("按", font: bodyFont, color: bodyColor)
+        let prefix = makeLine("拖拽绘制录制区域 · 按", font: bodyFont, color: bodyColor)
         let key = makeLine("Esc", font: keyFont, color: keyColor)
         let suffix = makeLine("取消选择", font: bodyFont, color: bodyColor)
         let prefixWidth = lineMetrics(prefix).width
@@ -277,7 +273,7 @@ final class EscapeHintContentView: NSView {
             width: keyWidth,
             height: keyHeight
         )
-        NSColor.white.withAlphaComponent(0.11).setFill()
+        NSColor.black.withAlphaComponent(0.055).setFill()
         NSBezierPath(
             roundedRect: keyRect,
             xRadius: 6 * scale,

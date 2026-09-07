@@ -6,7 +6,7 @@ import AVFoundation
 /// 模块内访问的暂停帧任务/令牌/请求数组只允许这里的代码写入。
 extension EditorPlaybackController {
     func refreshPausedFrames(at time: TimeInterval, seekToken: UInt64? = nil) {
-        guard let preparedMedia, !isPlaying else { return }
+        guard isPreviewActive, let preparedMedia, !isPlaying else { return }
         let requestedGeneration = preparedMedia.generation
         let requestedSeek = seekToken ?? self.seekToken
         let pausedFrameRate = max(frameRate, 1)
@@ -16,13 +16,21 @@ extension EditorPlaybackController {
             seconds: frame / Double(pausedFrameRate),
             preferredTimescale: 60_000
         )
-        let primaryAsset = ImmutablePreviewAsset(preparedMedia.composition.primaryComposition)
-        let cameraAsset = preparedMedia.composition.cameraComposition.map(ImmutablePreviewAsset.init)
+        let primaryAsset = ImmutablePreviewAsset(
+            preparedMedia.composition.primaryComposition,
+            videoComposition: preparedMedia.composition.primaryVideoComposition
+        )
+        let cameraAsset = preparedMedia.composition.cameraComposition.map {
+            ImmutablePreviewAsset($0)
+        }
         let shouldLoadCamera = cameraIsAvailable(at: frame / Double(pausedFrameRate))
         cancelPausedFrameDecode()
         // Own the generators for the whole request: Task cancellation alone
         // would leave them decoding in the background during fast scrubbing.
-        let screenRequest = PausedPreviewFrameRequest(primaryAsset.asset)
+        let screenRequest = PausedPreviewFrameRequest(
+            primaryAsset.asset,
+            videoComposition: primaryAsset.videoComposition
+        )
         let cameraRequest = shouldLoadCamera
             ? cameraAsset.map { PausedPreviewFrameRequest($0.asset) }
             : nil
@@ -50,11 +58,15 @@ extension EditorPlaybackController {
                       self.seekToken == requestedSeek,
                       self.pausedFrameDecodeToken == requestedDecode,
                       !self.isPlaying else { return }
-                self.pausedScreenImage = screenImage.map {
-                    NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height))
+                if let screenImage {
+                    self.pausedScreenImage = NSImage(cgImage: screenImage,
+                        size: NSSize(width: screenImage.width, height: screenImage.height))
                 }
-                self.pausedCameraImage = cameraImage.map {
-                    NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height))
+                if let cameraImage {
+                    self.pausedCameraImage = NSImage(cgImage: cameraImage,
+                        size: NSSize(width: cameraImage.width, height: cameraImage.height))
+                } else if !shouldLoadCamera {
+                    self.pausedCameraImage = nil
                 }
                 self.pausedFrameTask = nil
                 self.pausedFrameRequests.removeAll(keepingCapacity: true)

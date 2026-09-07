@@ -8,6 +8,7 @@ import RecorderCore
 import SwiftUI
 
 struct SharedRenderedPreviewView: NSViewRepresentable {
+    var presentationMode = 0
     let screenOutput: AVPlayerItemVideoOutput?
     let screenPreferredTransform: CGAffineTransform
     let cameraOutput: AVPlayerItemVideoOutput?
@@ -50,6 +51,7 @@ struct SharedRenderedPreviewView: NSViewRepresentable {
     }
 
     private func update(_ view: SharedRenderedPreviewNSView) {
+        view.preparePresentationTransition(presentationMode)
         view.update(
             screenOutput: screenOutput,
             screenPreferredTransform: screenPreferredTransform,
@@ -136,6 +138,8 @@ final class SharedRenderedPreviewNSView: NSView {
 
     private var screenFrame: CIImage?
     private var cameraFrame: CIImage?
+    private var cameraFrameMediaGeneration: UInt64?
+    private var cameraFrameDiscontinuityID: UInt64?
     private var pausedScreenImage: NSImage?
     private var pausedScreenFrame: CIImage?
     private var pausedCameraImage: NSImage?
@@ -166,9 +170,13 @@ final class SharedRenderedPreviewNSView: NSView {
 
     /// 合成与栅格化在专用串行队列上进行：update() 每次只取帧并入队，
     /// 主线程不再随每次状态变更同步渲染整幅画面（拖动不跟手/颤动的根因）。
+    /// Drain temporary Core Image/Metal Objective-C objects after each job,
+    /// rather than inheriting a worker pool with no per-job drain. Submitted
+    /// GPU commands retain their own resources until completion.
     let renderQueue = DispatchQueue(
         label: "cn.laogou.dogsc.preview-render",
-        qos: .userInitiated
+        qos: .userInitiated,
+        autoreleaseFrequency: .workItem
     )
     /// 主线程写入、renderQueue 读取（仅作过期启发式判断，UInt64 对齐读写在
     /// ARM 上是原子的；最严格的一致性由主线程应用前的最终比较兜底）。
@@ -239,6 +247,8 @@ final class SharedRenderedPreviewNSView: NSView {
         pausedCameraFrame = nil
         screenFrame = nil
         cameraFrame = nil
+        cameraFrameMediaGeneration = nil
+        cameraFrameDiscontinuityID = nil
         wallpaperImage = nil
         wallpaperFrame = nil
         wallpaperVideoURL = nil
@@ -484,10 +494,6 @@ final class SharedRenderedPreviewNSView: NSView {
             // every play/pause transition.
             contentRevision &+= 1
         }
-        if renderTick?.cameraIsAvailable != true {
-            if cameraFrame != nil { contentRevision &+= 1 }
-            cameraFrame = nil
-        }
         if colorContract != semanticScene.color {
             colorContract = semanticScene.color
             colorProfile = try? CoreImageFrameColorProfile(contract: semanticScene.color)
@@ -510,6 +516,12 @@ final class SharedRenderedPreviewNSView: NSView {
         self.perspectivePrewarmPlan = perspectivePrewarmPlan.map(
             SharedPreviewFramePipeline.rasterPlan
         )
+    }
+
+    func preparePresentationTransition(_ mode: Int) {
+        // Present the new crop/composition frame directly on the same backing
+        // layer. Fading a resized Metal surface exposes stale geometry.
+        layer?.removeAnimation(forKey: "cropPresentation")
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -555,6 +567,8 @@ final class SharedRenderedPreviewNSView: NSView {
                allowCachedFrame: cameraFrame != nil
            ) {
             cameraFrame = decoded
+            cameraFrameMediaGeneration = renderTick.mediaGeneration
+            cameraFrameDiscontinuityID = renderTick.discontinuityID
             contentRevision &+= 1
         }
         if let renderTick,
@@ -567,7 +581,6 @@ final class SharedRenderedPreviewNSView: NSView {
             preparedBackgroundCache.reset()
             contentRevision &+= 1
         }
-
         // Preserve an exact paused decode as the live-output fallback. The
         // controller intentionally releases its NSImage when playback starts;
         // retaining the CIImage here bridges that release to the decoder's
@@ -591,16 +604,33 @@ final class SharedRenderedPreviewNSView: NSView {
         }
         let cameraResource: CIImage? = {
             guard !suppressCameraContent else { return nil }
-            guard renderTick?.cameraIsAvailable == true else { return nil }
+            guard let renderTick, renderTick.cameraIsAvailable else { return nil }
             if usesPausedFrame, let pausedCameraFrame {
                 cameraFrame = pausedCameraFrame
+                cameraFrameMediaGeneration = renderTick.mediaGeneration
+                cameraFrameDiscontinuityID = renderTick.discontinuityID
             }
+            let cachedFrameBelongsToCurrentEpoch =
+                PreviewCameraFrameContinuityPolicy.canUseCachedFrame(
+                    cachedMediaGeneration: cameraFrameMediaGeneration,
+                    cachedDiscontinuityID: cameraFrameDiscontinuityID,
+                    currentMediaGeneration: renderTick.mediaGeneration,
+                    currentDiscontinuityID: renderTick.discontinuityID,
+                    presentationIsPaused: !renderTick.isPlaying
+                )
             let frame = usesPausedFrame
-                ? (pausedCameraFrame ?? cameraFrame)
-                : cameraFrame
+                ? (pausedCameraFrame ?? (cachedFrameBelongsToCurrentEpoch ? cameraFrame : nil))
+                : (cachedFrameBelongsToCurrentEpoch ? cameraFrame : nil)
             guard let frame, let cameraContentCrop else { return frame }
             return CameraLetterboxAnalysis.cropped(frame, to: cameraContentCrop)
         }()
+        if PreviewCameraFrameContinuityPolicy.shouldHoldPresentedFrame(
+            scene: semanticScene,
+            cameraIsExpected: renderTick?.cameraIsAvailable == true,
+            hasCameraFrame: cameraResource != nil
+        ) {
+            return
+        }
         let resources = SharedFrameRenderResources(
             screen: screen,
             camera: cameraResource,

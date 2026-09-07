@@ -147,6 +147,12 @@ final class CameraPreviewWindowController {
     private var panel: CameraPreviewPanel?
     private var presentationGeneration = 0
     private var hasPositionedPanel = false
+    private var mirrored = UserDefaults.standard.object(forKey: "recording.camera-mirrored") as? Bool ?? true
+    func setMirrored(_ value: Bool) {
+        mirrored = value
+        (panel?.contentView as? CameraPreviewSurface)?.mirrored = value
+        panel?.contentView?.needsLayout = true
+    }
     private var sourceAspectRatio: CGFloat?
     private var sourcePixelSize: CGSize?
     private var shapeObserver: NSObjectProtocol?
@@ -269,6 +275,7 @@ final class CameraPreviewWindowController {
             session: session,
             frameSink: frameSink
         )
+        surface.mirrored = mirrored
         surface.autoresizingMask = [.width, .height]
         panel.contentView = surface
         return panel
@@ -343,6 +350,7 @@ private final class CameraPreviewPanel: NSPanel {
 }
 
 private final class CameraPreviewSurface: NSView {
+    var mirrored = true
     private let session: AVCaptureSession
     private let frameSink: ImmediateCameraPreviewFrameSink
     private let previewLayer: AVSampleBufferDisplayLayer
@@ -478,7 +486,7 @@ private final class CameraPreviewSurface: NSView {
             sourceHeight: sourceHeight
         )
         previewLayer.setAffineTransform(
-            CGAffineTransform(scaleX: -fillScale, y: fillScale)
+            CGAffineTransform(scaleX: mirrored ? -fillScale : fillScale, y: fillScale)
         )
         CATransaction.commit()
 

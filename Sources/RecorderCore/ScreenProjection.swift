@@ -63,6 +63,24 @@ public struct ProjectedScreenPointMapper: Sendable {
         guard projected.x.isFinite, projected.y.isFinite else { return nil }
         return projected
     }
+    /// Exact inverse of the same homography used by the renderer. Editing a
+    /// tilted plane must not approximate perspective using its top/left edges.
+    public func unproject(_ point: CompositionPoint) -> CompositionPoint? {
+        guard point.x.isFinite, point.y.isFinite else { return nil }
+        let aa = a - point.x * perspectiveX
+        let bb = b - point.x * perspectiveY
+        let dd = d - point.y * perspectiveX
+        let ee = e - point.y * perspectiveY
+        let determinant = aa * ee - bb * dd
+        guard abs(determinant) > 0.000_000_001 else { return nil }
+        let x = point.x - topLeft.x, y = point.y - topLeft.y
+        let u = (x * ee - bb * y) / determinant
+        let v = (aa * y - x * dd) / determinant
+        let result = CompositionPoint(x: sourceRect.x + u * sourceRect.width,
+                                      y: sourceRect.y + v * sourceRect.height)
+        return result.x.isFinite && result.y.isFinite ? result : nil
+    }
+
 }
 
 public struct ProjectedScreenQuad: Equatable, Sendable {

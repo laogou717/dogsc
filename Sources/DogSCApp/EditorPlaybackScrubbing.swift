@@ -6,7 +6,7 @@ import AVFoundation
 extension EditorPlaybackController {
     /// PRE-005/EDT-004: pointer motion owns a cheap logical clock. Native
     /// playhead layers follow every update, while expensive exact AVFoundation
-    /// seeks are coalesced to one per 33 ms and the final mouse-up is exact.
+    /// seeks chase the latest target after the previous seek completes. Mouse-up is exact.
     func beginScrubbing() {
         guard !scrubIsActive, let primaryPlayer else { return }
         // 按下拖动（标尺、总览、裁剪手柄）接管传输层，悬浮预览立即让位。
@@ -15,8 +15,9 @@ extension EditorPlaybackController {
         cameraSeekToken &+= 1
         cameraSeekIsPending = false
         cameraPlayer?.cancelPendingSeeks()
-        scrubIsActive = true
         cancelScrubScheduling()
+        scrubIsActive = true
+        scrubPreviewTime = outputTime
         primaryPlayer.pauseTransport()
         cameraPlayer?.pauseTransport()
         primaryPlayer.cancelPendingSeeks()
@@ -35,9 +36,8 @@ extension EditorPlaybackController {
             requestedTime,
             duration: duration
         )
-        // Invalidate any older in-flight seek before publishing the newer
-        // pointer clock, otherwise its completion can pull the playhead back.
-        seekToken &+= 1
+        // The pointer clock never waits for decoding. A completed seek only
+        // publishes a preview frame; it must never pull this clock backwards.
         latestOutputTime = target
         resetPlaybackAnchor(to: target)
         scrubSeekCoalescer.update(target)
@@ -53,28 +53,36 @@ extension EditorPlaybackController {
     }
 
     private func scheduleScrubSeekIfNeeded() {
-        guard scrubIsActive, scrubSeekTask == nil else { return }
+        guard scrubIsActive, scrubSeekTask == nil, let primaryPlayer,
+              let target = scrubSeekCoalescer.takePending() else { return }
+        let session = scrubSeekGeneration
+        let generation = endpoints?.generation
+        seekToken &+= 1
+        let token = seekToken
+        primarySeekIsPending = true
         scrubSeekTask = Task { @MainActor [weak self] in
-            do {
-                try await Task.sleep(for: .milliseconds(33))
-            } catch {
-                return
-            }
-            guard let self, self.scrubIsActive else { return }
+            // At most one seek is in flight. Repeated cancel-and-seek at a
+            // fixed 33 ms interval can starve AVPlayer on a dense recording.
+            let finished = await primaryPlayer.seekTransport(
+                to: CMTime(seconds: target, preferredTimescale: 60_000),
+                toleranceBefore: .zero, toleranceAfter: .zero)
+            guard let self, self.scrubSeekGeneration == session else { return }
             self.scrubSeekTask = nil
-            guard let target = self.scrubSeekCoalescer.takePending() else { return }
-            self.seek(
-                to: target,
-                pausing: true,
-                loadsPausedFrame: false
-            )
-            if self.scrubSeekCoalescer.pendingTarget != nil {
-                self.scheduleScrubSeekIfNeeded()
+            guard self.scrubIsActive, self.endpoints?.generation == generation,
+                  self.seekToken == token, !Task.isCancelled else { return }
+            self.primarySeekIsPending = false
+            if finished {
+                self.scrubPreviewTime = target
+                self.synchronizeCamera(to: target, force: true)
+                self.advanceDiscontinuity()
             }
+            self.scheduleScrubSeekIfNeeded()
         }
     }
 
     func cancelScrubScheduling() {
+        scrubSeekGeneration &+= 1
+        scrubPreviewTime = nil
         scrubSeekTask?.cancel()
         scrubSeekTask = nil
         scrubSeekCoalescer.cancel()

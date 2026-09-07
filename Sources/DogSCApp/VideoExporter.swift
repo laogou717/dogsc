@@ -37,6 +37,7 @@ enum ExportMediaKind: String, Equatable, Sendable {
 enum VideoExporterError: LocalizedError, Equatable, Sendable {
     case cancelled
     case cannotCreateSession
+    case noAudioToExport
     case missingAssetReference(ExportAssetRole)
     case missingAssetFile(role: ExportAssetRole, path: String)
     case unreadableAsset(role: ExportAssetRole, path: String, reason: String)
@@ -51,7 +52,9 @@ enum VideoExporterError: LocalizedError, Equatable, Sendable {
         case .cancelled:
             return "已取消导出。"
         case .cannotCreateSession:
-            return "无法创建视频导出会话。"
+            return "无法创建导出会话。"
+        case .noAudioToExport:
+            return "当前剪辑没有可导出的声音。"
         case let .missingAssetReference(role):
             return "项目声明录制了\(role.displayName)，但项目中没有对应的素材路径。请恢复素材后重试。"
         case let .missingAssetFile(role, path):
@@ -112,7 +115,14 @@ final class VideoExporter: ObservableObject {
         }
 
         exportTask = Task { [self] in
-            defer { progressRelay.invalidate() }
+            // Export is a user-initiated job even when its editor is hidden.
+            // Balance the activity on success, failure, and cancellation.
+            let activity = ProcessInfo.processInfo.beginActivity(options: .userInitiated,
+                reason: "正在导出录屏作品")
+            defer {
+                progressRelay.invalidate()
+                ProcessInfo.processInfo.endActivity(activity)
+            }
             // The worker writes to a sibling .tmp file and atomically promotes
             // it only on success, so a pre-existing file at the target URL is
             // never truncated or destroyed by a failed or cancelled export.
@@ -148,6 +158,10 @@ final class VideoExporter: ObservableObject {
         exportProgress = 0
         lastExportURL = nil
         errorMessage = nil
+    }
+
+    func resetResultForNewExportSelection() {
+        resetResultForNewEditorSession()
     }
 
     nonisolated private static func performExport(
@@ -214,7 +228,7 @@ final class VideoExporter: ObservableObject {
         // recording impossible to export.
 
         let camera: LoadedVideoAsset?
-        if requiredMedia.cameraVideo {
+        if request.outputKind == .video, requiredMedia.cameraVideo {
             guard let cameraURL else {
                 throw VideoExporterError.missingAssetReference(.cameraRecording)
             }
@@ -234,7 +248,7 @@ final class VideoExporter: ObservableObject {
         }
 
         let wallpaperImage: CIImage?
-        if requiredMedia.backgroundImage {
+        if request.outputKind == .video, requiredMedia.backgroundImage {
             guard let wallpaperURL else {
                 throw VideoExporterError.missingAssetReference(.wallpaper)
             }
@@ -254,7 +268,7 @@ final class VideoExporter: ObservableObject {
             wallpaperImage = nil
         }
         let wallpaperVideo: LoadedVideoAsset?
-        if requiredMedia.backgroundVideo {
+        if request.outputKind == .video, requiredMedia.backgroundVideo {
             guard let wallpaperURL else {
                 throw VideoExporterError.missingAssetReference(.wallpaper)
             }
@@ -267,7 +281,8 @@ final class VideoExporter: ObservableObject {
         }
         var stickerImages: [String: CIImage] = [:]
         stickerImages.reserveCapacity(request.assets.stickers.count)
-        for (relativePath, asset) in request.assets.stickers {
+        for (relativePath, asset) in request.assets.stickers
+            where request.outputKind == .video {
             guard let image = CIImage(
                 contentsOf: asset.url,
                 options: [.applyOrientationProperty: true]
@@ -281,7 +296,8 @@ final class VideoExporter: ObservableObject {
             stickerImages[relativePath] = image
         }
         let mediaPlan = request.mediaPlan
-        if requiredMedia.cameraVideo,
+        if request.outputKind == .video,
+           requiredMedia.cameraVideo,
            mediaPlan.camera?.playableDuration ?? 0 <= 0 {
             throw VideoExporterError.unusableMediaRange(.cameraRecording)
         }
@@ -304,7 +320,9 @@ final class VideoExporter: ObservableObject {
         )
         // 与编辑预览一致：摄像头素材带黑边时统一裁掉，保证导出与预览一致。
         let cameraContentCrop: NormalizedCrop?
-        if requiredMedia.cameraVideo, let cameraURL {
+        if request.outputKind == .video,
+           requiredMedia.cameraVideo,
+           let cameraURL {
             cameraContentCrop = await CameraLetterboxAnalysis.normalizedContentCrop(
                 for: cameraURL
             )
@@ -315,38 +333,47 @@ final class VideoExporter: ObservableObject {
         // Write to a sibling temporary file and promote it atomically only
         // after the writer completes, so an export failure or cancellation
         // never truncates or destroys a pre-existing file at the target URL.
-        let temporaryOutputURL = finalOutputURL
-            .deletingLastPathComponent()
-            .appendingPathComponent(finalOutputURL.lastPathComponent + ".tmp")
-        let pipeline = try DirectExportPipeline(
-            media: compositionBundle,
-            wallpaperImage: wallpaperImage,
-            wallpaperVideo: wallpaperVideo,
-            stickerImages: stickerImages,
-            outputURL: temporaryOutputURL,
-            canvasSize: canvasSize,
-            project: project,
-            cursorSources: cursorSources,
-            frameRate: project.exportSettings.frameRate,
-            cameraContentCrop: cameraContentCrop,
-            progressHandler: progressHandler
+        let temporaryOutputURL = ExportFileTransaction.makeTemporaryURL(
+            for: finalOutputURL
         )
         do {
             try Task.checkCancellation()
-            try await pipeline.run()
+            switch request.outputKind {
+            case .video:
+                let pipeline = try DirectExportPipeline(
+                    media: compositionBundle,
+                    wallpaperImage: wallpaperImage,
+                    wallpaperVideo: wallpaperVideo,
+                    stickerImages: stickerImages,
+                    outputURL: temporaryOutputURL,
+                    canvasSize: canvasSize,
+                    project: project,
+                    cursorSources: cursorSources,
+                    frameRate: project.exportSettings.frameRate,
+                    outputRange: request.outputRange,
+                    cameraContentCrop: cameraContentCrop,
+                    progressHandler: progressHandler
+                )
+                try await pipeline.run()
+            case .audio:
+                let pipeline = try AudioOnlyExportPipeline(
+                    media: compositionBundle,
+                    outputURL: temporaryOutputURL,
+                    project: project,
+                    outputRange: request.outputRange,
+                    progressHandler: progressHandler
+                )
+                try await pipeline.run()
+            }
         } catch {
             try? FileManager.default.removeItem(at: temporaryOutputURL)
             throw error
         }
         do {
-            if FileManager.default.fileExists(atPath: finalOutputURL.path) {
-                _ = try FileManager.default.replaceItemAt(
-                    finalOutputURL,
-                    withItemAt: temporaryOutputURL
-                )
-            } else {
-                try FileManager.default.moveItem(at: temporaryOutputURL, to: finalOutputURL)
-            }
+            try ExportFileTransaction.promote(
+                temporaryURL: temporaryOutputURL,
+                to: finalOutputURL
+            )
         } catch {
             try? FileManager.default.removeItem(at: temporaryOutputURL)
             throw VideoExporterError.exportFailed("写入最终文件失败：\(error.localizedDescription)")

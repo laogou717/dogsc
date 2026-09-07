@@ -32,10 +32,66 @@ struct TimelineCompositionBundle {
     let plan: ProjectTimelineMediaPlan
     let primaryComposition: AVMutableComposition
     let primaryVideoTrack: AVMutableCompositionTrack
+    let primaryVideoTracks: [AVMutableCompositionTrack]
+    let primaryVideoComposition: AVVideoComposition?
     let systemAudioTrack: AVMutableCompositionTrack?
     let microphoneAudioTrack: AVMutableCompositionTrack?
     let cameraComposition: AVMutableComposition?
     let cameraVideoTrack: AVMutableCompositionTrack?
+
+    /// Cut-only edits at 1× must remain sample-accurate joins. Running those
+    /// joins through a time-pitch processor can soften audio around segment
+    /// boundaries even though the user never authored a fade. Only enable the
+    /// processor when at least one primary slice is genuinely retimed.
+    var requiresAudioTimePitchProcessing: Bool {
+        plan.primary.slices.contains {
+            abs($0.sourceTimeScale - 1) > 0.000_001
+        }
+    }
+
+    func primarySegmentAudioMixRanges(
+        audio: AudioStyle,
+        overrides: [UUID: PrimarySegmentAudioOverrides]
+    ) -> [TimelineSegmentAudioMixRange] {
+        plan.timelineMap.segments.compactMap { segment in
+            guard let outputRange = segment.outputRange else { return nil }
+            let segmentOverrides = overrides[segment.id]
+                ?? PrimarySegmentAudioOverrides()
+            let systemIsMuted = segmentOverrides.isSystemMuted
+                ?? audio.isSystemMuted
+            let microphoneIsMuted = segmentOverrides.isMicrophoneMuted
+                ?? audio.isMicrophoneMuted
+            let systemVolume = systemIsMuted
+                ? 0
+                : segmentOverrides.systemVolume ?? audio.systemVolume
+            let microphoneVolume = microphoneIsMuted
+                ? 0
+                : segmentOverrides.microphoneVolume ?? audio.microphoneVolume
+            return TimelineSegmentAudioMixRange(
+                segmentID: segment.id,
+                range: CMTimeRange(
+                    start: CMTime(
+                        seconds: outputRange.start,
+                        preferredTimescale: 60_000
+                    ),
+                    duration: CMTime(
+                        seconds: outputRange.duration,
+                        preferredTimescale: 60_000
+                    )
+                ),
+                systemTrackVolume: Float(min(max(systemVolume, 0), 1)),
+                microphoneTrackVolume: Float(min(max(microphoneVolume, 0), 1))
+            )
+        }
+    }
+
+}
+
+struct TimelineSegmentAudioMixRange: Equatable {
+    let segmentID: UUID
+    let range: CMTimeRange
+    let systemTrackVolume: Float
+    let microphoneTrackVolume: Float
 }
 
 struct TimelineCameraComposition {
@@ -72,13 +128,12 @@ enum TimelineCompositionBuilder {
             plan: plan.primary,
             sourceTrack: sourceVideoTrack,
             sourceAvailableRange: primaryVideoRange,
-            sourceTimeOffset: plan.primarySourceTimeOffset,
+            sourceTimeOffset: primaryVideoRange.start.seconds,
             mediaType: .video,
-            role: "主录屏",
+            role: "主轨画面",
             preferredTransform: primaryVideoPreferredTransform,
             into: primaryComposition
         )
-
         let systemAudioTrack: AVMutableCompositionTrack?
         if let sourceSystemAudioTrack,
            let systemAudioRange,
@@ -144,6 +199,8 @@ enum TimelineCompositionBuilder {
             plan: plan,
             primaryComposition: primaryComposition,
             primaryVideoTrack: primaryVideoTrack,
+            primaryVideoTracks: [primaryVideoTrack],
+            primaryVideoComposition: nil,
             systemAudioTrack: systemAudioTrack,
             microphoneAudioTrack: microphoneAudioTrack,
             cameraComposition: cameraComposition,
@@ -176,20 +233,46 @@ enum TimelineCompositionBuilder {
     static func audioMix(
         systemTrack: AVCompositionTrack?,
         systemVolume: Float,
+        primarySegmentRanges: [TimelineSegmentAudioMixRange] = [],
         microphoneTrack: AVCompositionTrack?,
-        microphoneVolume: Float
+        microphoneVolume: Float,
+        requiresTimePitchProcessing: Bool = false
     ) -> AVAudioMix? {
         var parameters: [AVAudioMixInputParameters] = []
         if let systemTrack {
             let input = AVMutableAudioMixInputParameters(track: systemTrack)
             input.setVolume(systemVolume, at: .zero)
-            input.audioTimePitchAlgorithm = .timeDomain
+            if !primarySegmentRanges.isEmpty {
+                for segment in primarySegmentRanges
+                    .filter({ $0.range.isValid && !$0.range.isEmpty })
+                    .sorted(by: { $0.range.start < $1.range.start }) {
+                    input.setVolumeRamp(
+                        fromStartVolume: segment.systemTrackVolume,
+                        toEndVolume: segment.systemTrackVolume,
+                        timeRange: segment.range
+                    )
+                }
+            }
+            if requiresTimePitchProcessing {
+                input.audioTimePitchAlgorithm = .timeDomain
+            }
             parameters.append(input)
         }
         if let microphoneTrack {
             let input = AVMutableAudioMixInputParameters(track: microphoneTrack)
             input.setVolume(microphoneVolume, at: .zero)
-            input.audioTimePitchAlgorithm = .timeDomain
+            for segment in primarySegmentRanges
+                .filter({ $0.range.isValid && !$0.range.isEmpty })
+                .sorted(by: { $0.range.start < $1.range.start }) {
+                input.setVolumeRamp(
+                    fromStartVolume: segment.microphoneTrackVolume,
+                    toEndVolume: segment.microphoneTrackVolume,
+                    timeRange: segment.range
+                )
+            }
+            if requiresTimePitchProcessing {
+                input.audioTimePitchAlgorithm = .timeDomain
+            }
             parameters.append(input)
         }
         guard !parameters.isEmpty else { return nil }

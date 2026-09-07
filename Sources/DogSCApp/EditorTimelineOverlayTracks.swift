@@ -1,7 +1,107 @@
 import RecorderCore
 import SwiftUI
 
+enum EditorOverlayTimingEditing {
+    static func adjustedTiming(
+        original: OverlayTiming,
+        mode: EditorMotionTimelineEditMode,
+        delta: TimeInterval,
+        timelineDuration: TimeInterval,
+        minimumLeadingStartTime: TimeInterval = 0
+    ) -> OverlayTiming {
+        guard delta.isFinite, timelineDuration.isFinite, timelineDuration > 0 else {
+            return original
+        }
+        let minimumDuration = min(0.08, max(original.duration, 0.001))
+        var timing = original
+        switch mode {
+        case .move:
+            timing.startTime = min(
+                max(original.startTime + delta, 0),
+                max(timelineDuration - original.duration, 0)
+            )
+        case .leading:
+            let end = min(max(original.endTime, minimumDuration), timelineDuration)
+            let lowerBound = min(
+                max(minimumLeadingStartTime, 0),
+                end - minimumDuration
+            )
+            timing.startTime = min(
+                max(original.startTime + delta, lowerBound),
+                end - minimumDuration
+            )
+            timing.duration = end - timing.startTime
+        case .trailing:
+            let end = min(
+                max(original.endTime + delta, original.startTime + minimumDuration),
+                timelineDuration
+            )
+            timing.duration = end - original.startTime
+        }
+        return timing
+    }
+
+}
+
 extension EditorTimelineView {
+    var overlayTimelineClips: [TimelineOverlayClip] {
+        let mosaics = editorStore.previewProject.timeline.mosaicClips.map {
+            TimelineOverlayClip(
+                id: $0.id,
+                timing: $0.timing,
+                title: $0.style == .spotlight ? "突出" : "柔化",
+                tint: .orange,
+                kind: .mosaic,
+                layerIndex: -1
+            )
+        }
+        let orderedStickers = editorStore.previewProject.timeline.stickerClips
+            .sorted {
+                $0.layerIndex == $1.layerIndex
+                    ? $0.id.uuidString < $1.id.uuidString
+                    : $0.layerIndex < $1.layerIndex
+            }
+        let stickers = orderedStickers.enumerated().map { rank, sticker in
+            TimelineOverlayClip(
+                id: sticker.id,
+                timing: sticker.timing,
+                title: orderedStickers.count > 1 ? "贴图 · 层 \(rank + 1)" : "贴图",
+                tint: editorOverlayClip,
+                kind: .sticker,
+                layerIndex: sticker.layerIndex
+            )
+        }
+        return (mosaics + stickers).sorted {
+            if $0.timing.startTime != $1.timing.startTime {
+                return $0.timing.startTime < $1.timing.startTime
+            }
+            if $0.layerIndex != $1.layerIndex {
+                return $0.layerIndex < $1.layerIndex
+            }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+    }
+
+    /// Greedy interval packing gives every simultaneously visible overlay its
+    /// own row while allowing non-overlapping clips to reuse space. No clip is
+    /// hidden behind another merely because their authored times coincide.
+    var overlayTimelineRows: [[TimelineOverlayClip]] {
+        var rows: [[TimelineOverlayClip]] = []
+        var rowEnds: [TimeInterval] = []
+        for clip in overlayTimelineClips {
+            if let row = rowEnds.firstIndex(where: {
+                $0 <= clip.timing.startTime + 0.000_001
+            }) {
+                rows[row].append(clip)
+                rowEnds[row] = clip.timing.endTime
+            } else {
+                rows.append([clip])
+                rowEnds.append(clip.timing.endTime)
+            }
+        }
+        return rows
+    }
+
     func trimMosaicClip(
         id: UUID,
         edge: RecordingSegmentTrimEdge,
@@ -119,109 +219,40 @@ extension EditorTimelineView {
         width: CGFloat,
         duration: TimeInterval
     ) -> some View {
-        let mosaicClips = editorStore.previewProject.timeline.mosaicClips.map {
-            TimelineOverlayClip(
-                id: $0.id,
-                timing: $0.timing,
-                title: $0.style == .spotlight ? "突出" : "柔化",
-                tint: .orange,
-                kind: .mosaic
-            )
-        }
-        let orderedStickers = editorStore.previewProject.timeline.stickerClips
-            .sorted {
-                $0.layerIndex == $1.layerIndex
-                    ? $0.id.uuidString < $1.id.uuidString
-                    : $0.layerIndex < $1.layerIndex
-            }
-        let stickerClips = orderedStickers.enumerated().map { rank, sticker in
-            TimelineOverlayClip(
-                id: sticker.id,
-                timing: sticker.timing,
-                title: orderedStickers.count > 1
-                    ? "贴图 · 层 \(rank + 1)"
-                    : "贴图",
-                tint: editorOverlayClip,
-                kind: .sticker
-            )
-        }
+        let rows = overlayTimelineRows
         return ZStack(alignment: .topLeading) {
             timelineLaneSurface(
                 tint: editorOverlayClip,
                 isFocused: focusedTimelineLane == .overlays
             )
-            if mosaicClips.isEmpty && stickerClips.isEmpty {
+            Color.clear
+                .contentShape(Rectangle())
+                .gesture(overlayTrackGesture(clips: [], timelineWidth: width, duration: duration))
+            if rows.isEmpty {
                 timelineEmptyTrackHint(
-                    "从顶部“添加”加入柔化或贴图",
+                    "单击或拖拽添加",
                     documentWidth: width
                 )
                     .frame(height: overlayTimelineHeight)
             }
-            VStack(spacing: 2) {
-                overlayClipRow(
-                    clips: mosaicClips,
-                    width: width,
-                    duration: duration
-                )
-                overlayClipRow(
-                    clips: stickerClips,
-                    width: width,
-                    duration: duration
-                )
-            }
-            // 19 + 2 + 19 + 1×2 = 42，严格落在单条叠加轨内，
-            // 不向相邻进度条/运动轨的命中区溢出。
-            .padding(.vertical, 1)
-        }
-        .frame(
-            width: width,
-            height: overlayTimelineHeight,
-            alignment: .topLeading
-        )
-        .overlay(alignment: .bottom) { Divider().overlay(dividerColor) }
-    }
-
-    func progressOverlayTimeline(
-        width: CGFloat,
-        duration: TimeInterval
-    ) -> some View {
-        ZStack(alignment: .topLeading) {
-            timelineLaneSurface(
-                tint: editorProgressClip,
-                isFocused: focusedTimelineLane == .progress
-            )
-            if editorStore.previewProject.timeline.progressOverlay != nil {
-                Button {
-                    editorStore.selection = .progress
-                } label: {
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(Color(white: editorStore.selection == .progress ? 0.26 : 0.15))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .fill(editorProgressClip.opacity(
-                                    editorStore.selection == .progress ? 0.34 : 0.16
-                                ))
-                        }
-                        .overlay {
-                            if editorStore.selection == .progress {
-                                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                    .stroke(
-                                        EditorTheme.platinumAccent.opacity(0.72),
-                                        lineWidth: 1
-                                    )
-                            }
-                        }
-                        .padding(.vertical, 7)
-                        .contentShape(Rectangle())
+            VStack(spacing: 4) {
+                ForEach(Array(rows.enumerated()), id: \.offset) { _, clips in
+                    overlayClipRow(
+                        clips: clips,
+                        width: width,
+                        duration: duration
+                    )
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("选择全片进度条")
-            } else {
-                timelineEmptyTrackHint(
-                    "从顶部“添加”创建进度条",
-                    documentWidth: width
-                )
-                    .frame(height: overlayTimelineHeight)
+            }
+            .padding(.vertical, 10)
+            if let range = overlayCreateRange, range.upperBound - range.lowerBound > 0.01 {
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(editorOverlayClip.opacity(0.18))
+                    .overlay(RoundedRectangle(cornerRadius: 7)
+                        .strokeBorder(editorOverlayClip.opacity(0.6), style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+                    .frame(width: max(CGFloat((range.upperBound - range.lowerBound) / duration) * width, 3), height: 30)
+                    .offset(x: CGFloat(range.lowerBound / duration) * width, y: 10)
+                    .allowsHitTesting(false)
             }
         }
         .frame(
@@ -229,7 +260,6 @@ extension EditorTimelineView {
             height: overlayTimelineHeight,
             alignment: .topLeading
         )
-        .overlay(alignment: .bottom) { Divider().overlay(dividerColor) }
     }
 
     private func overlayClipRow(
@@ -243,7 +273,7 @@ extension EditorTimelineView {
             // only visual occupants of that space; their intrinsic widths must
             // never determine the row origin or its gesture coordinates.
             Color.clear
-                .frame(width: width, height: 19)
+                .frame(width: width, height: 30)
                 .allowsHitTesting(false)
 
             ForEach(clips) { clip in
@@ -262,7 +292,11 @@ extension EditorTimelineView {
                     isHovered: isHovered
                 )
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Color(white: isSelected ? 0.26 : isHovered ? 0.20 : 0.16))
+                    .fill(
+                        isSelected
+                            ? EditorTheme.chrome(0.20)
+                            : EditorTheme.chrome(isHovered ? 0.12 : 0.075)
+                    )
                     .overlay {
                         RoundedRectangle(cornerRadius: 7, style: .continuous)
                             .fill(clip.tint.opacity(isSelected ? 0.34 : isHovered ? 0.24 : 0.18))
@@ -270,7 +304,7 @@ extension EditorTimelineView {
                     .overlay(alignment: .leading) {
                         if clipWidth >= 52 {
                             Text(clip.title)
-                                .font(.system(size: 10, weight: .semibold))
+                                .font(.appUI(size: 10, weight: .semibold))
                                 .lineLimit(1)
                                 .padding(.horizontal, 9)
                         }
@@ -279,11 +313,11 @@ extension EditorTimelineView {
                         if emphasis.showsHandles, clipWidth >= 22 {
                             HStack(spacing: 0) {
                                 Capsule()
-                                    .fill(Color.white.opacity(0.9))
+                                    .fill(EditorTheme.chrome(0.9))
                                     .frame(width: 3, height: 13)
                                 Spacer(minLength: 0)
                                 Capsule()
-                                    .fill(Color.white.opacity(0.9))
+                                    .fill(EditorTheme.chrome(0.9))
                                     .frame(width: 3, height: 13)
                             }
                             .padding(.horizontal, 2)
@@ -293,7 +327,7 @@ extension EditorTimelineView {
                     }
                     .editorTimelineClipChrome(cornerRadius: 7, emphasis: emphasis)
                     .contentShape(Rectangle())
-                .frame(width: clipWidth, height: 19)
+                .frame(width: clipWidth, height: 30)
                 .offset(x: x)
                 .zIndex(emphasis == .editing ? 4 : isSelected ? 3 : isHovered ? 1 : 0)
                 .onHover { hovering in
@@ -321,7 +355,7 @@ extension EditorTimelineView {
                 }
             }
         }
-        .frame(width: width, height: 19, alignment: .leading)
+        .frame(width: width, height: 30, alignment: .leading)
         .contentShape(Rectangle())
         // The lane owns the gesture. A clip must never be both the moving
         // visual and the coordinate system that interprets that movement.
@@ -339,13 +373,21 @@ extension EditorTimelineView {
     ) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
-                if overlayTimelineDrag == nil {
+                if overlayTimelineDrag == nil, overlayCreateRange == nil {
                     beginOverlayTimelineDrag(
                         at: value.startLocation.x,
                         clips: clips,
                         timelineWidth: timelineWidth,
                         duration: duration
                     )
+                }
+                if gestureOwnership.activeIntent == .overlayCreate {
+                    let start = overlayCreateStart ?? EditorTimelineMath.clampedTime(atX: Double(value.startLocation.x),
+                        width: Double(timelineWidth), duration: duration)
+                    let end = magneticTime(EditorTimelineMath.clampedTime(atX: Double(value.location.x),
+                        width: Double(timelineWidth), duration: duration), width: timelineWidth, duration: duration)
+                    overlayCreateRange = min(start, end)...max(start, end)
+                    return
                 }
                 guard let drag = overlayTimelineDrag else { return }
                 let intent = EditorTimelineGestureIntent.overlay(
@@ -354,18 +396,43 @@ extension EditorTimelineView {
                     drag.mode
                 )
                 guard gestureOwnership.activeIntent == intent else { return }
-                let delta = TimeInterval(
-                    value.translation.width / max(timelineWidth, 1)
-                ) * duration
+                let rawDelta = TimeInterval(value.translation.width / max(timelineWidth, 1)) * duration
+                let delta = magneticDelta(rawDelta, start: drag.original.startTime,
+                    end: drag.original.endTime, mode: drag.mode, width: timelineWidth, duration: duration)
                 let timing = adjustedOverlayTiming(
                     original: drag.original,
                     mode: drag.mode,
                     delta: delta,
-                    timelineDuration: duration
+                    timelineDuration: duration,
+                    minimumLeadingStartTime: 0
                 )
+                timelineSnap.validate(edges: drag.mode == .move ? [timing.startTime, timing.endTime]
+                    : [drag.mode == .leading ? timing.startTime : timing.endTime])
                 updateOverlayTimingDraft(drag: drag, timing: timing)
             }
             .onEnded { value in
+                if gestureOwnership.activeIntent == .overlayCreate, let range = overlayCreateRange {
+                    overlayCreateRange = nil
+                    overlayCreateStart = nil
+                    endTimelineGesture(.overlayCreate)
+                    let isDrawnRange = EditorTimelineRangeCreationPolicy.shouldCommit(
+                        horizontalTranslation: value.translation.width)
+                    if !isDrawnRange && emptyClickClearsSelection { return }
+                    let length = isDrawnRange ? max(range.upperBound - range.lowerBound, 0.08) : 3
+                    let start = min(range.lowerBound, max(duration - length, 0))
+                    let clip = MosaicClip(timing: OverlayTiming(startTime: start,
+                        duration: min(length, duration - start)))
+                    playbackController.pause()
+                    var timeline = editorStore.project.timeline
+                    timeline.mosaicClips.append(clip)
+                    do {
+                        try withAnimation(SpringMotion.fluid) {
+                            try editorStore.replaceTimeline(with: timeline, actionName: "添加柔化")
+                        }
+                        activateTimelineSelection(.mosaic(clip.id))
+                    } catch { onError(error.localizedDescription) }
+                    return
+                }
                 guard let drag = overlayTimelineDrag else { return }
                 let intent = EditorTimelineGestureIntent.overlay(
                     drag.kind,
@@ -404,7 +471,16 @@ extension EditorTimelineView {
         }
         guard let clip = candidates.first(where: {
             editorStore.selection == $0.kind.selection(id: $0.id)
-        }) ?? candidates.last else { return }
+        }) ?? candidates.last else {
+            prepareEmptyTimelineClick()
+            guard beginTimelineGesture(.overlayCreate) else { return }
+            let start = EditorTimelineMath.clampedTime(atX: Double(x),
+                width: Double(timelineWidth), duration: duration)
+            let snapped = magneticTime(start, width: timelineWidth, duration: duration)
+            overlayCreateStart = snapped
+            overlayCreateRange = snapped...snapped
+            return
+        }
         let startX = CGFloat(
             clip.timing.startTime / max(duration, 0.001)
         ) * timelineWidth
@@ -434,6 +510,7 @@ extension EditorTimelineView {
         playbackController.pause()
         let selection = clip.kind.selection(id: clip.id)
         editorStore.beginInteraction(tool: .select, selection: selection)
+        timelineInteractionID = editorStore.interaction?.id
         overlayTimelineDrag = EditorOverlayTimelineDrag(
             kind: clip.kind,
             id: clip.id,
@@ -460,34 +537,16 @@ extension EditorTimelineView {
         original: OverlayTiming,
         mode: EditorMotionTimelineEditMode,
         delta: TimeInterval,
-        timelineDuration: TimeInterval
+        timelineDuration: TimeInterval,
+        minimumLeadingStartTime: TimeInterval = 0
     ) -> OverlayTiming {
-        guard delta.isFinite, timelineDuration.isFinite, timelineDuration > 0 else {
-            return original
-        }
-        let minimumDuration = min(0.08, max(original.duration, 0.001))
-        var timing = original
-        switch mode {
-        case .move:
-            timing.startTime = min(
-                max(original.startTime + delta, 0),
-                max(timelineDuration - original.duration, 0)
-            )
-        case .leading:
-            let end = min(max(original.endTime, minimumDuration), timelineDuration)
-            timing.startTime = min(
-                max(original.startTime + delta, 0),
-                end - minimumDuration
-            )
-            timing.duration = end - timing.startTime
-        case .trailing:
-            let end = min(
-                max(original.endTime + delta, original.startTime + minimumDuration),
-                timelineDuration
-            )
-            timing.duration = end - original.startTime
-        }
-        return timing
+        EditorOverlayTimingEditing.adjustedTiming(
+            original: original,
+            mode: mode,
+            delta: delta,
+            timelineDuration: timelineDuration,
+            minimumLeadingStartTime: minimumLeadingStartTime
+        )
     }
 
     func updateOverlayTimingDraft(
@@ -531,4 +590,5 @@ struct TimelineOverlayClip: Identifiable {
     let title: String
     let tint: Color
     let kind: EditorOverlayTimelineKind
+    let layerIndex: Int
 }

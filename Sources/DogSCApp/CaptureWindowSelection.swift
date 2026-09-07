@@ -191,6 +191,7 @@ final class CaptureWindowSelector {
             }
             panel.automaticallyCreatesZooms = presentedAutomaticallyCreatesZooms
             panel.orderFrontRegardless()
+            animateRecorderOverlayIn(panel)
             return panel
         }
         updateOverlays(for: nil)
@@ -440,13 +441,16 @@ private final class WindowSelectionPanel: NSPanel {
         )
         setFrame(screen.frame, display: false)
         identifier = windowSelectionOverlayIdentifier
+        appearance = NSAppearance(named: .aqua)
         isOpaque = false
         backgroundColor = .clear
         hasShadow = false
         level = CaptureWindowLevelPolicy.level(for: .selectionOverlay)
         hidesOnDeactivate = false
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
-        sharingType = CommandLine.arguments.contains("--design-review") ? .readOnly : .none
+        sharingType = .readOnly
+        selectionView.frame = CGRect(origin: .zero, size: screen.frame.size)
+        selectionView.autoresizingMask = [.width, .height]
         contentView = selectionView
         ignoresMouseEvents = false
         selectionView.onCanvasClick = { [weak self] localPoint in
@@ -485,6 +489,7 @@ private final class WindowSelectionPanel: NSPanel {
             selectionLocked: selectionLocked,
             recordingHighlight: recordingHighlight
         )
+        sharingType = recordingHighlight ? .none : .readOnly
         ignoresMouseEvents = recordingHighlight
     }
 
@@ -502,355 +507,192 @@ private final class WindowSelectionOverlayView: NSView {
     var onStart: (() -> Void)?
     var onCancel: (() -> Void)?
     var onCanvasClick: ((CGPoint) -> Void)?
-
-    private let iconContainerView = NSView()
+    private let dimmingLayer = CAShapeLayer()
+    private let outlineLayer = CAShapeLayer()
+    private let card = NSView()
     private let iconView = NSImageView()
-    private let contextLabel = NSTextField(labelWithString: "将录制此窗口")
     private let titleLabel = NSTextField(labelWithString: "")
     private let detailLabel = NSTextField(labelWithString: "")
+    private let checkmark = NSImageView()
+    private let separator = NSView()
     private let cancelButton = CaptureSelectionNativeButton()
     private let startButton = CaptureSelectionNativeButton()
-    private let startButtonGradient = CAGradientLayer()
     private var cutoutFrame: CGRect?
     private var windowIdentity: UInt32?
     private var showsControls = false
     private var selectionLocked = false
     private var recordingHighlight = false
+    private var thumbnailTask: Task<Void, Never>?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        wantsLayer = true
         configureSubviews()
     }
-
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        wantsLayer = true
-        configureSubviews()
-    }
+    required init?(coder: NSCoder) { super.init(coder: coder); configureSubviews() }
 
     private func configureSubviews() {
-        iconContainerView.wantsLayer = true
-        iconContainerView.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.045).cgColor
-        iconContainerView.layer?.borderColor = NSColor.white.withAlphaComponent(0.12).cgColor
-        iconContainerView.layer?.borderWidth = 1
-        iconContainerView.layer?.shadowColor = NSColor.black.cgColor
-        iconContainerView.layer?.shadowOpacity = 0.34
-        iconContainerView.layer?.shadowRadius = 8
-        iconContainerView.layer?.shadowOffset = CGSize(width: 0, height: -3)
-        addSubview(iconContainerView)
-
+        wantsLayer = true
+        dimmingLayer.fillRule = .evenOdd
+        outlineLayer.fillColor = nil
+        outlineLayer.strokeColor = captureSelectionAccentNSColor.withAlphaComponent(0.95).cgColor
+        layer?.addSublayer(dimmingLayer)
+        layer?.addSublayer(outlineLayer)
+        card.wantsLayer = true
+        card.layer?.backgroundColor = captureSelectionSurfaceNSColor.cgColor
+        card.layer?.cornerRadius = 20
+        card.layer?.borderColor = NSColor.white.withAlphaComponent(0.9).cgColor
+        card.layer?.borderWidth = 1
+        card.layer?.shadowColor = NSColor(calibratedRed: 0.17, green: 0.23, blue: 0.27, alpha: 1).cgColor
+        card.layer?.shadowOpacity = 0.12
+        card.layer?.shadowRadius = 18
+        card.layer?.shadowOffset = CGSize(width: 0, height: -8)
+        addSubview(card)
+        card.isHidden = true
         iconView.imageScaling = .scaleProportionallyUpOrDown
         iconView.wantsLayer = true
-        iconContainerView.addSubview(iconView)
-
-        contextLabel.font = .systemFont(ofSize: 11, weight: .semibold)
-        contextLabel.textColor = NSColor.white.withAlphaComponent(0.56)
-        contextLabel.lineBreakMode = .byTruncatingTail
-        addSubview(contextLabel)
-
-        titleLabel.font = .systemFont(ofSize: 22, weight: .semibold)
-        titleLabel.textColor = .white
+        iconView.layer?.cornerRadius = 8
+        iconView.layer?.masksToBounds = true
+        titleLabel.font = .systemFont(ofSize: 15, weight: .medium)
+        titleLabel.textColor = captureSelectionInkNSColor
         titleLabel.lineBreakMode = .byTruncatingTail
-        addSubview(titleLabel)
-
-        detailLabel.font = .systemFont(ofSize: 12.5, weight: .medium)
-        detailLabel.textColor = NSColor.white.withAlphaComponent(0.57)
+        detailLabel.font = .systemFont(ofSize: 11)
+        detailLabel.textColor = captureSelectionInkNSColor.withAlphaComponent(0.6)
         detailLabel.lineBreakMode = .byTruncatingTail
-        addSubview(detailLabel)
-
+        checkmark.image = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: "已选择")
+        checkmark.contentTintColor = captureSelectionAccentNSColor
+        separator.wantsLayer = true
+        separator.layer?.backgroundColor = captureSelectionInkNSColor.withAlphaComponent(0.08).cgColor
+        for view in [iconView, titleLabel, detailLabel, checkmark, separator, cancelButton, startButton] { card.addSubview(view) }
+        for button in [cancelButton, startButton] {
+            button.isBordered = false
+            button.focusRingType = .none
+            button.font = .systemFont(ofSize: 12, weight: .medium)
+            button.wantsLayer = true
+            button.layer?.cornerRadius = 11
+            button.layer?.borderColor = NSColor.black.withAlphaComponent(0.065).cgColor
+            button.layer?.borderWidth = 0.75
+            button.layer?.shadowColor = NSColor.black.cgColor
+            button.layer?.shadowOpacity = 0.07
+            button.layer?.shadowRadius = 4
+            button.layer?.shadowOffset = CGSize(width: 0, height: -2)
+            button.target = self
+        }
         cancelButton.title = "取消"
-        cancelButton.font = .systemFont(ofSize: 14, weight: .medium)
-        cancelButton.contentTintColor = NSColor.white.withAlphaComponent(0.82)
-        cancelButton.isBordered = false
-        cancelButton.wantsLayer = true
-        cancelButton.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.07).cgColor
-        cancelButton.layer?.borderColor = NSColor.white.withAlphaComponent(0.1).cgColor
-        cancelButton.layer?.borderWidth = 1
-        cancelButton.layer?.cornerRadius = 11
-        cancelButton.target = self
+        cancelButton.contentTintColor = captureSelectionInkNSColor
+        cancelButton.layer?.backgroundColor = NSColor.white.cgColor
         cancelButton.action = #selector(cancelSelection(_:))
-        addSubview(cancelButton)
-
-        let startTitle = NSMutableAttributedString(
-            string: "开始录制",
-            attributes: [
-                .font: NSFont.systemFont(ofSize: 15, weight: .semibold),
-                .foregroundColor: NSColor.black.withAlphaComponent(0.88),
-            ]
-        )
-        startTitle.append(NSAttributedString(
-            string: "   ⌘R",
-            attributes: [
-                .font: NSFont.systemFont(ofSize: 13, weight: .medium),
-                .foregroundColor: NSColor.black.withAlphaComponent(0.54),
-            ]
-        ))
-        startButton.attributedTitle = startTitle
-        startButton.contentTintColor = NSColor.black.withAlphaComponent(0.88)
-        startButton.isBordered = false
-        startButton.wantsLayer = true
-        startButton.layer?.backgroundColor = NSColor.clear.cgColor
-        startButtonGradient.colors = [
-            NSColor(calibratedWhite: 0.98, alpha: 1).cgColor,
-            captureSelectionPlatinumNSColor.cgColor,
-        ]
-        startButtonGradient.startPoint = CGPoint(x: 0, y: 0.5)
-        startButtonGradient.endPoint = CGPoint(x: 1, y: 0.5)
-        startButton.layer?.insertSublayer(startButtonGradient, at: 0)
-        startButton.layer?.cornerRadius = 11
-        startButton.layer?.shadowColor = captureSelectionPlatinumNSColor.cgColor
-        startButton.layer?.shadowOffset = .zero
-        startButton.layer?.shadowOpacity = 0.38
-        startButton.layer?.shadowRadius = 9
-        startButton.target = self
+        startButton.contentTintColor = .white
+        startButton.layer?.backgroundColor = captureSelectionPlatinumNSColor.cgColor
         startButton.action = #selector(startRecording(_:))
-        addSubview(startButton)
-
-        startButton.layer?.shadowOpacity = 0.12
     }
 
-    func update(
-        cutoutFrame: CGRect?,
-        windowIdentity: UInt32?,
-        appName: String?,
-        windowTitle: String?,
-        windowSize: CGSize?,
-        appIcon: NSImage?,
-        showsControls: Bool,
-        selectionLocked: Bool,
-        recordingHighlight: Bool
-    ) {
-        let targetChanged = windowIdentity != nil && windowIdentity != self.windowIdentity
-        let lockChanged = selectionLocked != self.selectionLocked
+    func update(cutoutFrame: CGRect?, windowIdentity: UInt32?, appName: String?, windowTitle: String?,
+                windowSize: CGSize?, appIcon: NSImage?, showsControls: Bool, selectionLocked: Bool, recordingHighlight: Bool) {
+        let targetChanged = self.windowIdentity != windowIdentity
+        let firstLock = selectionLocked && !self.selectionLocked
+        let wasHidden = card.isHidden
         self.cutoutFrame = cutoutFrame
         self.windowIdentity = windowIdentity
         self.showsControls = showsControls
         self.selectionLocked = selectionLocked
         self.recordingHighlight = recordingHighlight
-        iconView.image = appIcon
-        contextLabel.stringValue = selectionLocked ? "已锁定此窗口" : "单击窗口以锁定"
-        startButton.isEnabled = selectionLocked
-        startButton.alphaValue = selectionLocked ? 1 : 0.48
-        updateStartButtonPulse(enabled: selectionLocked)
+        card.isHidden = appName == nil || !showsControls || recordingHighlight
         titleLabel.stringValue = appName ?? ""
-        let dimensions = windowSize.map {
-            "\(Int($0.width.rounded())) × \(Int($0.height.rounded()))"
-        } ?? ""
-        let cleanedWindowTitle = windowTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        detailLabel.stringValue = cleanedWindowTitle.isEmpty
-            ? dimensions
-            : [cleanedWindowTitle, dimensions].filter { !$0.isEmpty }.joined(separator: "  ·  ")
-
-        let controlsHidden = appName == nil || !showsControls || recordingHighlight
-        [iconContainerView, contextLabel, titleLabel, detailLabel, cancelButton, startButton]
-            .forEach { $0.isHidden = controlsHidden }
+        detailLabel.stringValue = windowTitle?.isEmpty == false ? windowTitle! : windowSize.map { "\(Int($0.width)) × \(Int($0.height))" } ?? ""
+        checkmark.isHidden = !selectionLocked
+        startButton.isEnabled = selectionLocked
+        startButton.alphaValue = selectionLocked ? 1 : 0.5
+        startButton.attributedTitle = NSAttributedString(string: selectionLocked ? "开始录制   ⌘R" : "单击窗口以锁定", attributes: [
+            .font: NSFont.systemFont(ofSize: 12, weight: .medium), .foregroundColor: NSColor.white])
+        if targetChanged {
+            thumbnailTask?.cancel()
+            iconView.image = appIcon
+        }
+        if (targetChanged || firstLock), selectionLocked, let windowIdentity {
+            thumbnailTask = Task { [weak self] in
+                let image = await RecorderSourceThumbnail.image(windowID: windowIdentity)
+                guard !Task.isCancelled, let self, self.windowIdentity == windowIdentity, let image else { return }
+                self.iconView.image = image
+            }
+        }
+        if recordingHighlight { thumbnailTask?.cancel() }
         needsLayout = true
         needsDisplay = true
         layoutSubtreeIfNeeded()
-        if (targetChanged || lockChanged) && !controlsHidden {
-            animateIconSelection()
+        if (wasHidden || targetChanged), !card.isHidden, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            let opacity = CABasicAnimation(keyPath: "opacity")
+            opacity.fromValue = 0
+            opacity.toValue = 1
+            opacity.duration = 0.18
+            card.layer?.add(opacity, forKey: "entrance-opacity")
+            let move = CABasicAnimation(keyPath: "transform.translation.y")
+            move.fromValue = -5
+            move.toValue = 0
+            move.duration = 0.18
+            card.layer?.add(move, forKey: "entrance-position")
         }
     }
 
     override func mouseDown(with event: NSEvent) {
         guard !recordingHighlight else { return }
-        onCanvasClick?(convert(event.locationInWindow, from: nil))
+        let point = convert(event.locationInWindow, from: nil)
+        guard card.isHidden || !card.frame.contains(point) else { return }
+        onCanvasClick?(point)
     }
-
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-
-    func containsConfirmationControls(at point: CGPoint) -> Bool {
-        guard showsControls, !recordingHighlight, windowIdentity != nil,
-              let target = cutoutFrame else { return false }
-        return confirmationCardFrame(for: target).contains(point)
-    }
+    func containsConfirmationControls(at point: CGPoint) -> Bool { !card.isHidden && card.frame.contains(point) }
 
     override func layout() {
         super.layout()
-        guard let target = cutoutFrame,
-              windowIdentity != nil,
-              showsControls,
-              !recordingHighlight else { return }
-        let card = confirmationCardFrame(for: target)
-        let scale = card.width / 780
-        cancelButton.layer?.cornerRadius = 11 * scale
-        startButton.layer?.cornerRadius = 11 * scale
-
-        let iconContainerSize: CGFloat = 72 * scale
-        iconContainerView.layer?.cornerRadius = 15 * scale
-        iconContainerView.frame = CGRect(
-            x: card.minX + 22 * scale,
-            y: card.midY - iconContainerSize / 2,
-            width: iconContainerSize,
-            height: iconContainerSize
-        )
-        let iconInset = 9 * scale
-        iconView.frame = CGRect(
-            x: iconInset,
-            y: iconInset,
-            width: iconContainerSize - iconInset * 2,
-            height: iconContainerSize - iconInset * 2
-        )
-
-        let cancelWidth: CGFloat = 82 * scale
-        let startWidth: CGFloat = 160 * scale
-        let buttonHeight: CGFloat = 48 * scale
-        let startX = card.maxX - 22 * scale - startWidth
-        startButton.frame = CGRect(
-            x: startX,
-            y: card.minY + 42 * scale,
-            width: startWidth,
-            height: buttonHeight
-        )
-        startButtonGradient.frame = startButton.bounds
-        startButtonGradient.cornerRadius = 11 * scale
-        cancelButton.frame = CGRect(
-            x: startButton.frame.minX - 10 * scale - cancelWidth,
-            y: startButton.frame.minY,
-            width: cancelWidth,
-            height: buttonHeight
-        )
-
-        let textX = iconContainerView.frame.maxX + 18 * scale
-        let textWidth = max(120 * scale, cancelButton.frame.minX - textX - 24 * scale)
-        contextLabel.frame = CGRect(
-            x: textX,
-            y: card.maxY - 31 * scale,
-            width: textWidth,
-            height: 15 * scale
-        )
-        titleLabel.frame = CGRect(
-            x: textX,
-            y: card.minY + 50 * scale,
-            width: textWidth,
-            height: 28 * scale
-        )
-        detailLabel.frame = CGRect(
-            x: textX,
-            y: card.minY + 28 * scale,
-            width: textWidth,
-            height: 17 * scale
-        )
+        updateSelectionMask()
+        guard let target = cutoutFrame, !card.isHidden else { return }
+        card.frame = confirmationCardFrame(for: target)
+        iconView.frame = CGRect(x: 18, y: 101, width: 70, height: 50)
+        titleLabel.frame = CGRect(x: 101, y: 126, width: 205, height: 20)
+        detailLabel.frame = CGRect(x: 101, y: 106, width: 205, height: 16)
+        checkmark.frame = CGRect(x: 312, y: 119, width: 18, height: 18)
+        separator.frame = CGRect(x: 18, y: 75, width: card.bounds.width - 36, height: 1)
+        cancelButton.frame = CGRect(x: 18, y: 22, width: 74, height: 36)
+        startButton.frame = CGRect(x: card.bounds.width - 160, y: 22, width: 142, height: 36)
     }
+    @objc private func startRecording(_ sender: Any?) { guard selectionLocked else { return }; onStart?() }
+    @objc private func cancelSelection(_ sender: Any?) { onCancel?() }
 
-    @objc private func startRecording(_ sender: Any?) {
-        onStart?()
-    }
-
-    @objc private func cancelSelection(_ sender: Any?) {
-        onCancel?()
-    }
-
-    private func animateIconSelection() {
-        guard let layer = iconContainerView.layer else { return }
-        layer.removeAnimation(forKey: "hover-bounce")
-        let vertical = CAKeyframeAnimation(keyPath: "transform.translation.y")
-        vertical.values = [0, 7, -2, 1, 0]
-        vertical.keyTimes = [0, 0.28, 0.55, 0.76, 1]
-        let scale = CAKeyframeAnimation(keyPath: "transform.scale")
-        scale.values = [1, 1.075, 0.985, 1.015, 1]
-        scale.keyTimes = vertical.keyTimes
-        let group = CAAnimationGroup()
-        group.animations = [vertical, scale]
-        group.duration = 0.52
-        group.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        layer.add(group, forKey: "hover-bounce")
-    }
-
-    private func updateStartButtonPulse(enabled: Bool) {
-        guard let layer = startButton.layer else { return }
-        layer.removeAnimation(forKey: "recording-pulse")
-        guard enabled, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
-            layer.shadowOpacity = enabled ? 0.2 : 0.08
-            return
+    /// An independent, full-screen shape keeps the outside dimmed while the
+    /// confirmation card and its preview update. The chosen window is a hole.
+    private func updateSelectionMask() {
+        let visibleTarget = cutoutFrame?.intersection(bounds)
+        let hasTarget = visibleTarget.map {
+            !$0.isNull && !$0.isInfinite && $0.width > 1 && $0.height > 1
+        } ?? false
+        let maskPath = CGMutablePath()
+        maskPath.addRect(bounds)
+        var borderPath: CGPath?
+        if hasTarget, let target = visibleTarget {
+            maskPath.addRoundedRect(in: target.insetBy(dx: -1, dy: -1), cornerWidth: 9, cornerHeight: 9)
+            borderPath = CGPath(roundedRect: target.insetBy(dx: 1.5, dy: 1.5),
+                                cornerWidth: 9, cornerHeight: 9, transform: nil)
         }
-        let pulse = CABasicAnimation(keyPath: "shadowOpacity")
-        pulse.fromValue = 0.12
-        pulse.toValue = 0.32
-        pulse.duration = 1.5
-        pulse.autoreverses = true
-        pulse.repeatCount = .infinity
-        layer.add(pulse, forKey: "recording-pulse")
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        let selectionTint = NSColor(
-            calibratedRed: 0.035,
-            green: 0.035,
-            blue: 0.035,
-            alpha: recordingHighlight ? 0 : 0.3
-        )
-        selectionTint.setFill()
-        bounds.fill()
-
-        let mask = NSBezierPath(rect: bounds)
-        if let cutoutFrame, cutoutFrame.width > 1, cutoutFrame.height > 1 {
-            mask.appendRoundedRect(cutoutFrame.insetBy(dx: -1, dy: -1), xRadius: 9, yRadius: 9)
-        }
-        mask.windingRule = .evenOdd
-        NSColor(
-            calibratedRed: 0.035,
-            green: 0.035,
-            blue: 0.035,
-            alpha: recordingHighlight ? 0.58 : 0.54
-        ).setFill()
-        mask.fill()
-
-        guard let target = cutoutFrame, target.width > 1, target.height > 1 else { return }
-        let outline = NSBezierPath(
-            roundedRect: target.insetBy(dx: 1.5, dy: 1.5),
-            xRadius: 9,
-            yRadius: 9
-        )
-        captureSelectionAccentNSColor.withAlphaComponent(0.95).setStroke()
-        outline.lineWidth = recordingHighlight ? 3 : (selectionLocked ? 5 : 4)
-        outline.stroke()
-
-        guard windowIdentity != nil, showsControls, !recordingHighlight else { return }
-        let card = confirmationCardFrame(for: target)
-        let radius = 18 * (card.width / 780)
-        let cardPath = NSBezierPath(roundedRect: card, xRadius: radius, yRadius: radius)
-        let shadow = NSShadow()
-        shadow.shadowColor = NSColor.black.withAlphaComponent(0.58)
-        shadow.shadowBlurRadius = 28
-        shadow.shadowOffset = CGSize(width: 0, height: -9)
-        NSGraphicsContext.saveGraphicsState()
-        shadow.set()
-        captureSelectionSurfaceNSColor.setFill()
-        cardPath.fill()
-        NSGraphicsContext.restoreGraphicsState()
-        NSColor.white.withAlphaComponent(0.12).setStroke()
-        cardPath.lineWidth = 1
-        cardPath.stroke()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        dimmingLayer.frame = bounds
+        dimmingLayer.path = maskPath
+        dimmingLayer.fillColor = NSColor.black.withAlphaComponent(recordingHighlight ? 0.58 : 0.42).cgColor
+        outlineLayer.frame = bounds
+        outlineLayer.path = borderPath
+        outlineLayer.lineWidth = recordingHighlight ? 3 : (selectionLocked ? 3 : 2)
+        CATransaction.commit()
     }
 
     private func confirmationCardFrame(for target: CGRect) -> CGRect {
-        let availableWidth = max(320, bounds.width - 40)
-        let cardWidth = min(780, availableWidth)
-        let size = CGSize(width: cardWidth, height: cardWidth / 6.4)
-        let centerX = min(
-            max(target.midX, size.width / 2 + 20),
-            bounds.maxX - size.width / 2 - 20
-        )
-        let preferredAboveY = target.maxY + 16
-        let preferredBelowY = target.minY - 16 - size.height
-        let cardY: CGFloat
-        if preferredAboveY + size.height <= bounds.maxY - 20 {
-            cardY = preferredAboveY
-        } else if preferredBelowY >= bounds.minY + 20 {
-            cardY = preferredBelowY
-        } else {
-            cardY = min(
-                max(target.maxY - size.height - 22, bounds.minY + 20),
-                bounds.maxY - size.height - 20
-            )
-        }
-        return CGRect(
-            x: centerX - size.width / 2,
-            y: cardY,
-            width: size.width,
-            height: size.height
-        )
+        let size = CGSize(width: 350, height: 178)
+        let centerX = min(max(target.midX, size.width / 2 + 20), bounds.maxX - size.width / 2 - 20)
+        let above = target.maxY + 16
+        let below = target.minY - size.height - 16
+        let y: CGFloat
+        if below >= bounds.minY + 20 { y = below }
+        else if above + size.height <= bounds.maxY - 20 { y = above }
+        else { y = min(max(target.maxY - size.height - 22, bounds.minY + 20), bounds.maxY - size.height - 20) }
+        return CGRect(x: centerX - size.width / 2, y: y, width: size.width, height: size.height)
     }
 }

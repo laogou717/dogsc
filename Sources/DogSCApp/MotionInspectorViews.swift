@@ -17,39 +17,39 @@ struct MotionInspectorScopeHeader: View {
             if showsContextHeader {
                 HStack(spacing: 8) {
                     Label(title, systemImage: "rectangle.stack")
-                        .font(.caption.weight(.semibold))
+                        .font(.appUI(.caption, weight: .semibold))
                         .foregroundStyle(Color.secondary)
                     Spacer(minLength: 4)
                     Text(statusTitle ?? "初始状态")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(.appUI(size: 10, weight: .semibold))
                         .foregroundStyle(Color.secondary)
                         .padding(.horizontal, 7)
                         .padding(.vertical, 4)
                         .background(
-                            Color.white.opacity(0.07),
+                            EditorTheme.chrome(0.07),
                             in: Capsule()
                         )
                 }
             }
 
             Text(detail)
-                .font(.caption2)
+                .font(.appUI(.caption2))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             Button(action: onAdd) {
                 Label(addTitle, systemImage: "plus.circle.fill")
-                    .font(.caption.weight(.semibold))
+                    .font(.appUI(.caption, weight: .semibold))
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.editorPrimary(minHeight: 32))
             .accessibilityIdentifier("motion.add-at-playhead")
         }
         .padding(11)
-        .background(Color.white.opacity(0.03), in: RoundedRectangle(cornerRadius: 11))
+        .background(EditorTheme.chrome(0.03), in: RoundedRectangle(cornerRadius: 11))
         .overlay {
             RoundedRectangle(cornerRadius: 11)
-                .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                .stroke(EditorTheme.chrome(0.06), lineWidth: 1)
         }
     }
 }
@@ -57,6 +57,7 @@ struct MotionInspectorScopeHeader: View {
 // MARK: - Screen motion
 
 struct ScreenMotionTargetInspector: View {
+    var sourceImage: NSImage? = nil
     @ObservedObject var editorStore: EditorStore
     let clipID: UUID
     let onError: (String) -> Void
@@ -137,6 +138,9 @@ struct ScreenMotionTargetInspector: View {
                         }
                     }
                 }
+
+                EditorFocusEffectInspector(editorStore: editorStore, sourceImage: sourceImage,
+                    selection: .screenMotion(clipID), onError: onError)
 
                 EditorInspectorSection("动画时间") {
                     MotionTimingControls(
@@ -269,7 +273,7 @@ struct CameraMotionTargetInspector: View {
                         }
                     } else {
                         Text("这段动画只让摄像头原地淡出，位置和形状不参与过渡。")
-                            .font(.caption2)
+                            .font(.appUI(.caption2))
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -454,27 +458,19 @@ struct MotionValueSlider: View {
     @State private var hasTextPreview = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            EditorInspectorParameterReadout(
-                title: title,
-                valueText: valueText,
-                isEditing: isSliderEditing || isTextEditing,
-                editConfiguration: EditorInspectorParameterEditConfiguration(
-                    draftText: inputFormat.editingText(for: value),
-                    onBegin: beginTextEditing,
-                    onPreview: previewTextValue,
-                    onCommit: commitTextEditing,
-                    onCancel: cancelTextEditing
-                )
-            )
+        HStack(spacing: 10) {
+            Text(appLocalized(title)).font(.appUI(size: 13)).foregroundStyle(EditorTheme.chrome(0.82))
+                .frame(width: 88, alignment: .leading).lineLimit(2)
             EditorSlider(
                 value: Binding(
                     get: { value },
                     set: { newValue in onChanged(newValue) }
                 ),
                 range: range,
+                title: nil,
                 formatValue: formatValue,
                 showsFloatingValue: false,
+                scale: inputFormat.sliderScale(in: range),
                 onEditingChanged: { editing in
                     isSliderEditing = editing
                     if !editing {
@@ -485,6 +481,21 @@ struct MotionValueSlider: View {
             .disabled(isTextEditing)
             .accessibilityLabel(title)
             .accessibilityValue(valueText)
+            EditorInspectorParameterReadout(
+                title: title,
+                valueText: valueText,
+                isEditing: isSliderEditing || isTextEditing,
+                editConfiguration: EditorInspectorParameterEditConfiguration(
+                    draftText: inputFormat.editingText(for: value),
+                    onBegin: beginTextEditing,
+                    onPreview: previewTextValue,
+                    onCommit: commitTextEditing,
+                    onCancel: cancelTextEditing
+                ),
+                showsTitle: false,
+                isEmbedded: false
+            )
+            .frame(width: 66, height: 32)
         }
     }
 
@@ -536,10 +547,10 @@ struct MotionTimingControls: View {
             HStack {
                 if showsHeader {
                     Label("过渡", systemImage: "waveform.path")
-                        .font(.caption.weight(.semibold))
+                        .font(.appUI(.caption, weight: .semibold))
                 } else {
                     Text("开始位置")
-                        .font(.caption)
+                        .font(.appUI(.caption))
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -550,7 +561,7 @@ struct MotionTimingControls: View {
             MotionValueSlider(
                 title: "过渡时长",
                 value: min(timing.leadInDuration, timing.duration),
-                range: 0.08...max(max(timing.duration, 0.08), 0.08),
+                range: 0...max(timing.duration, 0),
                 valueText: String(format: "%.2fs", min(timing.leadInDuration, timing.duration)),
                 formatValue: { String(format: "%.2fs", $0) },
                 inputFormat: .seconds,
@@ -571,7 +582,7 @@ struct MotionTimingControls: View {
             )
             if timing.duration - timing.leadInDuration > 0.01 {
                 Text("过渡完成后保持 \(String(format: "%.2f", timing.duration - min(timing.leadInDuration, timing.duration)))s")
-                    .font(.caption2)
+                    .font(.appUI(.caption2))
                     .foregroundStyle(.secondary)
             }
         }
@@ -729,7 +740,7 @@ struct CameraShapeIconPicker: View {
                     onSelect(shape)
                 } label: {
                     Image(systemName: icon(for: shape))
-                        .font(.system(size: 13))
+                        .font(.appUI(size: 13))
                         .foregroundStyle(
                             isSelected ? Color.primary : Color.secondary
                         )
@@ -737,16 +748,16 @@ struct CameraShapeIconPicker: View {
                         .frame(height: 30)
                         .background(
                             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .fill(isSelected ? Color.white.opacity(0.14) : Color.white.opacity(0.07))
+                                .fill(EditorTheme.chrome(isSelected ? 0.14 : 0.07))
                         )
                         .overlay(
                             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .stroke(isSelected ? Color.white.opacity(0.75) : .clear, lineWidth: 1)
+                                .stroke(isSelected ? EditorTheme.chrome(0.75) : .clear, lineWidth: 1)
                         )
                 }
                 .buttonStyle(.editorThumbnail)
-                .help(shape.rawValue)
-                .accessibilityLabel("形状：\(shape.rawValue)")
+                .help(appLocalized(shape.rawValue))
+                .accessibilityLabel("\(appLocalized("形状"))：\(appLocalized(shape.rawValue))")
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
             }
         }

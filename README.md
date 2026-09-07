@@ -20,7 +20,7 @@
 - 摄像头、麦克风与系统声音录制
 - 鼠标轨迹、自动缩放与屏幕动画
 - 时间线剪辑、变速与画面调整
-- 画面柔化、贴图与成片进度条
+- 画面柔化、贴图与自定义背景
 - 硬件加速视频导出
 
 ## 系统要求
@@ -36,4 +36,4 @@ swift build -c release
 
 ## 许可
 
-源代码采用 [MIT License](LICENSE)。内置壁纸的作者与许可记录见 [Resources/Wallpapers/SOURCES.md](Resources/Wallpapers/SOURCES.md)。
+源代码采用 [MIT License](LICENSE)。

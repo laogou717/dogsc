@@ -12,7 +12,6 @@ public enum ProjectTimelineTrack: String, Equatable, Sendable {
     case cameraMotion
     case mosaic
     case sticker
-    case progress
 }
 
 public enum ProjectTimelineEditingError: Error, Equatable, Sendable {
@@ -28,6 +27,8 @@ public enum ProjectTimelineEditingError: Error, Equatable, Sendable {
     case noRestorableTrailingSourceGap(UUID)
     case cannotMergeDeletedGap(previous: UUID, next: UUID)
     case cannotMergeDifferentPlaybackRates(previous: UUID, next: UUID)
+    case cannotMergeDifferentAudioOverrides(previous: UUID, next: UUID)
+    case invalidPrimarySegmentAudioOverrides(UUID)
     case duplicateClipID(track: ProjectTimelineTrack, id: UUID)
     case missingClip(track: ProjectTimelineTrack, id: UUID)
     case mismatchedClipID(track: ProjectTimelineTrack, expected: UUID, actual: UUID)
@@ -62,6 +63,10 @@ extension ProjectTimelineEditingError: LocalizedError {
             return "该剪切点包含已删除素材，应先还原而不是直接合并。"
         case .cannotMergeDifferentPlaybackRates:
             return "相邻片段速度不同，无法直接合并。"
+        case .cannotMergeDifferentAudioOverrides:
+            return "相邻片段的声音设置不同，无法直接合并。"
+        case .invalidPrimarySegmentAudioOverrides:
+            return "当前片段的声音设置无效。"
         case let .duplicateClipID(track, _):
             return "\(track.userFacingName)轨道中存在重复片段。"
         case let .missingClip(track, _):
@@ -85,7 +90,6 @@ private extension ProjectTimelineTrack {
         case .cameraMotion: "摄像运动"
         case .mosaic: "打码"
         case .sticker: "贴图"
-        case .progress: "进度"
         }
     }
 }
@@ -97,6 +101,31 @@ private extension ProjectTimelineTrack {
 /// removal and reordering transform every time-varying track with the edit.
 public enum ProjectTimelineEditing {
     static let epsilon = 1.0 / 120_000.0
+
+    public static func primarySegmentAudioOverrides(
+        in timeline: ProjectTimeline,
+        segmentID: UUID
+    ) -> PrimarySegmentAudioOverrides {
+        timeline.primarySegmentAudioOverrides[segmentID] ?? PrimarySegmentAudioOverrides()
+    }
+
+    public static func settingPrimarySegmentAudioOverrides(
+        in timeline: ProjectTimeline,
+        segmentID: UUID,
+        overrides: PrimarySegmentAudioOverrides
+    ) throws -> ProjectTimeline {
+        guard primarySegmentIDs(in: timeline.sourceSequence).contains(segmentID) else {
+            throw ProjectTimelineEditingError.segmentNotFound(segmentID)
+        }
+        var result = timeline
+        if overrides.isEmpty {
+            result.primarySegmentAudioOverrides.removeValue(forKey: segmentID)
+        } else {
+            result.primarySegmentAudioOverrides[segmentID] = overrides
+        }
+        try validate(result)
+        return result
+    }
 
     public static func materialized(
         _ timeline: ProjectTimeline,
@@ -252,6 +281,9 @@ public enum ProjectTimelineEditing {
 
         var result = timeline
         result.sourceSequence = .edited(segments)
+        if let overrides = timeline.primarySegmentAudioOverrides[resolved.id] {
+            result.primarySegmentAudioOverrides[newRightSegmentID] = overrides
+        }
         try validate(result, fullSourceDuration: fullSourceDuration)
         return result
     }
@@ -289,7 +321,10 @@ public enum ProjectTimelineEditing {
             }
             if outputTime < resolved.outputStart - epsilon {
                 let previousSourceEnd = segments.enumerated()
-                    .filter { $0.offset != index && $0.element.sourceEnd <= resolved.sourceStart + epsilon }
+                    .filter {
+                        $0.offset != index
+                            && $0.element.sourceEnd <= resolved.sourceStart + epsilon
+                    }
                     .map { $0.element.sourceEnd }
                     .max() ?? 0
                 let available = max(resolved.sourceStart - previousSourceEnd, 0)
@@ -317,12 +352,6 @@ public enum ProjectTimelineEditing {
                 result.stickerClips = timeline.stickerClips.map {
                     inserting($0, at: resolved.outputStart, duration: outputAmount)
                 }
-                if var progress = timeline.progressOverlay {
-                    progress.chapters = progress.chapters.map {
-                        inserting($0, at: resolved.outputStart, duration: outputAmount)
-                    }
-                    result.progressOverlay = progress
-                }
                 sortZoom(&result.zoomClips)
                 sortScreenMotion(&result.screenMotionClips)
                 sortCameraMotion(&result.cameraMotionClips)
@@ -343,10 +372,14 @@ public enum ProjectTimelineEditing {
                 return timeline
             }
             if outputTime > resolved.outputEnd + epsilon {
+                let availableDuration = fullSourceDuration
                 let nextSourceStart = segments.enumerated()
-                    .filter { $0.offset != index && $0.element.sourceStart >= resolved.sourceEnd - epsilon }
+                    .filter {
+                        $0.offset != index
+                            && $0.element.sourceStart >= resolved.sourceEnd - epsilon
+                    }
                     .map { $0.element.sourceStart }
-                    .min() ?? fullSourceDuration
+                    .min() ?? availableDuration
                 let available = max(nextSourceStart - resolved.sourceEnd, 0)
                 let outputAmount = outputTime - resolved.outputEnd
                 let sourceAmount = outputAmount * resolved.playbackRate
@@ -370,12 +403,6 @@ public enum ProjectTimelineEditing {
                 }
                 result.stickerClips = timeline.stickerClips.map {
                     inserting($0, at: resolved.outputEnd, duration: outputAmount)
-                }
-                if var progress = timeline.progressOverlay {
-                    progress.chapters = progress.chapters.map {
-                        inserting($0, at: resolved.outputEnd, duration: outputAmount)
-                    }
-                    result.progressOverlay = progress
                 }
                 sortZoom(&result.zoomClips)
                 sortScreenMotion(&result.screenMotionClips)
@@ -495,19 +522,6 @@ public enum ProjectTimelineEditing {
             newStarts: newStarts,
             outputDuration: newMap.outputDuration
         )
-        if var progress = timeline.progressOverlay {
-            progress.chapters = progress.chapters.map { chapter in
-                let delta = reorderedOutputOffset(
-                    at: chapter.time,
-                    oldMap: oldMap,
-                    newStarts: newStarts
-                )
-                var moved = chapter
-                moved.time = min(max(chapter.time + delta, 0), newMap.outputDuration)
-                return moved
-            }.sorted { $0.time < $1.time }
-            result.progressOverlay = progress
-        }
         try validate(result, fullSourceDuration: fullSourceDuration)
         return result
     }
@@ -563,6 +577,8 @@ public enum ProjectTimelineEditing {
         let insertionTime = previous.outputEnd
         var result = timeline
         result.sourceSequence = .edited(segments)
+        result.primarySegmentAudioOverrides[restoredSegmentID] =
+            timeline.primarySegmentAudioOverrides[previousSegmentID]
         result.zoomClips = timeline.zoomClips.map {
             inserting($0, at: insertionTime, duration: restoredDuration)
         }
@@ -577,12 +593,6 @@ public enum ProjectTimelineEditing {
         }
         result.stickerClips = timeline.stickerClips.map {
             inserting($0, at: insertionTime, duration: restoredDuration)
-        }
-        if var progress = timeline.progressOverlay {
-            progress.chapters = progress.chapters.map {
-                inserting($0, at: insertionTime, duration: restoredDuration)
-            }
-            result.progressOverlay = progress
         }
         sortZoom(&result.zoomClips)
         sortScreenMotion(&result.screenMotionClips)
@@ -625,6 +635,8 @@ public enum ProjectTimelineEditing {
         )
         var result = timeline
         result.sourceSequence = .edited(segments)
+        result.primarySegmentAudioOverrides[restoredSegmentID] =
+            timeline.primarySegmentAudioOverrides[first.id]
         result.zoomClips = timeline.zoomClips.map {
             inserting($0, at: 0, duration: restoredDuration)
         }
@@ -639,12 +651,6 @@ public enum ProjectTimelineEditing {
         }
         result.stickerClips = timeline.stickerClips.map {
             inserting($0, at: 0, duration: restoredDuration)
-        }
-        if var progress = timeline.progressOverlay {
-            progress.chapters = progress.chapters.map {
-                inserting($0, at: 0, duration: restoredDuration)
-            }
-            result.progressOverlay = progress
         }
         sortZoom(&result.zoomClips)
         sortScreenMotion(&result.screenMotionClips)
@@ -667,8 +673,13 @@ public enum ProjectTimelineEditing {
             sourceSequence: timeline.sourceSequence,
             fullSourceDuration: fullSourceDuration
         )
-        guard let last = map.segments.last,
-              fullSourceDuration - last.sourceEnd > epsilon else {
+        guard let last = map.segments.last else {
+            throw ProjectTimelineEditingError.noRestorableTrailingSourceGap(
+                restoredSegmentID
+            )
+        }
+        let sourceAvailableDuration = fullSourceDuration
+        guard sourceAvailableDuration - last.sourceEnd > epsilon else {
             throw ProjectTimelineEditingError.noRestorableTrailingSourceGap(
                 map.segments.last?.id ?? restoredSegmentID
             )
@@ -681,11 +692,13 @@ public enum ProjectTimelineEditing {
             RecordingSegment(
                 id: restoredSegmentID,
                 sourceStart: last.sourceEnd,
-                sourceDuration: fullSourceDuration - last.sourceEnd
+                sourceDuration: sourceAvailableDuration - last.sourceEnd
             )
         )
         var result = timeline
         result.sourceSequence = .edited(segments)
+        result.primarySegmentAudioOverrides[restoredSegmentID] =
+            timeline.primarySegmentAudioOverrides[last.id]
         try validate(result, fullSourceDuration: fullSourceDuration)
         return result
     }
@@ -728,12 +741,25 @@ public enum ProjectTimelineEditing {
                 next: nextSegmentID
             )
         }
+        guard primarySegmentAudioOverrides(
+            in: timeline,
+            segmentID: previousSegmentID
+        ) == primarySegmentAudioOverrides(
+            in: timeline,
+            segmentID: nextSegmentID
+        ) else {
+            throw ProjectTimelineEditingError.cannotMergeDifferentAudioOverrides(
+                previous: previousSegmentID,
+                next: nextSegmentID
+            )
+        }
 
         var segments = map.segments.map(Self.authoredSegment)
         segments[previousIndex].sourceDuration = next.sourceEnd - previous.sourceStart
         segments.remove(at: previousIndex + 1)
         var result = timeline
         result.sourceSequence = .edited(segments)
+        result.primarySegmentAudioOverrides.removeValue(forKey: nextSegmentID)
         try validate(result, fullSourceDuration: fullSourceDuration)
         return result
     }
@@ -878,12 +904,15 @@ public enum ProjectTimelineEditing {
     /// duration through `TimelineMap` before returning.
     public static func validate(_ timeline: ProjectTimeline) throws {
         try validateSourceSequence(timeline.sourceSequence)
+        try validatePrimarySegmentAudioOverrides(
+            timeline.primarySegmentAudioOverrides,
+            sourceSequence: timeline.sourceSequence
+        )
         try validateZoomClips(timeline.zoomClips)
         try validateScreenMotionClips(timeline.screenMotionClips)
         try validateCameraMotionClips(timeline.cameraMotionClips)
         try validateMosaicClips(timeline.mosaicClips)
         try validateStickerClips(timeline.stickerClips)
-        try validateProgressOverlay(timeline.progressOverlay)
     }
 
     public static func validate(

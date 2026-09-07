@@ -13,10 +13,10 @@ private enum AppSettingsSection: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .general: "通用"
-        case .editor: "编辑器"
-        case .recording: "录制"
-        case .permissions: "权限"
+        case .general: appLocalized("通用")
+        case .editor: appLocalized("编辑器")
+        case .recording: appLocalized("录制")
+        case .permissions: appLocalized("权限")
         }
     }
 
@@ -29,24 +29,22 @@ private enum AppSettingsSection: String, CaseIterable, Identifiable {
         }
     }
 
-    var preferredContentHeight: CGFloat {
+    var subtitle: String {
         switch self {
-        case .general: 440
-        case .editor: 330
-        case .recording, .permissions: 440
+        case .general: "界面、声音与文件"
+        case .editor: "预览与编辑工作区"
+        case .recording: "开始录制时的默认选项"
+        case .permissions: "管理录制所需的系统权限"
         }
     }
+
+
 }
 
 struct AppSettingsView: View {
-    private let onPreferredContentHeightChange: (@MainActor (CGFloat) -> Void)?
     @ObservedObject private var updateController = AppUpdateController.shared
-
-    init(
-        onPreferredContentHeightChange: (@MainActor (CGFloat) -> Void)? = nil
-    ) {
-        self.onPreferredContentHeightChange = onPreferredContentHeightChange
-    }
+    @ObservedObject private var guideAccess = FirstLaunchGuideAccess.shared
+    var contentHeight: CGFloat = 640
 
     @AppStorage(AppPreferences.exportCompletionSoundEnabledKey)
     private var exportCompletionSoundEnabled = true
@@ -54,6 +52,8 @@ struct AppSettingsView: View {
     private var previewResolutionMode = EditorPreviewResolutionMode.low
     @AppStorage(AppPreferences.recordingCameraPreviewShapeKey)
     private var recordingCameraPreviewShape = RecordingCameraPreviewShape.circle
+    @AppStorage(AppPreferences.appearancePreferenceKey)
+    private var appearancePreference = AppAppearancePreference.system
     @AppStorage(CaptureDevicePreferenceKey.systemAudioEnabled)
     private var recordsSystemAudioByDefault = true
     @AppStorage(CaptureDevicePreferenceKey.microphoneEnabled)
@@ -62,6 +62,9 @@ struct AppSettingsView: View {
     private var preferredMicrophoneName = ""
 
     @State private var selectedSection = AppSettingsSection.general
+    @FocusState private var focusedSection: AppSettingsSection?
+    @FocusState private var isGuideFocused: Bool
+    @Namespace private var sectionHighlight
     @State private var hoveredSection: AppSettingsSection?
     @State private var didResetWindowState = false
     @State private var isPlayingSoundPreview = false
@@ -78,46 +81,43 @@ struct AppSettingsView: View {
     )
 
     var body: some View {
-        VStack(spacing: 0) {
-            // 顶部优雅分段导航栏
-            headerTabBar
-                .padding(.horizontal, 20)
-                .padding(.top, 16)
-                .padding(.bottom, 14)
-
-            Divider()
-                .overlay(Color.white.opacity(0.08))
-
-            // 主内容区域
-            ScrollView(.vertical, showsIndicators: true) {
-                VStack(spacing: 20) {
-                    switch selectedSection {
-                    case .general:
-                        generalSettingsView
-                    case .editor:
-                        editorSettingsView
-                    case .recording:
-                        recordingSettingsView
-                    case .permissions:
-                        permissionSettingsView
+        HStack(alignment: .top, spacing: 0) {
+            settingsNavigation
+                .frame(width: 156)
+                .frame(maxHeight: .infinity, alignment: .top)
+                .background(EditorTheme.panelRaised.opacity(0.65))
+            Rectangle().fill(EditorTheme.hairline).frame(width: 1)
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: 22) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(selectedSection.label).font(.appUI(size: 22, weight: .semibold))
+                        Text(appLocalized(selectedSection.subtitle))
+                            .font(.appUI(size: 12)).foregroundStyle(.secondary)
+                    }
+                    .padding(.bottom, 2)
+                    Group {
+                        switch selectedSection {
+                        case .general: generalSettingsView
+                        case .editor: editorSettingsView
+                        case .recording: recordingSettingsView
+                        case .permissions: permissionSettingsView
+                        }
                     }
                 }
                 .id(selectedSection)
-                .transition(
-                    .asymmetric(
-                        insertion: .opacity.combined(with: .offset(y: 10)),
-                        removal: .opacity.combined(with: .offset(y: -6))
-                    )
-                )
-                .padding(22)
+                .transition(.identity)
+                .padding(24)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .animation(SpringMotion.fluid, value: selectedSection)
+            .transaction { $0.animation = nil }
         }
-        .frame(width: 620, height: selectedSection.preferredContentHeight)
+        .frame(width: 780, height: contentHeight)
         .background(EditorTheme.panelSurface)
+        .font(.appUI(.body))
         .tint(editorAccent)
-        .preferredColorScheme(.dark)
+        .onChange(of: appearancePreference) { _, _ in
+            AppPreferences.applyAppearancePreferenceToOpenWindows()
+        }
         .onChange(of: recordingCameraPreviewShape) { _, _ in
             NotificationCenter.default.post(
                 name: .recordingCameraPreviewShapeDidChange,
@@ -133,13 +133,11 @@ struct AppSettingsView: View {
         .onAppear {
             refreshPermissionStates()
             updateController.startIfEligible()
-            onPreferredContentHeightChange?(selectedSection.preferredContentHeight)
         }
         .onChange(of: selectedSection) { _, section in
             if section == .permissions {
                 refreshPermissionStates()
             }
-            onPreferredContentHeightChange?(section.preferredContentHeight)
         }
         .onReceive(
             NotificationCenter.default.publisher(
@@ -152,74 +150,88 @@ struct AppSettingsView: View {
         }
     }
 
-    @Namespace private var settingsTabNamespace
-
-    // MARK: - 顶部导航栏
-
-    private var headerTabBar: some View {
-        HStack(spacing: 6) {
+    private var settingsNavigation: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("设置").font(.appUI(size: 13, weight: .semibold))
+                .foregroundStyle(.secondary).padding(.horizontal, 12).padding(.bottom, 14)
             ForEach(AppSettingsSection.allCases) { section in
-                let isSelected = selectedSection == section
                 Button {
-                    withAnimation(SpringMotion.fluid) {
-                        selectedSection = section
-                    }
+                    focusedSection = section
+                    selectSection(section)
                 } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: section.iconName)
-                            .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
-                            .foregroundStyle(isSelected ? Color.black.opacity(0.82) : Color.white.opacity(0.55))
-
-                        Text(section.label)
-                            .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
-                            .foregroundStyle(isSelected ? Color.black.opacity(0.86) : Color.white.opacity(0.70))
+                    HStack(spacing: 10) {
+                        Image(systemName: section.iconName.replacingOccurrences(of: ".fill", with: ""))
+                            .font(.system(size: 16)).frame(width: 20)
+                        Text(section.label).font(.appUI(size: 13, weight: .medium))
+                        Spacer(minLength: 0)
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 7)
+                    .padding(.horizontal, 12).frame(height: 40)
                     .background {
-                        if isSelected {
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(
-                                    LinearGradient(
-                                        colors: [Color(red: 1.0, green: 0.99, blue: 0.96), EditorTheme.platinumAccent],
-                                        startPoint: .top,
-                                        endPoint: .bottom
-                                    )
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                        .stroke(Color.white.opacity(0.72), lineWidth: 0.75)
-                                )
-                                .matchedGeometryEffect(id: "activeSettingsTabPill", in: settingsTabNamespace)
+                        if selectedSection == section {
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(EditorTheme.chrome(0.08))
+                                .matchedGeometryEffect(id: "settings.selection", in: sectionHighlight)
                         } else if hoveredSection == section {
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(Color.white.opacity(0.075))
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(EditorTheme.chrome(0.035))
                         }
                     }
-                    .contentShape(Rectangle())
-                    .scaleEffect(isSelected ? 1.02 : hoveredSection == section ? 1.015 : 1.0)
+                    .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
-                .buttonStyle(.editorToolbarPress)
+                .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 10, showsHover: false))
+                .focused($focusedSection, equals: section)
+                .focusEffectDisabled()
                 .onHover { hovering in
                     withAnimation(SpringMotion.interactive) {
-                        if hovering {
-                            hoveredSection = section
-                        } else if hoveredSection == section {
-                            hoveredSection = nil
-                        }
+                        hoveredSection = hovering ? section : nil
                     }
                 }
-                .accessibilityAddTraits(isSelected ? .isSelected : [])
+                .accessibilityAddTraits(selectedSection == section ? .isSelected : [])
+                .accessibilityIdentifier("settings.section.\(section.rawValue)")
             }
-            Spacer()
+            Spacer(minLength: 20)
+            Button {
+                WindowCoordinator.showFirstLaunchGuide()
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "sparkles").font(.system(size: 14)).frame(width: 18)
+                    Text("首次使用引导").font(.appUI(size: 12, weight: .medium))
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 10).frame(height: 36)
+                .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(isGuideFocused ? EditorTheme.chrome(0.35) : .clear, lineWidth: 1)
+                }
+            }
+            .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 10))
+            .focused($isGuideFocused).focusEffectDisabled()
+            .disabled(!guideAccess.isAvailable)
+            .help("重看启动动画、授权与当前界面教学")
+            .accessibilityIdentifier("settings.first-launch-guide")
+            Text("DogSC").font(.appUI(size: 11)).foregroundStyle(.tertiary).padding(12)
         }
-        .animation(SpringMotion.fluid, value: selectedSection)
+        .padding(.horizontal, 12).padding(.top, 24).padding(.bottom, 8)
+        .onChange(of: focusedSection) { _, section in
+            // Keyboard navigation uses the same selection surface as a click,
+            // rather than leaving a second highlight on the previous section.
+            if let section { selectSection(section) }
+        }
+    }
+
+    private func selectSection(_ section: AppSettingsSection) {
+        guard selectedSection != section else { return }
+        withAnimation(SpringMotion.fluid) { selectedSection = section }
     }
 
     // MARK: - 通用设置
 
     @ViewBuilder
     private var generalSettingsView: some View {
+        appearanceSettingsCard
+
         // 提示与声音
         settingsCard(title: "提示与声音", icon: "bell.badge.fill") {
             VStack(spacing: 12) {
@@ -228,11 +240,11 @@ struct AppSettingsView: View {
 
                     VStack(alignment: .leading, spacing: 3) {
                         Text("导出完成后播放提示音")
-                            .font(.system(size: 13, weight: .medium))
+                            .font(.appUI(size: 13, weight: .medium))
                             .foregroundStyle(Color.primary)
-                        Text("导出取消或失败时不会播放提示音。")
-                            .font(.caption)
-                            .foregroundStyle(Color.white.opacity(0.50))
+                        Text("仅在成功导出后播放")
+                            .font(.appUI(.caption))
+                            .foregroundStyle(EditorTheme.chrome(0.50))
                     }
                     .accessibilityHidden(true)
 
@@ -243,9 +255,9 @@ struct AppSettingsView: View {
                     } label: {
                         HStack(spacing: 4) {
                             Image(systemName: isPlayingSoundPreview ? "waveform" : "play.fill")
-                                .font(.system(size: 10))
+                                .font(.appUI(size: 10))
                             Text("试听")
-                                .font(.system(size: 12))
+                                .font(.appUI(size: 12))
                         }
                     }
                     .buttonStyle(.editorQuiet)
@@ -263,7 +275,7 @@ struct AppSettingsView: View {
         settingsCard(title: "存储位置", icon: "folder.fill") {
             VStack(spacing: 14) {
                 fileLocationCardRow(
-                    title: "项目自动保存位置",
+                    title: "项目位置",
                     subtitle: "录制成片与草稿项目包的默认保存路径",
                     icon: "doc.badge.arrow.up.fill",
                     color: .orange,
@@ -272,10 +284,10 @@ struct AppSettingsView: View {
                     chooseProjectsFolder()
                 }
 
-                Divider().overlay(Color.white.opacity(0.06))
+                Divider().overlay(EditorTheme.chrome(0.06))
 
                 fileLocationCardRow(
-                    title: "成片导出默认位置",
+                    title: "导出位置",
                     subtitle: "视频导出面板记住的默认目标文件夹",
                     icon: "arrow.down.doc.fill",
                     color: .green,
@@ -286,7 +298,7 @@ struct AppSettingsView: View {
 
                 if let error = fileLocationError {
                     Text(error)
-                        .font(.caption)
+                        .font(.appUI(.caption))
                         .foregroundStyle(Color.red)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -303,11 +315,11 @@ struct AppSettingsView: View {
 
                     VStack(alignment: .leading, spacing: 3) {
                         Text("DogSC \(updateController.currentVersionDescription)")
-                            .font(.system(size: 13, weight: .medium))
+                            .font(.appUI(size: 13, weight: .medium))
                             .foregroundStyle(Color.primary)
                         Text(updateController.availabilityDescription)
-                            .font(.caption)
-                            .foregroundStyle(Color.white.opacity(0.50))
+                            .font(.appUI(.caption))
+                            .foregroundStyle(EditorTheme.chrome(0.50))
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
@@ -324,16 +336,16 @@ struct AppSettingsView: View {
                     .accessibilityHint("从 GitHub Release 检查并安装 DogSC 新版本")
                 }
 
-                Divider().overlay(Color.white.opacity(0.06))
+                Divider().overlay(EditorTheme.chrome(0.06))
 
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("自动检查更新")
-                            .font(.system(size: 13, weight: .medium))
+                            .font(.appUI(size: 13, weight: .medium))
                             .foregroundStyle(Color.primary)
                         Text("每天检查一次；下载与安装前仍会显示确认界面。")
-                            .font(.caption)
-                            .foregroundStyle(Color.white.opacity(0.50))
+                            .font(.appUI(.caption))
+                            .foregroundStyle(EditorTheme.chrome(0.50))
                     }
 
                     Spacer()
@@ -357,6 +369,30 @@ struct AppSettingsView: View {
         }
     }
 
+    private var appearanceSettingsCard: some View {
+        settingsCard(title: "外观", icon: "circle.lefthalf.filled") {
+            HStack(spacing: 10) {
+                ForEach(AppAppearancePreference.allCases) { preference in
+                    Button { appearancePreference = preference } label: {
+                        VStack(spacing: 8) {
+                            SettingsAppearanceMiniature(preference: preference)
+                                .frame(height: 58).padding(.horizontal, 8).padding(.top, 8)
+                            Text(preference.label).font(.appUI(size: 12))
+                        }
+                        .padding(8).frame(maxWidth: .infinity)
+                        .background(EditorTheme.chrome(0.025), in: RoundedRectangle(cornerRadius: 11))
+                        .overlay(RoundedRectangle(cornerRadius: 11)
+                            .strokeBorder(appearancePreference == preference ? EditorTheme.selectionTint : EditorTheme.hairline,
+                                          lineWidth: appearancePreference == preference ? 1.3 : 0.7))
+                    }
+                    .buttonStyle(.editorThumbnail)
+                    .accessibilityLabel(preference.label)
+                    .accessibilityAddTraits(appearancePreference == preference ? .isSelected : [])
+                }
+            }
+        }
+    }
+
     // MARK: - 编辑器设置
 
     @ViewBuilder
@@ -368,10 +404,10 @@ struct AppSettingsView: View {
 
                     VStack(alignment: .leading, spacing: 3) {
                         Text("默认预览画质")
-                            .font(.system(size: 13, weight: .medium))
+                            .font(.appUI(size: 13, weight: .medium))
                         Text("流畅模式按窗口尺寸合成，完整模式在播放与暂停时都保留源素材细节。")
-                            .font(.caption)
-                            .foregroundStyle(Color.white.opacity(0.50))
+                            .font(.appUI(.caption))
+                            .foregroundStyle(EditorTheme.chrome(0.50))
                     }
 
                     Spacer()
@@ -387,12 +423,12 @@ struct AppSettingsView: View {
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text("重置编辑窗口布局")
-                        .font(.system(size: 13, weight: .medium))
+                        .font(.appUI(size: 13, weight: .medium))
                     Text(didResetWindowState
                         ? "已成功重置，将在下次打开编辑器窗口时应用默认大小与居中位置。"
                         : "清除系统记住的窗口位置、尺寸和全屏记忆状态。")
-                        .font(.caption)
-                        .foregroundStyle(didResetWindowState ? Color.green : Color.white.opacity(0.50))
+                        .font(.appUI(.caption))
+                        .foregroundStyle(didResetWindowState ? Color.green : EditorTheme.chrome(0.50))
                 }
 
                 Spacer()
@@ -404,7 +440,7 @@ struct AppSettingsView: View {
                     }
                 } label: {
                     Text(didResetWindowState ? "已重置" : "重置布局")
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.appUI(size: 12, weight: .medium))
                         .foregroundStyle(didResetWindowState ? Color.green : Color.primary)
                 }
                 .buttonStyle(.editorQuiet)
@@ -424,27 +460,27 @@ struct AppSettingsView: View {
                     }
                 } label: {
                     Text(mode.label)
-                        .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
-                        .foregroundStyle(isSelected ? Color.white : Color.white.opacity(0.65))
+                        .font(.appUI(size: 12, weight: isSelected ? .semibold : .regular))
+                        .foregroundStyle(isSelected ? Color.primary : EditorTheme.chrome(0.65))
                         .padding(.horizontal, 12)
                         .padding(.vertical, 5)
                         .background(
                             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(isSelected ? Color.white.opacity(0.16) : Color.clear)
+                                .fill(isSelected ? EditorTheme.chrome(0.16) : Color.clear)
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                        .stroke(isSelected ? Color.white.opacity(0.20) : Color.clear, lineWidth: 1)
+                                        .stroke(isSelected ? EditorTheme.chrome(0.20) : Color.clear, lineWidth: 1)
                                 )
                         )
                 }
-                .buttonStyle(.editorToolbarPress)
+                .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 6))
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
             }
         }
         .padding(3)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.white.opacity(0.06))
+                .fill(EditorTheme.chrome(0.06))
         )
     }
 
@@ -459,10 +495,10 @@ struct AppSettingsView: View {
 
                     VStack(alignment: .leading, spacing: 3) {
                         Text("录制系统声音")
-                            .font(.system(size: 13, weight: .medium))
+                            .font(.appUI(size: 13, weight: .medium))
                         Text("默认采集 macOS 系统中各应用程序发出的声音与媒体音频。")
-                            .font(.caption)
-                            .foregroundStyle(Color.white.opacity(0.50))
+                            .font(.appUI(.caption))
+                            .foregroundStyle(EditorTheme.chrome(0.50))
                     }
                     .accessibilityHidden(true)
 
@@ -474,17 +510,17 @@ struct AppSettingsView: View {
                         .accessibilityHint("控制新录制是否默认采集系统声音")
                 }
 
-                Divider().overlay(Color.white.opacity(0.06))
+                Divider().overlay(EditorTheme.chrome(0.06))
 
                 HStack(spacing: 12) {
                     settingIconBadge("mic.fill", color: EditorTheme.amberAccent)
 
                     VStack(alignment: .leading, spacing: 3) {
                         Text("录制麦克风声音")
-                            .font(.system(size: 13, weight: .medium))
+                            .font(.appUI(size: 13, weight: .medium))
                         Text(microphonePreferenceDescription)
-                            .font(.caption)
-                            .foregroundStyle(Color.white.opacity(0.50))
+                            .font(.appUI(.caption))
+                            .foregroundStyle(EditorTheme.chrome(0.50))
                     }
                     .accessibilityHidden(true)
 
@@ -503,8 +539,8 @@ struct AppSettingsView: View {
                 cameraShapeSelector
 
                 Text("只影响录制时的悬浮预览，不改变摄像头源文件或编辑器布局。")
-                    .font(.caption)
-                    .foregroundStyle(Color.white.opacity(0.45))
+                    .font(.appUI(.caption))
+                    .foregroundStyle(EditorTheme.chrome(0.45))
             }
         }
     }
@@ -524,7 +560,7 @@ struct AppSettingsView: View {
                     statusColor: hasScreenRecordingPermission ? .green : .red
                 )
 
-                Divider().overlay(Color.white.opacity(0.06))
+                Divider().overlay(EditorTheme.chrome(0.06))
 
                 permissionRow(
                     title: "辅助功能权限",
@@ -535,7 +571,7 @@ struct AppSettingsView: View {
                     statusColor: hasAccessibilityPermission ? .green : .red
                 )
 
-                Divider().overlay(Color.white.opacity(0.06))
+                Divider().overlay(EditorTheme.chrome(0.06))
 
                 permissionRow(
                     title: "摄像头权限",
@@ -546,7 +582,7 @@ struct AppSettingsView: View {
                     statusColor: permissionStatusColor(cameraPermission)
                 )
 
-                Divider().overlay(Color.white.opacity(0.06))
+                Divider().overlay(EditorTheme.chrome(0.06))
 
                 permissionRow(
                     title: "麦克风权限",
@@ -557,12 +593,12 @@ struct AppSettingsView: View {
                     statusColor: permissionStatusColor(microphonePermission)
                 )
 
-                Divider().overlay(Color.white.opacity(0.06))
+                Divider().overlay(EditorTheme.chrome(0.06))
 
                 HStack {
                     Text("如遇录屏黑屏、鼠标无法跟随或无声音，请检查上方未授权项。")
-                        .font(.caption)
-                        .foregroundStyle(Color.white.opacity(0.50))
+                        .font(.appUI(.caption))
+                        .foregroundStyle(EditorTheme.chrome(0.50))
 
                     Spacer()
 
@@ -571,9 +607,9 @@ struct AppSettingsView: View {
                     } label: {
                         HStack(spacing: 6) {
                             Text(privacySettingsButtonTitle)
-                                .font(.system(size: 12, weight: .medium))
+                                .font(.appUI(size: 12, weight: .medium))
                             Image(systemName: "arrow.up.forward.square.fill")
-                                .font(.system(size: 11))
+                                .font(.appUI(size: 11))
                         }
                     }
                     .buttonStyle(.editorQuiet)
@@ -598,38 +634,38 @@ struct AppSettingsView: View {
                     VStack(spacing: 8) {
                         ZStack {
                             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(Color.white.opacity(0.06))
+                                .fill(EditorTheme.chrome(0.06))
                                 .frame(width: 44, height: 32)
 
                             switch shape {
                             case .circle:
                                 Circle()
-                                    .fill(isSelected ? EditorTheme.platinumAccent : Color.white.opacity(0.6))
+                                    .fill(isSelected ? EditorTheme.platinumAccent : EditorTheme.chrome(0.6))
                                     .frame(width: 20, height: 20)
                             case .roundedSquare:
                                 RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                    .fill(isSelected ? EditorTheme.platinumAccent : Color.white.opacity(0.6))
+                                    .fill(isSelected ? EditorTheme.platinumAccent : EditorTheme.chrome(0.6))
                                     .frame(width: 20, height: 20)
                             case .sourceAspect:
                                 RoundedRectangle(cornerRadius: 3, style: .continuous)
-                                    .fill(isSelected ? EditorTheme.platinumAccent : Color.white.opacity(0.6))
+                                    .fill(isSelected ? EditorTheme.platinumAccent : EditorTheme.chrome(0.6))
                                     .frame(width: 26, height: 16)
                             }
                         }
 
                         Text(shape.label)
-                            .font(.system(size: 12, weight: isSelected ? .medium : .regular))
-                            .foregroundStyle(isSelected ? Color.white : Color.white.opacity(0.70))
+                            .font(.appUI(size: 12, weight: isSelected ? .medium : .regular))
+                            .foregroundStyle(isSelected ? Color.primary : EditorTheme.chrome(0.70))
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 10)
                     .background(
                         RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(isSelected ? Color.white.opacity(0.08) : Color.white.opacity(0.03))
+                            .fill(isSelected ? EditorTheme.chrome(0.08) : EditorTheme.chrome(0.03))
                             .overlay(
                                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                                     .stroke(
-                                        isSelected ? EditorTheme.platinumAccent.opacity(0.6) : Color.white.opacity(0.06),
+                                        isSelected ? EditorTheme.platinumAccent.opacity(0.6) : EditorTheme.chrome(0.06),
                                         lineWidth: isSelected ? 1.5 : 1
                                     )
                             )
@@ -641,70 +677,23 @@ struct AppSettingsView: View {
         }
     }
 
-    /// 卡片化容器
-    private func settingsCard<Content: View>(
-        title: String,
-        icon: String,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
+    private func settingsCard<Content: View>(title: String, icon: String,
+        @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 6) {
-                Image(systemName: icon)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color.white.opacity(0.60))
-                    .accessibilityHidden(true)
-
-                Text(title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Color.white.opacity(0.88))
-                    .accessibilityAddTraits(.isHeader)
-            }
-            .padding(.leading, 2)
-
-            VStack(alignment: .leading, spacing: 0) {
-                content()
-            }
-            .padding(16)
-            .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(EditorTheme.cardElevated.opacity(0.7))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(
-                        LinearGradient(
-                            colors: [Color.white.opacity(0.12), Color.white.opacity(0.04)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ),
-                        lineWidth: 0.75
-                    )
-            )
+            Text(appLocalized(title)).font(.appUI(size: 14, weight: .semibold))
+                .accessibilityAddTraits(.isHeader)
+            content()
         }
+        .padding(16).frame(maxWidth: .infinity, alignment: .leading)
+        .background(EditorTheme.cardElevated.opacity(0.65), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(EditorTheme.hairline, lineWidth: 0.75))
     }
 
-    /// 统一图标前缀徽章
     private func settingIconBadge(_ icon: String, color: Color) -> some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [color.opacity(0.25), color.opacity(0.12)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .stroke(color.opacity(0.3), lineWidth: 0.5)
-                )
-                .frame(width: 28, height: 28)
-
-            Image(systemName: icon)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(color)
-        }
-        .accessibilityHidden(true)
+        Image(systemName: icon.replacingOccurrences(of: ".fill", with: ""))
+            .font(.system(size: 17, weight: .regular))
+            .foregroundStyle(EditorTheme.chrome(0.60))
+            .frame(width: 24, height: 28).accessibilityHidden(true)
     }
 
     /// 存储位置行
@@ -720,13 +709,13 @@ struct AppSettingsView: View {
             settingIconBadge(icon, color: color)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.system(size: 13, weight: .medium))
+                Text(appLocalized(title))
+                    .font(.appUI(size: 13, weight: .medium))
                     .foregroundStyle(Color.primary)
 
-                Text(url.path(percentEncoded: false))
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(Color.white.opacity(0.50))
+                Text(url.path(percentEncoded: false).replacingOccurrences(of: NSHomeDirectory(), with: "~"))
+                    .font(.appUI(size: 11))
+                    .foregroundStyle(EditorTheme.chrome(0.50))
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .help(url.path(percentEncoded: false))
@@ -736,7 +725,7 @@ struct AppSettingsView: View {
 
             Button(action: action) {
                 Text("更改…")
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.appUI(size: 12, weight: .medium))
             }
             .buttonStyle(.editorQuiet)
             .accessibilityLabel("更改\(title)")
@@ -758,18 +747,18 @@ struct AppSettingsView: View {
             settingIconBadge(icon, color: color)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.system(size: 13, weight: .medium))
+                Text(appLocalized(title))
+                    .font(.appUI(size: 13, weight: .medium))
                     .foregroundStyle(Color.primary)
-                Text(description)
-                    .font(.caption)
-                    .foregroundStyle(Color.white.opacity(0.50))
+                Text(appLocalized(description))
+                    .font(.appUI(.caption))
+                    .foregroundStyle(EditorTheme.chrome(0.50))
             }
 
             Spacer()
 
-            Text(status)
-                .font(.system(size: 11, weight: .semibold))
+            Text(appLocalized(status))
+                .font(.appUI(size: 11, weight: .semibold))
                 .foregroundStyle(statusColor)
                 .padding(.horizontal, 9)
                 .padding(.vertical, 4)
@@ -780,9 +769,9 @@ struct AppSettingsView: View {
                 .accessibilityLabel("权限状态：\(status)")
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(title)
-        .accessibilityValue(status)
-        .accessibilityHint(description)
+        .accessibilityLabel(appLocalized(title))
+        .accessibilityValue(appLocalized(status))
+        .accessibilityHint(appLocalized(description))
     }
 
     // MARK: - 操作方法

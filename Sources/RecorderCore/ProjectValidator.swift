@@ -62,6 +62,15 @@ public enum ProjectValidator {
               finite(style.backgroundBlur, in: 0...96),
               finite(style.insetOpacity, in: 0...1),
               finite(style.screenFrameScale, in: 0.6...1.6),
+              finite(style.screenFrameToolbarScale, in: 0.65...1.6),
+              (style.screenFrameOuterCornerRadius.map {
+                finite($0, in: 0...160)
+              } ?? true),
+              (style.screenFrameContentCornerRadius.map {
+                finite($0, in: 0...160)
+              } ?? true),
+              style.screenFrameTitle.count <= 120,
+              style.screenFrameBrowserAddress.count <= 240,
               style.crop == style.crop.clamped()
         else {
             throw ProjectValidationError.invalidCanvas(
@@ -102,7 +111,7 @@ public enum ProjectValidator {
         guard !style.assetID.rawValue.isEmpty,
               finite(style.size, in: 0.25...6),
               finite(style.idleDelay, in: 0.2...8),
-              finite(style.motionTiltStrength, in: 0...2)
+              finite(style.motionTiltStrength, in: 2...4)
         else {
             throw ProjectValidationError.invalidCursor(
                 reason: "尺寸、静止延迟或摆动强度超出支持范围。"
@@ -111,6 +120,9 @@ public enum ProjectValidator {
     }
 
     public static func validate(_ style: MotionStyle) throws {
+        if let scale = style.defaultZoomScale, !finite(scale, in: 1...6) {
+            throw ProjectValidationError.invalidMotion(reason: "新动画倍率必须在 1 到 6 倍之间。")
+        }
         guard finite(style.motionBlur, in: 0...1),
               finite(style.frameMotionBlur.strength, in: 0...1),
               finite(style.screenSpringMass, in: 0.01...20),
@@ -119,7 +131,7 @@ public enum ProjectValidator {
               finite(style.cursorSpringMass, in: 0.01...20),
               finite(style.cursorSpringStiffness, in: 1...5_000),
               finite(style.cursorSpringDamping, in: 0.1...1_000),
-              finite(style.defaultZoomTransitionDuration, in: 0.05...5)
+              finite(style.defaultZoomTransitionDuration, in: 0...5)
         else {
             throw ProjectValidationError.invalidMotion(
                 reason: "弹簧、运动模糊或默认过渡参数无法稳定求值。"

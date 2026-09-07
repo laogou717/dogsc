@@ -144,9 +144,8 @@ extension AppModel {
                       self.configuration.recordsCamera,
                       self.configuration.cameraDeviceID == device.id,
                       self.phase == .setup || self.phase == .preparing || self.phase == .recording else {
-                    // 陈旧 generation（用户已切换/关闭摄像头）：startPreview 已完成，
-                    // 必须显式停止已启动的采集会话，否则摄像头指示灯常亮且无预览 UI。
-                    await recorder.stopPreview()
+                    // Selection/phase changes already enqueue the replacement or
+                    // teardown. A stale task must not stop the new live session.
                     return
                 }
                 // A running AVCaptureSession is not yet a usable camera. Some
@@ -162,7 +161,6 @@ extension AppModel {
                           self.configuration.recordsCamera,
                           self.configuration.cameraDeviceID == device.id,
                           self.phase == .setup || self.phase == .preparing || self.phase == .recording else {
-                        await recorder.stopPreview()
                         return
                     }
                     guard ContinuousClock.now < startupDeadline else {
@@ -176,7 +174,6 @@ extension AppModel {
                       !Task.isCancelled,
                       self.captureDeviceLifecycle.isCurrent(operation),
                       self.configuration.cameraDeviceID == device.id else {
-                    await recorder.stopPreview()
                     return
                 }
                 let didTimeOut = error is CameraPreviewReadinessTimeout
@@ -211,8 +208,8 @@ extension AppModel {
                       self?.captureDeviceLifecycle.isCurrent(operation) == true,
                       self?.configuration.recordsMicrophone == true,
                       self?.configuration.microphoneDeviceID == device.id else {
-                    // 陈旧 generation：显式停止监听会话，避免麦克风继续被占用。
-                    await recorder.stopMonitoring()
+                    // The current selection owns start/stop. The recorder's
+                    // cancellation path is already scoped to its own request ID.
                     return
                 }
                 while !Task.isCancelled {
@@ -247,6 +244,10 @@ extension AppModel {
         // `resumeLiveInputIndicatorsForSetup()` reinstalls the observer and
         // performs one fresh catalog read before the recorder UI is reused.
         captureDeviceLifecycle.stop()
+        captureCatalogTask?.cancel()
+        captureCatalogTask = nil
+        cameraResolutionTask?.cancel()
+        cameraResolutionTask = nil
         cameraPreviewTask?.cancel()
         cameraPreviewTask = nil
         cameraRuntimeFormat = nil
@@ -287,6 +288,10 @@ extension AppModel {
         finishingTask = nil
         exporter.cancelExport()
         captureDeviceLifecycle.stop()
+        captureCatalogTask?.cancel()
+        captureCatalogTask = nil
+        cameraResolutionTask?.cancel()
+        cameraResolutionTask = nil
         captureSetup.stopPresentation()
         cameraPreviewTask?.cancel()
         cameraPreviewTask = nil

@@ -13,6 +13,39 @@ struct EditorCameraSyncCurveSample: Equatable {
 /// change from inside that body evaluation.
 @MainActor
 final class EditorTimelineDerivedPresentationCache {
+    private struct WaveformPlanInput: Equatable {
+        let sequence: SourceSequence
+        let manifest: ProjectMediaManifest?
+        let video: MediaTimeRange
+        let system: MediaTimeRange?
+        let microphone: MediaTimeRange?
+    }
+    private var waveformPlanInput: WaveformPlanInput?
+    private var waveformPlan: ProjectTimelineMediaPlan?
+
+    /// Pure media-time math over the existing PCM data. A ripple draft must
+    /// move every following audio slice with the same displayed segment map.
+    func waveformPlan(segments: [ResolvedRecordingSegment], manifest: ProjectMediaManifest?,
+                      video: MediaTimeRange, system: MediaTimeRange?, microphone: MediaTimeRange?) -> ProjectTimelineMediaPlan? {
+        let sequence = SourceSequence.edited(segments.map {
+            RecordingSegment(id: $0.id, sourceStart: $0.sourceStart,
+                             sourceDuration: $0.sourceDuration, playbackRate: $0.playbackRate)
+        })
+        let input = WaveformPlanInput(sequence: sequence, manifest: manifest, video: video,
+                                      system: system, microphone: microphone)
+        if input != waveformPlanInput {
+            waveformPlanInput = input
+            waveformPlan = try? ProjectTimelineMediaPlan(sourceSequence: sequence, mediaManifest: manifest,
+                primaryVideoRange: video, systemAudioRange: system, microphoneRange: microphone)
+        }
+        return waveformPlan
+    }
+
+    private struct TimelineMapInput: Equatable {
+        let sourceSequence: SourceSequence
+        let fullSourceDuration: TimeInterval
+    }
+
     private struct ZoomInput: Equatable {
         let animations: [ZoomAnimationClip]
         let duration: TimeInterval
@@ -36,6 +69,7 @@ final class EditorTimelineDerivedPresentationCache {
     private var zoomInput: ZoomInput?
     private var zoomSegments: [TimelineZoomSegment] = []
     private var zoomSegmentIndicesByID: [UUID: Int] = [:]
+    private var resolvedZoomsByID: [UUID: ZoomAnimationClip] = [:]
     private var screenMotionInput: ScreenMotionInput?
     private var screenMotionClips: [EditorMotionTimelineClip] = []
     private var screenMotionClipIndicesByID: [UUID: Int] = [:]
@@ -52,6 +86,27 @@ final class EditorTimelineDerivedPresentationCache {
     private var syncDisplayRange: TimeInterval = 0.118
     private var syncPathInput: CameraSyncPathInput?
     private var syncPathSamples: [EditorCameraSyncCurveSample] = []
+
+    private var timelineMapInput: TimelineMapInput?
+    private var resolvedTimelineMap: TimelineMap?
+
+    func timelineMap(
+        sourceSequence: SourceSequence,
+        fullSourceDuration: TimeInterval
+    ) -> TimelineMap? {
+        let nextInput = TimelineMapInput(
+            sourceSequence: sourceSequence,
+            fullSourceDuration: fullSourceDuration
+        )
+        guard timelineMapInput != nextInput else { return resolvedTimelineMap }
+        timelineMapInput = nextInput
+        resolvedTimelineMap = try? TimelineMap(
+            sourceSequence: sourceSequence,
+            fullSourceDuration: fullSourceDuration
+        )
+        return resolvedTimelineMap
+    }
+
     func zoomSegments(
         animations: [ZoomAnimationClip],
         duration: TimeInterval
@@ -59,6 +114,10 @@ final class EditorTimelineDerivedPresentationCache {
         let nextInput = ZoomInput(animations: animations, duration: duration)
         if zoomInput != nextInput {
             zoomInput = nextInput
+            resolvedZoomsByID = Dictionary(
+                ZoomTransitionResolution.resolve(animations, outputDuration: duration).map { ($0.id, $0) },
+                uniquingKeysWith: { first, _ in first }
+            )
             zoomSegments = EditorTimelineMath.zoomSegments(
                 from: animations,
                 duration: duration
@@ -74,6 +133,10 @@ final class EditorTimelineDerivedPresentationCache {
 
     func zoomSegmentIndex(for id: UUID?) -> Int? {
         id.flatMap { zoomSegmentIndicesByID[$0] }
+    }
+
+    func resolvedZoom(for id: UUID?) -> ZoomAnimationClip? {
+        id.flatMap { resolvedZoomsByID[$0] }
     }
 
     func screenMotionClips(

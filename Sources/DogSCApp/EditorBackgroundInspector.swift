@@ -2,8 +2,8 @@ import AppKit
 import RecorderCore
 import SwiftUI
 
-/// Owns background navigation state, wallpaper selection, gradient selection,
-/// custom-image commands, and the bounded thumbnail cache.
+/// Keeps the canvas background focused on four useful sources: the current
+/// Mac's wallpapers, simple patterns, dynamic backgrounds, and custom media.
 struct EditorBackgroundInspector: View {
     @ObservedObject var editorStore: EditorStore
     let onChooseWallpaper: () -> BackgroundSource?
@@ -11,31 +11,23 @@ struct EditorBackgroundInspector: View {
     let onError: (String) -> Void
 
     @State private var selectedBackgroundTab: BackgroundPanelTab = .wallpaper
-    @State private var selectedWallpaperCollection = "Photography"
-    @State private var candidateBackgroundHex = HexColor(rgb24: 0xD8_B2_6A)
     @State private var selectedSystemAssetID: String?
     @State private var selectedSystemVariantByGroup: [String: String] = [:]
     @State private var systemImageGroupLimit = 12
     @State private var systemVideoGroupLimit = 12
     @StateObject private var systemWallpaperCatalog = SystemWallpaperCatalog()
 
-    static let wallpaperThumbnailCache: NSCache<NSString, NSImage> = {
-        let cache = NSCache<NSString, NSImage>()
-        cache.countLimit = 24
-        cache.totalCostLimit = 12 * 1_024 * 1_024
-        return cache
-    }()
-
     var body: some View {
-            EditorInspectorSection("背景") {
+            EditorInspectorSection("背景素材") {
                 // 页签切换只浏览候选；真正选择资源或调整颜色时才写入项目。
-                EditorTileSelector(
+                EditorSegmentedControl(
                     options: BackgroundPanelTab.allCases,
-                    title: { $0.rawValue },
+                    title: { $0.localizedLabel },
                     icon: { $0.icon },
                     selection: $selectedBackgroundTab
                 )
 
+                Group {
                 switch selectedBackgroundTab {
                 case .wallpaper:
                     wallpaperLibraryGrid
@@ -43,17 +35,6 @@ struct EditorBackgroundInspector: View {
                     patternGrid
                 case .dynamic:
                     dynamicFlowGrid
-                case .gradient:
-                    gradientGrid
-                case .color:
-                    EditorTransactionalColorInput(
-                        editorStore: editorStore,
-                        title: "背景颜色",
-                        value: backgroundColorBinding,
-                        commandScope: .canvas,
-                        actionName: "调整背景颜色",
-                        onError: onError
-                    )
                 case .image:
                     VStack(alignment: .leading, spacing: 8) {
                         Button(action: chooseWallpaper) {
@@ -61,18 +42,17 @@ struct EditorBackgroundInspector: View {
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.editorQuiet)
-                        Button(action: chooseDesktopWallpaper) {
-                            Label("使用当前桌面壁纸", systemImage: "desktopcomputer")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.editorQuiet)
                         Text("支持静态图片和 MOV/MP4 动态背景；视频会循环播放并参与导出。")
-                            .font(.caption2)
+                            .font(.appUI(.caption2))
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
+                }
+                .id(selectedBackgroundTab)
+                .transition(.opacity.combined(with: .offset(y: 8)))
             }
+            .animation(SpringMotion.fluid, value: selectedBackgroundTab)
             .onAppear {
                 synchronizeBackgroundNavigation(
                     with: editorStore.project.canvas.backgroundSource
@@ -84,169 +64,25 @@ struct EditorBackgroundInspector: View {
     }
 
     var wallpaperLibraryGrid: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("内置壁纸").font(.caption.weight(.semibold))
-                Spacer()
-                Button {
-                    if let preset = selectedBundledWallpaperCollection?.wallpapers.randomElement() {
-                        selectBundledWallpaper(preset)
-                    }
-                } label: {
-                    Image(systemName: "shuffle")
-                        .frame(width: 14, height: 14)
-                }
-                .buttonStyle(.editorQuiet)
-                .help("随机壁纸")
-                .accessibilityLabel("随机壁纸")
+        systemWallpaperSection
+            .task {
+                await systemWallpaperCatalog.loadIfNeeded()
+                synchronizeSystemWallpaperSelection(
+                    with: editorStore.project.canvas.backgroundSource
+                )
+                await systemWallpaperCatalog.monitorChanges()
             }
-
-            // 集合清理后只剩 3 组且全部容纳在一行：不再需要横向滚动，
-            // 顺带消除滚动手势与胶囊点击的潜在竞争。命中面覆盖整颗胶囊
-            // （contentShape 在 label 内部），文字间隙同样可点。
-            // 分类胶囊不用 Button：macOS 的 AppKit 桥接命中判定在半透明/
-            // overlay 文本结构上反复回归（UX-024），只有当前选中的那颗能点。
-            // 整行不存在任何 Button 后，SwiftUI 手势层（contentShape +
-            // onTapGesture）不再与子按钮竞争，命中面即整颗胶囊。
-            GeometryReader { proxy in
-                let spacing: CGFloat = 6
-                let count = max(BundledWallpaperLibrary.collections.count, 1)
-                let itemWidth = max((proxy.size.width - spacing * CGFloat(count - 1)) / CGFloat(count), 0)
-                HStack(spacing: spacing) {
-                    ForEach(BundledWallpaperLibrary.collections) { collection in
-                        let isSelected = selectedWallpaperCollection == collection.name
-                        Capsule()
-                            .fill(isSelected ? editorAccent : Color(white: 0.16))
-                            .frame(width: itemWidth, height: 30)
-                            .overlay {
-                                Text(collection.displayName)
-                                    .font(.caption.weight(.medium))
-                                    .foregroundStyle(
-                                        isSelected
-                                            ? Color.black.opacity(0.85)
-                                            : Color.primary.opacity(0.9)
-                                    )
-                            }
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                withAnimation(SpringMotion.interactive) {
-                                    selectedWallpaperCollection = collection.name
-                                }
-                            }
-                            .help("切换到\(collection.displayName)分类")
-                            .accessibilityLabel(collection.displayName)
-                            .accessibilityAddTraits(.isButton)
-                            .accessibilityAddTraits(isSelected ? .isSelected : [])
-                    }
-                }
-                .frame(width: proxy.size.width, alignment: .leading)
+            .onChange(of: systemWallpaperCatalog.assets) { _, _ in
+                synchronizeSystemWallpaperSelection(
+                    with: editorStore.project.canvas.backgroundSource
+                )
             }
-            .frame(height: 30)
-            .animation(SpringMotion.interactive, value: selectedWallpaperCollection)
-
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 7) {
-                ForEach(selectedBundledWallpaperCollection?.wallpapers ?? []) { preset in
-                    let isSelected = selectedBundledWallpaperPath == preset.relativePath
-                    Button {
-                        selectBundledWallpaper(preset)
-                    } label: {
-                        // 命中框必须由固定尺寸且**不透明**的占位 label 决定：
-                        // ①图片一旦参与 label 布局（scaledToFill 的竖图可达
-                        //   92×161），AppKit 桥接按钮的命中框随之膨胀，向上
-                        //   盖住整行分类胶囊（UX-024 根因；
-                        //   clipShape/frame/clipped 都约束不了该命中框）；
-                        // ②label 若是 Color.clear（全透明），macOS 命中区
-                        //   塌缩为零像素，壁纸反而点不了。
-                        // 因此 label 用不透明深色占位定命中框，图片放
-                        // overlay 只绘制、不参与命中。
-                        Color(white: 0.12)
-                            .frame(height: 50)
-                            .overlay {
-                                BundledWallpaperThumbnail(preset: preset)
-                                    .frame(height: 50)
-                                    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                            }
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                    .stroke(
-                                        isSelected
-                                            ? LinearGradient(
-                                                colors: [Color.white, Color(white: 0.85)],
-                                                startPoint: .top,
-                                                endPoint: .bottom
-                                            )
-                                            : LinearGradient(
-                                                colors: [Color.white.opacity(0.12), Color.white.opacity(0.04)],
-                                                startPoint: .top,
-                                                endPoint: .bottom
-                                            ),
-                                        lineWidth: isSelected ? 2 : 1
-                                    )
-                            )
-                            .overlay(alignment: .topTrailing) {
-                                if isSelected {
-                                    ZStack {
-                                        Circle()
-                                            .fill(Color.white)
-                                            .frame(width: 15, height: 15)
-                                        Image(systemName: "checkmark")
-                                            .font(.system(size: 8, weight: .bold))
-                                            .foregroundStyle(Color.black)
-                                    }
-                                    .padding(3)
-                                    .transition(.scale.combined(with: .opacity))
-                                }
-                            }
-                            .scaleEffect(isSelected ? 1.02 : 1.0)
-                            .animation(SpringMotion.interactive, value: isSelected)
-                    }
-                    .buttonStyle(.editorThumbnail)
-                    .help(preset.name)
-                    .accessibilityLabel(preset.name)
-                    .accessibilityAddTraits(isSelected ? .isSelected : [])
-                }
-            }
-
-
-            if BundledWallpaperLibrary.collections.isEmpty {
-                Text("未找到内置壁纸资源")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            systemWallpaperSection
-        }
-        .task {
-            // 后台预热全部缩略图：首次切换集合的网格立即呈现，不再逐格
-            // 等待大图首次解码（此前让切换看起来"没反应"）。
-            await WallpaperThumbnailLoader.prewarmAll(
-                into: EditorBackgroundInspector.wallpaperThumbnailCache
-            )
-            await systemWallpaperCatalog.refresh()
-            synchronizeSystemWallpaperSelection(
-                with: editorStore.project.canvas.backgroundSource
-            )
-            await systemWallpaperCatalog.monitorChanges()
-        }
-        .onChange(of: systemWallpaperCatalog.assets) { _, _ in
-            synchronizeSystemWallpaperSelection(
-                with: editorStore.project.canvas.backgroundSource
-            )
-        }
-
-    }
-
-    var selectedBundledWallpaperCollection: BundledWallpaperCollection? {
-        BundledWallpaperLibrary.collections.first { $0.name == selectedWallpaperCollection }
-            ?? BundledWallpaperLibrary.collections.first
     }
 
     @ViewBuilder
     var systemWallpaperSection: some View {
-        Divider().padding(.vertical, 2)
-
         HStack {
-            Text("本机壁纸").font(.caption.weight(.semibold))
+            Text("本机壁纸").font(.appUI(size: 12, weight: .medium)).foregroundStyle(.secondary)
             Spacer()
             if systemWallpaperCatalog.isLoading {
                 ProgressView().controlSize(.mini)
@@ -263,69 +99,30 @@ struct EditorBackgroundInspector: View {
             .accessibilityLabel("重新读取本机壁纸")
         }
 
-        if let currentGroup = systemWallpaperCatalog.currentDesktopGroup {
-            Text("当前桌面")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            systemGroupGrid([currentGroup])
-        } else if let issue = systemWallpaperCatalog.currentDesktopIssue {
-            Label(issue, systemImage: "exclamationmark.triangle")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+        let current = systemWallpaperCatalog.currentDesktopGroup
+        let images = Array(systemWallpaperCatalog.imageGroups.prefix(systemImageGroupLimit))
+        let groups = (current.map { [$0] } ?? []) + images.filter { $0.id != current?.id }
+        systemGroupGrid(groups)
+        if let issue = systemWallpaperCatalog.currentDesktopIssue, current == nil {
+            Text(issue).font(.appUI(size: 11)).foregroundStyle(.secondary)
         }
-
-        if !systemWallpaperCatalog.imageGroups.isEmpty {
-            Text("系统壁纸")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            systemGroupGrid(
-                Array(systemWallpaperCatalog.imageGroups.prefix(systemImageGroupLimit))
-            )
-            if systemWallpaperCatalog.imageGroups.count > systemImageGroupLimit {
-                Button("显示更多系统壁纸") {
-                    systemImageGroupLimit += 16
-                }
-                .buttonStyle(.editorQuiet)
-            }
+        if systemWallpaperCatalog.imageGroups.count > systemImageGroupLimit {
+            Button("显示更多壁纸") { systemImageGroupLimit += 16 }
+                .buttonStyle(.editorGhost)
         }
-
-        Text("已安装屏保视频")
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-        if systemWallpaperCatalog.videoGroups.isEmpty, !systemWallpaperCatalog.isLoading {
-            Label(
-                "当前 Mac 没有可读的本地屏保视频；下载后会自动出现在这里。",
-                systemImage: "film.stack"
-            )
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-        } else {
-            systemGroupGrid(
-                Array(systemWallpaperCatalog.videoGroups.prefix(systemVideoGroupLimit))
-            )
+        if !systemWallpaperCatalog.videoGroups.isEmpty {
+            Text("动态壁纸").font(.appUI(size: 11)).foregroundStyle(.secondary)
+            systemGroupGrid(Array(systemWallpaperCatalog.videoGroups.prefix(systemVideoGroupLimit)))
             if systemWallpaperCatalog.videoGroups.count > systemVideoGroupLimit {
-                Button("显示更多屏保视频") {
-                    systemVideoGroupLimit += 16
-                }
-                .buttonStyle(.editorQuiet)
+                Button("显示更多动态壁纸") { systemVideoGroupLimit += 16 }
+                    .buttonStyle(.editorGhost)
             }
         }
-        Text("引用本机原始资源，不复制进项目；同款颜色已合并。")
-            .font(.caption2)
-            .foregroundStyle(.tertiary)
-            .fixedSize(horizontal: false, vertical: true)
     }
 
     func systemGroupGrid(_ groups: [SystemWallpaperGroup]) -> some View {
-        LazyVGrid(
-            columns: [GridItem(.flexible()), GridItem(.flexible())],
-            spacing: 9
-        ) {
-            ForEach(groups) { group in
-                systemWallpaperGroupCard(group)
-            }
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 4), spacing: 14) {
+            ForEach(groups) { group in systemWallpaperGroupCard(group) }
         }
     }
 
@@ -333,82 +130,55 @@ struct EditorBackgroundInspector: View {
     func systemWallpaperGroupCard(_ group: SystemWallpaperGroup) -> some View {
         if let asset = preferredAsset(for: group) {
             let isSelected = group.assets.contains { $0.id == selectedSystemAssetID }
-            VStack(alignment: .leading, spacing: 5) {
-                Button {
-                    selectSystemAsset(asset, in: group)
-                } label: {
-                    Color(white: 0.12)
-                        .frame(height: 72)
+            VStack(spacing: 5) {
+                Button { selectSystemAsset(asset, in: group) } label: {
+                    Color.clear.aspectRatio(1, contentMode: .fit)
+                        .overlay { SystemWallpaperThumbnail(asset: asset) }
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
                         .overlay {
-                            SystemWallpaperThumbnail(asset: asset)
-                        }
-                        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                .stroke(
-                                    isSelected ? Color.white : Color.white.opacity(0.12),
-                                    lineWidth: isSelected ? 2 : 1
-                                )
+                            RoundedRectangle(cornerRadius: 12)
+                                .strokeBorder(isSelected ? EditorTheme.selectionTint : EditorTheme.chrome(0.08), lineWidth: isSelected ? 2 : 0.75)
                         }
                         .overlay(alignment: .topTrailing) {
+                            if isSelected {
+                                Image(systemName: "checkmark")
+                                    .font(.appUI(size: 8, weight: .semibold))
+                                    .foregroundStyle(EditorTheme.selectionTint)
+                                    .frame(width: 17, height: 17).background(.white, in: Circle()).padding(5)
+                            }
+                        }
+                        .overlay(alignment: .bottomLeading) {
                             if asset.isVideo {
-                                Image(systemName: "play.fill")
-                                    .font(.system(size: 8, weight: .bold))
-                                    .foregroundStyle(.white)
-                                    .padding(5)
-                                    .background(.black.opacity(0.55), in: Circle())
-                                    .padding(5)
+                                Image(systemName: "play.fill").font(.appUI(size: 8))
+                                    .foregroundStyle(.white).padding(5)
+                                    .background(.black.opacity(0.4), in: Circle()).padding(5)
                             }
                         }
                 }
                 .buttonStyle(.editorThumbnail)
+                .focusEffectDisabled()
                 .help("\(group.name) · \(asset.variantName)")
                 .accessibilityLabel("\(group.name)，\(asset.variantName)")
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
-
-                HStack(spacing: 4) {
-                    Text(group.name)
-                        .font(.system(size: 10, weight: .semibold))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer(minLength: 2)
-                    if group.assets.count > 1 {
-                        Menu {
-                            ForEach(group.assets) { variant in
-                                Button {
-                                    selectSystemAsset(variant, in: group)
-                                } label: {
-                                    if selectedSystemAssetID == variant.id {
-                                        Label(variant.variantName, systemImage: "checkmark")
-                                    } else {
-                                        Text(variant.variantName)
-                                    }
-                                }
-                            }
-                        } label: {
-                            HStack(spacing: 3) {
-                                variantSwatch(for: asset)
-                                Text("\(group.assets.count)")
-                                    .font(.system(size: 8, weight: .semibold))
-                                Image(systemName: "chevron.down")
-                                    .font(.system(size: 7, weight: .bold))
-                            }
-                            .padding(.horizontal, 5)
-                            .frame(height: 20)
-                            .background(Color.white.opacity(0.08), in: Capsule())
+                if group.assets.count > 1 {
+                    EditorActionMenu(title: group.name, items: group.assets.map { variant in
+                        .action(variant.variantName, isOn: selectedSystemAssetID == variant.id) {
+                            selectSystemAsset(variant, in: group)
                         }
-                        .menuStyle(.borderlessButton)
-                        .fixedSize()
-                        .help("选择 \(group.name) 的颜色或版本")
-                        .accessibilityLabel("\(group.name) 版本，当前 \(asset.variantName)")
-                    } else {
-                        Text(asset.variantName)
-                            .font(.system(size: 8))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                    }) {
+                        HStack(spacing: 3) {
+                            Text(group.name).lineLimit(1).truncationMode(.middle)
+                            Image(systemName: "chevron.down").font(.appUI(size: 8))
+                        }.font(.appUI(size: 11)).foregroundStyle(EditorTheme.chrome(0.65))
+                            .frame(maxWidth: .infinity).frame(height: 20)
                     }
+                    .accessibilityLabel("\(group.name) 版本，当前 \(asset.variantName)")
+                } else {
+                    Text(group.name).font(.appUI(size: 11)).foregroundStyle(EditorTheme.chrome(0.65))
+                        .lineLimit(1).frame(height: 20)
                 }
             }
+            .animation(SpringMotion.interactive, value: isSelected)
         }
     }
 
@@ -418,10 +188,10 @@ struct EditorBackgroundInspector: View {
             Circle()
                 .fill(Color(hex: HexColor(rgb24: rgb)))
                 .frame(width: 8, height: 8)
-                .overlay(Circle().stroke(Color.white.opacity(0.25), lineWidth: 0.5))
+                .overlay(Circle().stroke(EditorTheme.chrome(0.25), lineWidth: 0.5))
         } else {
             Image(systemName: "circle.lefthalf.filled")
-                .font(.system(size: 8))
+                .font(.appUI(size: 8))
         }
     }
 
@@ -456,22 +226,6 @@ struct EditorBackgroundInspector: View {
         }
     }
 
-    var selectedBundledWallpaperPath: String? {
-        guard case let .bundledImage(relativePath) = editorStore.project.canvas.backgroundSource else {
-            return nil
-        }
-        return relativePath
-    }
-
-    func selectBundledWallpaper(_ preset: BundledWallpaperPreset) {
-        selectedSystemAssetID = nil
-        var canvas = editorStore.project.canvas
-        canvas.backgroundSource = .bundledImage(relativePath: preset.relativePath)
-        performEditorCommand {
-            try editorStore.replaceCanvas(with: canvas, actionName: "选择内置壁纸")
-        }
-    }
-
     func chooseWallpaper() {
         guard let source = onChooseWallpaper() else { return }
         selectedSystemAssetID = nil
@@ -494,14 +248,6 @@ struct EditorBackgroundInspector: View {
 
     func synchronizeBackgroundNavigation(with source: BackgroundSource) {
         switch source {
-        case let .bundledImage(relativePath):
-            selectedSystemAssetID = nil
-            selectedBackgroundTab = .wallpaper
-            if let collection = BundledWallpaperLibrary.collections.first(where: {
-                $0.wallpapers.contains(where: { $0.relativePath == relativePath })
-            }) {
-                selectedWallpaperCollection = collection.name
-            }
         case .pattern:
             selectedSystemAssetID = nil
             selectedBackgroundTab = .pattern
@@ -520,15 +266,6 @@ struct EditorBackgroundInspector: View {
             selectedSystemAssetID = systemWallpaperCatalog.assets.first(where: {
                 $0.url.standardizedFileURL.resolvingSymlinksInPath().path == normalized
             })?.id
-        case .gradient:
-            selectedSystemAssetID = nil
-            selectedBackgroundTab = .gradient
-        case let .solidColor(hex):
-            selectedSystemAssetID = nil
-            selectedBackgroundTab = .color
-            // 记住当前纯色作为候选：切去壁纸再切回"颜色"页时仍可一键还原，
-            // 不再因为页签切换丢掉用户选过的颜色。
-            candidateBackgroundHex = hex
         }
     }
 
@@ -557,7 +294,7 @@ struct EditorBackgroundInspector: View {
 
     var patternGrid: some View {
         VStack(alignment: .leading, spacing: 12) {
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 80, maximum: 110), spacing: 10)], spacing: 10) {
                 ForEach(BackgroundPatternPreset.allCases) { preset in
                     let isSelected = editorStore.project.canvas.backgroundSource == .pattern(preset)
                     Button {
@@ -568,24 +305,26 @@ struct EditorBackgroundInspector: View {
                         }
                     } label: {
                         PatternMiniatureView(preset: preset)
-                            .frame(height: 64)
+                            .aspectRatio(1, contentMode: .fit)
                             .clipShape(RoundedRectangle(cornerRadius: 9))
                             .overlay(alignment: .bottomLeading) {
-                                Text(preset.rawValue)
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(preset == .engineeringWhiteGrid || preset == .architecturalDots ? .black.opacity(0.85) : .white)
-                                    .padding(7)
+                                Text(appLocalized(preset.rawValue))
+                                    .font(.appUI(size: 11, weight: .medium))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 8).padding(.vertical, 5)
+                                    .background(.black.opacity(0.55), in: Capsule())
+                                    .padding(6)
                             }
                             .overlay(
                                 RoundedRectangle(cornerRadius: 9)
                                     .stroke(
-                                        isSelected ? editorAccent : .white.opacity(0.12),
+                                        isSelected ? editorAccent : EditorTheme.chrome(0.12),
                                         lineWidth: isSelected ? 2 : 1
                                     )
                             )
                     }
                     .buttonStyle(.editorThumbnail)
-                    .accessibilityLabel(preset.rawValue)
+                    .accessibilityLabel(appLocalized(preset.rawValue))
                     .accessibilityAddTraits(isSelected ? .isSelected : [])
                 }
             }
@@ -596,7 +335,7 @@ struct EditorBackgroundInspector: View {
 
     var dynamicFlowGrid: some View {
         VStack(alignment: .leading, spacing: 12) {
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 80, maximum: 110), spacing: 10)], spacing: 10) {
                 ForEach(DynamicBackgroundPreset.allCases) { preset in
                     let isSelected = editorStore.project.canvas.backgroundSource == .dynamicFlow(preset)
                     Button {
@@ -607,28 +346,32 @@ struct EditorBackgroundInspector: View {
                         }
                     } label: {
                         DynamicFlowMiniatureView(preset: preset)
-                            .frame(height: 64)
+                            .aspectRatio(1, contentMode: .fit)
                             .clipShape(RoundedRectangle(cornerRadius: 9))
                             .overlay(alignment: .bottomLeading) {
                                 HStack(spacing: 4) {
                                     Circle()
-                                        .fill(editorAccent)
+                                        .fill(Color.white)
                                         .frame(width: 5, height: 5)
-                                    Text(preset.displayName)
-                                        .font(.caption2.weight(.semibold))
+                                    Text(appLocalized(preset.displayName))
+                                        .font(.appUI(size: 12, weight: .medium))
                                 }
-                                .padding(7)
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 5)
+                                .background(.black.opacity(0.55), in: Capsule())
+                                .padding(6)
                             }
                             .overlay(
                                 RoundedRectangle(cornerRadius: 9)
                                     .stroke(
-                                        isSelected ? editorAccent : .white.opacity(0.12),
+                                        isSelected ? editorAccent : EditorTheme.chrome(0.12),
                                         lineWidth: isSelected ? 2 : 1
                                     )
                             )
                     }
                     .buttonStyle(.editorThumbnail)
-                    .accessibilityLabel(preset.displayName)
+                    .accessibilityLabel(appLocalized(preset.displayName))
                     .accessibilityAddTraits(isSelected ? .isSelected : [])
                 }
             }
@@ -680,43 +423,6 @@ struct EditorBackgroundInspector: View {
         .padding(.top, 6)
     }
 
-    var gradientGrid: some View {
-        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-            ForEach(BackgroundGradientPreset.allCases, id: \.self) { preset in
-                let isSelected = editorStore.project.canvas.backgroundSource == .gradient(preset)
-                Button {
-                    var canvas = editorStore.project.canvas
-                    canvas.backgroundSource = .gradient(preset)
-                    performEditorCommand {
-                        try editorStore.replaceCanvas(with: canvas, actionName: "选择渐变背景")
-                    }
-                } label: {
-                    LinearGradient(
-                        colors: gradientColors(for: preset),
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                    .frame(height: 64)
-                    .clipShape(RoundedRectangle(cornerRadius: 9))
-                    .overlay(alignment: .bottomLeading) {
-                        Text(gradientName(for: preset))
-                            .font(.caption2.weight(.semibold))
-                            .padding(7)
-                    }
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 9)
-                            .stroke(
-                                isSelected ? .white : .white.opacity(0.1),
-                                lineWidth: isSelected ? 2 : 1
-                            )
-                    )
-                }
-                .buttonStyle(.editorThumbnail)
-                .accessibilityLabel(gradientName(for: preset))
-                .accessibilityAddTraits(isSelected ? .isSelected : [])
-            }
-        }
-    }
 
     private func performEditorCommand(_ operation: () throws -> Void) {
         do {
@@ -726,67 +432,6 @@ struct EditorBackgroundInspector: View {
         }
     }
 
-    private var backgroundColorBinding: Binding<HexColor> {
-        Binding(
-            get: {
-                if case let .solidColor(hex) = editorStore.previewProject.canvas.backgroundSource {
-                    return hex
-                }
-                return candidateBackgroundHex
-            },
-            set: { color in
-                candidateBackgroundHex = color
-                if editorStore.interaction?.commandScope == .canvas {
-                    editorStore.updateInteraction { project in
-                        project.canvas.backgroundSource = .solidColor(hex: color)
-                    }
-                    return
-                }
-                var canvas = editorStore.project.canvas
-                canvas.backgroundSource = .solidColor(hex: color)
-                performEditorCommand {
-                    try editorStore.replaceCanvas(
-                        with: canvas,
-                        actionName: "调整背景颜色"
-                    )
-                }
-            }
-        )
-    }
-
-    func gradientName(for preset: BackgroundGradientPreset) -> String {
-        switch preset {
-        case .aurora: return "极光"
-        case .twilight: return "暮色"
-        case .sunrise: return "日出"
-        case .graphite: return "石墨"
-        }
-    }
-
-    func gradientColors(for preset: BackgroundGradientPreset) -> [Color] {
-        switch preset {
-        case .aurora:
-            return [
-                Color(hex: HexColor(rgb24: 0x6A_5A_E0)),
-                Color(hex: HexColor(rgb24: 0x2D_B7_D3)),
-            ]
-        case .twilight:
-            return [
-                Color(hex: HexColor(rgb24: 0x30_2B_63)),
-                Color(hex: HexColor(rgb24: 0xD7_6D_77)),
-            ]
-        case .sunrise:
-            return [
-                Color(hex: HexColor(rgb24: 0xFF_8A_5B)),
-                Color(hex: HexColor(rgb24: 0xFF_D5_6B)),
-            ]
-        case .graphite:
-            return [
-                Color(hex: HexColor(rgb24: 0x12_15_1C)),
-                Color(hex: HexColor(rgb24: 0x45_4B_58)),
-            ]
-        }
-    }
 }
 
 private struct PatternMiniatureView: View {
@@ -868,10 +513,13 @@ private struct PatternMiniatureView: View {
 private struct DynamicFlowMiniatureView: View {
     let preset: DynamicBackgroundPreset
     @Environment(\.accessibilityReduceMotion) private var reducesMotion
+    @Environment(\.editorIsActive) private var isEditorActive
+    @State private var isHovered = false
+    @State private var isAnimating = false
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reducesMotion)) { timeline in
-            let time = reducesMotion ? 0 : timeline.date.timeIntervalSinceReferenceDate
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reducesMotion || !isEditorActive || !isAnimating)) { timeline in
+            let time = reducesMotion || !isEditorActive || !isAnimating ? 0 : timeline.date.timeIntervalSinceReferenceDate
             ZStack {
                 switch preset {
                 case .cyberDriftGrid:
@@ -895,6 +543,14 @@ private struct DynamicFlowMiniatureView: View {
                     fluidClouds(time: time)
                 }
             }
+        }
+        .onHover { isHovered = $0 }
+        .task(id: "\(isHovered):\(isEditorActive)") {
+            isAnimating = isHovered && isEditorActive && !reducesMotion
+            guard isAnimating else { return }
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            isAnimating = false
         }
     }
 
@@ -988,41 +644,6 @@ private struct DynamicFlowMiniatureView: View {
                     )
                 }
             }
-        }
-    }
-}
-
-private struct BundledWallpaperThumbnail: View {
-    let preset: BundledWallpaperPreset
-    @State private var image: NSImage?
-
-    var body: some View {
-        Color.secondary.opacity(0.2)
-            .overlay {
-                if let image {
-                    GeometryReader { proxy in
-                        Image(nsImage: image)
-                            .resizable()
-                            .scaledToFill()
-                            .frame(width: proxy.size.width, height: proxy.size.height)
-                            .clipped()
-                    }
-                }
-            }
-            .task(id: preset.id) {
-            let key = preset.relativePath as NSString
-            if let cached = EditorBackgroundInspector.wallpaperThumbnailCache.object(forKey: key) {
-                image = cached
-                return
-            }
-            guard let decoded = await WallpaperThumbnailLoader.image(at: preset.url),
-                  !Task.isCancelled else { return }
-            EditorBackgroundInspector.wallpaperThumbnailCache.setObject(
-                decoded,
-                forKey: key,
-                cost: WallpaperThumbnailDecoder.decodedByteCost(of: decoded)
-            )
-            image = decoded
         }
     }
 }

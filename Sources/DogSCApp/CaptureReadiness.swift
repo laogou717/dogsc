@@ -153,10 +153,10 @@ enum CapturePermissionState: String, Equatable, Sendable {
 
     var label: String {
         switch self {
-        case .notDetermined: return "首次使用时询问"
-        case .restricted: return "系统限制"
-        case .denied: return "未授权"
-        case .authorized: return "已授权"
+        case .notDetermined: return appLocalized("首次使用时询问")
+        case .restricted: return appLocalized("系统限制")
+        case .denied: return appLocalized("未授权")
+        case .authorized: return appLocalized("已授权")
         }
     }
 }

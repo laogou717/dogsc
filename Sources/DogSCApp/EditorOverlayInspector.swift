@@ -16,8 +16,6 @@ extension EditorInspectorView {
             mosaicInspector(id: id)
         case let .sticker(id):
             stickerInspector(id: id)
-        case .progress:
-            progressInspector
         default:
             EmptyView()
         }
@@ -195,7 +193,7 @@ extension EditorInspectorView {
                             }
                         }
                         Text("当前第 \(state.rank + 1) 层，共 \(state.count) 层")
-                            .font(.caption2)
+                            .font(.appUI(.caption2))
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -225,11 +223,11 @@ extension EditorInspectorView {
                 EditorInspectorSection("背景处理") {
                     if clip.hidesScreen {
                         Label("仅保留画布背景与贴图", systemImage: "rectangle.slash")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(Color.white.opacity(0.78))
+                            .font(.appUI(.caption, weight: .semibold))
+                            .foregroundStyle(EditorTheme.chrome(0.78))
                         Text("录屏画面已隐藏，录屏虚化不会再让画布背景变得雾蒙蒙；画布自身设置的壁纸模糊仍会保留。")
-                            .font(.caption2)
-                            .foregroundStyle(Color.white.opacity(0.50))
+                            .font(.appUI(.caption2))
+                            .foregroundStyle(EditorTheme.chrome(0.50))
                             .fixedSize(horizontal: false, vertical: true)
                     } else {
                         overlaySlider("录屏虚化", value: stickerBinding(id: id, keyPath: \.backdropBlur, fallback: clip.backdropBlur), range: 0...60, format: .points)
@@ -261,15 +259,42 @@ extension EditorInspectorView {
                         title: "贴图期间隐藏摄像头"
                     )
                     Text("隐藏与虚化会跟随贴图的入场和退场曲线，不会突然切换。")
-                        .font(.caption2)
-                        .foregroundStyle(Color.white.opacity(0.50))
+                        .font(.appUI(.caption2))
+                        .foregroundStyle(EditorTheme.chrome(0.50))
                 }
 
                 EditorInspectorSection("出入场") {
                     VStack(alignment: .leading, spacing: 7) {
+                        Text("动效节奏")
+                            .font(.appUI(.caption2, weight: .semibold))
+                            .foregroundStyle(EditorTheme.chrome(0.62))
+                        EditorTileSelector(
+                            options: ElementMotionCurve.allCases,
+                            title: { $0.editorTitle },
+                            icon: { $0.editorSymbol },
+                            selection: stickerBinding(
+                                id: id,
+                                keyPath: \.animationCurve,
+                                fallback: clip.animationCurve
+                            ),
+                            columnCount: 3
+                        )
+                        Text(
+                            "\(clip.animationCurve.editorDetail) "
+                                + "同时影响入场与退场，方向和时长仍可分别调整。"
+                        )
+                            .font(.appUI(.caption2))
+                            .foregroundStyle(EditorTheme.chrome(0.48))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Divider()
+                        .overlay(EditorTheme.chrome(0.05))
+
+                    VStack(alignment: .leading, spacing: 7) {
                         Text("入场方式")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(Color.white.opacity(0.62))
+                            .font(.appUI(.caption2, weight: .semibold))
+                            .foregroundStyle(EditorTheme.chrome(0.62))
                         EditorTileSelector(
                             options: StickerAnimationPreset.allCases,
                             title: stickerAnimationShortLabel,
@@ -295,12 +320,12 @@ extension EditorInspectorView {
                     }
 
                     Divider()
-                        .overlay(Color.white.opacity(0.05))
+                        .overlay(EditorTheme.chrome(0.05))
 
                     VStack(alignment: .leading, spacing: 7) {
                         Text("退场方式")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(Color.white.opacity(0.62))
+                            .font(.appUI(.caption2, weight: .semibold))
+                            .foregroundStyle(EditorTheme.chrome(0.62))
                         EditorTileSelector(
                             options: stickerExitAnimationOptions,
                             title: stickerAnimationShortLabel,
@@ -318,8 +343,8 @@ extension EditorInspectorView {
                                 "自动采用入场方式的反向动作",
                                 systemImage: "arrow.triangle.2.circlepath"
                             )
-                            .font(.caption2)
-                            .foregroundStyle(Color.white.opacity(0.50))
+                            .font(.appUI(.caption2))
+                            .foregroundStyle(EditorTheme.chrome(0.50))
                         }
                         overlaySlider(
                             "出场时长",
@@ -338,205 +363,6 @@ extension EditorInspectorView {
             }
         } else {
             missingOverlayView
-        }
-    }
-
-    var progressInspector: some View {
-        Group {
-            if let overlay = editorStore.previewProject.timeline.progressOverlay {
-                let activeChapter = overlay.chapters
-                    .filter { $0.time <= playbackTime }
-                    .max { $0.time < $1.time }
-                VStack(alignment: .leading, spacing: 14) {
-                    EditorInspectorSection("位置与尺寸") {
-                        EditorSegmentedControl(
-                            options: ProgressOverlayPlacement.allCases,
-                            title: { placement in
-                                switch placement {
-                                case .top: "顶部"
-                                case .custom: "自由"
-                                case .bottom: "底部"
-                                }
-                            },
-                            icon: { placement in
-                                switch placement {
-                                case .top: "rectangle.topthird.inset.filled"
-                                case .custom: "move.3d"
-                                case .bottom: "rectangle.bottomthird.inset.filled"
-                                }
-                            },
-                            selection: progressBinding(
-                                keyPath: \.placement,
-                                fallback: overlay.placement
-                            )
-                        )
-                        if overlay.placement == .custom {
-                            overlaySlider(
-                                "垂直位置",
-                                value: progressPositionBinding(
-                                    keyPath: \.y,
-                                    fallback: overlay.position.y
-                                ),
-                                range: 0...1,
-                                format: .percent
-                            )
-                        }
-                        overlaySlider(
-                            "宽度",
-                            value: progressBinding(
-                                keyPath: \.width,
-                                fallback: overlay.width
-                            ),
-                            range: 0.2...1,
-                            format: .percent
-                        )
-                        overlaySlider(
-                            "条带高度",
-                            value: progressBinding(
-                                keyPath: \.bandHeight,
-                                fallback: overlay.bandHeight
-                            ),
-                            range: 28...180,
-                            format: .points
-                        )
-                        overlaySlider(
-                            "文字大小",
-                            value: progressBinding(
-                                keyPath: \.textSize,
-                                fallback: overlay.textSize
-                            ),
-                            range: 10...72,
-                            format: .points
-                        )
-                    }
-
-                    if let activeChapter {
-                        EditorInspectorSection("当前看点") {
-                            progressChapterCard(activeChapter, isActive: true)
-                            Button {
-                                addProgressChapter()
-                            } label: {
-                                Label("在当前时间开始新一段", systemImage: "plus")
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                            .buttonStyle(.editorQuiet)
-                        }
-                    }
-
-                    EditorInspectorSection("颜色") {
-                        progressColorInput(
-                            "条带背景",
-                            value: overlay.backgroundColor,
-                            keyPath: \.backgroundColor
-                        )
-                        overlaySlider(
-                            "背景透明度",
-                            value: progressBinding(
-                                keyPath: \.backgroundOpacity,
-                                fallback: overlay.backgroundOpacity
-                            ),
-                            range: 0...1,
-                            format: .percent
-                        )
-                        progressColorInput("进度颜色", value: overlay.fillColor, keyPath: \.fillColor)
-                        progressColorInput("分隔线", value: overlay.nodeColor, keyPath: \.nodeColor)
-                        progressColorInput("文字颜色", value: overlay.textColor, keyPath: \.textColor)
-                    }
-
-                    EditorDisclosure(
-                        "全部看点",
-                        detail: "\(overlay.chapters.count) 个节点"
-                    ) {
-                        VStack(alignment: .leading, spacing: 9) {
-                            ForEach(overlay.chapters) { chapter in
-                                progressChapterCard(
-                                    chapter,
-                                    isActive: chapter.id == activeChapter?.id
-                                )
-                            }
-                            Button {
-                                addProgressChapter()
-                            } label: {
-                                Label("在当前时间开始新一段", systemImage: "plus")
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                            .buttonStyle(.editorQuiet)
-                        }
-                    }
-                    removeOverlayButton(title: "删除进度条")
-                }
-            } else {
-                missingOverlayView
-            }
-        }
-    }
-
-    func progressChapterCard(
-        _ chapter: ProgressChapter,
-        isActive: Bool
-    ) -> some View {
-        let isOpening = abs(chapter.time) <= 1.0 / 120.0
-        return VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 6) {
-                Text(progressChapterTimestamp(chapter.time))
-                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(Color.white.opacity(isActive ? 0.88 : 0.50))
-                if isActive {
-                    Text("当前")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(EditorTheme.platinumAccent)
-                        .padding(.horizontal, 6)
-                        .frame(height: 18)
-                        .background(
-                            EditorTheme.platinumAccent.opacity(0.10),
-                            in: Capsule(style: .continuous)
-                        )
-                }
-                Spacer(minLength: 0)
-            }
-            HStack {
-                TextField(
-                    "看点名称",
-                    text: progressChapterTitleBinding(
-                        chapter.id,
-                        fallback: chapter.title
-                    )
-                )
-                if !isOpening {
-                    Button(role: .destructive) {
-                        removeProgressChapter(chapter.id)
-                    } label: {
-                        Image(systemName: "trash")
-                    }
-                    .buttonStyle(.editorDestructiveIcon)
-                    .help("删除这个看点")
-                }
-            }
-            if !isOpening {
-                overlaySlider(
-                    "开始时间",
-                    value: progressChapterTimeBinding(
-                        chapter.id,
-                        fallback: chapter.time
-                    ),
-                    range: 1.0 / 30.0...max(timelineDuration, 0.1),
-                    format: .seconds
-                )
-            }
-        }
-        .padding(9)
-        .background(
-            Color.white.opacity(isActive ? 0.065 : 0.030),
-            in: RoundedRectangle(cornerRadius: 9, style: .continuous)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .stroke(
-                    isActive
-                        ? EditorTheme.platinumAccent.opacity(0.18)
-                        : Color.white.opacity(0.035),
-                    lineWidth: 0.75
-                )
         }
     }
 
@@ -691,38 +517,6 @@ extension EditorInspectorView {
         preset.map(stickerAnimationSymbol) ?? "arrow.triangle.2.circlepath"
     }
 
-    func progressBinding<Value>(
-        keyPath: WritableKeyPath<ProgressOverlay, Value>,
-        fallback: Value
-    ) -> Binding<Value> {
-        editorTimelineBinding(
-            store: editorStore,
-            selection: .progress,
-            get: { $0.progressOverlay?[keyPath: keyPath] ?? fallback },
-            set: { timeline, value in
-                timeline.progressOverlay?[keyPath: keyPath] = value
-            },
-            actionName: "调整进度条",
-            onError: onError
-        )
-    }
-
-    func progressPositionBinding(
-        keyPath: WritableKeyPath<NormalizedPoint, Double>,
-        fallback: Double
-    ) -> Binding<Double> {
-        editorTimelineBinding(
-            store: editorStore,
-            selection: .progress,
-            get: { $0.progressOverlay?.position[keyPath: keyPath] ?? fallback },
-            set: { timeline, value in
-                timeline.progressOverlay?.position[keyPath: keyPath] = min(max(value, 0), 1)
-            },
-            actionName: "移动进度条",
-            onError: onError
-        )
-    }
-
     func replaceSticker(
         id: UUID,
         actionName: String,
@@ -761,25 +555,25 @@ extension EditorInspectorView {
         Button(action: action) {
             VStack(spacing: 4) {
                 Image(systemName: symbol)
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.appUI(size: 12, weight: .semibold))
                 Text(title)
-                    .font(.system(size: 9.5, weight: .medium))
+                    .font(.appUI(size: 9.5, weight: .medium))
             }
             .foregroundStyle(
                 disabled
-                    ? Color.white.opacity(0.28)
-                    : Color.white.opacity(0.84)
+                    ? EditorTheme.chrome(0.28)
+                    : EditorTheme.chrome(0.84)
             )
             .frame(maxWidth: .infinity)
             .frame(height: 40)
             .background(
-                Color.white.opacity(disabled ? 0.018 : 0.055),
+                EditorTheme.chrome(disabled ? 0.018 : 0.055),
                 in: RoundedRectangle(cornerRadius: 8, style: .continuous)
             )
             .overlay {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .stroke(
-                        Color.white.opacity(disabled ? 0.025 : 0.075),
+                        EditorTheme.chrome(disabled ? 0.025 : 0.075),
                         lineWidth: 0.75
                     )
             }
@@ -867,100 +661,4 @@ extension EditorInspectorView {
         }
     }
 
-    func progressColorInput(
-        _ title: String,
-        value: HexColor,
-        keyPath: WritableKeyPath<ProgressOverlay, HexColor>
-    ) -> some View {
-        EditorTransactionalColorInput(
-            editorStore: editorStore,
-            title: title,
-            value: progressBinding(keyPath: keyPath, fallback: value),
-            commandScope: .selection,
-            selection: .progress,
-            actionName: "调整进度条颜色",
-            onError: onError
-        )
-    }
-
-    func progressChapterTitleBinding(
-        _ id: UUID,
-        fallback: String
-    ) -> Binding<String> {
-        editorTimelineBinding(
-            store: editorStore,
-            selection: .progress,
-            get: { timeline in
-                timeline.progressOverlay?.chapters.first { $0.id == id }?.title
-                    ?? fallback
-            },
-            set: { timeline, value in
-                guard let index = timeline.progressOverlay?.chapters.firstIndex(
-                    where: { $0.id == id }
-                ) else { return }
-                timeline.progressOverlay?.chapters[index].title = value
-            },
-            actionName: "编辑看点名称",
-            onError: onError
-        )
-    }
-
-    func progressChapterTimeBinding(
-        _ id: UUID,
-        fallback: TimeInterval
-    ) -> Binding<Double> {
-        editorTimelineBinding(
-            store: editorStore,
-            selection: .progress,
-            get: { timeline in
-                timeline.progressOverlay?.chapters.first { $0.id == id }?.time
-                    ?? fallback
-            },
-            set: { timeline, value in
-                guard let index = timeline.progressOverlay?.chapters.firstIndex(
-                    where: { $0.id == id }
-                ) else { return }
-                timeline.progressOverlay?.chapters[index].time = value
-                timeline.progressOverlay?.chapters.sort { $0.time < $1.time }
-            },
-            actionName: "调整看点时间",
-            onError: onError
-        )
-    }
-
-    func progressChapterTimestamp(_ time: TimeInterval) -> String {
-        let centiseconds = max(Int((time * 100).rounded(.down)), 0)
-        let minutes = centiseconds / 6_000
-        let seconds = (centiseconds / 100) % 60
-        let fraction = centiseconds % 100
-        return String(format: "%d:%02d.%02d", minutes, seconds, fraction)
-    }
-
-    func addProgressChapter() {
-        var timeline = editorStore.project.timeline
-        guard var progress = timeline.progressOverlay else { return }
-        progress.insertChapterIfNeeded(
-            at: min(max(playbackTime, 0), timelineDuration),
-            title: "看点 \(progress.chapters.count + 1)"
-        )
-        timeline.progressOverlay = progress
-        do {
-            try editorStore.replaceTimeline(with: timeline, actionName: "添加看点")
-        } catch {
-            onError(error.localizedDescription)
-        }
-    }
-
-    func removeProgressChapter(_ id: UUID) {
-        var timeline = editorStore.project.timeline
-        guard let chapter = timeline.progressOverlay?.chapters.first(where: {
-            $0.id == id
-        }), abs(chapter.time) > 1.0 / 120.0 else { return }
-        timeline.progressOverlay?.chapters.removeAll { $0.id == id }
-        do {
-            try editorStore.replaceTimeline(with: timeline, actionName: "删除看点")
-        } catch {
-            onError(error.localizedDescription)
-        }
-    }
 }

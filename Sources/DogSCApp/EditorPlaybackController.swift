@@ -304,6 +304,8 @@ final class EditorPlaybackController: ObservableObject {
     var scrubSeekTask: Task<Void, Never>?
     var scrubSeekCoalescer = EditorScrubSeekCoalescer()
     var scrubIsActive = false
+    var scrubSeekGeneration: UInt64 = 0
+    var scrubPreviewTime: TimeInterval?
     /// EDT-030 悬浮预览轴：暂停时指针扫过时间线，画布实时显示所指帧，但
     /// 逻辑时钟（`latestOutputTime`、播放头、时间码、总览）保持不动；只有
     /// 传输层被物理 seek 到所指帧。悬浮结束时传输层回到播放头，下一次播
@@ -316,7 +318,7 @@ final class EditorPlaybackController: ObservableObject {
     var hoverSeekCoalescer = EditorScrubSeekCoalescer()
     var hoverSeekGeneration: UInt64 = 0
     var hoverSeekInFlightCount = 0
-    private var primarySeekIsPending = false
+    var primarySeekIsPending = false // Transport and single-flight scrub lifecycle only.
     /// Every AVAssetImageGenerator backing `pausedFrameTask`. A camera project
     /// owns both a screen and camera generator; cancelling only one leaves the
     /// other decoding a retired seek in the background.
@@ -358,6 +360,7 @@ final class EditorPlaybackController: ObservableObject {
     func install(
         _ prepared: EditorPreparedMedia?,
         audio: AudioStyle,
+        primarySegmentAudioOverrides: [UUID: PrimarySegmentAudioOverrides],
         frameRate: Int,
         initialTime: TimeInterval? = nil,
         cameraTimingRevision: UInt64 = 0
@@ -385,7 +388,10 @@ final class EditorPlaybackController: ObservableObject {
             cameraFrameRate = prepared.inventories.camera.videoFrameRate ?? 30
             guard installToken == requestedInstall else { return }
             self.cameraTimingRevision = cameraTimingRevision
-            updateAudio(audio)
+            updateAudio(
+                audio,
+                primarySegmentAudioOverrides: primarySegmentAudioOverrides
+            )
             return
         }
 
@@ -426,8 +432,15 @@ final class EditorPlaybackController: ObservableObject {
             kCVPixelBufferMetalCompatibilityKey as String: true,
         ]
         let item = AVPlayerItem(asset: bundle.primaryComposition)
-        item.audioTimePitchAlgorithm = .timeDomain
-        item.audioMix = Self.previewAudioMix(for: audio, bundle: bundle)
+        item.videoComposition = bundle.primaryVideoComposition
+        if bundle.requiresAudioTimePitchProcessing {
+            item.audioTimePitchAlgorithm = .timeDomain
+        }
+        item.audioMix = Self.previewAudioMix(
+            for: audio,
+            primarySegmentAudioOverrides: primarySegmentAudioOverrides,
+            bundle: bundle
+        )
         let screenOutput = AVPlayerItemVideoOutput(
             pixelBufferAttributes: pixelBufferAttributes
         )
@@ -469,7 +482,9 @@ final class EditorPlaybackController: ObservableObject {
             seconds: safeTime,
             preferredTimescale: 60_000
         )
-        let screenPreferredTransform = bundle.primaryVideoTrack.preferredTransform
+        let screenPreferredTransform = bundle.primaryVideoComposition == nil
+            ? bundle.primaryVideoTrack.preferredTransform
+            : .identity
         let cameraPreferredTransform = bundle.cameraVideoTrack?.preferredTransform ?? .identity
         async let decodedFirstScreen = loadInitialFrame(
             screenOutput,
@@ -494,6 +509,12 @@ final class EditorPlaybackController: ObservableObject {
             return
         }
 
+        // A ripple rebuild may have no camera pixel yet. Bridge only within
+        // the same editor and camera asset, never into an unrelated project.
+        let canBridgeCamera = preparedMedia?.request.editorSessionID == prepared.request.editorSessionID
+            && preparedMedia?.request.camera == prepared.request.camera
+            && prepared.plan.camera?.contains(outputTime: safeTime) == true
+        let cameraBridge = canBridgeCamera ? pausedCameraImage : nil
         // Swap the complete transport generation in one MainActor turn. The
         // old endpoints remain renderable until this exact point.
         removeObservers()
@@ -507,7 +528,7 @@ final class EditorPlaybackController: ObservableObject {
         duration = prepared.outputDuration
         latestOutputTime = safeTime
         pausedScreenImage = firstScreenImage
-        pausedCameraImage = firstCameraImage
+        pausedCameraImage = firstCameraImage ?? cameraBridge
         endpoints = EditorPlaybackMediaEndpoints(
             generation: prepared.generation,
             screenOutput: screenOutput,
@@ -530,10 +551,14 @@ final class EditorPlaybackController: ObservableObject {
         }
     }
 
-    func updateAudio(_ audio: AudioStyle) {
+    func updateAudio(
+        _ audio: AudioStyle,
+        primarySegmentAudioOverrides: [UUID: PrimarySegmentAudioOverrides]
+    ) {
         guard let preparedMedia else { return }
         primaryPlayer?.item?.audioMix = Self.previewAudioMix(
             for: audio,
+            primarySegmentAudioOverrides: primarySegmentAudioOverrides,
             bundle: preparedMedia.composition
         )
     }
@@ -738,6 +763,7 @@ final class EditorPlaybackController: ObservableObject {
     }
 
     func play() {
+        guard isPreviewActive else { return }
         guard canPlay else { return }
         if outputTime >= duration - 0.000_1 {
             seek(to: 0, pausing: true, resumeAfterCompletion: true)
@@ -747,7 +773,7 @@ final class EditorPlaybackController: ObservableObject {
     }
 
     private func startPlaybackFromCurrentPosition() {
-        guard canPlay, let primaryPlayer else { return }
+        guard isPreviewActive, canPlay, let primaryPlayer else { return }
         if hoverPreviewTime != nil {
             // 悬浮预览期间传输层物理位置停在所指帧；无摄像头路径的
             // playTransport() 会从该位置起播。先走“精确 seek + 完成后
@@ -827,6 +853,32 @@ final class EditorPlaybackController: ObservableObject {
         }
     }
 
+    private(set) var isPreviewActive = true
+
+    /// This controller owns editing playback only. Export uses its own media
+    /// readers and must not be paused by window visibility or App Nap policy.
+    func setPreviewActive(_ active: Bool) {
+        guard active != isPreviewActive else { return }
+        isPreviewActive = active
+        if active {
+            refreshPausedFrames(at: outputTime)
+        } else {
+            deferredPlaybackIntent = false
+            endHoverPreview()
+            pause()
+            playbackStartToken &+= 1
+            cameraSeekToken &+= 1
+            seekToken &+= 1
+            primarySeekIsPending = false
+            cameraSeekIsPending = false
+            primaryPlayer?.pauseTransport()
+            cameraPlayer?.pauseTransport()
+            primaryPlayer?.cancelPendingSeeks()
+            cameraPlayer?.cancelPendingSeeks()
+            cancelPausedFrameDecode()
+        }
+    }
+
     func pause() {
         guard isPlaying else { return }
         playbackStartToken &+= 1
@@ -847,7 +899,12 @@ final class EditorPlaybackController: ObservableObject {
         primarySeekIsPending = false
         latestOutputTime = sampled
         resetPlaybackAnchor(to: sampled)
-        advanceDiscontinuity()
+        // Pausing at the transport's current sample is not a timeline
+        // discontinuity. Advancing the epoch here invalidated the last valid
+        // camera pixel before the exact paused-frame decoder finished, so the
+        // camera disappeared for one render whenever Space paused playback.
+        // Keep the live frame as the bridge; the exact paused pair replaces it
+        // atomically as soon as decoding completes.
         refreshPausedFrames(at: sampled)
     }
 
@@ -969,7 +1026,7 @@ final class EditorPlaybackController: ObservableObject {
 
     var stationaryRenderTick: EditorPlaybackRenderTick? {
         guard let endpoints else { return nil }
-        let time = EditorPlaybackClockPolicy.clampedTime(outputTime, duration: duration)
+        let time = EditorPlaybackClockPolicy.clampedTime(scrubIsActive ? (scrubPreviewTime ?? outputTime) : outputTime, duration: duration)
         return EditorPlaybackRenderTick(
             mediaGeneration: endpoints.generation,
             discontinuityID: discontinuityID,
@@ -1070,6 +1127,8 @@ final class EditorPlaybackController: ObservableObject {
                     )
                 } else {
                     self.cameraPlayer?.pauseTransport()
+                    // Publish the landed auxiliary frame, including hover seeks.
+                    self.advanceDiscontinuity()
                 }
             }
         }
@@ -1244,6 +1303,7 @@ final class EditorPlaybackController: ObservableObject {
 
     private static func previewAudioMix(
         for audio: AudioStyle,
+        primarySegmentAudioOverrides: [UUID: PrimarySegmentAudioOverrides],
         bundle: TimelineCompositionBundle
     ) -> AVAudioMix? {
         TimelineCompositionBuilder.audioMix(
@@ -1251,10 +1311,15 @@ final class EditorPlaybackController: ObservableObject {
             systemVolume: audio.isSystemMuted
                 ? 0
                 : Float(min(max(audio.systemVolume, 0), 1)),
+            primarySegmentRanges: bundle.primarySegmentAudioMixRanges(
+                audio: audio,
+                overrides: primarySegmentAudioOverrides
+            ),
             microphoneTrack: bundle.microphoneAudioTrack,
             microphoneVolume: audio.isMicrophoneMuted
                 ? 0
-                : Float(min(max(audio.microphoneVolume, 0), 1))
+                : Float(min(max(audio.microphoneVolume, 0), 1)),
+            requiresTimePitchProcessing: bundle.requiresAudioTimePitchProcessing
         )
     }
 }

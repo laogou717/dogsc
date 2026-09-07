@@ -150,6 +150,23 @@ public enum CaptureCodec: String, Codable, CaseIterable, Identifiable, Sendable 
     }
 }
 
+public enum CaptureResolutionLimit: String, CaseIterable, Codable, Identifiable, Sendable {
+    case native = "原始分辨率"
+    case uhd = "最高 4K"
+    case fullHD = "最高 1080p"
+    public var id: String { rawValue }
+
+    /// Downscale within a landscape or portrait envelope; never enlarge a source.
+    public func applying(to size: CaptureDimensions) -> CaptureDimensions {
+        guard self != .native else { return size }
+        let longEdge = self == .uhd ? 3840 : 1920
+        let shortEdge = self == .uhd ? 2160 : 1080
+        return .h264Compatible(sourceWidth: size.width, sourceHeight: size.height,
+            maximumWidth: size.width >= size.height ? longEdge : shortEdge,
+            maximumHeight: size.width >= size.height ? shortEdge : longEdge)
+    }
+}
+
 public struct CaptureConfiguration: Codable, Equatable, Sendable {
     public var source: CaptureSource
     public var displayID: UInt32?
@@ -165,6 +182,7 @@ public struct CaptureConfiguration: Codable, Equatable, Sendable {
     /// Recording-time master codec. HEVC is the native-resolution Apple
     /// hardware default, H.264 is the <=4K compatibility path, and ProRes 422
     /// is the large near-lossless option. Export remains an independent choice.
+    public var captureResolutionLimit: CaptureResolutionLimit
     public var captureCodec: CaptureCodec
     public var hidesDesktopFiles: Bool
     public var hidesDock: Bool
@@ -192,6 +210,7 @@ public struct CaptureConfiguration: Codable, Equatable, Sendable {
         deviceName: String? = nil,
         captureFrameRate: OutputFrameRate = .fps60,
         captureCodec: CaptureCodec = .hevc,
+        captureResolutionLimit: CaptureResolutionLimit = .native,
         hidesDesktopFiles: Bool = false,
         hidesDock: Bool = false,
         recordsSystemAudio: Bool = true,
@@ -216,6 +235,7 @@ public struct CaptureConfiguration: Codable, Equatable, Sendable {
         self.deviceName = deviceName
         self.captureFrameRate = captureFrameRate
         self.captureCodec = captureCodec
+        self.captureResolutionLimit = captureResolutionLimit
         self.hidesDesktopFiles = hidesDesktopFiles
         self.hidesDock = hidesDock
         self.recordsSystemAudio = recordsSystemAudio
@@ -253,6 +273,7 @@ public struct CaptureConfiguration: Codable, Equatable, Sendable {
         case cameraDeviceName
         case cameraCaptureResolution
         case captureCodec
+        case captureResolutionLimit
     }
 
     public init(from decoder: Decoder) throws {
@@ -275,6 +296,7 @@ public struct CaptureConfiguration: Codable, Equatable, Sendable {
         deviceName = try container.decodeIfPresent(String.self, forKey: .deviceName)
         captureFrameRate = try container.decodeIfPresent(OutputFrameRate.self, forKey: .captureFrameRate) ?? .fps60
         captureCodec = try container.decodeIfPresent(CaptureCodec.self, forKey: .captureCodec) ?? .h264
+        captureResolutionLimit = try container.decodeIfPresent(CaptureResolutionLimit.self, forKey: .captureResolutionLimit) ?? .native
         hidesDesktopFiles = try container.decodeIfPresent(Bool.self, forKey: .hidesDesktopFiles) ?? false
         hidesDock = try container.decodeIfPresent(Bool.self, forKey: .hidesDock) ?? false
         recordsSystemAudio = try container.decodeIfPresent(Bool.self, forKey: .recordsSystemAudio) ?? true
@@ -311,6 +333,7 @@ public struct CaptureConfiguration: Codable, Equatable, Sendable {
         try container.encodeIfPresent(deviceName, forKey: .deviceName)
         try container.encode(captureFrameRate, forKey: .captureFrameRate)
         try container.encode(captureCodec, forKey: .captureCodec)
+        try container.encode(captureResolutionLimit, forKey: .captureResolutionLimit)
         try container.encode(hidesDesktopFiles, forKey: .hidesDesktopFiles)
         try container.encode(hidesDock, forKey: .hidesDock)
         try container.encode(recordsSystemAudio, forKey: .recordsSystemAudio)

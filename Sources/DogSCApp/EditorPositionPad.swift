@@ -1,7 +1,7 @@
 import RecorderCore
 import SwiftUI
 
-/// One 1:1 direct-manipulation surface for every normalized editor position.
+/// A compact direct-manipulation surface for normalized editor positions.
 /// The visual pad, exact X/Y entry and reset action all share the caller's
 /// single continuous interaction instead of exposing three competing paths.
 struct EditorPositionPad: View {
@@ -15,13 +15,14 @@ struct EditorPositionPad: View {
     let onEnded: () -> Void
     let onCancelled: () -> Void
     var snapsToGrid = true
+    var compactLayout = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 8) {
                 Text(title)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.white.opacity(0.84))
+                    .font(.appUI(.caption, weight: .semibold))
+                    .foregroundStyle(EditorTheme.chrome(0.84))
 
                 Spacer(minLength: 8)
 
@@ -32,7 +33,7 @@ struct EditorPositionPad: View {
                     }
                 } label: {
                     Label("居中", systemImage: "scope")
-                        .font(.caption2.weight(.semibold))
+                        .font(.appUI(.caption2, weight: .semibold))
                 }
                 .buttonStyle(.editorGhost)
                 .controlSize(.small)
@@ -42,13 +43,24 @@ struct EditorPositionPad: View {
 
             if let detail {
                 Text(detail)
-                    .font(.caption2)
-                    .foregroundStyle(Color.white.opacity(0.50))
+                    .font(.appUI(.caption2))
+                    .foregroundStyle(EditorTheme.chrome(0.50))
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            positionSurface
+            if compactLayout {
+                HStack(spacing: 18) {
+                    positionSurface
+                    coordinateReadouts.frame(maxWidth: .infinity)
+                }
+            } else {
+                positionSurface
+                coordinateReadouts
+            }
+        }
+    }
 
+    private var coordinateReadouts: some View {
             EditorPairedParameterReadouts(
                 first: EditorPairedParameterValue(
                     title: "X",
@@ -69,9 +81,9 @@ struct EditorPositionPad: View {
                 },
                 onEnded: onEnded,
                 onCancelled: onCancelled,
-                onEditingChanged: { isCoordinateEditing = $0 }
+                onEditingChanged: { isCoordinateEditing = $0 },
+                vertical: compactLayout
             )
-        }
     }
 
     private var positionSurface: some View {
@@ -89,8 +101,8 @@ struct EditorPositionPad: View {
                     .fill(
                         LinearGradient(
                             colors: [
-                                Color.black.opacity(0.38),
-                                Color.black.opacity(0.20),
+                                EditorTheme.chrome(0.045),
+                                EditorTheme.chrome(0.025),
                             ],
                             startPoint: .top,
                             endPoint: .bottom
@@ -101,7 +113,7 @@ struct EditorPositionPad: View {
                             .stroke(
                                 isDirectlyEditing
                                     ? EditorTheme.platinumAccent.opacity(0.22)
-                                    : Color.white.opacity(0.075),
+                                    : EditorTheme.chrome(0.075),
                                 lineWidth: 0.75
                             )
                     }
@@ -139,7 +151,7 @@ struct EditorPositionPad: View {
                     Circle()
                         .fill(
                             LinearGradient(
-                                colors: [Color.white, EditorTheme.platinumAccent],
+                                colors: [EditorTheme.platinumAccent, EditorTheme.platinumAccent],
                                 startPoint: .top,
                                 endPoint: .bottom
                             )
@@ -147,7 +159,7 @@ struct EditorPositionPad: View {
                         .frame(width: isDirectlyEditing ? 16 : 14, height: isDirectlyEditing ? 16 : 14)
                         .overlay {
                             Circle()
-                                .stroke(Color.white.opacity(0.78), lineWidth: 0.75)
+                                .stroke(EditorTheme.chrome(0.78), lineWidth: 0.75)
                         }
                         .shadow(color: Color.black.opacity(0.42), radius: 3, y: 1.5)
                 }
@@ -178,8 +190,8 @@ struct EditorPositionPad: View {
             .allowsHitTesting(!isCoordinateEditing)
             .accessibilityHidden(true)
         }
-        .frame(width: 184, height: 184)
-        .frame(maxWidth: .infinity)
+        .frame(width: compactLayout ? 158 : 184, height: compactLayout ? 112 : 132)
+        .frame(maxWidth: compactLayout ? nil : .infinity)
     }
 
     private func referenceGrid(
@@ -200,7 +212,7 @@ struct EditorPositionPad: View {
                 }
             }
             .stroke(
-                Color.white.opacity(0.065),
+                EditorTheme.chrome(0.065),
                 style: StrokeStyle(lineWidth: 0.75, dash: [3, 4])
             )
 
@@ -260,6 +272,7 @@ struct EditorTransactionalPositionPad: View {
     var selection: EditorSelection? = nil
     let actionName: String
     var snapsToGrid = true
+    var compactLayout = false
     let onError: (String) -> Void
 
     var body: some View {
@@ -269,7 +282,8 @@ struct EditorTransactionalPositionPad: View {
             onChanged: updatePoint,
             onEnded: commitPoint,
             onCancelled: cancelPoint,
-            snapsToGrid: snapsToGrid
+            snapsToGrid: snapsToGrid,
+            compactLayout: compactLayout
         )
     }
 

@@ -6,12 +6,17 @@ import Foundation
 /// persist a second `outputStart`: it is derived by accumulating durations, so
 /// a trim or ripple delete cannot leave two contradictory timeline positions.
 public struct RecordingSegment: Codable, Equatable, Identifiable, Sendable {
+    /// The editing surface deliberately supports substantial time compression
+    /// for long pauses and setup work while keeping the persisted contract
+    /// bounded to a rate AVFoundation can handle predictably.
+    public static let minimumPlaybackRate: Double = 1
+    public static let maximumPlaybackRate: Double = 100
+
     public var id: UUID
     public var sourceStart: TimeInterval
     public var sourceDuration: TimeInterval
-    /// Source seconds consumed by one output second. The editor currently
-    /// exposes 1x...8x fast-forward while the storage contract remains ready
-    /// for any positive rate supported by a future UI.
+    /// Source seconds consumed by one output second. The editor exposes
+    /// 1×...100× fast-forward; animation tracks remain on the output clock.
     public var playbackRate: Double
 
     public init(
@@ -181,42 +186,73 @@ public struct TransitionTiming: Codable, Equatable, Sendable {
     }
 }
 
+/// Optional per-source overrides owned by one primary segment.
+///
+/// Missing values deliberately inherit the project-wide audio setting. This
+/// keeps the familiar System Sound / Microphone controls as the default while
+/// allowing a selected clip to diverge only for the source the user edits.
+public struct PrimarySegmentAudioOverrides: Codable, Equatable, Sendable {
+    public var systemVolume: Double?
+    public var microphoneVolume: Double?
+    public var isSystemMuted: Bool?
+    public var isMicrophoneMuted: Bool?
+
+    public init(
+        systemVolume: Double? = nil,
+        microphoneVolume: Double? = nil,
+        isSystemMuted: Bool? = nil,
+        isMicrophoneMuted: Bool? = nil
+    ) {
+        self.systemVolume = systemVolume.map { min(max($0, 0), 1) }
+        self.microphoneVolume = microphoneVolume.map { min(max($0, 0), 1) }
+        self.isSystemMuted = isSystemMuted
+        self.isMicrophoneMuted = isMicrophoneMuted
+    }
+
+    public var isEmpty: Bool {
+        systemVolume == nil
+            && microphoneVolume == nil
+            && isSystemMuted == nil
+            && isMicrophoneMuted == nil
+    }
+}
+
 /// The single persisted owner of every time-varying project edit.
 public struct ProjectTimeline: Codable, Equatable, Sendable {
     public var sourceSequence: SourceSequence
+    public var primarySegmentAudioOverrides: [UUID: PrimarySegmentAudioOverrides]
     public var zoomClips: [ZoomAnimationClip]
     public var screenMotionClips: [ScreenMotionClip]
     public var cameraMotionClips: [CameraMotionClip]
     public var mosaicClips: [MosaicClip]
     public var stickerClips: [StickerClip]
-    public var progressOverlay: ProgressOverlay?
 
     public init(
         sourceSequence: SourceSequence = .fullRecording,
+        primarySegmentAudioOverrides: [UUID: PrimarySegmentAudioOverrides] = [:],
         zoomClips: [ZoomAnimationClip] = [],
         screenMotionClips: [ScreenMotionClip] = [],
         cameraMotionClips: [CameraMotionClip] = [],
         mosaicClips: [MosaicClip] = [],
-        stickerClips: [StickerClip] = [],
-        progressOverlay: ProgressOverlay? = nil
+        stickerClips: [StickerClip] = []
     ) {
         self.sourceSequence = sourceSequence
+        self.primarySegmentAudioOverrides = primarySegmentAudioOverrides
         self.zoomClips = zoomClips
         self.screenMotionClips = screenMotionClips
         self.cameraMotionClips = cameraMotionClips
         self.mosaicClips = mosaicClips
         self.stickerClips = stickerClips
-        self.progressOverlay = progressOverlay
     }
 
     private enum CodingKeys: String, CodingKey {
         case sourceSequence
+        case primarySegmentAudioOverrides
         case zoomClips
         case screenMotionClips
         case cameraMotionClips
         case mosaicClips
         case stickerClips
-        case progressOverlay
     }
 
     public init(from decoder: any Decoder) throws {
@@ -225,6 +261,10 @@ public struct ProjectTimeline: Codable, Equatable, Sendable {
             SourceSequence.self,
             forKey: .sourceSequence
         ) ?? .fullRecording
+        primarySegmentAudioOverrides = try container.decodeIfPresent(
+            [UUID: PrimarySegmentAudioOverrides].self,
+            forKey: .primarySegmentAudioOverrides
+        ) ?? [:]
         zoomClips = try container.decodeIfPresent(
             [ZoomAnimationClip].self,
             forKey: .zoomClips
@@ -245,9 +285,5 @@ public struct ProjectTimeline: Codable, Equatable, Sendable {
             [StickerClip].self,
             forKey: .stickerClips
         ) ?? []
-        progressOverlay = try container.decodeIfPresent(
-            ProgressOverlay.self,
-            forKey: .progressOverlay
-        )
     }
 }

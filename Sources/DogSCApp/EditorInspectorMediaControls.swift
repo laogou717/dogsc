@@ -7,27 +7,21 @@ extension EditorInspectorView {
     var cursorInspector: some View {
         let cursorIsHidden = editorStore.previewProject.cursorStyle.assetID == .hidden
 
-        return VStack(alignment: .leading, spacing: 15) {
-            EditorInspectorSection("光标样式") {
-                LazyVGrid(
-                    columns: [
-                        GridItem(.flexible(), spacing: 8),
-                        GridItem(.flexible(), spacing: 8),
-                    ],
-                    spacing: 8
-                ) {
-                    ForEach(cursorAssets) { asset in
-                        cursorAssetButton(asset)
-                    }
-                }
-
+        return VStack(alignment: .leading, spacing: 12) {
+            EditorCursorStylePreview(style: editorStore.previewProject.cursorStyle)
+            EditorSegmentedControl(
+                options: cursorAssets.map(\.id),
+                title: { id in appLocalized(cursorAssets.first(where: { $0.id == id })?.displayName ?? "系统") },
+                selection: cursorBinding(\.assetID, actionName: "调整光标样式")
+            )
+            VStack(alignment: .leading, spacing: 12) {
                 if cursorIsHidden {
                     Text("当前已隐藏光标。选择一种光标样式后，才需要调整大小、点击动画和移动手感。")
-                        .font(.caption2)
+                        .font(.appUI(.caption2))
                         .foregroundStyle(.secondary)
                 } else {
                     sliderRow(
-                        "光标大小",
+                        "大小",
                         value: cursorBinding(\.size, actionName: "调整光标大小"),
                         range: 0.25...6,
                         format: .multiplier
@@ -80,14 +74,14 @@ extension EditorInspectorView {
                         )
 
                         sliderRow(
-                            "动画不透明度",
+                            "不透明度",
                             value: cursorBinding(\.clickOpacity, actionName: "调整点击不透明度"),
                             range: 0.1...1.0,
                             format: .percent
                         )
 
                         sliderRow(
-                            "动画大小",
+                            "范围",
                             value: cursorBinding(\.clickScale, actionName: "调整点击动画大小"),
                             range: 0.5...2.0,
                             format: .multiplier
@@ -95,25 +89,35 @@ extension EditorInspectorView {
                     }
                 }
 
-                EditorInspectorSection("移动手感") {
+                EditorDisclosure("移动手感", detail: editorStore.previewProject.motion.cursor == .none
+                    ? "线性" : appLocalized(editorStore.previewProject.motion.cursor.rawValue)) {
                     EditorSegmentedControl(
                         options: CursorMotionStyle.allCases,
                         title: { style in
-                            style == .none ? "线性" : style.rawValue
+                            style == .none ? appLocalized("线性") : appLocalized(style.rawValue)
                         },
                         selection: motionBinding(\.cursor, actionName: "调整光标动画")
                     )
 
                     if editorStore.previewProject.motion.cursor != .none {
-                        sliderRow(
-                            "摆动强度",
-                            value: cursorBinding(
-                                \.motionTiltStrength,
-                                actionName: "调整光标摆动强度"
-                            ),
-                            range: 0...2,
-                            format: .percent
-                        )
+                        VStack(alignment: .leading, spacing: 7) {
+                            Text("摆动强度")
+                                .font(.appUI(.caption, weight: .semibold))
+                            EditorSegmentedControl(
+                                options: [2.0, 2.5, 3.0, 3.5, 4.0],
+                                title: { "\(Int($0 * 100))" },
+                                accessibilityTitle: { "\(appLocalized("光标摆动强度")) \(Int($0 * 100))%" },
+                                selection: cursorBinding(
+                                    \.motionTiltStrength,
+                                    actionName: "调整光标摆动强度"
+                                )
+                            )
+                            .accessibilityElement(children: .contain)
+                            .accessibilityLabel("光标摆动强度")
+                        }
+                        Text("强度以百分比表示")
+                            .font(.appUI(.caption2))
+                            .foregroundStyle(.secondary)
                     }
 
                     if editorStore.previewProject.motion.cursor == .smooth {
@@ -151,62 +155,6 @@ extension EditorInspectorView {
         }
     }
 
-    func cursorAssetButton(_ asset: ResolvedCursorAsset) -> some View {
-        let isSelected = editorStore.previewProject.cursorStyle.assetID == asset.id
-        return Button {
-            var style = editorStore.project.cursorStyle
-            style.assetID = asset.id
-            performEditorCommand {
-                try editorStore.replaceCursor(with: style, actionName: "调整光标样式")
-            }
-        } label: {
-            HStack(spacing: 8) {
-                Group {
-                    if asset.id == .automatic {
-                        Image(systemName: "cursorarrow")
-                            .font(.system(size: 18, weight: .regular))
-                            .foregroundStyle(.primary)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else if let image = asset.image {
-                        Image(nsImage: image)
-                            .resizable()
-                            .interpolation(.high)
-                            .scaledToFit()
-                            .padding(6.5)
-                    } else {
-                        Image(systemName: "eye.slash")
-                            .font(.system(size: 15, weight: .medium))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .frame(width: 34, height: 34)
-                .background(Color.black.opacity(0.22), in: RoundedRectangle(cornerRadius: 8))
-
-                Text(asset.displayName)
-                    .font(.caption.weight(.medium))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.78)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 8)
-            .frame(maxWidth: .infinity, minHeight: 48)
-            .background(
-                isSelected ? editorAccent.opacity(0.22) : Color.white.opacity(0.045),
-                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(
-                        isSelected ? editorAccent.opacity(0.95) : Color.white.opacity(0.07),
-                        lineWidth: isSelected ? 1.5 : 1
-                    )
-            }
-        }
-        .buttonStyle(.editorThumbnail)
-        .accessibilityLabel("光标样式，\(asset.displayName)")
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
-    }
-
     @ViewBuilder
     var cameraInspector: some View {
         Group {
@@ -232,6 +180,9 @@ extension EditorInspectorView {
 
     var cameraInspectorControls: some View {
         VStack(alignment: .leading, spacing: 14) {
+            Text("基础布局作用于全片；时间线动画可在指定时段覆盖它。")
+                .font(.appUI(.caption)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             EditorToggle(
                 isOn: Binding(
                     get: { !editorStore.previewProject.camera.isHidden },
@@ -242,7 +193,7 @@ extension EditorInspectorView {
 
             if editorStore.previewProject.camera.isHidden {
                 Text("摄像头初始隐藏；仍可在播放头添加出现动画。开启后可调整布局和外观。")
-                    .font(.caption2)
+                    .font(.appUI(.caption2))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Button {
@@ -258,7 +209,7 @@ extension EditorInspectorView {
                         "直接在画布中拖动，拖右下角调整大小",
                         systemImage: "hand.draw"
                     )
-                    .font(.caption2)
+                    .font(.appUI(.caption2))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -296,7 +247,27 @@ extension EditorInspectorView {
                     }
                 }
 
+                EditorInspectorSection("基础外观") {
+                    EditorToggle(
+                        isOn: cameraBinding(\.isMirrored, actionName: "切换摄像头镜像"),
+                        title: "镜像摄像头"
+                    )
+                    sliderRow("描边", value: cameraBinding(\.borderWidth, actionName: "调整摄像头描边"),
+                              range: 0...18, format: .points)
+                    sliderRow("阴影", value: cameraBinding(\.shadowStrength, actionName: "调整摄像头阴影"),
+                              range: 0...1, format: .percent)
+                }
+
                 cameraLayoutAnimationSection
+
+                EditorDisclosure("缩放联动", detail: EditorSliderValueFormat.multiplier.text(for: editorStore.previewProject.camera.scaleDuringZoom)) {
+                    sliderRow("屏幕放大时的摄像头倍率",
+                              value: cameraBinding(\.scaleDuringZoom, actionName: "调整摄像头缩放跟随"),
+                              range: 0.35...1.25, format: .multiplier)
+                    Text("跟随屏幕缩放调整摄像头大小；1 倍保持原大小。")
+                        .font(.appUI(.caption2)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
                 EditorDisclosure(
                     "蒙版内取景",
@@ -304,7 +275,7 @@ extension EditorInspectorView {
                 ) {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("只调整原摄像素材在当前蒙版内显示的位置和大小，不移动蒙版本身。")
-                            .font(.caption2)
+                            .font(.appUI(.caption2))
                             .foregroundStyle(.secondary)
                         EditorTransactionalPositionPad(
                             editorStore: editorStore,
@@ -344,35 +315,7 @@ extension EditorInspectorView {
                     }
                 }
 
-                EditorDisclosure(
-                    "全片外观",
-                    detail: "\(editorStore.previewProject.camera.isMirrored ? "镜像" : "正常") · 描边 \(EditorSliderValueFormat.points.text(for: editorStore.previewProject.camera.borderWidth)) · 阴影 \(EditorSliderValueFormat.percent.text(for: editorStore.previewProject.camera.shadowStrength))"
-                ) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        EditorToggle(
-                            isOn: cameraBinding(\.isMirrored, actionName: "切换摄像头镜像"),
-                            title: "镜像摄像头"
-                        )
-                        sliderRow(
-                            "缩放时大小",
-                            value: cameraBinding(\.scaleDuringZoom, actionName: "调整摄像头缩放跟随"),
-                            range: 0.35...1.25,
-                            format: .multiplier
-                        )
-                        sliderRow(
-                            "描边",
-                            value: cameraBinding(\.borderWidth, actionName: "调整摄像头描边"),
-                            range: 0...18,
-                            format: .points
-                        )
-                        sliderRow(
-                            "阴影",
-                            value: cameraBinding(\.shadowStrength, actionName: "调整摄像头阴影"),
-                            range: 0...1,
-                            format: .percent
-                        )
-                    }
-                }
+
             }
 
             EditorDisclosure(
@@ -413,7 +356,7 @@ extension EditorInspectorView {
                 }
             }
             Label("在播放头创建布局动画；播放头位于已有动画内时直接更新", systemImage: "info.circle")
-                .font(.caption2)
+                .font(.appUI(.caption2))
                 .foregroundStyle(.secondary)
 
             HStack(spacing: 10) {
@@ -421,34 +364,30 @@ extension EditorInspectorView {
                     layoutPresetName = ""
                     isNamingLayoutPreset = true
                 } label: {
-                    Label("保存当前为预设", systemImage: "square.and.arrow.down")
-                        .font(.caption2)
+                    Label("保存摄像头布局预设", systemImage: "square.and.arrow.down")
+                        .font(.appUI(.caption2))
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.editorQuiet)
                 .foregroundStyle(.secondary)
 
                 if !savedLayoutPresets.isEmpty {
-                    Menu {
-                        ForEach(savedLayoutPresets, id: \.name) { preset in
-                            Button(preset.name) { applySavedLayoutPreset(preset) }
+                    EditorActionMenu(title: "我的摄像头布局预设", items:
+                        savedLayoutPresets.map { preset in
+                            .action(preset.name) { applySavedLayoutPreset(preset) }
+                        } + [.separator] + savedLayoutPresets.map { preset in
+                            .action("删除“\(preset.name)”") { deleteSavedLayoutPreset(preset) }
                         }
-                        Divider()
-                        ForEach(savedLayoutPresets, id: \.name) { preset in
-                            Button("删除“\(preset.name)”", role: .destructive) {
-                                deleteSavedLayoutPreset(preset)
-                            }
-                        }
-                    } label: {
+                    ) {
                         HStack(spacing: 6) {
                             Image(systemName: "square.stack.3d.up")
                             Text("我的预设")
                             Spacer(minLength: 2)
                             Image(systemName: "chevron.down")
-                                .font(.system(size: 8, weight: .bold))
+                                .font(.appUI(size: 8, weight: .bold))
                                 .foregroundStyle(.secondary)
                         }
-                        .font(.caption2.weight(.medium))
+                        .font(.appUI(.caption2, weight: .medium))
                         .foregroundStyle(
                             Color.primary.opacity(
                                 savedLayoutPresetMenuHovered ? 1 : 0.88
@@ -457,7 +396,7 @@ extension EditorInspectorView {
                         .padding(.horizontal, 10)
                         .frame(maxWidth: .infinity, minHeight: 30)
                         .background(
-                            Color.white.opacity(
+                            EditorTheme.chrome(
                                 savedLayoutPresetMenuHovered ? 0.085 : 0.045
                             ),
                             in: RoundedRectangle(cornerRadius: 7, style: .continuous)
@@ -465,15 +404,13 @@ extension EditorInspectorView {
                         .overlay {
                             RoundedRectangle(cornerRadius: 7, style: .continuous)
                                 .stroke(
-                                    Color.white.opacity(
+                                    EditorTheme.chrome(
                                         savedLayoutPresetMenuHovered ? 0.15 : 0.08
                                     ),
                                     lineWidth: 0.75
                                 )
                         }
                     }
-                    .menuStyle(.borderlessButton)
-                    .menuIndicator(.hidden)
                     .frame(maxWidth: .infinity, minHeight: 30)
                     .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                     .scaleEffect(savedLayoutPresetMenuHovered ? 1.01 : 1)
@@ -520,7 +457,7 @@ extension EditorInspectorView {
     var cameraSyncCorrectionControls: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
-                Text("全片偏移").font(.caption.weight(.semibold))
+                Text("全片偏移").font(.appUI(.caption, weight: .semibold))
                 Spacer()
                 Text(cameraSyncOffsetLabel)
                     .font(.caption.monospacedDigit())
@@ -547,13 +484,13 @@ extension EditorInspectorView {
             )
 
             Text("声音先出来、嘴后动：点“画面提前”。每次调整会自动试听，预览与导出使用同一结果。")
-                .font(.caption2)
+                .font(.appUI(.caption2))
                 .foregroundStyle(.secondary)
 
             Divider().overlay(dividerColor)
 
             HStack(spacing: 8) {
-                Text("分段同步点").font(.caption.weight(.semibold))
+                Text("分段同步点").font(.appUI(.caption, weight: .semibold))
                 Spacer()
                 Text("\(cameraSyncAnchors.count) 个 · 当前 \(cameraAnchorTotalOffsetLabel)")
                     .font(.caption.monospacedDigit())
@@ -562,7 +499,7 @@ extension EditorInspectorView {
 
             if cameraAnchorSourceTime == nil {
                 Label("当前播放头无法映射到源素材", systemImage: "exclamationmark.triangle")
-                    .font(.caption2)
+                    .font(.appUI(.caption2))
                     .foregroundStyle(.secondary)
             } else if hasCameraAnchorAtPlayhead {
                 cameraSyncNudgeRow(
@@ -586,7 +523,7 @@ extension EditorInspectorView {
             }
 
             Text("先在错位前固定当前，再到错位后调整；两点之间自动平滑重映射。")
-                .font(.caption2)
+                .font(.appUI(.caption2))
                 .foregroundStyle(.secondary)
         }
     }
@@ -735,25 +672,66 @@ extension EditorInspectorView {
 
     var audioInspector: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if sourceHasAudio {
-                audioVolumeRow(
-                    "系统声音",
-                    symbol: "speaker.wave.2.fill",
-                    detail: "录屏中的应用与系统声音",
-                    value: audioBinding(\.systemVolume, actionName: "调整系统声音音量"),
-                    isMuted: audioBinding(\.isSystemMuted, actionName: "切换系统声音")
-                )
+            if let segmentID = selectedPrimarySegmentForAudio {
+                selectedAudioContext(segmentID)
+                EditorInspectorSection("片段声音") {
+                    if sourceHasAudio {
+                        audioVolumeRow(
+                            "系统声音",
+                            symbol: "speaker.wave.2.fill",
+                            detail: segmentAudioSourceDetail(segmentID, microphone: false),
+                            value: primarySegmentSystemVolumeBinding(
+                                segmentID: segmentID
+                            ),
+                            isMuted: primarySegmentSystemMuteBinding(
+                                segmentID: segmentID
+                            ),
+                            commandScope: .selection,
+                            accessibilityStem: "editor.audio.segment.system"
+                        )
+                    }
+                    if microphoneHasAudio {
+                        audioVolumeRow(
+                            "麦克风",
+                            symbol: "mic.fill",
+                            detail: segmentAudioSourceDetail(segmentID, microphone: true),
+                            value: primarySegmentMicrophoneVolumeBinding(
+                                segmentID: segmentID
+                            ),
+                            isMuted: primarySegmentMicrophoneMuteBinding(
+                                segmentID: segmentID
+                            ),
+                            commandScope: .selection,
+                            accessibilityStem: "editor.audio.segment.microphone"
+                        )
+                    }
+                }
+            } else if sourceHasAudio || microphoneHasAudio {
+                EditorInspectorSection("全片音轨") {
+                    if sourceHasAudio {
+                        audioVolumeRow(
+                            "系统声音",
+                            symbol: "speaker.wave.2.fill",
+                            detail: "录屏中的应用与系统声音",
+                            value: audioBinding(\.systemVolume, actionName: "调整系统声音音量"),
+                            isMuted: audioBinding(\.isSystemMuted, actionName: "切换系统声音"),
+                            accessibilityStem: "editor.audio.system"
+                        )
+                    }
+                    if microphoneHasAudio {
+                        audioVolumeRow(
+                            "麦克风",
+                            symbol: "mic.fill",
+                            detail: "独立录制的人声轨道",
+                            value: audioBinding(\.microphoneVolume, actionName: "调整麦克风音量"),
+                            isMuted: audioBinding(\.isMicrophoneMuted, actionName: "切换麦克风"),
+                            accessibilityStem: "editor.audio.microphone"
+                        )
+                    }
+                }
             }
-            if microphoneHasAudio {
-                audioVolumeRow(
-                    "麦克风",
-                    symbol: "mic.fill",
-                    detail: "独立录制的人声轨道",
-                    value: audioBinding(\.microphoneVolume, actionName: "调整麦克风音量"),
-                    isMuted: audioBinding(\.isMicrophoneMuted, actionName: "切换麦克风")
-                )
-            }
-            if !sourceHasAudio && !microphoneHasAudio {
+            if selectedPrimarySegmentForAudio == nil,
+               !sourceHasAudio && !microphoneHasAudio {
                 EditorInspectorEmptyState(
                     title: "没有音频轨",
                     detail: "这个项目中没有可编辑的系统声音或麦克风素材。",
@@ -763,12 +741,81 @@ extension EditorInspectorView {
         }
     }
 
+    private var selectedPrimarySegmentForAudio: UUID? {
+        guard case let .primarySegment(id) = editorStore.selection else { return nil }
+        return id
+    }
+
+    private func primarySegmentSystemVolumeBinding(segmentID: UUID) -> Binding<Double> {
+        editorPrimarySegmentAudioBinding(
+            store: editorStore,
+            segmentID: segmentID,
+            get: { project, overrides in
+                overrides.systemVolume
+                    ?? project.audio.systemVolume
+            },
+            set: { overrides, value in
+                overrides.systemVolume = min(max(value, 0), 1)
+            },
+            actionName: "调整当前片段系统声音",
+            onError: onError
+        )
+    }
+
+    private func primarySegmentSystemMuteBinding(segmentID: UUID) -> Binding<Bool> {
+        editorPrimarySegmentAudioBinding(
+            store: editorStore,
+            segmentID: segmentID,
+            get: { project, overrides in
+                overrides.isSystemMuted ?? project.audio.isSystemMuted
+            },
+            set: { $0.isSystemMuted = $1 },
+            actionName: "切换当前片段系统声音",
+            onError: onError
+        )
+    }
+
+    private func primarySegmentMicrophoneVolumeBinding(
+        segmentID: UUID
+    ) -> Binding<Double> {
+        editorPrimarySegmentAudioBinding(
+            store: editorStore,
+            segmentID: segmentID,
+            get: { project, overrides in
+                overrides.microphoneVolume
+                    ?? project.audio.microphoneVolume
+            },
+            set: { overrides, value in
+                overrides.microphoneVolume = min(max(value, 0), 1)
+            },
+            actionName: "调整当前片段麦克风",
+            onError: onError
+        )
+    }
+
+    private func primarySegmentMicrophoneMuteBinding(
+        segmentID: UUID
+    ) -> Binding<Bool> {
+        editorPrimarySegmentAudioBinding(
+            store: editorStore,
+            segmentID: segmentID,
+            get: { project, overrides in
+                overrides.isMicrophoneMuted ?? project.audio.isMicrophoneMuted
+            },
+            set: { $0.isMicrophoneMuted = $1 },
+            actionName: "切换当前片段麦克风",
+            onError: onError
+        )
+    }
+
     func audioVolumeRow(
         _ title: String,
         symbol: String,
         detail: String,
         value: Binding<Double>,
-        isMuted: Binding<Bool>
+        isMuted: Binding<Bool>,
+        commandScope: EditorInteractionCommandScope = .audio,
+        accessibilityStem: String
     ) -> some View {
         let isEnabled = Binding(
             get: { !isMuted.wrappedValue },
@@ -781,15 +828,15 @@ extension EditorInspectorView {
                         .fill(
                             LinearGradient(
                                 colors: [
-                                    Color.white.opacity(isEnabled.wrappedValue ? 0.13 : 0.055),
-                                    Color.white.opacity(isEnabled.wrappedValue ? 0.065 : 0.025)
+                                    EditorTheme.chrome(isEnabled.wrappedValue ? 0.13 : 0.055),
+                                    EditorTheme.chrome(isEnabled.wrappedValue ? 0.065 : 0.025)
                                 ],
                                 startPoint: .top,
                                 endPoint: .bottom
                             )
                         )
                     Image(systemName: symbol)
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.appUI(size: 14, weight: .semibold))
                         .foregroundStyle(
                             isEnabled.wrappedValue
                                 ? EditorTheme.platinumAccent
@@ -801,9 +848,9 @@ extension EditorInspectorView {
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(.caption.weight(.semibold))
+                        .font(.appUI(.caption, weight: .semibold))
                     Text(detail)
-                        .font(.caption2)
+                        .font(.appUI(.caption2))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
@@ -815,70 +862,32 @@ extension EditorInspectorView {
                         isEnabled.wrappedValue ? "开启" : "关闭"
                     )
                     .accessibilityIdentifier(
-                        title == "系统声音"
-                            ? "editor.audio.system.enabled"
-                            : "editor.audio.microphone.enabled"
+                        "\(accessibilityStem).enabled"
                     )
             }
-            HStack(spacing: 10) {
-                EditorTransactionalSlider(
-                    editorStore: editorStore,
-                    value: value,
-                    range: 0...1,
-                    commandScope: .audio,
-                    actionName: "调整\(title)音量",
-                    formatValue: { "\(Int(($0 * 100).rounded()))%" },
-                    showsFloatingValue: false,
-                    onError: onError
-                )
-                    .disabled(isMuted.wrappedValue)
-                    .accessibilityLabel("\(title)音量")
-                    .accessibilityValue(
-                        "\(Int((value.wrappedValue * 100).rounded()))%"
-                    )
-                Text(String(format: "%.0f%%", value.wrappedValue * 100))
-                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(
-                        isEnabled.wrappedValue
-                            ? Color.primary.opacity(0.86)
-                            : Color.secondary
-                    )
-                    .padding(.horizontal, 7)
-                    .frame(minWidth: 42, minHeight: 22)
-                    .background(
-                        Color.black.opacity(0.22),
-                        in: Capsule(style: .continuous)
-                    )
-                    .accessibilityHidden(true)
-            }
+            EditorTransactionalSliderRow(
+                editorStore: editorStore, title: "音量", value: value, range: 0...1,
+                commandScope: commandScope, format: .percent, onError: onError
+            )
+            .disabled(isMuted.wrappedValue)
             .opacity(isMuted.wrappedValue ? 0.45 : 1)
         }
         .padding(12)
         .background(
             LinearGradient(
                 colors: [
-                    Color.white.opacity(isEnabled.wrappedValue ? 0.065 : 0.035),
-                    Color.white.opacity(0.024)
+                    EditorTheme.chrome(isEnabled.wrappedValue ? 0.025 : 0.015),
+                    EditorTheme.chrome(0.012)
                 ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             ),
             in: RoundedRectangle(cornerRadius: 12, style: .continuous)
         )
-        .overlay(alignment: .leading) {
-            Capsule(style: .continuous)
-                .fill(
-                    isEnabled.wrappedValue
-                        ? EditorTheme.platinumAccent.opacity(0.72)
-                        : Color.white.opacity(0.08)
-                )
-                .frame(width: 2.5, height: 38)
-                .padding(.leading, 1)
-        }
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(
-                    Color.white.opacity(isEnabled.wrappedValue ? 0.10 : 0.055),
+                    EditorTheme.chrome(isEnabled.wrappedValue ? 0.10 : 0.055),
                     lineWidth: 0.75
                 )
         }
@@ -907,7 +916,7 @@ extension EditorInspectorView {
 
     var inferredContinuousCommandScope: EditorInteractionCommandScope {
         switch selectedInspector {
-        case .frame, .mockup: return .canvas
+        case .frame: return .canvas
         case .opening: return .project
         case .camera: return .camera
         case .audio: return .audio
@@ -987,24 +996,10 @@ struct CursorClickEffectStylePicker: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("动画样式")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text(selection.displayName)
-                    .font(.caption)
-                    .foregroundStyle(.primary)
-            }
-            // Every option below already carries the complete
-            // "点击动画：…" name and selected state. Keep this compact
-            // visual summary out of the reading order to avoid hearing the
-            // current style twice before reaching the actual controls.
-            .accessibilityHidden(true)
             HStack(spacing: 5) {
                 ForEach(CursorClickEffectStyle.allCases, id: \.self) { style in
                     let isSelected = selection == style
-                    let isPreviewing = isSelected || hoveredStyle == style
+                    let isPreviewing = hoveredStyle == style
                     Button {
                         onSelect(style)
                     } label: {
@@ -1012,10 +1007,10 @@ struct CursorClickEffectStylePicker: View {
                             CursorClickEffectPreviewGlyph(
                                 style: style,
                                 isActive: isPreviewing,
-                                color: isSelected ? EditorTheme.amberAccent : Color.secondary
+                                color: isSelected ? EditorTheme.selectionTint : Color.secondary
                             )
                             Text(shortName(for: style))
-                                .font(.system(size: 9.5, weight: isSelected ? .semibold : .medium))
+                                .font(.appUI(size: 11, weight: isSelected ? .medium : .regular))
                                 .lineLimit(1)
                         }
                         .foregroundStyle(
@@ -1027,16 +1022,16 @@ struct CursorClickEffectStylePicker: View {
                             RoundedRectangle(cornerRadius: 8, style: .continuous)
                                 .fill(
                                     isSelected
-                                        ? EditorTheme.amberAccent.opacity(0.13)
-                                        : Color.white.opacity(hoveredStyle == style ? 0.095 : 0.055)
+                                        ? EditorTheme.selectionWash
+                                        : EditorTheme.chrome(hoveredStyle == style ? 0.045 : 0.012)
                                 )
                         )
                         .overlay(
                             RoundedRectangle(cornerRadius: 8, style: .continuous)
                                 .stroke(
                                     isSelected
-                                        ? EditorTheme.amberAccent.opacity(0.72)
-                                        : Color.white.opacity(hoveredStyle == style ? 0.16 : 0.06),
+                                        ? EditorTheme.selectionTint.opacity(0.65)
+                                        : EditorTheme.chrome(hoveredStyle == style ? 0.16 : 0.06),
                                     lineWidth: 1
                                 )
                         )
@@ -1045,8 +1040,8 @@ struct CursorClickEffectStylePicker: View {
                     .onHover { isHovering in
                         hoveredStyle = isHovering ? style : (hoveredStyle == style ? nil : hoveredStyle)
                     }
-                    .help(style.displayName)
-                    .accessibilityLabel("点击动画：\(style.displayName)")
+                    .help(appLocalized(style.displayName))
+                    .accessibilityLabel("\(appLocalized("点击动画"))：\(appLocalized(style.displayName))")
                     .accessibilityAddTraits(isSelected ? .isSelected : [])
                 }
             }
@@ -1058,21 +1053,30 @@ struct CursorClickEffectStylePicker: View {
 /// The picker should explain motion before it changes the project. Only the
 /// selected or hovered glyph advances; the other four remain still, so the
 /// inspector stays inexpensive while its choices remain visually legible.
-private struct CursorClickEffectPreviewGlyph: View {
+struct CursorClickEffectPreviewGlyph: View {
     let style: CursorClickEffectStyle
     let isActive: Bool
     let color: Color
 
     @Environment(\.accessibilityReduceMotion) private var reducesMotion
+    @Environment(\.editorIsActive) private var isEditorActive
+    @State private var isAnimating = false
 
     var body: some View {
-        TimelineView(.animation(paused: !isActive || reducesMotion)) { timeline in
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !isAnimating || !isEditorActive || reducesMotion)) { timeline in
             let rawPhase = timeline.date.timeIntervalSinceReferenceDate
                 .truncatingRemainder(dividingBy: 1.15) / 1.15
-            let phase = isActive && !reducesMotion ? rawPhase : 0.34
+            let phase = isAnimating && isEditorActive && !reducesMotion ? rawPhase : 0.34
             glyph(phase: phase)
         }
         .frame(width: 28, height: 20)
+        .task(id: "\(isActive):\(isEditorActive)") {
+            isAnimating = isActive && isEditorActive && !reducesMotion
+            guard isAnimating else { return }
+            try? await Task.sleep(for: .milliseconds(1600))
+            guard !Task.isCancelled else { return }
+            isAnimating = false
+        }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
@@ -1112,7 +1116,7 @@ private struct CursorClickEffectPreviewGlyph: View {
 
         case .burst:
             Image(systemName: "sparkles")
-                .font(.system(size: 15, weight: .medium))
+                .font(.appUI(size: 15, weight: .medium))
                 .foregroundStyle(color)
                 .rotationEffect(.degrees(-8 + wave * 16))
                 .scaleEffect(0.84 + wave * 0.24)
@@ -1120,7 +1124,7 @@ private struct CursorClickEffectPreviewGlyph: View {
 
         case .none:
             Image(systemName: "slash.circle")
-                .font(.system(size: 15, weight: .medium))
+                .font(.appUI(size: 15, weight: .medium))
                 .foregroundStyle(color)
         }
     }
@@ -1150,82 +1154,42 @@ struct CursorClickColorPicker: View {
         ("冰川白", HexColor(rgb24: 0xFF_FF_FF)),
     ]
 
+    @State private var showsCustomColor = false
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("点击颜色")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                if selectedColor == nil {
-                    Text("跟随光标主题")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            // The default, preset and custom controls below all include
-            // "点击颜色" in their own names. This header remains a visual
-            // summary rather than an extra non-actionable stop.
-            .accessibilityHidden(true)
-
-            HStack(spacing: 7) {
-                Button {
-                    onSelect(nil)
-                } label: {
-                    HStack(spacing: 3) {
-                        Circle()
-                            .fill(Color(hex: defaultColor))
-                            .frame(width: 8, height: 8)
-                        Text("默认")
-                            .font(.system(size: 10))
-                    }
-                    .frame(height: 30)
-                    .padding(.horizontal, 8)
-                    .background(
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .fill(selectedColor == nil ? Color.white.opacity(0.16) : Color.white.opacity(0.06))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .stroke(selectedColor == nil ? Color.white.opacity(0.75) : .clear, lineWidth: 1)
-                    )
-                }
-                .buttonStyle(.editorThumbnail)
-                .help("跟随光标主题色彩")
-                .accessibilityLabel("点击颜色：跟随光标主题")
-                .accessibilityAddTraits(selectedColor == nil ? .isSelected : [])
-
-                ForEach(Self.presets, id: \.hex) { preset in
-                    let isSelected = selectedColor == preset.hex
-                    Button {
-                        onSelect(preset.hex)
-                    } label: {
-                        Circle()
-                            .fill(Color(hex: preset.hex))
-                            .frame(width: 18, height: 18)
-                            .overlay(
-                                Circle()
-                                    .stroke(isSelected ? Color.white : Color.white.opacity(0.2), lineWidth: isSelected ? 2 : 1)
-                            )
-                            .frame(width: 30, height: 30)
-                    }
-                    .buttonStyle(.editorSwatch)
-                    .help(preset.name)
-                    .accessibilityLabel("预设颜色：\(preset.name)")
-                    .accessibilityAddTraits(isSelected ? .isSelected : [])
-                }
-
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Text("颜色").font(.appUI(size: 12)).foregroundStyle(.secondary)
                 Spacer(minLength: 0)
+                Button { onSelect(nil) } label: {
+                    Image(systemName: "arrow.uturn.backward").font(.appUI(size: 11))
+                        .frame(width: 25, height: 28)
+                }
+                .buttonStyle(.editorToolbarPress).help("恢复光标默认颜色")
+                .accessibilityLabel("点击颜色：跟随光标主题")
+                ForEach(Self.presets, id: \.hex) { preset in
+                    Button { onSelect(preset.hex) } label: {
+                        RoundedRectangle(cornerRadius: 5).fill(Color(hex: preset.hex))
+                            .frame(width: 18, height: 18).padding(3)
+                            .overlay(RoundedRectangle(cornerRadius: 7)
+                                .strokeBorder(selectedColor == preset.hex ? EditorTheme.selectionTint : .clear, lineWidth: 1.5))
+                    }
+                    .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 7, cornerStyle: .circular)).help(preset.name)
+                    .accessibilityLabel("预设颜色：\(preset.name)")
+                    .accessibilityAddTraits(selectedColor == preset.hex ? .isSelected : [])
+                }
+                Button { showsCustomColor = true } label: {
+                    Circle().fill(Color(hex: selectedColor ?? defaultColor)).frame(width: 20, height: 20)
+                        .overlay(Image(systemName: "plus").font(.appUI(size: 9, weight: .bold)).foregroundStyle(.black.opacity(0.65)))
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 14, cornerStyle: .circular)).accessibilityLabel("自定义点击颜色")
+                .popover(isPresented: $showsCustomColor) {
+                    EditorTransactionalColorInput(editorStore: editorStore, title: "点击颜色",
+                        value: customColorBinding, commandScope: .cursor,
+                        actionName: "调整点击动画颜色", onError: onError, presentsPalette: true)
+                }
             }
-
-            EditorTransactionalColorInput(
-                editorStore: editorStore,
-                title: "自定义颜色",
-                value: customColorBinding,
-                commandScope: .cursor,
-                actionName: "调整点击动画颜色",
-                onError: onError
-            )
         }
         .accessibilityElement(children: .contain)
     }
@@ -1241,5 +1205,53 @@ struct CursorClickColorPicker: View {
             get: { optional.wrappedValue ?? defaultColor },
             set: { optional.wrappedValue = $0 }
         )
+    }
+}
+
+/// An illustrative preview responds to an explicit replay or a setting change;
+/// it never runs a perpetual animation just because this page is selected.
+private struct EditorCursorStylePreview: View {
+    let style: CursorStyle
+    @State private var replayID = 0
+    @State private var isReplaying = false
+    @Environment(\.editorIsActive) private var isEditorActive
+
+    var body: some View {
+        Button { replayID += 1 } label: {
+            ZStack {
+                EditorTheme.chrome(0.018)
+                EditorWorkspaceGrid()
+                CursorClickEffectPreviewGlyph(style: style.clickEffectStyle, isActive: isReplaying,
+                    color: Color(hex: style.clickColor ?? CursorAssetLibrary.defaultClickColor))
+                    .scaleEffect(2.4 * style.clickScale).opacity(style.clickOpacity)
+                Group {
+                    if let image = CursorAssetLibrary.resolvedAsset(for: style.assetID)?.image {
+                        Image(nsImage: image).resizable().scaledToFit()
+                    } else {
+                        Image(nsImage: NSCursor.arrow.image).resizable().scaledToFit()
+                    }
+                }
+                .frame(width: min(max(28 * style.size, 20), 70), height: min(max(36 * style.size, 24), 80))
+                .offset(x: 8, y: 12)
+                .opacity(style.assetID == .hidden ? 0 : 1)
+            }
+            .frame(height: 124)
+            .overlay(alignment: .topLeading) {
+                Text("效果预览").font(.appUI(size: 10)).foregroundStyle(.tertiary).padding(10)
+            }
+            .overlay(alignment: .topTrailing) {
+                Image(systemName: "arrow.clockwise").font(.appUI(size: 11)).foregroundStyle(.secondary).padding(10)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(EditorTheme.hairline))
+        }
+        .buttonStyle(.plain).accessibilityLabel("播放光标效果示意")
+        .task(id: "\(replayID):\(style.clickEffectStyle):\(isEditorActive)") {
+            isReplaying = isEditorActive
+            guard isEditorActive else { return }
+            try? await Task.sleep(for: .milliseconds(1600))
+            guard !Task.isCancelled else { return }
+            isReplaying = false
+        }
     }
 }

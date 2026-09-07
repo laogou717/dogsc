@@ -175,18 +175,22 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
             useNativeRecordingOutput = false
         }
         let streamConfiguration = SCStreamConfiguration()
-        let encodedDimensions = NativeScreenRecordingBackendPolicy.captureDimensions(
+        let nativeEncodedDimensions = NativeScreenRecordingBackendPolicy.captureDimensions(
             sourceWidth: sourceWidth,
             sourceHeight: sourceHeight,
             codec: configuration.captureCodec,
             usesNativeWriter: useNativeRecordingOutput,
             legacyH264Maximum: maximumH264CaptureDimensions
         )
-        let streamSurfaceDimensions = NativeScreenRecordingBackendPolicy
+        let encodedDimensions = configuration.captureResolutionLimit.applying(to: nativeEncodedDimensions)
+        let nativeSurfaceDimensions = NativeScreenRecordingBackendPolicy
             .streamSurfaceDimensions(
                 sourceWidth: sourceWidth,
                 sourceHeight: sourceHeight
             )
+        let streamSurfaceDimensions = useNativeRecordingOutput
+            ? configuration.captureResolutionLimit.applying(to: nativeSurfaceDimensions)
+            : nativeSurfaceDimensions
         // REC-003: preserve native Retina luma/detail until the writer's one
         // explicit resize. Capture surfaces and encoded output intentionally
         // remain separate ownership boundaries.
@@ -215,9 +219,10 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
             streamConfiguration.sourceRect = sourceRect
         }
         // REC-001/REC-002/REC-004: keep real VFR timestamps and write every
-        // complete monotonic SCK sample. Display/area sources request at most
-        // 60 updates so a 120 Hz 5K compositor does not overload WindowServer;
-        // independent windows keep their native producer cadence.
+        // complete monotonic SCK sample. Every Mac screen source requests at
+        // most 60 updates so 120 Hz display/window producers do not spend the
+        // recording's quality and encoding budget on frames a 60 FPS export
+        // cannot retain.
         streamConfiguration.minimumFrameInterval =
             CaptureStreamTimingPolicy.minimumFrameInterval(for: configuration.source)
         // REC-001/REC-004: use SCK's bounded eight-surface pool so short

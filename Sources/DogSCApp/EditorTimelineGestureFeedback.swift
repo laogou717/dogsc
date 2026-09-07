@@ -75,18 +75,18 @@ private struct EditorTimelineGestureFeedbackHUD: View {
 
             HStack(spacing: 9) {
                 Image(systemName: descriptor.icon)
-                    .font(.system(size: 11, weight: .bold))
+                    .font(.appUI(size: 11, weight: .bold))
                     .foregroundStyle(Color.black.opacity(0.76))
                     .frame(width: 24, height: 24)
                     .background(accent, in: Circle())
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(descriptor.title)
-                        .font(.system(size: 10.5, weight: .semibold))
-                        .foregroundStyle(Color.white.opacity(0.96))
+                        .font(.appUI(size: 10.5, weight: .semibold))
+                        .foregroundStyle(EditorTheme.chrome(0.96))
                     Text(descriptor.value)
-                        .font(.system(size: 9.5, weight: .medium, design: .monospaced))
-                        .foregroundStyle(Color.white.opacity(0.66))
+                        .font(.appUI(size: 9.5, weight: .medium, design: .monospaced))
+                        .foregroundStyle(EditorTheme.chrome(0.66))
                         .lineLimit(1)
                 }
 
@@ -94,7 +94,7 @@ private struct EditorTimelineGestureFeedbackHUD: View {
 
                 if let status = descriptor.status {
                     Text(status)
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(.appUI(size: 9, weight: .semibold))
                         .foregroundStyle(accent.opacity(0.98))
                         .padding(.horizontal, 7)
                         .frame(height: 22)
@@ -109,7 +109,7 @@ private struct EditorTimelineGestureFeedbackHUD: View {
             .frame(width: min(bubbleWidth, max(visibleWidth - 10, 80)), height: 40)
             .background(
                 LinearGradient(
-                    colors: [Color(white: 0.14), Color(white: 0.075)],
+                    colors: [EditorTheme.cardElevated, EditorTheme.panelRaised],
                     startPoint: .top,
                     endPoint: .bottom
                 ),
@@ -192,7 +192,8 @@ extension EditorTimelineView {
                 / max(primaryRetimeDraft.proposedRate, 0.000_1)
             let end = primaryRetimeDraft.original.outputStart + outputDuration
             let status: String?
-            if primaryRetimeDraft.proposedRate >= 20 - 0.000_1 {
+            if primaryRetimeDraft.proposedRate
+                >= RecordingSegment.maximumPlaybackRate - 0.000_1 {
                 status = "速度上限"
             } else if primaryRetimeDraft.proposedRate <= 1 + 0.000_1 {
                 status = "正常速度"

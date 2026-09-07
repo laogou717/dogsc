@@ -306,7 +306,7 @@ extension EditorInspectorView {
         )
     }
 
-    func zoomAnimationTransitionDurationBinding(_ index: Int) -> Binding<Double> {
+    func zoomAnimationTransitionDurationBinding(_ index: Int, entering: Bool) -> Binding<Double> {
         let id = editorStore.previewProject.zoomAnimations.indices.contains(index)
             ? editorStore.previewProject.zoomAnimations[index].id
             : selectedZoomID
@@ -316,16 +316,28 @@ extension EditorInspectorView {
                       let animation = editorStore.previewProject.zoomAnimations.first(where: {
                           $0.id == id
                       }) else { return 0.7 }
-                return (animation.enterDuration + animation.exitDuration) / 2
+                return entering ? animation.requestedEnterDuration : animation.requestedExitDuration()
             },
             set: { value in
                 guard let id,
                       let current = editorStore.previewProject.zoomAnimations.first(where: { $0.id == id })
                 else { return }
                 var updated = current
-                let duration = min(max(value, 0.08), 3)
-                updated.enterDuration = duration
-                updated.exitDuration = duration
+                updated.preserveTransitionIntent()
+                let duration = min(max(value, 0), 3)
+                if entering {
+                    updated.preferredEnterDuration = duration
+                    updated.enterDuration = min(duration, updated.duration)
+                    updated.enterProgressOffset = 0
+                } else {
+                    updated.preferredExitDuration = duration
+                    let next = editorStore.previewProject.zoomAnimations
+                        .filter { $0.id != updated.id && $0.startTime >= updated.endTime }
+                        .map(\.startTime).min()
+                    let gap = next.map { max($0 - updated.endTime, 0) }
+                    updated.exitDuration = gap.map { $0 <= ZoomInterpolator.adjacencyTolerance ? 0 : min(duration, $0) } ?? duration
+                    updated.exitProgressOffset = 0
+                }
                 updateZoomAnimation(updated)
             }
         )
@@ -539,6 +551,29 @@ extension EditorInspectorView {
         }
         do {
             try editorStore.replaceZoom(animation, actionName: "调整缩放")
+        } catch {
+            onError(error.localizedDescription)
+        }
+    }
+
+    /// Reuse the selected clip's authored magnification without flattening
+    /// every clip's timing or focal point. Applying those spatial/timing
+    /// values globally would move automatic cursor-follow zooms to one spot
+    /// and could create overlapping return transitions.
+    func applySelectedZoomScaleToAll(_ scale: Double) {
+        let resolvedScale = min(max(scale.isFinite ? scale : 1.6, 1), 6)
+        var timeline = editorStore.project.timeline
+        for index in timeline.zoomClips.indices {
+            timeline.zoomClips[index].scale = resolvedScale
+        }
+        do {
+            var motion = editorStore.project.motion
+            motion.defaultZoomScale = resolvedScale
+            try editorStore.performBatch([
+                ProjectCommand.replacingTimeline(in: editorStore.project, with: timeline),
+                ProjectCommand.replacingMotion(in: editorStore.project, with: motion),
+            ], actionName: "统一全部缩放级别")
+            AppPreferences.rememberZoomCreationScale(resolvedScale)
         } catch {
             onError(error.localizedDescription)
         }

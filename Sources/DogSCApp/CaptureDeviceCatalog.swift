@@ -30,14 +30,45 @@ struct CameraSystemVideoEffects: Equatable, Sendable {
 /// The AVFoundation boundary for device discovery. Discovery sessions are
 /// rebuilt for each catalog refresh and again for every recorder start.
 enum CaptureDeviceCatalog {
+    struct Snapshot: Sendable {
+        let screenDevices: [CaptureDeviceInfo]
+        let cameras: [CaptureDeviceInfo]
+        let microphones: [CaptureDeviceInfo]
+    }
+
+    // UI refreshes must not wait for device discovery/driver format queries.
+    // Serialize them so connection bursts do not enumerate devices in parallel.
+    private static let discoveryQueue = DispatchQueue(
+        label: "cn.laogou.dogsc.device-catalog", qos: .userInitiated
+    )
+
+    static func snapshotForUI() async -> Snapshot {
+        await withCheckedContinuation { continuation in
+            discoveryQueue.async {
+                continuation.resume(returning: Snapshot(
+                    screenDevices: screenDevices(), cameras: videoDevices(),
+                    microphones: audioDevices()
+                ))
+            }
+        }
+    }
+
+    static func resolutionsForUI(deviceUniqueID: String) async -> [CameraCaptureResolution] {
+        await withCheckedContinuation { continuation in
+            discoveryQueue.async {
+                continuation.resume(returning: cameraResolutions(deviceUniqueID: deviceUniqueID))
+            }
+        }
+    }
+
     static func enabledSystemVideoEffects() -> CameraSystemVideoEffects {
         var names: [String] = []
-        if AVCaptureDevice.isPortraitEffectEnabled { names.append("人像") }
-        if AVCaptureDevice.isCenterStageEnabled { names.append("人物居中") }
-        if AVCaptureDevice.isStudioLightEnabled { names.append("演播室灯光") }
-        if AVCaptureDevice.reactionEffectGesturesEnabled { names.append("手势特效识别") }
+        if AVCaptureDevice.isPortraitEffectEnabled { names.append(appLocalized("人像")) }
+        if AVCaptureDevice.isCenterStageEnabled { names.append(appLocalized("人物居中")) }
+        if AVCaptureDevice.isStudioLightEnabled { names.append(appLocalized("演播室灯光")) }
+        if AVCaptureDevice.reactionEffectGesturesEnabled { names.append(appLocalized("手势特效识别")) }
         if #available(macOS 15.0, *), AVCaptureDevice.isBackgroundReplacementEnabled {
-            names.append("背景替换")
+            names.append(appLocalized("背景替换"))
         }
         return CameraSystemVideoEffects(names: names)
     }

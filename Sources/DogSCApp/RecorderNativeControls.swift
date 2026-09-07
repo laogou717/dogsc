@@ -9,6 +9,7 @@ struct RecorderMenuItem {
         case info
     }
 
+    var systemImage: String? = nil
     let kind: Kind
     let title: String
     let isOn: Bool
@@ -17,13 +18,15 @@ struct RecorderMenuItem {
 
     static func action(
         _ title: String,
+        systemImage: String? = nil,
         isOn: Bool = false,
         isEnabled: Bool = true,
         handler: @escaping () -> Void
     ) -> Self {
         Self(
+            systemImage: systemImage,
             kind: .action,
-            title: title,
+            title: appLocalized(title),
             isOn: isOn,
             isEnabled: isEnabled,
             handler: handler
@@ -31,7 +34,7 @@ struct RecorderMenuItem {
     }
 
     static func info(_ title: String) -> Self {
-        Self(kind: .info, title: title, isOn: false, isEnabled: false, handler: nil)
+        Self(kind: .info, title: appLocalized(title), isOn: false, isEnabled: false, handler: nil)
     }
 
     static var separator: Self {
@@ -39,17 +42,19 @@ struct RecorderMenuItem {
     }
 }
 
-private final class RecorderMenuActionBox: NSObject {
-    let handler: () -> Void
-
-    init(handler: @escaping () -> Void) {
-        self.handler = handler
-    }
-}
-
 final class RecorderMenuButtonNSView: NSButton {
+    var onPressChange: ((Bool) -> Void)?
+    // Artwork belongs to SwiftUI; AppKit owns first-click and mouse tracking only.
+    override func draw(_ dirtyRect: NSRect) {}
+    override func mouseDown(with event: NSEvent) {
+        guard isEnabled else { return }
+        onPressChange?(true)
+        defer { onPressChange?(false) }
+        super.mouseDown(with: event)
+    }
+
     var hoverCornerRadius: CGFloat = 10 {
-        didSet { layer?.cornerRadius = hoverCornerRadius }
+        didSet { updateHoverShape() }
     }
     var hoverHighlightOpacity: CGFloat = 0.065
     private var hoverTrackingArea: NSTrackingArea?
@@ -59,6 +64,7 @@ final class RecorderMenuButtonNSView: NSButton {
         wantsLayer = true
         layer?.masksToBounds = true
         layer?.cornerRadius = hoverCornerRadius
+        layer?.cornerCurve = .continuous
     }
 
     required init?(coder: NSCoder) {
@@ -66,9 +72,22 @@ final class RecorderMenuButtonNSView: NSButton {
         wantsLayer = true
         layer?.masksToBounds = true
         layer?.cornerRadius = hoverCornerRadius
+        layer?.cornerCurve = .continuous
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func layout() {
+        super.layout()
+        updateHoverShape()
+    }
+
+    private func updateHoverShape() {
+        layer?.cornerRadius = hoverCornerRadius
+        let isCircle = bounds.width > 0 && abs(bounds.width - bounds.height) < 0.5
+            && hoverCornerRadius >= bounds.height / 2
+        layer?.cornerCurve = isCircle ? .circular : .continuous
+    }
 
     override func updateTrackingAreas() {
         if let hoverTrackingArea {
@@ -118,15 +137,15 @@ final class RecorderMenuButtonNSView: NSButton {
     }
 
     private func setHoverAppearance(_ hovering: Bool) {
-        let targetColor = hovering
-            ? NSColor.white.withAlphaComponent(hoverHighlightOpacity).cgColor
+        let targetColor = hovering && isEnabled
+            ? NSColor.black.withAlphaComponent(hoverHighlightOpacity).cgColor
             : NSColor.clear.cgColor
         guard layer?.backgroundColor != targetColor else { return }
 
         let animation = CABasicAnimation(keyPath: "backgroundColor")
         animation.fromValue = layer?.presentation()?.backgroundColor ?? layer?.backgroundColor
         animation.toValue = targetColor
-        animation.duration = 0.14
+        animation.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.14
         animation.timingFunction = CAMediaTimingFunction(name: .easeOut)
         layer?.add(animation, forKey: "recorderMenuHover")
         layer?.backgroundColor = targetColor
@@ -140,6 +159,7 @@ struct RecorderActionTrigger: NSViewRepresentable {
     var accessibilityIdentifier: String? = nil
     var cornerRadius: CGFloat = 10
     var highlightOpacity: Double = 0.075
+    var onPressChange: ((Bool) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(action: action)
@@ -158,7 +178,7 @@ struct RecorderActionTrigger: NSViewRepresentable {
         button.hoverCornerRadius = cornerRadius
         button.hoverHighlightOpacity = highlightOpacity
         button.isEnabled = isEnabled
-        button.setAccessibilityLabel(accessibilityLabel)
+        button.setAccessibilityLabel(appLocalized(accessibilityLabel))
         button.setAccessibilityIdentifier(accessibilityIdentifier)
         button.identifier = accessibilityIdentifier.map {
             NSUserInterfaceItemIdentifier($0)
@@ -168,10 +188,11 @@ struct RecorderActionTrigger: NSViewRepresentable {
 
     func updateNSView(_ nsView: RecorderMenuButtonNSView, context: Context) {
         context.coordinator.action = action
+        nsView.onPressChange = onPressChange
         nsView.hoverCornerRadius = cornerRadius
         nsView.hoverHighlightOpacity = highlightOpacity
         nsView.isEnabled = isEnabled
-        nsView.setAccessibilityLabel(accessibilityLabel)
+        nsView.setAccessibilityLabel(appLocalized(accessibilityLabel))
         nsView.setAccessibilityIdentifier(accessibilityIdentifier)
         nsView.identifier = accessibilityIdentifier.map {
             NSUserInterfaceItemIdentifier($0)
@@ -188,127 +209,5 @@ struct RecorderActionTrigger: NSViewRepresentable {
         @objc func performAction(_ sender: NSButton) {
             action()
         }
-    }
-}
-
-private struct RecorderMenuTrigger: NSViewRepresentable {
-    let items: [RecorderMenuItem]
-    let accessibilityLabel: String
-    let accessibilityIdentifier: String?
-    let cornerRadius: CGFloat
-    let highlightOpacity: Double
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(items: items)
-    }
-
-    func makeNSView(context: Context) -> RecorderMenuButtonNSView {
-        let button = RecorderMenuButtonNSView()
-        button.isBordered = false
-        button.title = ""
-        button.focusRingType = .none
-        button.target = context.coordinator
-        button.action = #selector(Coordinator.showMenu(_:))
-        button.hoverCornerRadius = cornerRadius
-        button.hoverHighlightOpacity = highlightOpacity
-        button.setAccessibilityLabel(accessibilityLabel)
-        button.setAccessibilityIdentifier(accessibilityIdentifier)
-        button.identifier = accessibilityIdentifier.map {
-            NSUserInterfaceItemIdentifier($0)
-        }
-        return button
-    }
-
-    func updateNSView(_ nsView: RecorderMenuButtonNSView, context: Context) {
-        context.coordinator.items = items
-        nsView.hoverCornerRadius = cornerRadius
-        nsView.hoverHighlightOpacity = highlightOpacity
-        nsView.setAccessibilityLabel(accessibilityLabel)
-        nsView.setAccessibilityIdentifier(accessibilityIdentifier)
-        nsView.identifier = accessibilityIdentifier.map {
-            NSUserInterfaceItemIdentifier($0)
-        }
-    }
-
-    @MainActor
-    final class Coordinator: NSObject {
-        var items: [RecorderMenuItem]
-
-        init(items: [RecorderMenuItem]) {
-            self.items = items
-        }
-
-        @objc func showMenu(_ sender: NSButton) {
-            let menu = NSMenu()
-            menu.autoenablesItems = false
-
-            for entry in items {
-                switch entry.kind {
-                case .separator:
-                    menu.addItem(.separator())
-                case .info:
-                    let item = NSMenuItem(title: entry.title, action: nil, keyEquivalent: "")
-                    item.isEnabled = false
-                    menu.addItem(item)
-                case .action:
-                    let item = NSMenuItem(
-                        title: entry.title,
-                        action: #selector(performMenuAction(_:)),
-                        keyEquivalent: ""
-                    )
-                    item.target = self
-                    item.state = entry.isOn ? .on : .off
-                    item.isEnabled = entry.isEnabled
-                    if let handler = entry.handler {
-                        item.representedObject = RecorderMenuActionBox(handler: handler)
-                    }
-                    menu.addItem(item)
-                }
-            }
-
-            menu.popUp(
-                positioning: nil,
-                at: NSPoint(x: 0, y: sender.bounds.maxY + 4),
-                in: sender
-            )
-
-            (sender as? RecorderMenuButtonNSView)?.refreshHoverState()
-        }
-
-        @objc private func performMenuAction(_ sender: NSMenuItem) {
-            (sender.representedObject as? RecorderMenuActionBox)?.handler()
-        }
-    }
-}
-
-struct RecorderPopupMenuButton<Content: View>: View {
-    let width: CGFloat
-    let items: [RecorderMenuItem]
-    let accessibilityLabel: String
-    var accessibilityIdentifier: String? = nil
-    var height: CGFloat = 44
-    var cornerRadius: CGFloat = 10
-    var highlightOpacity: Double = 0.065
-    @ViewBuilder let content: Content
-
-    var body: some View {
-        ZStack {
-            content
-                // The AppKit trigger below owns the menu action and accessible
-                // name. Its SwiftUI artwork is only a visual label; exposing
-                // both creates separate icon/text stops before the real button.
-                .accessibilityHidden(true)
-
-            RecorderMenuTrigger(
-                items: items,
-                accessibilityLabel: accessibilityLabel,
-                accessibilityIdentifier: accessibilityIdentifier,
-                cornerRadius: cornerRadius,
-                highlightOpacity: highlightOpacity
-            )
-            .frame(width: width, height: height)
-        }
-        .frame(width: width, height: height)
-        .contentShape(Rectangle())
     }
 }

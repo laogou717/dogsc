@@ -31,16 +31,16 @@ private enum EditorInspectorSelectionKind: Hashable {
     case audio
     case mosaic
     case sticker
-    case progress
 }
 
 private enum EditorInspectorScrollContext: Hashable {
     case crop
     case selection(EditorInspectorSelectionKind)
     case tab(InspectorTab)
+    case frameTab(FrameInspectorTab)
 }
 
-private enum EditorInspectorScrollAnchor: Hashable {
+enum EditorInspectorScrollAnchor: Hashable {
     case top
 }
 
@@ -58,7 +58,7 @@ struct EditorInspectorView: View {
     @Binding var visibleTimelineTracks: EditorTimelineTrackVisibility
     let isCropping: Bool
     @Binding var cropDraft: NormalizedCrop
-    /// 内容面板宽度（不含 70pt 导航轨），由编辑器分栏条实时解析。
+    /// Parameter panel width. Tool navigation is owned by the workspace.
     let contentWidth: CGFloat
     let onChooseWallpaper: () -> BackgroundSource?
     let onChooseDesktopWallpaper: () -> BackgroundSource?
@@ -68,7 +68,7 @@ struct EditorInspectorView: View {
     @State var isNamingLayoutPreset = false
     @State var layoutPresetName = ""
     @State var motionInspectorMode = EditorMotionInspectorMode.zoom
-    @State var hoveredInspectorTab: InspectorTab?
+    @State var selectedFrameInspectorTab = FrameInspectorTab.background
     @State var savedLayoutPresetMenuHovered = false
 
 
@@ -114,6 +114,30 @@ struct EditorInspectorView: View {
     var cameraHasVideo: Bool { cameraInventory.hasVideo }
     var microphoneHasAudio: Bool { microphoneInventory.hasAudio }
 
+    /// Selecting another primary clip must not replace a global inspector task
+    /// the user deliberately kept open. The frame tab remains the one place
+    /// where primary selection opens the clip-specific panel.
+    private var primarySelectionKeepsInspectorTask: Bool {
+        guard case .primarySegment = editorStore.selection else { return false }
+        return selectedInspector != .frame
+    }
+
+    private func header(for tab: InspectorTab) -> (title: String, scope: String?) {
+        if tab == .audio,
+           case let .primarySegment(id) = editorStore.selection,
+           let context = primarySegmentContext(id: id) {
+            return ("声音", String(format: appLocalized("第 %lld 段"), context.index + 1))
+        }
+        return switch tab {
+        case .frame: ("画面", "全片")
+        case .opening: ("开场", "全片")
+        case .zoom: ("运镜", "缩放")
+        case .cursor: ("光标", "全片")
+        case .camera: ("摄像头", "全片基础布局")
+        case .audio: ("声音", "全片")
+        }
+    }
+
     var selectedZoomID: UUID? {
         get {
             guard case let .zoom(id) = editorStore.selection else { return nil }
@@ -125,15 +149,11 @@ struct EditorInspectorView: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            inspectorRail
-                .disabled(isCropping)
-                .opacity(isCropping ? 0.45 : 1)
-            Divider().overlay(dividerColor)
-            inspector
-        }
+        inspector
         .onChange(of: editorStore.selection) { _, selection in
             switch selection {
+            case .screen:
+                selectedFrameInspectorTab = .layout
             case .screenMotionTrack, .screenMotion:
                 motionInspectorMode = .screen3D
             case .zoom, .zoomTrack:
@@ -144,160 +164,51 @@ struct EditorInspectorView: View {
         }
     }
 
-    @Namespace private var inspectorRailNamespace
-
-    var inspectorRail: some View {
-        VStack(spacing: 7) {
-            ForEach(InspectorTab.allCases) { tab in
-                let isSelected = selectedInspector == tab
-                Button {
-                    withAnimation(SpringMotion.fluid) {
-                        selectedInspector = tab
-                    }
-                } label: {
-                    VStack(spacing: 3) {
-                        Image(systemName: tab.icon)
-                            .font(.system(size: 15, weight: isSelected ? .bold : .semibold))
-                            .frame(height: 18)
-                        Text(tab.rawValue)
-                            .font(.system(size: 10, weight: isSelected ? .semibold : .medium))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.85)
-                    }
-                    .frame(width: 56, height: 52)
-                    .background {
-                        if isSelected {
-                            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                .fill(
-                                    LinearGradient(
-                                        colors: [
-                                            Color.white.opacity(0.14),
-                                            Color.white.opacity(0.08)
-                                        ],
-                                        startPoint: .top,
-                                        endPoint: .bottom
-                                    )
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                        .stroke(Color.white.opacity(0.16), lineWidth: 0.75)
-                                )
-                                .overlay(alignment: .leading) {
-                                    Capsule()
-                                        .fill(
-                                            LinearGradient(
-                                                colors: [Color.white, Color(white: 0.85)],
-                                                startPoint: .top,
-                                                endPoint: .bottom
-                                            )
-                                        )
-                                        .frame(width: 2.5, height: 22)
-                                        .offset(x: -1)
-                                        .shadow(color: Color.white.opacity(0.4), radius: 3)
-                                }
-                                .matchedGeometryEffect(id: "activeInspectorTabIndicator", in: inspectorRailNamespace)
-                        } else if hoveredInspectorTab == tab && inspectorTabIsAvailable(tab) {
-                            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                .fill(Color.white.opacity(0.06))
-                        }
-                    }
-                    .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-                    .scaleEffect(isSelected ? 1.02 : 1.0)
-                }
-                // The rail already owns hover and selected surfaces. Reuse
-                // the press-only chrome response so a click feels physical
-                // without wrapping the tab in another card.
-                .buttonStyle(.editorToolbarPress)
-                .foregroundStyle(inspectorRailForeground(for: tab))
-                .disabled(!inspectorTabIsAvailable(tab))
-                .opacity(inspectorTabIsAvailable(tab) ? 1 : 0.32)
-                .accessibilityAddTraits(selectedInspector == tab ? .isSelected : [])
-                .help(inspectorTabHelp(tab))
-                .onHover { isHovering in
-                    guard inspectorTabIsAvailable(tab) else { return }
-                    withAnimation(SpringMotion.interactive) {
-                        if isHovering {
-                            hoveredInspectorTab = tab
-                        } else if hoveredInspectorTab == tab {
-                            hoveredInspectorTab = nil
-                        }
-                    }
-                }
-            }
-            Spacer()
-        }
-        .padding(.top, 12)
-        .frame(width: 70)
-        .background(EditorTheme.backgroundDeep)
-        .animation(SpringMotion.interactive, value: hoveredInspectorTab)
-        .animation(SpringMotion.fluid, value: selectedInspector)
-    }
-
-    func inspectorRailBackground(for tab: InspectorTab) -> Color {
-        if selectedInspector == tab {
-            return Color.white.opacity(0.12)
-        }
-        if hoveredInspectorTab == tab, inspectorTabIsAvailable(tab) {
-            return Color.white.opacity(0.07)
-        }
-        return .clear
-    }
-
-    func inspectorRailForeground(for tab: InspectorTab) -> Color {
-        if selectedInspector == tab {
-            return .white
-        }
-        if hoveredInspectorTab == tab, inspectorTabIsAvailable(tab) {
-            return Color.white.opacity(0.9)
-        }
-        return .secondary
-    }
-
-    func inspectorTabIsAvailable(_ tab: InspectorTab) -> Bool {
-        switch tab {
-        case .camera:
-            return cameraHasVideo
-        case .audio:
-            return sourceHasAudio || microphoneHasAudio
-        case .cursor:
-            return !pointerEvents.isEmpty
-        case .frame, .opening, .mockup, .zoom:
+    private var showsFrameInspectorNavigation: Bool {
+        guard selectedInspector == .frame, !isCropping else { return false }
+        switch editorStore.selection {
+        case .canvas, .screen, nil:
             return true
+        default:
+            return false
         }
     }
 
-    func inspectorTabHelp(_ tab: InspectorTab) -> String {
-        guard !inspectorTabIsAvailable(tab) else { return tab.rawValue }
-        switch tab {
-        case .camera: return "当前项目没有摄像头素材"
-        case .audio: return "当前项目没有系统声音或麦克风素材"
-        case .cursor: return "当前项目没有记录鼠标事件"
-        case .frame, .opening, .mockup, .zoom: return tab.rawValue
+    private var frameInspectorNavigation: some View {
+        EditorSegmentedControl(
+            options: FrameInspectorTab.allCases,
+            title: { $0.localizedLabel },
+            icon: { $0.icon },
+            selection: $selectedFrameInspectorTab
+        )
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .background(panelBackground)
+        .overlay(alignment: .bottom) {
+            Divider().overlay(dividerColor)
         }
+        .accessibilityIdentifier("editor.inspector.frame-subnavigation")
     }
 
     var inspector: some View {
         VStack(spacing: 0) {
             ZStack(alignment: .leading) {
                 HStack(spacing: 8) {
-                    Text(inspectorHeader.title)
-                        .font(.system(size: 14.5, weight: .semibold))
-                        .foregroundStyle(Color.white.opacity(0.94))
+                    Text(appLocalized(inspectorHeader.title))
+                        .font(.appUI(size: 17, weight: .semibold))
+                        .foregroundStyle(EditorTheme.chrome(0.94))
                     if let scope = inspectorHeader.scope {
-                        Text(scope)
-                            .font(.system(size: 10.5, weight: .semibold))
+                        Text(appLocalized(scope))
+                            .font(.appUI(size: 10.5, weight: .semibold))
                             .foregroundStyle(EditorTheme.platinumMuted)
                             .lineLimit(1)
                             .padding(.horizontal, 7)
                             .frame(height: 23)
                             .background(
-                                Color.black.opacity(0.24),
+                                EditorTheme.chrome(0.065),
                                 in: Capsule(style: .continuous)
                             )
-                            .overlay {
-                                Capsule(style: .continuous)
-                                    .stroke(Color.white.opacity(0.09), lineWidth: 0.6)
-                            }
+
                         }
                     Spacer()
                 }
@@ -310,13 +221,7 @@ struct EditorInspectorView: View {
             }
             .padding(.horizontal, 18)
             .frame(height: 54)
-            .background(
-                LinearGradient(
-                    colors: [EditorTheme.panelRaised.opacity(0.72), panelBackground],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            )
+            .background(panelBackground)
             .overlay(alignment: .bottom) {
                 Divider().overlay(dividerColor)
             }
@@ -324,38 +229,28 @@ struct EditorInspectorView: View {
             .accessibilityLabel(inspectorTitle)
             .animation(SpringMotion.fluid, value: inspectorPresentationIdentity)
 
-            ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 0) {
-                        Color.clear
-                            .frame(height: 0)
-                            .id(EditorInspectorScrollAnchor.top)
+            if showsFrameInspectorNavigation {
+                frameInspectorNavigation
+            }
 
-                        VStack(alignment: .leading, spacing: 18) {
-                            inspectorContent
-                        }
-                        .padding(16)
-                        // Preserve the reader's viewport while moving between
-                        // objects of the same kind (notably sticker-to-sticker
-                        // animation tuning). A different inspector task still
-                        // receives a clean top position.
-                        .id(inspectorScrollContext)
-                        .transition(
-                            .asymmetric(
-                                insertion: .opacity.combined(with: .move(edge: .trailing)),
-                                removal: .opacity.combined(with: .scale(scale: 0.985))
-                            )
-                        )
-                    }
+            ZStack(alignment: .top) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) { inspectorContent }
+                        .padding(.horizontal, 22).padding(.vertical, 18)
                 }
-                .animation(SpringMotion.fluid, value: inspectorScrollContext)
-                .onChange(of: inspectorScrollContext) { _, _ in
-                    var transaction = Transaction()
-                    transaction.disablesAnimations = true
-                    withTransaction(transaction) {
-                        proxy.scrollTo(EditorInspectorScrollAnchor.top, anchor: .top)
-                    }
-                }
+                .scrollIndicators(.hidden)
+                .id(inspectorScrollContext)
+                .transition(.asymmetric(
+                    insertion: .opacity.combined(with: .offset(y: 10)),
+                    removal: .opacity.combined(with: .offset(y: -5))))
+            }
+            .clipped()
+            .animation(SpringMotion.fluid, value: inspectorScrollContext)
+            if showsFrameInspectorNavigation, selectedFrameInspectorTab == .background,
+               editorStore.previewProject.canvas.backgroundSource.usesWallpaperMedia {
+                backgroundBlurSection
+                    .padding(.horizontal, 22).padding(.bottom, 14)
+                    .background(panelBackground)
             }
         }
         .frame(width: contentWidth)
@@ -364,23 +259,22 @@ struct EditorInspectorView: View {
 
     var inspectorHeader: (title: String, scope: String?) {
         if isCropping { return ("裁切", "屏幕素材") }
+        if primarySelectionKeepsInspectorTask {
+            return header(for: selectedInspector)
+        }
         if selectedInspector == .opening,
            editorStore.selection == .canvas || editorStore.selection == nil {
             return ("开场", "全片")
-        }
-        if selectedInspector == .mockup,
-           editorStore.selection == .canvas || editorStore.selection == nil {
-            return ("样机", "屏幕素材")
         }
         switch editorStore.selection {
         case .canvas:
             return ("画面", "全片")
         case .screen:
-            return ("屏幕素材", "初始状态")
+            return ("屏幕素材", "全片基础布局")
         case .primarySegment:
             return ("片段", "当前片段")
         case .zoomTrack:
-            return ("运镜", "自动缩放")
+            return ("运镜", "缩放")
         case .zoom:
             return ("运镜", "缩放片段")
         case .screenMotionTrack:
@@ -390,7 +284,7 @@ struct EditorInspectorView: View {
         case .cursor:
             return ("光标", "全片")
         case .camera:
-            return ("摄像头", "初始状态")
+            return ("摄像头", "全片基础布局")
         case .cameraMotion:
             return ("摄像头", "动画目标")
         case .audio:
@@ -401,21 +295,24 @@ struct EditorInspectorView: View {
             return ("打码", "选中区域")
         case .sticker:
             return ("贴图", "选中图片")
-        case .progress:
-            return ("进度条", "全片")
         case nil:
-            return (selectedInspector.rawValue, nil)
+            return (selectedInspector.localizedLabel, nil)
         }
     }
 
     var inspectorTitle: String {
-        guard let scope = inspectorHeader.scope else { return inspectorHeader.title }
-        return "\(inspectorHeader.title) · \(scope)"
+        guard let scope = inspectorHeader.scope else {
+            return appLocalized(inspectorHeader.title)
+        }
+        return "\(appLocalized(inspectorHeader.title)) · \(appLocalized(scope))"
     }
 
     private var inspectorPresentationIdentity: EditorInspectorPresentationIdentity {
         if isCropping { return .crop }
-        if selectedInspector == .opening || selectedInspector == .mockup,
+        if primarySelectionKeepsInspectorTask {
+            return .tab(selectedInspector)
+        }
+        if selectedInspector == .opening,
            editorStore.selection == .canvas || editorStore.selection == nil {
             return .tab(selectedInspector)
         }
@@ -425,12 +322,21 @@ struct EditorInspectorView: View {
 
     private var inspectorScrollContext: EditorInspectorScrollContext {
         if isCropping { return .crop }
-        if selectedInspector == .opening || selectedInspector == .mockup,
+        if primarySelectionKeepsInspectorTask {
+            return .tab(selectedInspector)
+        }
+        if selectedInspector == .opening,
            editorStore.selection == .canvas || editorStore.selection == nil {
             return .tab(selectedInspector)
         }
         guard let selection = editorStore.selection else {
-            return .tab(selectedInspector)
+            return selectedInspector == .frame
+                ? .frameTab(selectedFrameInspectorTab)
+                : .tab(selectedInspector)
+        }
+        if selectedInspector == .frame,
+           (selection == .canvas || selection == .screen) {
+            return .frameTab(selectedFrameInspectorTab)
         }
         let kind: EditorInspectorSelectionKind = switch selection {
         case .canvas: .canvas
@@ -447,7 +353,6 @@ struct EditorInspectorView: View {
         case .audio: .audio
         case .mosaic: .mosaic
         case .sticker: .sticker
-        case .progress: .progress
         }
         return .selection(kind)
     }
@@ -460,9 +365,8 @@ struct EditorInspectorView: View {
             overlayInspector
         } else if case .sticker = editorStore.selection {
             overlayInspector
-        } else if editorStore.selection == .progress {
-            overlayInspector
-        } else if case let .primarySegment(id) = editorStore.selection {
+        } else if case let .primarySegment(id) = editorStore.selection,
+                  selectedInspector == .frame {
             // 选中主片段给真正的片段面板：此前标题写着"当前片段"，内容却是
             // 全片初始状态控件，名实不符。
             primarySegmentInspector(id: id)
@@ -472,8 +376,6 @@ struct EditorInspectorView: View {
             frameInspector
         case .opening:
             openingInspector
-        case .mockup:
-            mockupInspector
         case .zoom:
             motionInspector
         case .cursor:
@@ -486,26 +388,29 @@ struct EditorInspectorView: View {
         }
     }
 
-    /// 合并后的"画面"页：背景、画布布局、屏幕素材位置与屏幕外观都是同一
-    /// 个 CanvasStyle，按"美化画面"的任务顺序排在一页里，不再让用户在
-    /// 两个页签之间猜参数归属。
+    /// Background media, layout/appearance and mockups are the three frame
+    /// tasks. Canvas ratio and crop entry belong to the monitor toolbar.
+    @ViewBuilder
     var frameInspector: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            if editorStore.selection == .screen {
-                // Directly selecting the recorded screen is an object task:
-                // show its transform and appearance immediately instead of
-                // making the user scroll through the wallpaper library first.
-                screenMaterialLayoutSection
-            } else {
-                EditorBackgroundInspector(
-                    editorStore: editorStore,
-                    onChooseWallpaper: onChooseWallpaper,
-                    onChooseDesktopWallpaper: onChooseDesktopWallpaper,
-                    onError: onError
-                )
+        switch selectedFrameInspectorTab {
+        case .background:
+            VStack(alignment: .leading, spacing: 14) {
+            EditorBackgroundInspector(
+                editorStore: editorStore,
+                onChooseWallpaper: onChooseWallpaper,
+                onChooseDesktopWallpaper: onChooseDesktopWallpaper,
+                onError: onError
+            )
+                if !showsFrameInspectorNavigation { backgroundBlurSection }
+            }
+        case .layout:
+            VStack(alignment: .leading, spacing: 14) {
                 canvasLayoutSection
                 screenMaterialLayoutSection
+                screenSurfaceAppearanceSection
             }
+        case .mockup:
+            screenMockupSection
         }
     }
 
@@ -515,19 +420,6 @@ struct EditorInspectorView: View {
     var openingInspector: some View {
         VStack(alignment: .leading, spacing: 14) {
             openingSequenceSection
-        }
-    }
-
-    var mockupInspector: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Label(
-                "样机与屏幕内容共用同一投影，缩放、3D 运镜和导出不会分离。",
-                systemImage: "cube.transparent"
-            )
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-            screenAppearanceSection
         }
     }
 
@@ -545,13 +437,33 @@ struct EditorInspectorView: View {
             if sequence.isEnabled {
                 VStack(alignment: .leading, spacing: 7) {
                     Text("开场方式")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(Color.white.opacity(0.62))
+                        .font(.appUI(.caption2, weight: .semibold))
+                        .foregroundStyle(EditorTheme.chrome(0.62))
                     EditorTileSelector(
                         options: OpeningSequencePreset.allCases,
-                        title: { $0.rawValue },
+                        title: { appLocalized($0.rawValue) },
                         icon: openingPresetIcon,
                         selection: openingBinding(\.preset, actionName: "更换开场方式"),
+                        columnCount: 3
+                    )
+                    Text(sequence.motionCurve.editorDetail)
+                        .font(.appUI(.caption2))
+                        .foregroundStyle(EditorTheme.chrome(0.48))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("动效节奏")
+                        .font(.appUI(.caption2, weight: .semibold))
+                        .foregroundStyle(EditorTheme.chrome(0.62))
+                    EditorTileSelector(
+                        options: ElementMotionCurve.allCases,
+                        title: { $0.editorTitle },
+                        icon: { $0.editorSymbol },
+                        selection: openingBinding(
+                            \.motionCurve,
+                            actionName: "调整开场节奏"
+                        ),
                         columnCount: 3
                     )
                 }
@@ -575,8 +487,8 @@ struct EditorInspectorView: View {
                     )
                 } else {
                     Text("只有一个元素参与时无需设置间隔。")
-                        .font(.caption2)
-                        .foregroundStyle(Color.white.opacity(0.48))
+                        .font(.appUI(.caption2))
+                        .foregroundStyle(EditorTheme.chrome(0.48))
                 }
 
                 EditorDisclosure(
@@ -608,8 +520,8 @@ struct EditorInspectorView: View {
                 .buttonStyle(.editorQuiet)
 
                 Text("柔化和突出从首帧保持生效；从 0 秒开始的贴图自身入场由全局开场接管，避免两套动画叠加。")
-                    .font(.caption2)
-                    .foregroundStyle(Color.white.opacity(0.50))
+                    .font(.appUI(.caption2))
+                    .foregroundStyle(EditorTheme.chrome(0.50))
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -622,13 +534,13 @@ struct EditorInspectorView: View {
         let index = order.firstIndex(of: element) ?? 0
         return HStack(spacing: 7) {
             Text("\(index + 1)")
-                .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                .foregroundStyle(Color.white.opacity(0.45))
+                .font(.appUI(size: 9.5, weight: .bold, design: .monospaced))
+                .foregroundStyle(EditorTheme.chrome(0.45))
                 .frame(width: 18, height: 18)
-                .background(Color.white.opacity(0.055), in: Circle())
-            Label(element.rawValue, systemImage: openingElementIcon(element))
-                .font(.caption.weight(.medium))
-                .foregroundStyle(Color.white.opacity(0.78))
+                .background(EditorTheme.chrome(0.055), in: Circle())
+            Label(appLocalized(element.rawValue), systemImage: openingElementIcon(element))
+                .font(.appUI(.caption, weight: .medium))
+                .foregroundStyle(EditorTheme.chrome(0.78))
             Spacer(minLength: 4)
             Button {
                 moveOpeningElement(element, offset: -1)
@@ -664,7 +576,6 @@ struct EditorInspectorView: View {
     func openingElementIcon(_ element: OpeningSequenceElement) -> String {
         switch element {
         case .screen: "rectangle.on.rectangle"
-        case .progress: "chart.bar.fill"
         case .camera: "video.fill"
         case .stickers: "photo.on.rectangle.angled"
         }
@@ -723,90 +634,66 @@ struct EditorInspectorView: View {
     }
 
     var canvasLayoutSection: some View {
-        EditorInspectorSection("画布布局") {
-            sliderRow(
-                "背景模糊",
-                value: canvasBinding(\.backgroundBlur, actionName: "调整背景模糊"),
-                range: 0...80,
-                format: .points
-            )
-            .disabled(!editorStore.previewProject.canvas.backgroundSource.usesWallpaperMedia)
-            .opacity(
-                editorStore.previewProject.canvas.backgroundSource.usesWallpaperMedia
-                    ? 1
-                    : 0.45
-            )
-            sliderRow(
-                "边距",
-                value: canvasBinding(\.padding, actionName: "调整画布边距"),
-                range: 0...360,
-                format: .points
-            )
+        EditorInspectorSection("画面留白") {
+            sliderRow("边距", value: canvasBinding(\.padding, actionName: "调整画布边距"),
+                      range: 0...360, format: .points)
         }
     }
 
     var screenMaterialLayoutSection: some View {
-        EditorInspectorSection("屏幕素材布局") {
-            Label(
-                "直接在画布中拖动，拖右下角缩放；动画在“运镜”中添加",
-                systemImage: "hand.draw"
-            )
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-
+        EditorInspectorSection("位置与大小") {
             EditorTransactionalPositionPad(
                 editorStore: editorStore,
                 title: "素材位置",
-                point: canvasBinding(
-                    \.contentPosition,
-                    actionName: "移动屏幕素材"
-                ),
+                point: canvasBinding(\.contentPosition, actionName: "移动屏幕素材"),
                 commandScope: .canvas,
                 actionName: "移动屏幕素材",
+                compactLayout: true,
                 onError: onError
             )
-
-            sliderRow(
-                "素材缩放",
-                value: canvasBinding(\.contentScale, actionName: "缩放屏幕素材"),
-                range: 0.25...4,
-                format: .multiplier
-            )
-
-            Button("恢复位置与大小") {
-                var canvas = editorStore.project.canvas
-                canvas.contentScale = 1
-                canvas.contentPosition = NormalizedPoint(x: 0.5, y: 0.5)
-                performEditorCommand {
-                    try editorStore.replaceCanvas(with: canvas, actionName: "居中屏幕素材")
+            sliderRow("素材缩放", value: canvasBinding(\.contentScale, actionName: "缩放屏幕素材"),
+                      range: 0.25...4, format: .multiplier)
+            HStack {
+                Text("可直接在画面中拖动")
+                    .font(.appUI(size: 11)).foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                Button("恢复位置与大小") {
+                    var canvas = editorStore.project.canvas
+                    canvas.contentScale = 1
+                    canvas.contentPosition = NormalizedPoint(x: 0.5, y: 0.5)
+                    performEditorCommand {
+                        try editorStore.replaceCanvas(with: canvas, actionName: "居中屏幕素材")
+                    }
                 }
+                .font(.appUI(size: 11))
+                .buttonStyle(.editorGhost)
             }
-            .buttonStyle(.editorQuiet)
         }
     }
 
-    var screenAppearanceSection: some View {
-        EditorInspectorSection("屏幕外观") {
-            EditorScreenFramePicker(editorStore: editorStore, onError: onError)
-            if editorStore.previewProject.canvas.screenFrame != .none {
-                sliderRow(
-                    "样式大小",
-                    value: canvasBinding(
-                        \.screenFrameScale,
-                        actionName: "调整屏幕样式大小"
-                    ),
-                    range: 0.6...1.6,
-                    format: .multiplier
-                )
-            } else {
+    var screenSurfaceAppearanceSection: some View {
+        EditorInspectorSection("圆角、描边与阴影", icon: "square.on.square") {
+            if editorStore.previewProject.canvas.screenFrame == .none {
                 sliderRow(
                     "画面圆角",
                     value: canvasBinding(\.cornerRadius, actionName: "调整画面圆角"),
                     range: 0...160,
                     format: .points
                 )
+            } else {
+                sliderRow(
+                    "内容圆角",
+                    value: screenFrameRadiusBinding(
+                        \.screenFrameContentCornerRadius,
+                        fallback: editorStore.previewProject.canvas.screenFrame
+                            .defaultContentCornerRadius,
+                        actionName: "调整样机内容圆角"
+                    ),
+                    range: 0...160,
+                    format: .points
+                )
             }
+
             sliderRow(
                 "外描边",
                 value: canvasBinding(\.borderWidth, actionName: "调整屏幕描边"),
@@ -826,8 +713,8 @@ struct EditorInspectorView: View {
                     onError: onError
                 )
                 sliderRow(
-                    "描边透明度",
-                    value: canvasBinding(\.insetOpacity, actionName: "调整描边透明度"),
+                    "描边不透明度",
+                    value: canvasBinding(\.insetOpacity, actionName: "调整描边不透明度"),
                     range: 0...1,
                     format: .percent
                 )
@@ -841,11 +728,73 @@ struct EditorInspectorView: View {
         }
     }
 
+    var screenMockupSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label(
+                "选择样机；内容圆角、描边与阴影在“布局”中调整。",
+                systemImage: "macwindow"
+            )
+            .font(.appUI(.caption2))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+
+            EditorInspectorSection("样机") {
+                EditorScreenFramePicker(editorStore: editorStore, onError: onError)
+
+                if editorStore.previewProject.canvas.screenFrame != .none {
+                    sliderRow(
+                        "框体比例",
+                        value: canvasBinding(
+                            \.screenFrameScale,
+                            actionName: "调整屏幕样机大小"
+                        ),
+                        range: 0.6...1.6,
+                        format: .multiplier
+                    )
+                    if editorStore.previewProject.canvas.screenFrame.isWindowFrame || editorStore.previewProject.canvas.screenFrame.isBrowserFrame {
+                        sliderRow(
+                            "顶栏高度",
+                            value: canvasBinding(
+                                \.screenFrameToolbarScale,
+                                actionName: "调整样机顶栏高度"
+                            ),
+                            range: 0.65...1.6,
+                            format: .multiplier
+                        )
+                    }
+                    sliderRow(
+                        "框体外圆角",
+                        value: screenFrameRadiusBinding(
+                            \.screenFrameOuterCornerRadius,
+                            fallback: editorStore.previewProject.canvas.screenFrame
+                                .defaultOuterCornerRadius,
+                            actionName: "调整样机外圆角"
+                        ),
+                        range: 0...160,
+                        format: .points
+                    )
+                }
+            }
+        }
+    }
+
+    private func screenFrameRadiusBinding(
+        _ keyPath: WritableKeyPath<CanvasStyle, Double?>,
+        fallback: Double,
+        actionName: String
+    ) -> Binding<Double> {
+        let optionalBinding = canvasBinding(keyPath, actionName: actionName)
+        return Binding(
+            get: { optionalBinding.wrappedValue ?? fallback },
+            set: { optionalBinding.wrappedValue = $0 }
+        )
+    }
+
 
     var cropInspector: some View {
         VStack(alignment: .leading, spacing: 14) {
             Label("在画面上拖动边缘或四角，拖动框内可整体移动。", systemImage: "crop")
-                .font(.caption)
+                .font(.appUI(.caption))
                 .foregroundStyle(.secondary)
 
             HStack(spacing: 8) {
@@ -862,10 +811,8 @@ struct EditorInspectorView: View {
             LabeledContent("裁切后尺寸") {
                 Text(cropSizeText).monospacedDigit()
             }
-            .font(.caption)
+            .font(.appUI(.caption))
 
-            Button("恢复全部画面") { cropDraft = .full }
-                .buttonStyle(.editorQuiet)
         }
     }
 
@@ -1012,23 +959,23 @@ struct EditorInspectorView: View {
                 EditorInspectorSection("片段信息", icon: "film") {
                     HStack(alignment: .firstTextBaseline, spacing: 7) {
                         Text("第 \(context.index + 1) 段")
-                            .font(.callout.weight(.semibold))
+                            .font(.appUI(.callout, weight: .semibold))
                         Text("共 \(context.total) 段")
-                            .font(.caption)
+                            .font(.appUI(.caption))
                             .foregroundStyle(.secondary)
                         Spacer(minLength: 8)
                         Text(playbackRateText(context.segment.playbackRate))
-                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .font(.appUI(size: 11, weight: .semibold, design: .monospaced))
                             .monospacedDigit()
                             .padding(.horizontal, 7)
                             .frame(height: 24)
                             .background(
-                                Color.white.opacity(0.065),
+                                EditorTheme.chrome(0.065),
                                 in: RoundedRectangle(cornerRadius: 6, style: .continuous)
                             )
                     }
 
-                    Divider().overlay(Color.white.opacity(0.07))
+                    Divider().overlay(EditorTheme.chrome(0.07))
 
                     primarySegmentInfoRow(
                         "输出时长",
@@ -1178,8 +1125,8 @@ struct EditorInspectorView: View {
     ) -> some View {
         HStack(spacing: 8) {
             Image(systemName: systemImage)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(Color.white.opacity(0.52))
+                .font(.appUI(size: 10, weight: .semibold))
+                .foregroundStyle(EditorTheme.chrome(0.52))
                 .frame(width: 14)
             Text(title)
                 .foregroundStyle(.secondary)
@@ -1189,7 +1136,7 @@ struct EditorInspectorView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.78)
         }
-        .font(.caption)
+        .font(.appUI(.caption))
         .frame(maxWidth: .infinity)
     }
 
@@ -1280,7 +1227,7 @@ struct EditorInspectorView: View {
             EditorInspectorSection("运镜类型") {
                 EditorSegmentedControl(
                     options: EditorMotionInspectorMode.allCases,
-                    title: { $0 == .screen3D ? "屏幕 3D" : "自动缩放" },
+                    title: { $0 == .screen3D ? "屏幕 3D" : "缩放" },
                     icon: { $0 == .screen3D ? "cube.transparent" : "scope" },
                     selection: Binding(
                         get: { motionInspectorMode },
@@ -1308,6 +1255,7 @@ struct EditorInspectorView: View {
                 zoomInspector
             } else if case let .screenMotion(id) = editorStore.selection {
                 ScreenMotionTargetInspector(
+                    sourceImage: playbackController.pausedScreenImage,
                     editorStore: editorStore,
                     clipID: id,
                     onError: onError
@@ -1341,19 +1289,7 @@ struct EditorInspectorView: View {
         VStack(alignment: .leading, spacing: 14) {
             if let index = selectedZoomAnimationIndex {
                 let animation = editorStore.previewProject.zoomAnimations[index]
-                EditorInspectorSection("缩放片段") {
-                    EditorSegmentedControl(
-                        options: [ZoomKeyframeOrigin.automatic, .manual],
-                        title: { $0 == .automatic ? "自动跟随" : "手动定位" },
-                        selection: zoomAnimationOriginBinding(index)
-                    )
-
-                    sliderRow(
-                        "缩放级别",
-                        value: zoomAnimationDoubleBinding(index, keyPath: \.scale),
-                        range: 1...6,
-                        format: .multiplier
-                    )
+                Group {
                     if editorStore.previewProject.zoomAnimations[index].origin == .manual {
                         ZoomFocusMap(
                             mediaSession: mediaSession,
@@ -1370,30 +1306,58 @@ struct EditorInspectorView: View {
                             },
                             onEditingCancelled: { editorStore.cancelInteraction() }
                         )
-                        Text("整张源画面会完整显示；圆圈可到真实四角，成片会自动留出舒适观看距离。")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
                     } else {
-                        Label("自动跟随会优先让鼠标保持在画面内", systemImage: "cursorarrow.motionlines")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        ZoomFocusMap(mediaSession: mediaSession,
+                            outputTime: animation.startTime, sourcePixelSize: sourcePixelSize,
+                            focus: .constant(animation.focus), allowsEditing: false)
+                        Label("焦点随鼠标自动移动", systemImage: "cursorarrow.motionlines")
+                            .font(.appUI(size: 11)).foregroundStyle(.secondary)
                     }
                 }
 
-                EditorInspectorSection("动画手感") {
+                VStack(alignment: .leading, spacing: 12) {
+                    EditorSegmentedControl(
+                        options: [ZoomKeyframeOrigin.automatic, .manual],
+                        title: { $0 == .automatic ? "自动跟随" : "手动定位" },
+                        selection: zoomAnimationOriginBinding(index)
+                    )
+
                     sliderRow(
-                        "过渡时长",
-                        value: zoomAnimationTransitionDurationBinding(index),
-                        range: 0.08...3,
+                        "放大比例",
+                        value: zoomAnimationDoubleBinding(index, keyPath: \.scale),
+                        range: 1...6,
+                        format: .multiplier
+                    )
+
+                    Button {
+                        applySelectedZoomScaleToAll(animation.scale)
+                    } label: {
+                        Label("将倍率应用到全部缩放", systemImage: "square.stack.3d.up")
+                    }
+                    .buttonStyle(.editorQuiet)
+                    .disabled(editorStore.previewProject.zoomAnimations.count < 2)
+                    .help("将当前缩放级别应用到全部缩放动画，保留每段的时间和焦点")
+                }
+
+                EditorInspectorSection("过渡") {
+                    EditorInspectorZoomPhases(animation: animation)
+                    sliderRow(
+                        "进入时长",
+                        value: zoomAnimationTransitionDurationBinding(index, entering: true),
+                        range: 0...3,
                         format: .seconds
                     )
-                    Text("进入和退出保持一致；数值越小越干脆，越大越柔和。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    sliderRow(
+                        "退出时长",
+                        value: zoomAnimationTransitionDurationBinding(index, entering: false),
+                        range: 0...3,
+                        format: .seconds
+                    )
+                    zoomTransitionAvailability(animation)
 
                     EditorDisclosure(
                         "片段时间",
-                        detail: "开始 \(EditorSliderValueFormat.seconds.text(for: animation.startTime)) · 保持 \(EditorSliderValueFormat.seconds.text(for: animation.duration))"
+                        detail: "开始 \(EditorSliderValueFormat.seconds.text(for: animation.startTime)) · 范围 \(EditorSliderValueFormat.seconds.text(for: animation.duration))"
                     ) {
                         VStack(spacing: 9) {
                             zoomTimeStepper(
@@ -1403,7 +1367,7 @@ struct EditorInspectorView: View {
                                 resolvedValue: { resolvedZoomStartValue(index, proposed: $0) }
                             )
                             zoomTimeStepper(
-                                "保持时长",
+                                "片段长度",
                                 value: zoomAnimationDurationBinding(index),
                                 range: 0.16...max(timelineDuration, 0.16),
                                 resolvedValue: { resolvedZoomDurationValue(index, proposed: $0) }
@@ -1412,7 +1376,10 @@ struct EditorInspectorView: View {
                     }
                 }
 
-                Button("删除这个动画片段", role: .destructive) {
+                EditorFocusEffectInspector(editorStore: editorStore,
+                    selection: .zoom(animation.id), onError: onError)
+
+                Button("删除片段", role: .destructive) {
                     if let selectedZoomID {
                         do {
                             try editorStore.removeZoom(id: selectedZoomID, actionName: "删除缩放")
@@ -1428,7 +1395,7 @@ struct EditorInspectorView: View {
                     title: "缩放片段已不存在",
                     detail: "它可能已在时间线中删除或被撤销。",
                     systemImage: "scope",
-                    actionTitle: "返回自动缩放",
+                    actionTitle: "返回缩放",
                     action: { editorStore.selection = .zoomTrack }
                 )
             } else {
@@ -1438,11 +1405,11 @@ struct EditorInspectorView: View {
                     "在“缩放”轨道拖动创建；选中片段后在这里调整",
                     systemImage: "timeline.selection"
                 )
-                .font(.caption)
+                .font(.appUI(.caption))
                 .foregroundStyle(.secondary)
                 .padding(10)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
+                .background(EditorTheme.chrome(0.035), in: RoundedRectangle(cornerRadius: 10))
 
                 motionGlobalDefaults
             }
@@ -1463,7 +1430,7 @@ struct EditorInspectorView: View {
                     \.defaultZoomTransitionDuration,
                     actionName: "调整默认过渡时长"
                 ),
-                range: 0.08...3,
+                range: 0...3,
                 interactionScope: .motion,
                 format: .seconds
             )

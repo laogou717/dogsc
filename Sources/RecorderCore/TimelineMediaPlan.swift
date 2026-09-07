@@ -32,9 +32,15 @@ public struct TimelineMediaSlice: Equatable, Identifiable, Sendable {
 
     public func sourceTime(atOutputTime time: TimeInterval) -> TimeInterval? {
         guard time.isFinite,
-              time >= outputStart,
+              time > outputStart
+                || TimelineMediaPlan.isSameBoundary(time, outputStart),
               time < outputEnd else { return nil }
-        return sourceStart + (time - outputStart) * sourceTimeScale
+        // `TimelineMediaPlan.slice` may deliberately assign a rational media
+        // timestamp that is a few ulps below a Double-authored cut to the next
+        // slice. Clamp that representation-only delta to the slice start so a
+        // second strict comparison cannot turn the selected slice into a gap.
+        let elapsed = max(time - outputStart, 0)
+        return sourceStart + elapsed * sourceTimeScale
     }
 }
 
@@ -202,7 +208,8 @@ public struct TimelineMediaPlan: Equatable, Sendable {
         var upper = slices.endIndex
         while lower < upper {
             let middle = lower + (upper - lower) / 2
-            if slices[middle].outputEnd <= time {
+            let end = slices[middle].outputEnd
+            if end < time || Self.isSameBoundary(end, time) {
                 lower = middle + 1
             } else {
                 upper = middle
@@ -210,10 +217,12 @@ public struct TimelineMediaPlan: Equatable, Sendable {
         }
         guard lower < slices.endIndex else { return nil }
         let candidate = slices[lower]
-        return time >= candidate.outputStart ? candidate : nil
+        return time > candidate.outputStart
+            || Self.isSameBoundary(time, candidate.outputStart)
+            ? candidate : nil
     }
 
-    private static func isSameBoundary(
+    static func isSameBoundary(
         _ lhs: TimeInterval,
         _ rhs: TimeInterval
     ) -> Bool {

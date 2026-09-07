@@ -16,8 +16,6 @@ extension CanvasPreview {
         if cameraSizeOrigin != nil { return cameraSizeScope?.selection }
         if cameraDragOrigin != nil { return cameraDragScope?.selection }
         if let stickerRotationOrigin { return .sticker(stickerRotationOrigin.id) }
-        if progressHeightResizeOrigin != nil { return .progress }
-        if progressResizeOrigin != nil { return .progress }
         if let overlayResizeSelection { return overlayResizeSelection }
         if let overlayDragSelection { return overlayDragSelection }
         if mosaicDragOrigin != nil || mosaicResizeOrigin != nil {
@@ -57,10 +55,10 @@ extension CanvasPreview {
                 Circle()
                     .fill(EditorTheme.backgroundDeep)
                     .overlay {
-                        Circle().stroke(editorAccent, lineWidth: 1.25)
+                        Circle().stroke(EditorTheme.mediaAccent, lineWidth: 1.25)
                     }
                     .frame(width: 7, height: 7)
-                    .shadow(color: editorAccent.opacity(0.38), radius: 4)
+                    .shadow(color: EditorTheme.mediaAccent.opacity(0.38), radius: 4)
                     .position(
                         x: canvasSnapGuideX * canvasSize.width,
                         y: canvasSnapGuideY * canvasSize.height
@@ -79,7 +77,7 @@ extension CanvasPreview {
                         .foregroundStyle(Color.white.opacity(0.94))
                         .contentTransition(.numericText())
                 }
-                .font(.system(size: 10.5, weight: .semibold))
+                .font(.appUI(size: 10.5, weight: .semibold))
                 .padding(.horizontal, 10)
                 .frame(height: 30)
                 .background(
@@ -197,55 +195,6 @@ extension CanvasPreview {
                 position: clip.position
             )
 
-        case .progress:
-            guard let progress = preview.timeline.progressOverlay else { return nil }
-            if progressHeightResizeOrigin != nil {
-                let objectY: Double = switch progress.placement {
-                case .top: 0
-                case .bottom: 1
-                case .custom: progress.position.y
-                }
-                return CanvasManipulationReadout(
-                    systemImage: "arrow.up.and.down",
-                    title: "条带高度",
-                    value: String(format: "H %.0f pt", progress.bandHeight),
-                    objectY: objectY
-                )
-            }
-            if progressResizeOrigin != nil {
-                let snapped = canvasSnapGuideX != nil ? " · 已吸附" : ""
-                let objectY: Double = switch progress.placement {
-                case .top: 0
-                case .bottom: 1
-                case .custom: progress.position.y
-                }
-                return CanvasManipulationReadout(
-                    systemImage: "arrow.left.and.right",
-                    title: "进度条宽度",
-                    value: "W \(percent(progress.width)) · X \(percent(progress.position.x))\(snapped)",
-                    objectY: objectY
-                )
-            }
-            let placement: String
-            let y: Double
-            switch progress.placement {
-            case .top:
-                placement = "顶部"
-                y = 0
-            case .bottom:
-                placement = "底部"
-                y = 1
-            case .custom:
-                placement = "Y \(percent(progress.position.y))"
-                y = progress.position.y
-            }
-            return CanvasManipulationReadout(
-                systemImage: "chart.bar.fill",
-                title: "进度条位置",
-                value: "X \(percent(progress.position.x)) · \(placement)",
-                objectY: y
-            )
-
         default:
             return nil
         }
@@ -278,7 +227,7 @@ extension CanvasPreview {
                 path.move(to: start)
                 path.addLine(to: end)
             }
-            .stroke(editorAccent.opacity(0.20), lineWidth: 5)
+            .stroke(EditorTheme.mediaAccent.opacity(0.20), lineWidth: 5)
             .blur(radius: 2)
 
             Path { path in
@@ -286,7 +235,7 @@ extension CanvasPreview {
                 path.addLine(to: end)
             }
             .stroke(
-                editorAccent.opacity(0.88),
+                EditorTheme.mediaAccent.opacity(0.88),
                 style: StrokeStyle(lineWidth: 1, dash: [3, 3])
             )
         }
@@ -308,9 +257,6 @@ extension CanvasPreview {
         mosaicResizeOrigin = nil
         stickerResizeOrigin = nil
         stickerRotationOrigin = nil
-        progressResizeOrigin = nil
-        progressHeightResizeOrigin = nil
-        progressHeightDragHandleY = nil
         overlayResizeSelection = nil
         canvasSnapGuideX = nil
         canvasSnapGuideY = nil

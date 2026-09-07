@@ -44,9 +44,7 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
 
             if clips.isEmpty {
                 timelineEmptyTrackHint(
-                    track == .screen
-                        ? "拖动空白处添加屏幕 3D"
-                        : "拖动空白处添加摄像运动",
+                    "单击或拖拽添加",
                     documentWidth: width
                 )
             }
@@ -101,10 +99,10 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
                                     Text("过渡 \(index + 1)")
                                     if clipWidth > 116 {
                                         Text(timelineTimestamp(clip.timing.duration))
-                                            .foregroundStyle(.white.opacity(0.7))
+                                            .foregroundStyle(EditorTheme.chrome(0.7))
                                     }
                                 }
-                                .font(.system(size: 10, weight: .semibold))
+                                .font(.appUI(size: 10, weight: .semibold))
                                 .lineLimit(1)
                                 .padding(.horizontal, 9)
                             }
@@ -170,7 +168,7 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
                 duration: duration
             ) {
                 Image(systemName: "plus")
-                    .font(.system(size: 9, weight: .bold))
+                    .font(.appUI(size: 9, weight: .bold))
                     .foregroundStyle(.white)
                     .frame(width: 16, height: 16)
                     .background(Circle().fill(motionTrackColor(track)))
@@ -187,7 +185,7 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
                     .fill(motionTrackColor(track).opacity(0.42))
                     .overlay(
                         RoundedRectangle(cornerRadius: 6)
-                            .stroke(.white.opacity(0.8), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                            .stroke(EditorTheme.chrome(0.8), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
                     )
                     .frame(width: rangeWidth, height: 36)
                     .offset(x: startX)
@@ -195,7 +193,6 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
             }
         }
         .frame(width: width, height: motionTimelineHeight, alignment: .leading)
-        .overlay(alignment: .bottom) { Divider().overlay(dividerColor) }
         .contentShape(Rectangle())
         // 与缩放轨同一单手势分发模型：按下按命中区域（手柄/片段/空白）分发为
         // 调整、移动或创建。
@@ -233,7 +230,7 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
 
     func motionResizeHandle(leading: Bool) -> some View {
         Capsule(style: .continuous)
-            .fill(Color.white.opacity(0.94))
+            .fill(EditorTheme.chrome(0.94))
             .frame(width: 3, height: 26)
             .accessibilityLabel(leading ? "调整动画开始" : "调整动画结束")
     }
@@ -292,11 +289,9 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
                 case .create:
                     guard gestureOwnership.activeIntent == .motionCreate(track),
                           var drag = motionCreateDrag else { return }
-                    drag.end = EditorTimelineMath.clampedTime(
-                        atX: Double(value.location.x),
-                        width: Double(width),
-                        duration: duration
-                    )
+                    drag.end = magneticTime(EditorTimelineMath.clampedTime(
+                        atX: Double(value.location.x), width: Double(width), duration: duration
+                    ), width: width, duration: duration)
                     motionCreateDrag = drag
                     if EditorTimelineRangeCreationPolicy.shouldCommit(
                         horizontalTranslation: value.translation.width
@@ -309,7 +304,9 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
                     )
                     guard gestureOwnership.activeIntent == intent,
                           let origin = motionGestureOrigin else { return }
-                    let delta = TimeInterval(value.translation.width / max(width, 1)) * duration
+                    let rawDelta = TimeInterval(value.translation.width / max(width, 1)) * duration
+                    let delta = magneticDelta(rawDelta, start: origin.clip.timing.startTime,
+                        end: origin.clip.timing.endTime, mode: .move, width: width, duration: duration)
                     let timing = EditorMotionTimelinePresentation.adjustedTiming(
                         original: origin.clip.timing,
                         mode: .move,
@@ -317,6 +314,7 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
                         bounds: origin.bounds,
                         timelineDuration: duration
                     )
+                    timelineSnap.validate(edges: [timing.startTime, timing.endTime])
                     updateMotionTimingDraft(
                         clip: origin.clip,
                         timing: timing,
@@ -328,7 +326,9 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
                     let intent = EditorTimelineGestureIntent.motion(track, id, mode)
                     guard gestureOwnership.activeIntent == intent,
                           let origin = motionGestureOrigin else { return }
-                    let delta = TimeInterval(value.translation.width / max(width, 1)) * duration
+                    let rawDelta = TimeInterval(value.translation.width / max(width, 1)) * duration
+                    let delta = magneticDelta(rawDelta, start: origin.clip.timing.startTime,
+                        end: origin.clip.timing.endTime, mode: mode, width: width, duration: duration)
                     let timing = EditorMotionTimelinePresentation.adjustedTiming(
                         original: origin.clip.timing,
                         mode: mode,
@@ -336,6 +336,7 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
                         bounds: origin.bounds,
                         timelineDuration: duration
                     )
+                    timelineSnap.validate(edges: [leading ? timing.startTime : timing.endTime])
                     updateMotionTimingDraft(
                         clip: origin.clip,
                         timing: timing,
@@ -357,14 +358,19 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
                 case .create:
                     guard gestureOwnership.activeIntent == .motionCreate(track),
                           let create else { return }
-                    guard EditorTimelineRangeCreationPolicy.shouldCommit(
-                        horizontalTranslation: value.translation.width
-                    ) else {
-                        clearTimelineSelection()
-                        endTimelineGesture(.motionCreate(track))
-                        return
+                    var requested = create
+                    if !EditorTimelineRangeCreationPolicy.shouldCommit(
+                        horizontalTranslation: value.translation.width) {
+                        if emptyClickClearsSelection {
+                            endTimelineGesture(.motionCreate(track))
+                            return
+                        }
+                        requested.end = requested.start + 3
                     }
-                    createManualMotionClip(drag: create, duration: duration)
+                    playbackController.pause()
+                    withAnimation(SpringMotion.fluid) {
+                        createManualMotionClip(drag: requested, duration: duration)
+                    }
                     endTimelineGesture(.motionCreate(track))
                 case let .move(id):
                     let intent = EditorTimelineGestureIntent.motion(
@@ -417,6 +423,7 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
             duration: duration,
             selectedID: track == .screen ? selectedScreenMotionID : selectedCameraMotionID,
             hoveredID: hoveredMotionClip?.track == track ? hoveredMotionClip?.id : nil,
+            trackHeight: Double(motionTimelineHeight),
             itemsAreOrdered: true
         )
         // Alt+单击快捷裁剪：切分运动片段（与主片段同一快捷逻辑），不进入拖拽。
@@ -436,6 +443,7 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
         }
         switch zone {
         case .empty:
+            prepareEmptyTimelineClick()
             let intent = EditorTimelineGestureIntent.motionCreate(track)
             guard beginTimelineGesture(intent) else { return }
             let start = EditorTimelineMath.clampedTime(
@@ -443,7 +451,8 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
                 width: Double(width),
                 duration: duration
             )
-            motionCreateDrag = MotionCreateDragState(track: track, start: start, end: start)
+            let snapped = magneticTime(start, width: width, duration: duration)
+            motionCreateDrag = MotionCreateDragState(track: track, start: snapped, end: snapped)
             motionTrackDrag = .create
         case let .move(id):
             let intent = EditorTimelineGestureIntent.motion(
@@ -502,6 +511,7 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
             duration: duration,
             selectedID: track == .screen ? selectedScreenMotionID : selectedCameraMotionID,
             hoveredID: hoveredMotionClip?.track == track ? hoveredMotionClip?.id : nil,
+            trackHeight: Double(motionTimelineHeight),
             itemsAreOrdered: true
         )
         guard zone == .empty else { return nil }
@@ -597,6 +607,7 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
             tool = .editCameraMotion
         }
         editorStore.beginInteraction(tool: tool, selection: selection)
+        timelineInteractionID = editorStore.interaction?.id
         var partnerOrigins: [EditorMotionPartnerOrigin] = []
         if let groupID = clip.groupID {
             partnerOrigins =
@@ -654,6 +665,10 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
         partnerOrigins: [EditorMotionPartnerOrigin],
         timelineDuration: TimeInterval
     ) {
+        let current = clip.track == .screen
+            ? editorStore.previewProject.timeline.screenMotionClips.first(where: { $0.id == clip.id })?.timing
+            : editorStore.previewProject.timeline.cameraMotionClips.first(where: { $0.id == clip.id })?.timing
+        guard current != timing else { return }
         editorStore.updateInteraction { project in
             switch clip.track {
             case .screen:

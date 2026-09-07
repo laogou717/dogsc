@@ -75,6 +75,9 @@ extension CanvasPreview {
             styleScale: Double(renderScale),
             automaticZoomFocus: automaticCameraPosition,
             inheritedAutomaticZoomFocus: inheritedAutomaticCameraPosition,
+            reanchorAutomaticEntry: activeAutomaticClip.map {
+                mediaPlan?.pointer.automaticEntryStartsAfterCut($0) ?? false
+            } ?? false,
             zoomTrack: tracks.zoom,
             screenMotionTrack: tracks.screenMotion,
             cameraMotionTrack: tracks.cameraMotion
@@ -85,10 +88,6 @@ extension CanvasPreview {
         let frameScene = FrameSceneEvaluator.scene(
             project: evaluatedProject,
             time: playbackTime,
-            // The point-space scene owns canvas hit targets. Progress scene
-            // evaluation needs the same authored duration as the raster
-            // render plan; without it the visible band is rendered while its
-            // interaction target is omitted and clicks fall through to screen.
             outputDuration: mediaSession.outputDuration,
             canvasSize: CompositionSize(
                 width: Double(canvasSize.width),

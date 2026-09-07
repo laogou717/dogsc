@@ -356,6 +356,13 @@ final class CaptureSetupController: ObservableObject {
         refreshReadiness()
     }
 
+    func setResolutionLimit(_ limit: CaptureResolutionLimit) {
+        var updated = configuration
+        updated.captureResolutionLimit = limit
+        publishConfiguration(updated)
+        refreshReadiness()
+    }
+
     func setCaptureCodec(_ codec: CaptureCodec) {
         var updated = configuration
         updated.captureCodec = codec

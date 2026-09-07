@@ -1,6 +1,32 @@
 import Foundation
 import RecorderCore
 
+enum ExportOutputKind: String, CaseIterable, Identifiable, Equatable, Sendable {
+    case video
+    case audio
+
+    var id: Self { self }
+    var fileExtension: String { self == .video ? "mp4" : "m4a" }
+}
+
+/// The visible export window chosen by the editor. A ranged export keeps the
+/// project's authored timeline clock intact; only the encoded file is rebased
+/// to start at zero.
+enum EditorExportScope: Equatable, Sendable {
+    case fullProject
+    case timelineRange(MediaTimeRange, selectedSegmentCount: Int)
+
+    var outputRange: MediaTimeRange? {
+        guard case let .timelineRange(range, _) = self else { return nil }
+        return range
+    }
+
+    var selectedSegmentCount: Int {
+        guard case let .timelineRange(_, count) = self else { return 0 }
+        return count
+    }
+}
+
 /// One export input frozen to the exact on-disk file generation inspected by
 /// the editor. Keeping URL and version together prevents a path from silently
 /// resolving to replacement media after the user presses Export.
@@ -113,6 +139,8 @@ struct EditorExportRequest: Equatable, Sendable {
     let mediaPlan: ProjectTimelineMediaPlan
     let assets: EditorExportAssets
     let outputURL: URL
+    let outputKind: ExportOutputKind
+    let outputRange: MediaTimeRange?
 
     fileprivate init(
         editorSessionID: EditorSessionID,
@@ -120,7 +148,9 @@ struct EditorExportRequest: Equatable, Sendable {
         project: RecorderProject,
         mediaPlan: ProjectTimelineMediaPlan,
         assets: EditorExportAssets,
-        outputURL: URL
+        outputURL: URL,
+        outputKind: ExportOutputKind,
+        outputRange: MediaTimeRange?
     ) {
         self.editorSessionID = editorSessionID
         self.mediaGeneration = mediaGeneration
@@ -128,6 +158,8 @@ struct EditorExportRequest: Equatable, Sendable {
         self.mediaPlan = mediaPlan
         self.assets = assets
         self.outputURL = outputURL
+        self.outputKind = outputKind
+        self.outputRange = outputRange
     }
 }
 
@@ -142,6 +174,7 @@ enum EditorExportRequestError: LocalizedError, Equatable, Sendable {
     case assetVersionChanged(role: ExportAssetRole, path: String)
     case invalidOutputURL(String)
     case outputCollidesWithInput(String)
+    case invalidOutputRange
 
     var errorDescription: String? {
         switch self {
@@ -165,6 +198,8 @@ enum EditorExportRequestError: LocalizedError, Equatable, Sendable {
             return "导出位置不是本地文件路径：\(value)。"
         case let .outputCollidesWithInput(path):
             return "导出位置不能覆盖项目素材：\(path)。"
+        case .invalidOutputRange:
+            return "所选片段已经变化，无法确定有效的导出范围。请重新选择片段。"
         }
     }
 }
@@ -177,7 +212,9 @@ enum EditorExportRequestBuilder {
         preparedMedia: EditorPreparedMedia,
         wallpaperURL: URL?,
         stickerURLs: [String: URL] = [:],
-        outputURL: URL? = nil
+        outputURL: URL? = nil,
+        outputKind: ExportOutputKind = .video,
+        outputRange: MediaTimeRange? = nil
     ) throws -> EditorExportRequest {
         let preparedRequest = preparedMedia.request
         guard preparedRequest.editorSessionID == editorSessionID else {
@@ -207,16 +244,19 @@ enum EditorExportRequestBuilder {
             preparedRequest.source,
             role: .screenRecording
         )
-        let camera = try requiredMedia.cameraVideo
+        let camera = try outputKind == .video && requiredMedia.cameraVideo
             ? requiredAsset(preparedRequest.camera, role: .cameraRecording)
             : nil
         let microphone = try requiredMedia.microphoneAudio
             ? requiredAsset(preparedRequest.microphone, role: .microphoneRecording)
             : nil
-        let wallpaper = try (requiredMedia.backgroundImage || requiredMedia.backgroundVideo)
+        let wallpaper = try outputKind == .video
+            && (requiredMedia.backgroundImage || requiredMedia.backgroundVideo)
             ? requiredWallpaper(at: wallpaperURL)
             : nil
-        let stickerPaths = Set(project.timeline.stickerClips.map(\.relativePath))
+        let stickerPaths = outputKind == .video
+            ? Set(project.timeline.stickerClips.map(\.relativePath))
+            : []
         var stickers: [String: EditorExportAsset] = [:]
         stickers.reserveCapacity(stickerPaths.count)
         for relativePath in stickerPaths {
@@ -236,14 +276,26 @@ enum EditorExportRequestBuilder {
         // Reject a replacement that occurred after preview preparation.
         try assets.validateCurrentVersions()
 
-        let resolvedOutputURL = try (outputURL ?? makeDefaultOutputURL(for: project))
+        let resolvedOutputURL = try (outputURL ?? makeDefaultOutputURL(
+            for: project,
+            outputKind: outputKind
+        ))
             .standardizedFileURL
         guard resolvedOutputURL.isFileURL else {
             throw EditorExportRequestError.invalidOutputURL(
                 resolvedOutputURL.absoluteString
             )
         }
-        guard !assets.inputURLs.contains(resolvedOutputURL) else {
+        guard resolvedOutputURL.pathExtension.lowercased()
+            == outputKind.fileExtension else {
+            throw EditorExportRequestError.invalidOutputURL(
+                "音视频类型与扩展名不匹配：\(resolvedOutputURL.path)"
+            )
+        }
+        guard !ExportFileTransaction.collides(
+            outputURL: resolvedOutputURL,
+            inputURLs: assets.inputURLs
+        ) else {
             throw EditorExportRequestError.outputCollidesWithInput(
                 resolvedOutputURL.path
             )
@@ -261,6 +313,20 @@ enum EditorExportRequestBuilder {
             microphoneRange: preparedMedia.inventories.microphone.audioTimeRange,
             sourcePointerEvents: preparedRequest.pointerEvents
         )
+        let validatedOutputRange: MediaTimeRange?
+        if let outputRange {
+            let tolerance = max(currentMediaPlan.outputDuration.ulp * 8, 0.000_001)
+            let start = max(outputRange.start, 0)
+            let end = min(outputRange.end, currentMediaPlan.outputDuration)
+            guard outputRange.start >= -tolerance,
+                  outputRange.end <= currentMediaPlan.outputDuration + tolerance,
+                  let range = MediaTimeRange(start: start, duration: end - start) else {
+                throw EditorExportRequestError.invalidOutputRange
+            }
+            validatedOutputRange = range
+        } else {
+            validatedOutputRange = nil
+        }
 
         return EditorExportRequest(
             editorSessionID: editorSessionID,
@@ -268,13 +334,16 @@ enum EditorExportRequestBuilder {
             project: project,
             mediaPlan: currentMediaPlan,
             assets: assets,
-            outputURL: resolvedOutputURL
+            outputURL: resolvedOutputURL,
+            outputKind: outputKind,
+            outputRange: validatedOutputRange
         )
     }
 
     static func makeDefaultOutputURL(
         for project: RecorderProject,
-        preferredProjectName: String? = nil
+        preferredProjectName: String? = nil,
+        outputKind: ExportOutputKind = .video
     ) throws -> URL {
         let folder = AppPreferences.exportDirectoryURL
         try FileManager.default.createDirectory(
@@ -284,15 +353,26 @@ enum EditorExportRequestBuilder {
 
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd-HH-mm-ss"
-        let frameRate = project.exportSettings.frameRate
         let projectName = preferredProjectName.flatMap(exportFileNameComponent)
-        let baseName = projectName.map {
-            "\($0)-\(frameRate.rawValue)fps"
-        } ?? "成片-\(formatter.string(from: Date()))-\(frameRate.rawValue)fps"
-        var candidate = folder.appendingPathComponent("\(baseName).mp4")
+        let baseName: String
+        switch outputKind {
+        case .video:
+            let frameRate = project.exportSettings.frameRate
+            baseName = projectName.map {
+                "\($0)-\(frameRate.rawValue)fps"
+            } ?? "成片-\(formatter.string(from: Date()))-\(frameRate.rawValue)fps"
+        case .audio:
+            baseName = projectName.map { "\($0)-音频" }
+                ?? "音频-\(formatter.string(from: Date()))"
+        }
+        var candidate = folder.appendingPathComponent(
+            "\(baseName).\(outputKind.fileExtension)"
+        )
         var suffix = 2
         while FileManager.default.fileExists(atPath: candidate.path) {
-            candidate = folder.appendingPathComponent("\(baseName)-\(suffix).mp4")
+            candidate = folder.appendingPathComponent(
+                "\(baseName)-\(suffix).\(outputKind.fileExtension)"
+            )
             suffix += 1
         }
         return candidate

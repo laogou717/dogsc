@@ -12,30 +12,32 @@ extension EditorTimelineView {
             + (showsScreenMotionTimeline ? motionTimelineHeight : 0)
             + (showsCameraMotionTimeline ? motionTimelineHeight : 0)
             + (showsOverlayTimeline ? overlayTimelineHeight : 0)
-            + (showsProgressTimeline ? overlayTimelineHeight : 0)
     }
 
     var cameraSyncTimelineHeight: CGFloat { 62 }
-    var motionTimelineHeight: CGFloat { 46 }
-    var overlayTimelineHeight: CGFloat { 42 }
-    var timelineRulerHeight: CGFloat { 50 }
-    var timelineControlsHeight: CGFloat { 50 }
+    var motionTimelineHeight: CGFloat { 56 }
+    var overlayTimelineHeight: CGFloat {
+        max(CGFloat(max(overlayTimelineRows.count, 1) * 34 + 16), 56)
+    }
+    var timelineRulerHeight: CGFloat { 44 }
+    var timelineControlsHeight: CGFloat { 68 }
     var timelineOverviewHeight: CGFloat { 20 }
     var timelineDividerHeight: CGFloat { 1 }
-    var timelineLabelWidth: CGFloat { 86 }
-    var primaryTimelineHeight: CGFloat {
-        EditorTimelineSizing.clampedPrimaryLaneHeight(primaryLaneHeight)
+    var timelineLabelWidth: CGFloat { 156 }
+    var preferredPanelHeight: CGFloat {
+        timelineCanvasHeight + timelineControlsHeight + timelineOverviewHeight + timelineDividerHeight * 2
     }
-    var primaryClipContentHeight: CGFloat {
-        max(primaryTimelineHeight - 12, 44)
+    // Track density stays fixed as visible rows determine the panel height.
+    var primaryTimelineHeight: CGFloat { primaryVideoHeight + 12 }
+    var waveformContentHeight: CGFloat { primaryVideoHeight }
+    // Display mode changes the contents, never the workspace geometry.
+    var primaryVideoHeight: CGFloat { 96 }
+    var primaryClipContentHeight: CGFloat { primaryTimelineHeight - 12 }
+    var timelineViewportHeight: CGFloat {
+        max(panelHeight - timelineControlsHeight - timelineOverviewHeight - timelineDividerHeight * 2, 80)
     }
-
-    var timelineHeight: CGFloat {
-        timelineControlsHeight
-            + timelineOverviewHeight
-            + timelineCanvasHeight
-            + timelineDividerHeight * 2
-    }
+    var timelineDocumentHeight: CGFloat { max(timelineCanvasHeight, timelineViewportHeight) }
+    var timelineHeight: CGFloat { panelHeight }
 
     func seekTimeline(to time: TimeInterval) {
         let snapped = snappedTimelineTime(time)
@@ -101,11 +103,15 @@ extension EditorTimelineView {
     }
 
     func beginTimelineGesture(_ intent: EditorTimelineGestureIntent) -> Bool {
-        gestureOwnership.begin(intent)
+        if gestureOwnership.activeIntent == nil { timelineSnap.reset() }
+        return gestureOwnership.begin(intent)
     }
 
     func endTimelineGesture(_ intent: EditorTimelineGestureIntent) {
+        guard gestureOwnership.activeIntent == intent else { return }
         gestureOwnership.end(intent)
+        timelineInteractionID = nil
+        timelineSnap.reset()
     }
 
     func cancelActiveTimelineGesture() {
@@ -113,6 +119,7 @@ extension EditorTimelineView {
             playbackController.endScrubbing()
         }
         gestureOwnership.cancel()
+        timelineSnap.reset()
         endPrimarySegmentDrag()
         primaryTrimDraft = nil
         primaryRetimeDraft = nil
@@ -124,7 +131,14 @@ extension EditorTimelineView {
         motionTrackDrag = nil
         motionCreateDrag = nil
         overlayTimelineDrag = nil
-        editorStore.cancelInteraction()
+        overlayCreateRange = nil
+        overlayCreateStart = nil
+        // Recovery is allowed to retire its own draft only. A delayed mouse-up
+        // must never cancel a crop/inspector interaction started since then.
+        if let owned = timelineInteractionID, editorStore.interaction?.id == owned {
+            editorStore.cancelInteraction()
+        }
+        timelineInteractionID = nil
     }
 
     func stepTimeline(byFrames frames: Int) {

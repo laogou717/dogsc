@@ -1,27 +1,12 @@
 import Foundation
 
-/// Owns the on-disk compatibility contract for `project.json`.
-///
-/// Version 1 stored zoom keyframes alongside (or instead of) zoom animation
-/// clips. Version 2 made `zoomAnimations` the only persisted zoom timeline.
-/// Version 3 introduces single-source media and background records. Version 4
-/// makes `ProjectTimeline` the only persisted owner of source edits and every
-/// time-varying scene track. Version 5 moves output frame rate and resolution
-/// into the one persisted `ExportSettings` value. Version 6 adds the typed
-/// screen-frame decoration selected by the editor. Version 7 makes the source
-/// recording's native pixel dimensions the default full-quality canvas.
-/// Version 8 persists camera framing inside its mask independently from the
-/// mask's own canvas position and size. Version 9 adds segment playback rates,
-/// redactions, stickers and the authored chapter progress overlay. Version 10
-/// adds authored pattern and animated-flow backgrounds. Version 11 gives a
-/// sticker independent control over screen/camera backdrop treatment. Version
-/// 12 adds generic mobile-device screen frames without Apple product artwork.
-/// Version 13 adds a project-level opening sequence shared by preview/export.
-/// Version 15 splits mobile-device frames into explicit phone/tablet and
-/// portrait/landscape variants.
+/// Version 23 is the first deliberately compact project contract. It retains
+/// recording cuts, motion, redaction and still-image stickers, and removes the
+/// retired subtitle, material-library video and progress-overlay models.
 public enum ProjectSchema {
-    public static let minimumSupportedVersion = 1
-    public static let currentVersion = 15
+    public static let minimumSupportedVersion = 23
+    // Version 24 adds authored canvas ratios. Version 23 projects retain their defaults.
+    public static let currentVersion = 26
 
     static func validateForDecoding(_ version: Int) throws {
         guard version >= minimumSupportedVersion else {
@@ -82,6 +67,10 @@ public enum CanvasAspectRatio: String, CaseIterable, Codable, Identifiable, Send
     case standard = "4:3"
     case portrait = "9:16"
     case square = "1:1"
+    case standardPortrait = "3:4"
+    case cinema = "2.39:1"
+    case cinemaPortrait = "1:2.39"
+    case custom = "自定义"
 
     public var id: String { rawValue }
 }
@@ -120,18 +109,11 @@ public enum ScreenFrameStyle: String, CaseIterable, Codable, Identifiable, Senda
     case deviceTabletPortrait
     case deviceTabletLandscape
 
-    /// The two generic device cases remain decode-only compatibility values
-    /// for v12-v14 projects. New edits always persist an explicit orientation.
+    /// One adaptive device entry; legacy oriented identities retain their
+    /// saved geometry but share the same picker card.
     public static let allCases: [ScreenFrameStyle] = [
-        .none,
-        .windowLight,
-        .windowDark,
-        .browserLight,
-        .browserDark,
-        .devicePhonePortrait,
-        .devicePhoneLandscape,
-        .deviceTabletPortrait,
-        .deviceTabletLandscape,
+        .none, .windowLight, .windowDark, .browserLight, .browserDark,
+        .devicePhone,
     ]
 
     public var id: String { rawValue }
@@ -144,6 +126,8 @@ public enum ScreenFrameStyle: String, CaseIterable, Codable, Identifiable, Senda
         case Self.windowDark.rawValue: self = .windowDark
         case Self.browserLight.rawValue: self = .browserLight
         case Self.browserDark.rawValue: self = .browserDark
+        // Removed local designs have no chrome; retain only safe decoding.
+        case "paperWhite", "graphite": self = .none
         case Self.devicePhone.rawValue: self = .devicePhone
         case Self.deviceTablet.rawValue: self = .deviceTablet
         case Self.devicePhonePortrait.rawValue: self = .devicePhonePortrait
@@ -167,6 +151,26 @@ public enum ScreenFrameStyle: String, CaseIterable, Codable, Identifiable, Senda
         var container = encoder.singleValueContainer()
         try container.encode(rawValue)
     }
+
+    public var defaultOuterCornerRadius: Double { defaults.outerRadius }
+    public var defaultContentCornerRadius: Double { defaults.contentRadius }
+
+    public var isDeviceFrame: Bool {
+        switch self {
+        case .devicePhone, .deviceTablet, .devicePhonePortrait,
+             .devicePhoneLandscape, .deviceTabletPortrait,
+             .deviceTabletLandscape: true
+        case .none, .windowLight, .windowDark, .browserLight, .browserDark: false
+        }
+    }
+
+    public var isBrowserFrame: Bool {
+        self == .browserLight || self == .browserDark
+    }
+
+    public var isWindowFrame: Bool {
+        self == .windowLight || self == .windowDark
+    }
 }
 
 public enum OpeningSequencePreset: String, CaseIterable, Codable, Identifiable, Sendable {
@@ -179,7 +183,6 @@ public enum OpeningSequencePreset: String, CaseIterable, Codable, Identifiable, 
 
 public enum OpeningSequenceElement: String, CaseIterable, Codable, Identifiable, Sendable {
     case screen = "屏幕"
-    case progress = "进度条"
     case camera = "摄像头"
     case stickers = "贴图"
 
@@ -195,6 +198,7 @@ public struct OpeningSequence: Codable, Equatable, Sendable {
 
     public var isEnabled: Bool
     public var preset: OpeningSequencePreset
+    public var motionCurve: ElementMotionCurve
     public var duration: TimeInterval
     public var stagger: TimeInterval
     public var includedElements: [OpeningSequenceElement]
@@ -203,13 +207,15 @@ public struct OpeningSequence: Codable, Equatable, Sendable {
     public init(
         isEnabled: Bool = false,
         preset: OpeningSequencePreset = .light3D,
+        motionCurve: ElementMotionCurve = .swift,
         duration: TimeInterval = 2.2,
         stagger: TimeInterval = 0.16,
         includedElements: [OpeningSequenceElement] = OpeningSequenceElement.allCases,
-        elementOrder: [OpeningSequenceElement] = [.screen, .progress, .camera, .stickers]
+        elementOrder: [OpeningSequenceElement] = [.screen, .camera, .stickers]
     ) {
         self.isEnabled = isEnabled
         self.preset = preset
+        self.motionCurve = motionCurve
         self.duration = min(max(duration.isFinite ? duration : 2.2, 0.4), 8)
         self.stagger = min(max(stagger.isFinite ? stagger : 0.16, 0), 1.2)
         self.includedElements = Self.normalized(includedElements, appendingMissing: false)
@@ -238,6 +244,7 @@ public struct OpeningSequence: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case isEnabled
         case preset
+        case motionCurve
         case duration
         case stagger
         case includedElements
@@ -250,6 +257,10 @@ public struct OpeningSequence: Codable, Equatable, Sendable {
             isEnabled: try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? false,
             preset: try container.decodeIfPresent(OpeningSequencePreset.self, forKey: .preset)
                 ?? .light3D,
+            motionCurve: try container.decodeIfPresent(
+                ElementMotionCurve.self,
+                forKey: .motionCurve
+            ) ?? .swift,
             duration: try container.decodeIfPresent(TimeInterval.self, forKey: .duration) ?? 2.2,
             stagger: try container.decodeIfPresent(TimeInterval.self, forKey: .stagger) ?? 0.16,
             includedElements: try container.decodeIfPresent(
@@ -259,7 +270,7 @@ public struct OpeningSequence: Codable, Equatable, Sendable {
             elementOrder: try container.decodeIfPresent(
                 [OpeningSequenceElement].self,
                 forKey: .elementOrder
-            ) ?? [.screen, .progress, .camera, .stickers]
+            ) ?? [.screen, .camera, .stickers]
         )
     }
 
@@ -274,19 +285,6 @@ public struct OpeningSequence: Codable, Equatable, Sendable {
         }
         return result
     }
-}
-
-public enum CanvasBackgroundPreset: String, CaseIterable, Codable, Identifiable, Sendable {
-    case aurora = "极光"
-    case twilight = "暮色"
-    case sunrise = "日出"
-    case graphite = "石墨"
-    case pattern = "纹理网格"
-    case dynamic = "动态流光"
-    case solid = "纯色"
-    case image = "图片壁纸"
-
-    public var id: String { rawValue }
 }
 
 public enum BackgroundPatternPreset: String, CaseIterable, Codable, Sendable, Identifiable {
@@ -340,41 +338,26 @@ public enum DynamicBackgroundPreset: String, CaseIterable, Codable, Sendable, Id
     }
 }
 
-/// Gradient presets that can actually be represented by a gradient source.
-/// Keeping image and solid color out of this enum makes invalid combinations
-/// such as `gradient(.image)` impossible.
-public enum BackgroundGradientPreset: String, CaseIterable, Codable, Sendable {
-    case aurora
-    case twilight
-    case sunrise
-    case graphite
-}
-
 /// The one active background source for a canvas.
 ///
-/// Associated values deliberately distinguish bundled, project-relative and
-/// system-absolute images. A project can therefore never activate several
-/// wallpaper paths at the same time.
+/// Project-relative custom media and system-absolute wallpaper references stay
+/// distinct so user files can travel with a project while Apple-managed media
+/// is never copied into the app or project package.
 public enum BackgroundSource: Codable, Equatable, Sendable {
-    case gradient(BackgroundGradientPreset)
     case pattern(BackgroundPatternPreset)
     case dynamicFlow(DynamicBackgroundPreset)
-    case solidColor(hex: HexColor)
-    case bundledImage(relativePath: String)
     case projectImage(relativePath: String)
     case systemImage(absolutePath: String)
     case projectVideo(relativePath: String)
     case systemVideo(absolutePath: String)
 
-    public static let defaultBundledImage = BackgroundSource.bundledImage(
-        relativePath: "Photography/garrett-parker-moraine-lake.jpg"
-    )
+    public static let safeFallback = BackgroundSource.pattern(.obsidianGrid)
 
     public var isImage: Bool {
         switch self {
-        case .bundledImage, .projectImage, .systemImage:
+        case .projectImage, .systemImage:
             return true
-        case .gradient, .pattern, .dynamicFlow, .solidColor, .projectVideo, .systemVideo:
+        case .pattern, .dynamicFlow, .projectVideo, .systemVideo:
             return false
         }
     }
@@ -383,8 +366,7 @@ public enum BackgroundSource: Codable, Equatable, Sendable {
         switch self {
         case .projectVideo, .systemVideo:
             return true
-        case .gradient, .pattern, .dynamicFlow, .solidColor,
-             .bundledImage, .projectImage, .systemImage:
+        case .pattern, .dynamicFlow, .projectImage, .systemImage:
             return false
         }
     }
@@ -392,11 +374,8 @@ public enum BackgroundSource: Codable, Equatable, Sendable {
     public var usesWallpaperMedia: Bool { isImage || isVideo }
 
     private enum Kind: String, Codable {
-        case gradient
         case pattern
         case dynamicFlow
-        case solidColor
-        case bundledImage
         case projectImage
         case systemImage
         case projectVideo
@@ -405,10 +384,8 @@ public enum BackgroundSource: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case kind
-        case preset
         case patternPreset
         case dynamicPreset
-        case hex
         case relativePath
         case absolutePath
     }
@@ -417,10 +394,6 @@ public enum BackgroundSource: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let kind = try container.decode(Kind.self, forKey: .kind)
         switch kind {
-        case .gradient:
-            self = .gradient(
-                try container.decode(BackgroundGradientPreset.self, forKey: .preset)
-            )
         case .pattern:
             self = .pattern(
                 try container.decode(BackgroundPatternPreset.self, forKey: .patternPreset)
@@ -428,12 +401,6 @@ public enum BackgroundSource: Codable, Equatable, Sendable {
         case .dynamicFlow:
             self = .dynamicFlow(
                 try container.decode(DynamicBackgroundPreset.self, forKey: .dynamicPreset)
-            )
-        case .solidColor:
-            self = .solidColor(hex: try container.decode(HexColor.self, forKey: .hex))
-        case .bundledImage:
-            self = .bundledImage(
-                relativePath: try container.decode(String.self, forKey: .relativePath)
             )
         case .projectImage:
             self = .projectImage(
@@ -457,21 +424,12 @@ public enum BackgroundSource: Codable, Equatable, Sendable {
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
-        case let .gradient(preset):
-            try container.encode(Kind.gradient, forKey: .kind)
-            try container.encode(preset, forKey: .preset)
         case let .pattern(preset):
             try container.encode(Kind.pattern, forKey: .kind)
             try container.encode(preset, forKey: .patternPreset)
         case let .dynamicFlow(preset):
             try container.encode(Kind.dynamicFlow, forKey: .kind)
             try container.encode(preset, forKey: .dynamicPreset)
-        case let .solidColor(hex):
-            try container.encode(Kind.solidColor, forKey: .kind)
-            try container.encode(hex, forKey: .hex)
-        case let .bundledImage(relativePath):
-            try container.encode(Kind.bundledImage, forKey: .kind)
-            try container.encode(relativePath, forKey: .relativePath)
         case let .projectImage(relativePath):
             try container.encode(Kind.projectImage, forKey: .kind)
             try container.encode(relativePath, forKey: .relativePath)
@@ -613,8 +571,8 @@ public struct CursorStyle: Codable, Equatable, Sendable {
     public var clickOpacity: Double
     public var clickScale: Double
     /// User-facing strength of the hotspot-anchored cursor body swing.
-    /// `1` preserves the original tuned response, `0` disables the swing,
-    /// and values above `1` make slower motion react more visibly.
+    /// The visible presets run from `2` through `4`; `.none` on the motion
+    /// style is the single explicit way to disable the effect.
     public var motionTiltStrength: Double
 
     public var showsClickEffect: Bool {
@@ -637,7 +595,7 @@ public struct CursorStyle: Codable, Equatable, Sendable {
         clickColor: HexColor? = nil,
         clickOpacity: Double = 0.8,
         clickScale: Double = 1.0,
-        motionTiltStrength: Double = 1.0
+        motionTiltStrength: Double = 2.0
     ) {
         self.assetID = assetID.rawValue.isEmpty ? .systemArrow : assetID
         self.size = min(max(size, 0.25), 6)
@@ -647,7 +605,7 @@ public struct CursorStyle: Codable, Equatable, Sendable {
         self.clickColor = clickColor
         self.clickOpacity = min(max(clickOpacity, 0.05), 1.0)
         self.clickScale = min(max(clickScale, 0.4), 3.0)
-        self.motionTiltStrength = min(max(motionTiltStrength, 0), 2)
+        self.motionTiltStrength = min(max(motionTiltStrength, 2), 4)
     }
 
     public init(
@@ -768,7 +726,7 @@ public struct CursorStyle: Codable, Equatable, Sendable {
             motionTiltStrength: try container.decodeIfPresent(
                 Double.self,
                 forKey: .motionTiltStrength
-            ) ?? 1.0
+            ) ?? 2.0
         )
     }
 
@@ -853,6 +811,7 @@ public struct NormalizedCrop: Codable, Equatable, Sendable {
 
 public struct CanvasStyle: Codable, Equatable, Sendable {
     public var aspectRatio: CanvasAspectRatio
+    public var customAspectRatio: CanvasCustomAspectRatio
     public var backgroundSource: BackgroundSource
     public var padding: Double
     public var contentScale: Double
@@ -868,6 +827,17 @@ public struct CanvasStyle: Codable, Equatable, Sendable {
     /// Scales the authored toolbar and bezel measurements of a screen frame
     /// without changing the recorded content itself.
     public var screenFrameScale: Double
+    /// Independently scales a window/browser toolbar without changing device
+    /// bezels or the recorded content rectangle.
+    public var screenFrameToolbarScale: Double
+    /// Optional authored-point overrides. `nil` preserves the style's native
+    /// geometry so old projects retain their exact silhouette.
+    public var screenFrameOuterCornerRadius: Double?
+    public var screenFrameContentCornerRadius: Double?
+    /// Text is part of the frame decoration and therefore shares screen 3D,
+    /// opening motion, preview and export instead of floating above the card.
+    public var screenFrameTitle: String
+    public var screenFrameBrowserAddress: String
     /// Scales the density / spacing / size of background grids and dot patterns.
     public var patternScale: Double
     /// Controls the opacity / intensity of background patterns and dynamic flows.
@@ -875,7 +845,8 @@ public struct CanvasStyle: Codable, Equatable, Sendable {
 
     public init(
         aspectRatio: CanvasAspectRatio = .adaptive,
-        backgroundSource: BackgroundSource = .defaultBundledImage,
+        customAspectRatio: CanvasCustomAspectRatio = .init(),
+        backgroundSource: BackgroundSource = .safeFallback,
         padding: Double = 100,
         contentScale: Double = 1,
         contentPosition: NormalizedPoint = NormalizedPoint(x: 0.5, y: 0.5),
@@ -888,10 +859,16 @@ public struct CanvasStyle: Codable, Equatable, Sendable {
         insetOpacity: Double = 0.125,
         screenFrame: ScreenFrameStyle = .none,
         screenFrameScale: Double = 1,
+        screenFrameToolbarScale: Double = 1,
+        screenFrameOuterCornerRadius: Double? = nil,
+        screenFrameContentCornerRadius: Double? = nil,
+        screenFrameTitle: String = "",
+        screenFrameBrowserAddress: String = "",
         patternScale: Double = 1,
         patternOpacity: Double = 1
     ) {
         self.aspectRatio = aspectRatio
+        self.customAspectRatio = customAspectRatio
         self.backgroundSource = backgroundSource
         self.padding = padding
         self.contentScale = contentScale
@@ -905,15 +882,23 @@ public struct CanvasStyle: Codable, Equatable, Sendable {
         self.insetOpacity = insetOpacity
         self.screenFrame = screenFrame
         self.screenFrameScale = min(max(screenFrameScale, 0.6), 1.6)
+        self.screenFrameToolbarScale = min(max(screenFrameToolbarScale, 0.65), 1.6)
+        self.screenFrameOuterCornerRadius = screenFrameOuterCornerRadius.map {
+            min(max($0, 0), 160)
+        }
+        self.screenFrameContentCornerRadius = screenFrameContentCornerRadius.map {
+            min(max($0, 0), 160)
+        }
+        self.screenFrameTitle = String(screenFrameTitle.prefix(120))
+        self.screenFrameBrowserAddress = String(screenFrameBrowserAddress.prefix(240))
         self.patternScale = min(max(patternScale, 0.4), 6.0)
         self.patternOpacity = min(max(patternOpacity, 0.0), 1.0)
     }
 
     private enum CodingKeys: String, CodingKey {
         case aspectRatio
+        case customAspectRatio
         case backgroundSource
-        // v1/v2 decode-only fields.
-        case backgroundPreset
         case padding
         case contentScale
         case contentPosition
@@ -922,14 +907,15 @@ public struct CanvasStyle: Codable, Equatable, Sendable {
         case borderWidth
         case borderHex
         case shadowStrength
-        case backgroundHex
-        case wallpaperRelativePath
-        case systemWallpaperPath
-        case bundledWallpaperRelativePath
         case backgroundBlur
         case insetOpacity
         case screenFrame
         case screenFrameScale
+        case screenFrameToolbarScale
+        case screenFrameOuterCornerRadius
+        case screenFrameContentCornerRadius
+        case screenFrameTitle
+        case screenFrameBrowserAddress
         case patternScale
         case patternOpacity
     }
@@ -942,46 +928,14 @@ public struct CanvasStyle: Codable, Equatable, Sendable {
     }
 
     init(from decoder: any Decoder, projectSchemaVersion: Int) throws {
+        _ = projectSchemaVersion
         let container = try decoder.container(keyedBy: CodingKeys.self)
         aspectRatio = try container.decodeIfPresent(CanvasAspectRatio.self, forKey: .aspectRatio) ?? .adaptive
-        if let decodedSource = try container.decodeIfPresent(
+        customAspectRatio = try container.decodeIfPresent(CanvasCustomAspectRatio.self, forKey: .customAspectRatio) ?? .init()
+        backgroundSource = try container.decodeIfPresent(
             BackgroundSource.self,
             forKey: .backgroundSource
-        ) {
-            backgroundSource = decodedSource
-        } else if projectSchemaVersion <= 2 {
-            let legacyPreset = try container.decodeIfPresent(
-                CanvasBackgroundPreset.self,
-                forKey: .backgroundPreset
-            ) ?? .aurora
-            let legacyHex = try container.decodeIfPresent(
-                HexColor.self,
-                forKey: .backgroundHex
-            ) ?? HexColor(rgb24: 0xD9_C8_FF)
-            let projectImage = try container.decodeIfPresent(
-                String.self,
-                forKey: .wallpaperRelativePath
-            )
-            let systemImage = try container.decodeIfPresent(
-                String.self,
-                forKey: .systemWallpaperPath
-            )
-            let bundledImage = try container.decodeIfPresent(
-                String.self,
-                forKey: .bundledWallpaperRelativePath
-            )
-            backgroundSource = Self.migrateLegacyBackground(
-                preset: legacyPreset,
-                hex: legacyHex,
-                projectImage: projectImage,
-                systemImage: systemImage,
-                bundledImage: bundledImage
-            )
-        } else {
-            // A current-schema document never falls back to stale legacy
-            // fields; doing so could resurrect a source the user removed.
-            backgroundSource = .defaultBundledImage
-        }
+        ) ?? .safeFallback
         padding = try container.decodeIfPresent(Double.self, forKey: .padding) ?? 100
         contentScale = try container.decodeIfPresent(Double.self, forKey: .contentScale) ?? 1
         contentPosition = try container.decodeIfPresent(NormalizedPoint.self, forKey: .contentPosition)
@@ -999,6 +953,26 @@ public struct CanvasStyle: Codable, Equatable, Sendable {
             try container.decodeIfPresent(Double.self, forKey: .screenFrameScale) ?? 1,
             0.6
         ), 1.6)
+        screenFrameToolbarScale = min(max(
+            try container.decodeIfPresent(Double.self, forKey: .screenFrameToolbarScale) ?? 1,
+            0.65
+        ), 1.6)
+        screenFrameOuterCornerRadius = try container.decodeIfPresent(
+            Double.self,
+            forKey: .screenFrameOuterCornerRadius
+        ).map { min(max($0, 0), 160) }
+        screenFrameContentCornerRadius = try container.decodeIfPresent(
+            Double.self,
+            forKey: .screenFrameContentCornerRadius
+        ).map { min(max($0, 0), 160) }
+        screenFrameTitle = String((try container.decodeIfPresent(
+            String.self,
+            forKey: .screenFrameTitle
+        ) ?? "").prefix(120))
+        screenFrameBrowserAddress = String((try container.decodeIfPresent(
+            String.self,
+            forKey: .screenFrameBrowserAddress
+        ) ?? "").prefix(240))
         patternScale = min(max(
             try container.decodeIfPresent(Double.self, forKey: .patternScale) ?? 1,
             0.4
@@ -1012,6 +986,7 @@ public struct CanvasStyle: Codable, Equatable, Sendable {
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(aspectRatio, forKey: .aspectRatio)
+        try container.encode(customAspectRatio, forKey: .customAspectRatio)
         try container.encode(backgroundSource, forKey: .backgroundSource)
         try container.encode(padding, forKey: .padding)
         try container.encode(contentScale, forKey: .contentScale)
@@ -1025,40 +1000,21 @@ public struct CanvasStyle: Codable, Equatable, Sendable {
         try container.encode(insetOpacity, forKey: .insetOpacity)
         try container.encode(screenFrame, forKey: .screenFrame)
         try container.encode(screenFrameScale, forKey: .screenFrameScale)
+        try container.encode(screenFrameToolbarScale, forKey: .screenFrameToolbarScale)
+        try container.encodeIfPresent(
+            screenFrameOuterCornerRadius,
+            forKey: .screenFrameOuterCornerRadius
+        )
+        try container.encodeIfPresent(
+            screenFrameContentCornerRadius,
+            forKey: .screenFrameContentCornerRadius
+        )
+        try container.encode(screenFrameTitle, forKey: .screenFrameTitle)
+        try container.encode(screenFrameBrowserAddress, forKey: .screenFrameBrowserAddress)
         try container.encode(patternScale, forKey: .patternScale)
         try container.encode(patternOpacity, forKey: .patternOpacity)
     }
 
-    private static func migrateLegacyBackground(
-        preset: CanvasBackgroundPreset,
-        hex: HexColor,
-        projectImage: String?,
-        systemImage: String?,
-        bundledImage: String?
-    ) -> BackgroundSource {
-        switch preset {
-        case .aurora: return .gradient(.aurora)
-        case .twilight: return .gradient(.twilight)
-        case .sunrise: return .gradient(.sunrise)
-        case .graphite: return .gradient(.graphite)
-        case .pattern: return .pattern(.obsidianGrid)
-        case .dynamic: return .dynamicFlow(.cyberDriftGrid)
-        case .solid: return .solidColor(hex: hex)
-        case .image:
-            // This order matches the v1/v2 runtime resolver, making corrupt
-            // multi-path projects migrate deterministically to what users saw.
-            if let bundledImage, !bundledImage.isEmpty {
-                return .bundledImage(relativePath: bundledImage)
-            }
-            if let systemImage, !systemImage.isEmpty {
-                return .systemImage(absolutePath: systemImage)
-            }
-            if let projectImage, !projectImage.isEmpty {
-                return .projectImage(relativePath: projectImage)
-            }
-            return .defaultBundledImage
-        }
-    }
 }
 
 public struct CanvasDimensions: Codable, Equatable, Sendable {
@@ -1106,6 +1062,14 @@ public extension CanvasStyle {
             return CanvasDimensions(width: shortEdge, height: shortEdge * 16 / 9)
         case .square:
             return CanvasDimensions(width: shortEdge, height: shortEdge)
+        case .standardPortrait:
+            return CanvasDimensions(width: shortEdge, height: shortEdge * 4 / 3)
+        case .cinema, .cinemaPortrait, .custom:
+            let ratio = resolvedFixedAspectRatio ?? 1
+            let long = Double(preset.long)
+            return ratio >= 1
+                ? CanvasDimensions(width: even(long), height: even(long / ratio))
+                : CanvasDimensions(width: even(long * ratio), height: even(long))
         }
     }
 
@@ -1127,14 +1091,7 @@ public extension CanvasStyle {
             )
         }
 
-        let targetRatio: Double
-        switch aspectRatio {
-        case .adaptive: targetRatio = croppedWidth / croppedHeight
-        case .landscape: targetRatio = 16.0 / 9.0
-        case .standard: targetRatio = 4.0 / 3.0
-        case .portrait: targetRatio = 9.0 / 16.0
-        case .square: targetRatio = 1
-        }
+        let targetRatio = resolvedFixedAspectRatio ?? croppedWidth / croppedHeight
         if croppedWidth / croppedHeight >= targetRatio {
             return CanvasDimensions(
                 width: even(croppedHeight * targetRatio),
@@ -1285,6 +1242,9 @@ public struct MotionStyle: Codable, Equatable, Sendable {
     public var cursorSpringDamping: Double
     public var defaultZoomEasing: ZoomEasingPreset
     public var defaultZoomTransitionDuration: TimeInterval
+    /// Project-owned creation default. Older projects can still inherit the
+    /// app's remembered magnification until they author or apply a preset.
+    public var defaultZoomScale: Double?
 
     public init(
         screen: ScreenMotionStyle = .focused,
@@ -1298,7 +1258,8 @@ public struct MotionStyle: Codable, Equatable, Sendable {
         cursorSpringStiffness: Double = 450,
         cursorSpringDamping: Double = 66,
         defaultZoomEasing: ZoomEasingPreset = .spring,
-        defaultZoomTransitionDuration: TimeInterval = 0.7
+        defaultZoomTransitionDuration: TimeInterval = 0.7,
+        defaultZoomScale: Double? = nil
     ) {
         self.screen = screen
         self.cursor = cursor
@@ -1311,7 +1272,8 @@ public struct MotionStyle: Codable, Equatable, Sendable {
         self.cursorSpringStiffness = cursorSpringStiffness
         self.cursorSpringDamping = cursorSpringDamping
         self.defaultZoomEasing = defaultZoomEasing
-        self.defaultZoomTransitionDuration = min(max(defaultZoomTransitionDuration, 0.05), 5)
+        self.defaultZoomTransitionDuration = min(max(defaultZoomTransitionDuration, 0), 5)
+        self.defaultZoomScale = defaultZoomScale
     }
 
     /// New recordings use the inexpensive layer-local motion treatment by
@@ -1326,7 +1288,7 @@ public struct MotionStyle: Codable, Equatable, Sendable {
         case screen, cursor, motionBlur, frameMotionBlur
         case screenSpringMass, screenSpringStiffness, screenSpringDamping
         case cursorSpringMass, cursorSpringStiffness, cursorSpringDamping
-        case defaultZoomEasing, defaultZoomTransitionDuration
+        case defaultZoomEasing, defaultZoomTransitionDuration, defaultZoomScale
     }
 
     public init(from decoder: any Decoder) throws {
@@ -1349,7 +1311,8 @@ public struct MotionStyle: Codable, Equatable, Sendable {
             defaultZoomTransitionDuration: try container.decodeIfPresent(
                 TimeInterval.self,
                 forKey: .defaultZoomTransitionDuration
-            ) ?? 0.7
+            ) ?? 0.7,
+            defaultZoomScale: try container.decodeIfPresent(Double.self, forKey: .defaultZoomScale)
         )
     }
 }

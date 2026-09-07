@@ -8,7 +8,7 @@ private struct PlaybackRateTimeTransform {
 
     var tailOffset: TimeInterval { newSegmentEnd - oldSegmentEnd }
 
-    func map(_ time: TimeInterval) -> TimeInterval {
+    func mapAnchor(_ time: TimeInterval) -> TimeInterval {
         guard time.isFinite else { return time }
         if time <= segmentStart { return time }
         if time >= oldSegmentEnd { return time + tailOffset }
@@ -16,44 +16,36 @@ private struct PlaybackRateTimeTransform {
     }
 
     func map(_ timing: OverlayTiming) -> OverlayTiming {
-        let start = map(timing.startTime)
-        let end = map(timing.endTime)
-        return OverlayTiming(startTime: start, duration: max(end - start, 0.000_001))
+        OverlayTiming(
+            startTime: mapAnchor(timing.startTime),
+            duration: timing.duration
+        )
     }
 
     func map(_ timing: TransitionTiming) -> TransitionTiming {
-        let start = map(timing.startTime)
-        let end = map(timing.endTime)
-        let leadInEnd = map(
-            timing.startTime + min(timing.leadInDuration, timing.duration)
-        )
-        let returnEnd = map(timing.effectEndTime)
         var result = timing
-        result.startTime = start
-        result.duration = max(end - start, 0.000_001)
-        result.leadInDuration = min(max(leadInEnd - start, 0), 5)
-        result.returnDuration = min(max(returnEnd - end, 0), 5)
+        result.startTime = mapAnchor(timing.startTime)
         return result
     }
 
     func map(_ clip: ZoomAnimationClip) -> ZoomAnimationClip {
-        let start = map(clip.startTime)
-        let end = map(clip.endTime)
-        let enterEnd = map(clip.startTime + min(clip.enterDuration, clip.duration))
-        let effectEnd = map(clip.effectEndTime)
         var result = clip
-        result.startTime = start
-        result.endTime = max(end, start)
-        result.enterDuration = min(max(enterEnd - start, 0), 5)
-        result.exitDuration = min(max(effectEnd - end, 0), 5)
+        let duration = clip.duration
+        result.startTime = mapAnchor(clip.startTime)
+        result.endTime = result.startTime + duration
         return result
+    }
+
+    func map(_ time: TimeInterval) -> TimeInterval {
+        mapAnchor(time)
     }
 }
 
 public extension ProjectTimelineEditing {
-    /// Changes one retained primary segment's speed and maps every authored
-    /// output-time value through the same piecewise transform. Effects remain
-    /// attached to the recorded actions they were authored against.
+    /// Changes one retained primary segment's media speed. Timed objects move
+    /// with the ripple edit, but their authored durations and easing windows
+    /// remain on the output clock so a 100× clip cannot turn a smooth 0.7 s
+    /// zoom/camera transition into an imperceptible flash.
     static func settingPlaybackRate(
         _ requestedRate: Double,
         for segmentID: UUID,
@@ -68,7 +60,15 @@ public extension ProjectTimelineEditing {
         guard let resolved = oldMap.segments.first(where: { $0.id == segmentID }) else {
             throw ProjectTimelineEditingError.segmentNotFound(segmentID)
         }
-        let rate = min(max(requestedRate.isFinite ? requestedRate : 1, 1), 20)
+        let rate = min(
+            max(
+                requestedRate.isFinite
+                    ? requestedRate
+                    : RecordingSegment.minimumPlaybackRate,
+                RecordingSegment.minimumPlaybackRate
+            ),
+            RecordingSegment.maximumPlaybackRate
+        )
         guard abs(rate - resolved.playbackRate) > epsilon else { return timeline }
 
         var authored = oldMap.segments.map(authoredSegment)
@@ -86,17 +86,25 @@ public extension ProjectTimelineEditing {
 
         var result = timeline
         result.sourceSequence = .edited(authored)
-        result.zoomClips = timeline.zoomClips.map(transform.map)
+        result.zoomClips = nonoverlappingZoomClips(
+            timeline.zoomClips.map(transform.map)
+        )
         result.screenMotionClips = timeline.screenMotionClips.map { clip in
             var edited = clip
             edited.timing = transform.map(clip.timing)
             return edited
         }
+        result.screenMotionClips = nonoverlappingScreenMotionClips(
+            result.screenMotionClips
+        )
         result.cameraMotionClips = timeline.cameraMotionClips.map { clip in
             var edited = clip
             edited.timing = transform.map(clip.timing)
             return edited
         }
+        result.cameraMotionClips = nonoverlappingCameraMotionClips(
+            result.cameraMotionClips
+        )
         result.mosaicClips = timeline.mosaicClips.map { clip in
             var edited = clip
             edited.timing = transform.map(clip.timing)
@@ -115,18 +123,6 @@ public extension ProjectTimelineEditing {
             )
             return edited
         }
-        if var progress = timeline.progressOverlay {
-            progress.chapters = progress.chapters.map { chapter in
-                var edited = chapter
-                edited.time = transform.map(chapter.time)
-                return edited
-            }.sorted {
-                if $0.time != $1.time { return $0.time < $1.time }
-                return $0.id.uuidString < $1.id.uuidString
-            }
-            result.progressOverlay = progress
-        }
-
         sortZoom(&result.zoomClips)
         sortScreenMotion(&result.screenMotionClips)
         sortCameraMotion(&result.cameraMotionClips)
@@ -140,6 +136,80 @@ public extension ProjectTimelineEditing {
             return lhs.id.uuidString < rhs.id.uuidString
         }
         try validate(result, fullSourceDuration: fullSourceDuration)
+        return result
+    }
+}
+
+private extension ProjectTimelineEditing {
+    /// Preserving output-time animation durations can bring two animations
+    /// closer together when the media beneath them is compressed. Move the
+    /// later animation forward instead of shortening either transition.
+    static func nonoverlappingZoomClips(
+        _ clips: [ZoomAnimationClip]
+    ) -> [ZoomAnimationClip] {
+        var result: [ZoomAnimationClip] = []
+        for var clip in clips {
+            if let previous = result.last,
+               !EditorTimelineMath.zoomSequenceIsValid(
+                   previous: previous,
+                   next: clip
+               ) {
+                let minimumStart = clip.startTime < previous.endTime
+                    ? previous.endTime
+                    : previous.effectEndTime
+                let duration = clip.duration
+                clip.startTime = minimumStart
+                clip.endTime = minimumStart + duration
+            }
+            result.append(clip)
+        }
+        return result
+    }
+
+    static func nonoverlappingScreenMotionClips(
+        _ clips: [ScreenMotionClip]
+    ) -> [ScreenMotionClip] {
+        nonoverlappingTransitionClips(
+            clips,
+            timing: { $0.timing },
+            setTiming: { $0.timing = $1 }
+        )
+    }
+
+    static func nonoverlappingCameraMotionClips(
+        _ clips: [CameraMotionClip]
+    ) -> [CameraMotionClip] {
+        nonoverlappingTransitionClips(
+            clips,
+            timing: { $0.timing },
+            setTiming: { $0.timing = $1 }
+        )
+    }
+
+    static func nonoverlappingTransitionClips<Clip>(
+        _ clips: [Clip],
+        timing: (Clip) -> TransitionTiming,
+        setTiming: (inout Clip, TransitionTiming) -> Void
+    ) -> [Clip] {
+        var result: [Clip] = []
+        for var clip in clips {
+            var current = timing(clip)
+            if let previousClip = result.last {
+                let previous = timing(previousClip)
+                let gap = current.startTime - previous.endTime
+                let touches = gap <= ZoomInterpolator.adjacencyTolerance
+                let clearsReturn = current.startTime
+                    >= previous.effectEndTime - 0.000_1
+                if current.startTime < previous.endTime - 0.000_1
+                    || (!touches && !clearsReturn) {
+                    current.startTime = current.startTime < previous.endTime
+                        ? previous.endTime
+                        : previous.effectEndTime
+                    setTiming(&clip, current)
+                }
+            }
+            result.append(clip)
+        }
         return result
     }
 }

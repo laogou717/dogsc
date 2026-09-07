@@ -104,7 +104,9 @@ public enum EditorTimelineMath {
             origin: origin,
             easing: easing,
             enterDuration: transitionDuration,
-            exitDuration: fittedExit
+            exitDuration: fittedExit,
+            preferredEnterDuration: transitionDuration,
+            preferredExitDuration: transitionDuration
         )
     }
 
@@ -217,9 +219,11 @@ public enum EditorTimelineMath {
         guard splitTime - animation.startTime >= minimumDuration,
               animation.endTime - splitTime >= minimumDuration else { return nil }
         var left = animation
+        left.preserveTransitionIntent()
         left.endTime = splitTime
         left.exitDuration = 0
         var right = animation
+        right.preserveTransitionIntent()
         right.id = UUID()
         right.startTime = splitTime
         // A split creates two touching camera states. Keep an actual hand-off
@@ -250,7 +254,7 @@ public enum EditorTimelineMath {
         of clip: ZoomAnimationClip,
         defaultExit: TimeInterval
     ) -> TimeInterval {
-        clip.exitDuration > 0.000_1 ? clip.exitDuration : max(defaultExit, 0)
+        clip.requestedExitDuration(defaultTransition: defaultExit)
     }
 
     /// 拖动/调整一段缩放后修复退出时长：被编辑片段及其前驱一旦不再与后一段
@@ -284,12 +288,14 @@ public enum EditorTimelineMath {
             let touchesSuccessor = next.map {
                 abs($0.startTime - clip.endTime) <= ZoomInterpolator.adjacencyTolerance
             } ?? false
-            guard !touchesSuccessor, clip.exitDuration <= 0.000_1 else { return }
+            guard !touchesSuccessor else { return }
+            let requested = clip.requestedExitDuration(defaultTransition: defaultExit)
             let available = next.map { $0.startTime - clip.endTime }
-                ?? max(defaultExit, 0)
+                ?? requested
             var patched = clip
-            patched.exitDuration = min(max(defaultExit, 0), max(available, 0))
-            patches.append(patched)
+            patched.preserveTransitionIntent(defaultTransition: defaultExit)
+            patched.exitDuration = min(requested, max(available, 0))
+            if patched != clip { patches.append(patched) }
         }
         if let predecessor { appendPatch(for: predecessor, followedBy: edited) }
         appendPatch(for: edited, followedBy: successor)

@@ -11,7 +11,7 @@ public enum AutoZoomPlanner {
             guard event.kind == .leftClick || event.kind == .rightClick else { return nil }
             return PointerClick(time: event.time, location: event.location)
         }
-        let duration = min(max(transitionDuration, 0.05), 5)
+        let duration = min(max(transitionDuration, 0), 5)
         let planned = makeAnimations(
             for: clicks,
             zoomScale: zoomScale,
@@ -53,7 +53,7 @@ public enum AutoZoomPlanner {
         if easing != .cubic {
             legacyEasings.append(.cubic)
         }
-        let currentDuration = min(max(transitionDuration, 0.05), 5)
+        let currentDuration = min(max(transitionDuration, 0), 5)
         let matchesExpectedPlan: ([ZoomAnimationClip]) -> Bool = { expected in
             expected.count == animations.count
                 && (

@@ -7,17 +7,20 @@ import SwiftUI
 struct EditorWindowLifecycleBridge: NSViewRepresentable {
     let projectTitle: String
     let onResignKey: @MainActor () -> Void
+    var onActivityChanged: @MainActor (Bool) -> Void = { _ in }
 
     func makeNSView(context: Context) -> WindowObservationView {
         WindowObservationView(
             projectTitle: projectTitle,
-            onResignKey: onResignKey
+            onResignKey: onResignKey,
+            onActivityChanged: onActivityChanged
         )
     }
 
     func updateNSView(_ view: WindowObservationView, context: Context) {
         view.projectTitle = projectTitle
         view.onResignKey = onResignKey
+        view.onActivityChanged = onActivityChanged
         view.updateWindowTitle()
     }
 
@@ -29,14 +32,18 @@ struct EditorWindowLifecycleBridge: NSViewRepresentable {
 final class WindowObservationView: NSView {
     var projectTitle: String
     var onResignKey: @MainActor () -> Void
-    private var observer: NSObjectProtocol?
+    var onActivityChanged: @MainActor (Bool) -> Void
+    private var observers: [NSObjectProtocol] = []
+    private var lastActivity: Bool?
 
     init(
         projectTitle: String,
-        onResignKey: @escaping @MainActor () -> Void
+        onResignKey: @escaping @MainActor () -> Void,
+        onActivityChanged: @escaping @MainActor (Bool) -> Void
     ) {
         self.projectTitle = projectTitle
         self.onResignKey = onResignKey
+        self.onActivityChanged = onActivityChanged
         super.init(frame: .zero)
     }
 
@@ -50,12 +57,35 @@ final class WindowObservationView: NSView {
         stopObserving()
         guard let window else { return }
         updateWindowTitle()
-        observer = NotificationCenter.default.addObserver(
-            forName: NSWindow.didResignKeyNotification,
-            object: window,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.onResignKey() }
+        let center = NotificationCenter.default
+        observers.append(center.addObserver(forName: NSWindow.didResignKeyNotification,
+            object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.onResignKey() }
+            })
+        for name in [NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification,
+                     NSWindow.didChangeOcclusionStateNotification, NSWindow.didExposeNotification] {
+            observers.append(center.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.updateActivity() }
+            })
+        }
+        for name in [NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification,
+                     NSApplication.didHideNotification, NSApplication.didUnhideNotification] {
+            observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.updateActivity() }
+            })
+        }
+        updateActivity()
+    }
+
+    private func updateActivity() {
+        let active = NSApp.isActive && !NSApp.isHidden && window?.isMiniaturized == false
+            && window?.isVisible == true && window?.occlusionState.contains(.visible) == true
+        guard active != lastActivity else { return }
+        lastActivity = active
+        // NSView attachment may occur during SwiftUI's update pass.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.lastActivity == active else { return }
+            self.onActivityChanged(active)
         }
     }
 
@@ -72,9 +102,19 @@ final class WindowObservationView: NSView {
     }
 
     private func stopObserving() {
-        if let observer {
-            NotificationCenter.default.removeObserver(observer)
-            self.observer = nil
-        }
+        observers.forEach { NotificationCenter.default.removeObserver($0) }
+        observers.removeAll()
+        lastActivity = nil
+    }
+}
+
+private struct EditorActivityKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    var editorIsActive: Bool {
+        get { self[EditorActivityKey.self] }
+        set { self[EditorActivityKey.self] = newValue }
     }
 }

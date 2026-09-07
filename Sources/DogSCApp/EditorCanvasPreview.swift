@@ -37,33 +37,15 @@ struct StickerRotationHandleGeometry {
     let handle: CGPoint
 }
 
-enum ProgressResizeEdge: Hashable {
-    case leading
-    case trailing
-}
-
-struct ProgressResizeGestureOrigin {
-    let edge: ProgressResizeEdge
-    let leading: Double
-    let trailing: Double
-}
-
-enum ProgressHeightResizeEdge: Hashable {
-    case top
-    case bottom
-}
-
-struct ProgressHeightResizeGestureOrigin {
-    let edge: ProgressHeightResizeEdge
-    let bandHeight: Double
-    let positionY: Double
-    let fixedCanvasY: CGFloat
-    let handleCanvasY: CGFloat
-    let placement: ProgressOverlayPlacement
+private struct CanvasRenderedFrame {
+    let playbackTime: TimeInterval
+    let layout: CanvasPreviewLayout
 }
 
 struct CanvasPreview: View {
     @Environment(\.displayScale) var displayScale
+    @Environment(\.editorIsActive) var isEditorActive
+    @State private var loadedWallpaperSource: BackgroundSource?
     @ObservedObject var editorStore: EditorStore
     @ObservedObject var mediaSession: EditorMediaSession
     @ObservedObject var playbackController: EditorPlaybackController
@@ -117,9 +99,6 @@ struct CanvasPreview: View {
     @State var mosaicResizeOrigin: NormalizedOverlayRect?
     @State var stickerResizeOrigin: StickerResizeGestureOrigin?
     @State var stickerRotationOrigin: StickerRotationGestureOrigin?
-    @State var progressResizeOrigin: ProgressResizeGestureOrigin?
-    @State var progressHeightResizeOrigin: ProgressHeightResizeGestureOrigin?
-    @State var progressHeightDragHandleY: CGFloat?
     @State var overlayResizeSelection: EditorSelection?
     /// The canvas owns one hover identity across screen, camera and authored
     /// overlays. Keeping it here prevents every object type from inventing a
@@ -219,241 +198,34 @@ struct CanvasPreview: View {
                 // 时间码与总览仍钉在 outputTime 上。
                 let activeTick = playbackController.hoverRenderTick
                     ?? playbackController.stationaryRenderTick
-                let renderedFrame: (
-                    playbackTime: TimeInterval,
-                    layout: CanvasPreviewLayout
-                )? = {
-                    // Crop mode owns a separate, deliberately flat source-only
-                    // renderer. Do not build the regular full-resolution scene,
-                    // motion-blur plan and 3D interaction geometry behind it.
-                    guard !isCropping else { return nil }
-                    let renderScale = previewRenderScale(for: rasterCanvasSize)
-                    let playbackTracks = playbackTrackCache.tracks(for: project)
-                    // 拖动某个动画片段的目标时，播放头可能还在过渡开始之前
-                    // （画面上看不到任何变化）。交互期间把预览钉在该片段过渡
-                    // 完成的时间点（目标完全生效、回落尚未开始），所见即所改。
-                    let interactionPreviewTime: TimeInterval? = {
-                        guard let selection = editorStore.interaction?.selection else { return nil }
-                        switch selection {
-                        case let .cameraMotion(id):
-                            return project.timeline.cameraMotionClips
-                                .first { $0.id == id }
-                                .map { $0.timing.endTime - 0.001 }
-                        case let .screenMotion(id):
-                            return project.timeline.screenMotionClips
-                                .first { $0.id == id }
-                                .map { $0.timing.endTime - 0.001 }
-                        // Overlays are manipulated directly on the frame the
-                        // user is already looking at. Jumping a sticker or
-                        // mosaic back to its clip start changed the screen,
-                        // background and sibling overlays for the lifetime of
-                        // the drag, then snapped everything back on mouse-up.
-                        // Their first-frame authoring visibility is handled by
-                        // overlayAuthoringProject(at:) without changing time.
-                        case .mosaic, .sticker:
-                            return nil
-                        default:
-                            return nil
-                        }
-                    }()
-                    let playbackTime = interactionPreviewTime
-                        ?? activeTick?.outputTime
-                        ?? playbackController.outputTime
-                    return (
-                        playbackTime,
-                        previewLayout(
-                            canvasSize: rasterCanvasSize,
-                            renderScale: renderScale,
-                            playbackTime: playbackTime,
-                            tracks: playbackTracks
-                        )
-                    )
-                }()
-                let perspectivePrewarmPlan: FrameRenderPlan? = {
-                    // The renderer only consumes perspective prewarm plans for
-                    // paused frames. Building one while playback is starting,
-                    // or while the crop-only canvas has no rendered surface,
-                    // steals CPU from the interaction that just occurred.
-                    guard !playbackController.isPlaying,
-                          let renderedFrame,
-                          let prewarmTime = perspectivePrewarmTime(
-                              atOrAfter: renderedFrame.playbackTime
-                          ) else { return nil }
-                    // Prewarm the authored graph at the user's selected preview
-                    // raster. Playback must not silently switch to a different
-                    // quality contract after this paused frame.
-                    return perspectivePrewarmPlanCache.plan(
-                        at: prewarmTime,
-                        using: renderedFrame.layout.playbackEvaluation
-                    )
-                }()
+                let renderedFrame = makeRenderedFrame(
+                    canvasSize: rasterCanvasSize,
+                    activeTick: activeTick
+                )
+                let perspectivePrewarmPlan = isEditorActive ? makePerspectivePrewarmPlan(for: renderedFrame) : nil
                 let playbackPlanCacheHandle = renderedFrame.flatMap {
                     playbackPlanCache.prepare(
                         around: playbackController.outputTime,
                         using: $0.layout.playbackEvaluation,
                         isPlaying: playbackController.isPlaying,
-                        isInteracting: editorStore.interaction != nil
+                        isInteracting: editorStore.interaction != nil || !isEditorActive
                     )
                 }
 
-                ZStack {
-                    // A nearly transparent fill is a reliable AppKit hit
-                    // surface. Pure Color.clear may disappear from hit testing
-                    // after the Metal preview layer is rebuilt.
-                    Color.black.opacity(0.001)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            guard !isCropping else { return }
-                            onCanvasFocused()
-                            editorStore.selection = .canvas
-                        }
-                    if isCropping {
-                        cropEditor(
-                            canvasSize: liveCanvasSize,
-                            sourceAspect: sourceAspectRatio
-                        )
-                    } else if let renderedFrame {
-                        let layout = renderedFrame.layout
-                        SharedRenderedPreviewView(
-                            screenOutput: playbackController.endpoints?.screenOutput,
-                            screenPreferredTransform: playbackController.endpoints?
-                                .screenPreferredTransform ?? .identity,
-                            cameraOutput: playbackController.endpoints?.cameraOutput,
-                            cameraPreferredTransform: playbackController.endpoints?
-                                .cameraPreferredTransform ?? .identity,
-                            cameraContentCrop: mediaSession.cameraContentCrop,
-                            renderTick: activeTick,
-                            // 悬浮预览期间必须让视频输出里刚 seek 落地的所指
-                            // 帧通过；播放头那张精确暂停帧保持原样，指针离开
-                            // 时无需重新解码即可瞬间回落。
-                            usesPausedFrame: !playbackController.isPlaying
-                                && playbackController.hoverPreviewTime == nil,
-                            renderPlan: layout.renderPlan,
-                            semanticScene: layout.rasterFrameScene,
-                            perspectivePrewarmPlan: perspectivePrewarmPlan,
-                            pausedScreenImage: playbackController.pausedScreenImage,
-                            pausedCameraImage: playbackController.pausedCameraImage,
-                            wallpaperImage: resolvedWallpaperImage,
-                            wallpaperVideoURL: resolvedWallpaperVideoURL,
-                            stickerImages: resolvedStickerImages,
-                            suppressCameraContent: cameraCompositorSuppressed,
-                            suppressScreenContent: screenCompositorSuppressed,
-                            playbackController: playbackController,
-                            playbackFrameProvider: { tick in
-                                if let playbackPlanCacheHandle,
-                                   let cached = playbackPlanCache.frame(
-                                       at: tick.outputTime,
-                                       handle: playbackPlanCacheHandle
-                                   ) {
-                                    return cached
-                                }
-                                return layout.playbackEvaluation.frame(
-                                    at: tick.outputTime
-                                )
-                            },
-                            onCameraContentApplied: {
-                                // 合成帧已带着摄像头内容落地，覆盖图可以退出了
-                                guard cameraDragOrigin == nil, cameraSizeOrigin == nil else { return }
-                                cameraDragPreviewImage = nil
-                            },
-                            onScreenContentApplied: {
-                                guard screenDragOrigin == nil, screenScaleOrigin == nil else { return }
-                                screenDragPreviewImage = nil
-                            }
-                        )
-                        .frame(
-                            width: liveCanvasSize.width,
-                            height: liveCanvasSize.height
-                        )
-
-                        // 分栏拖动期间内容按冻结栅格等比拉伸，按冻结几何摆放
-                        // 的交互覆盖层必然错位；拖动手在分栏条上，这些覆盖层
-                        // 此刻不可用，直接隐藏到松手后的重评估。
-                        if !isSplitterResizing {
-                            screenSelectionTarget(
-                                scene: layout.frameScene.screen,
-                                canvasSize: rasterCanvasSize
-                            )
-                            .accessibilityHidden(isScreenSelectionActive)
-
-                            if CanvasPreviewInteractionPolicy.showsEditingOverlays(
-                                isPlaying: playbackController.isPlaying
-                            ),
-                               case .screen = editScope,
-                               let contentPosition = editScope.position(in: project),
-                               let contentScale = editScope.scale(in: project) {
-                                screenInteractionOverlay(
-                                    scene: layout.frameScene.screen,
-                                    canvasSize: rasterCanvasSize,
-                                    contentPosition: contentPosition,
-                                    contentScale: contentScale,
-                                    scope: editScope
-                                )
-                                .transaction { $0.animation = nil }
-                            }
-
-                            // 摄像头在画面上渲染在最上层，交互层也必须在最上：
-                            // 否则屏幕素材盖住摄像头时，屏幕的命中区会把点击全部吞掉。
-                            if CanvasPreviewInteractionPolicy.showsEditingOverlays(
-                                isPlaying: playbackController.isPlaying
-                            ) {
-                                // Mosaic/spotlight regions belong to the screen
-                                // composite. Their hit surfaces must remain
-                                // below the camera, matching the rendered stack.
-                                mosaicSelectionTargets(
-                                    scene: layout.frameScene,
-                                    canvasSize: rasterCanvasSize,
-                                    time: renderedFrame.playbackTime
-                                )
-                            }
-
-                            if CanvasPreviewInteractionPolicy.showsEditingOverlays(
-                                isPlaying: playbackController.isPlaying
-                            ),
-                               hasCameraTrack,
-                               !project.camera.isHidden,
-                               let cameraEvaluation = layout.scene.camera {
-                                cameraInteractionOverlay(
-                                    in: rasterCanvasSize,
-                                    evaluation: cameraEvaluation,
-                                    isAvailable: activeTick?.cameraIsAvailable == true,
-                                    scope: cameraInteractionScope,
-                                    dragPreviewImage: cameraDragPreviewImage
-                                )
-                            }
-
-                            if CanvasPreviewInteractionPolicy.showsEditingOverlays(
-                                isPlaying: playbackController.isPlaying
-                            ) {
-                                // Stickers and the finished-film progress band
-                                // render above the camera and therefore keep
-                                // their interaction targets above it as well.
-                                frontOverlaySelectionTargets(
-                                    scene: layout.frameScene,
-                                    canvasSize: rasterCanvasSize,
-                                    time: renderedFrame.playbackTime
-                                )
-                                if !isDirectCanvasManipulation {
-                                    overlayQuickEditor(
-                                        scene: layout.frameScene,
-                                        canvasSize: rasterCanvasSize,
-                                        time: renderedFrame.playbackTime
-                                    )
-                                    .frame(
-                                        width: rasterCanvasSize.width,
-                                        height: rasterCanvasSize.height
-                                    )
-                                    .zIndex(200)
-                                }
-                            }
-                        }
-
-                        canvasManipulationFeedback(canvasSize: liveCanvasSize)
-                            .zIndex(300)
-                    }
-
-                }
+                canvasContent(
+                    liveCanvasSize: liveCanvasSize,
+                    rasterCanvasSize: rasterCanvasSize,
+                    activeTick: activeTick,
+                    renderedFrame: renderedFrame,
+                    perspectivePrewarmPlan: perspectivePrewarmPlan,
+                    playbackPlanCacheHandle: playbackPlanCacheHandle
+                )
                 .frame(width: liveCanvasSize.width, height: liveCanvasSize.height)
+                .overlay {
+                    if !isEditorActive {
+                        EditorTheme.sleepingMonitor.allowsHitTesting(false).accessibilityHidden(true)
+                    }
+                }
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(.white.opacity(0.12), lineWidth: 1))
                 .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
@@ -467,11 +239,13 @@ struct CanvasPreview: View {
                     splitterResizeFrozenCanvasSize = resizing ? restCanvasSize : nil
                 }
         }
-        .task(id: project.canvas.backgroundSource) {
+        .task(id: "\(project.canvas.backgroundSource):\(isEditorActive)") {
             let source = project.canvas.backgroundSource
+            guard isEditorActive, loadedWallpaperSource != source else { return }
             guard let url = wallpaperURLResolver(source) else {
                 resolvedWallpaperImage = nil
                 resolvedWallpaperVideoURL = nil
+                loadedWallpaperSource = source
                 return
             }
             if source.isVideo {
@@ -491,6 +265,7 @@ struct CanvasPreview: View {
                     guard !Task.isCancelled else { return }
                     resolvedWallpaperImage = poster
                 }
+                loadedWallpaperSource = source
                 return
             }
 
@@ -512,20 +287,22 @@ struct CanvasPreview: View {
             let image = await WallpaperFullImageLoader.image(at: url)
             guard !Task.isCancelled else { return }
             resolvedWallpaperImage = image
+            loadedWallpaperSource = source
         }
-        .task(id: project.timeline.stickerClips.map(\.relativePath).sorted()) {
-            let relativePaths = Set(
-                project.timeline.stickerClips.map(\.relativePath)
-            )
+        .task(id: "\(project.timeline.stickerClips.map(\.relativePath).sorted()):\(isEditorActive)") {
+            guard isEditorActive else { return }
+            let relativePaths = Set(project.timeline.stickerClips.map(\.relativePath))
             var images: [String: NSImage] = [:]
             images.reserveCapacity(relativePaths.count)
             for relativePath in relativePaths {
-                guard let url = projectAssetURLResolver(relativePath),
-                      let image = await WallpaperFullImageLoader.image(at: url) else {
-                    continue
+                guard let url = projectAssetURLResolver(relativePath) else { continue }
+                if let cached = resolvedStickerImages[relativePath] {
+                    images[relativePath] = cached
+                } else {
+                    let image = await WallpaperFullImageLoader.image(at: url)
+                    guard !Task.isCancelled else { return }
+                    if let image { images[relativePath] = image }
                 }
-                guard !Task.isCancelled else { return }
-                images[relativePath] = image
             }
             guard !Task.isCancelled else { return }
             resolvedStickerImages = images
@@ -536,12 +313,183 @@ struct CanvasPreview: View {
             }
         }
         .onChange(of: editorStore.interaction?.selection) { _, selection in
-            if selection == nil, isDirectCanvasManipulation {
+            if selection != directCanvasManipulationSelection, isDirectCanvasManipulation {
                 clearCanvasManipulationPresentation()
             }
         }
+        .onChange(of: isEditorActive) { _, active in
+            if !active { playbackPlanCache.invalidate() }
+        }
         .onDisappear {
             playbackPlanCache.invalidate()
+        }
+    }
+
+    @ViewBuilder
+    private func canvasContent(
+        liveCanvasSize: CGSize,
+        rasterCanvasSize: CGSize,
+        activeTick: EditorPlaybackRenderTick?,
+        renderedFrame: CanvasRenderedFrame?,
+        perspectivePrewarmPlan: FrameRenderPlan?,
+        playbackPlanCacheHandle: EditorCanvasPlaybackPlanCache.Handle?
+    ) -> some View {
+        ZStack {
+            // This opaque, static plate survives Metal/decoder retirement.
+            // Sleep never exposes the workspace grid through the monitor.
+            EditorTheme.sleepingMonitor
+                .contentShape(Rectangle())
+                .onTapGesture(perform: focusCanvas)
+
+            monitorSurface(canvasSize: liveCanvasSize, activeTick: activeTick,
+                renderedFrame: renderedFrame, perspectivePrewarmPlan: perspectivePrewarmPlan,
+                playbackPlanCacheHandle: playbackPlanCacheHandle)
+                .allowsHitTesting(false)
+
+            if isCropping {
+                cropEditor(canvasSize: liveCanvasSize, sourceAspect: sourceAspectRatio)
+                    .transition(.identity)
+            } else if let renderedFrame {
+                if !isSplitterResizing && isEditorActive {
+                    canvasEditingOverlays(renderedFrame: renderedFrame,
+                        canvasSize: rasterCanvasSize, activeTick: activeTick)
+                }
+                if isEditorActive {
+                    canvasManipulationFeedback(canvasSize: liveCanvasSize).zIndex(300)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func monitorSurface(canvasSize: CGSize, activeTick: EditorPlaybackRenderTick?,
+        renderedFrame: CanvasRenderedFrame?, perspectivePrewarmPlan: FrameRenderPlan?,
+        playbackPlanCacheHandle: EditorCanvasPlaybackPlanCache.Handle?) -> some View {
+        let sourceSize = aspectFittedSize(aspectRatio: sourceAspectRatio,
+            inside: CGSize(width: max(canvasSize.width - 36, 2), height: max(canvasSize.height - 36, 2)))
+        let cropFrame: SharedPreviewPlaybackFrame? = isCropping ? cropSourceFrameCache.frame(
+            normalizedProject: cropSourceProject(), size: sourceSize, sourceAspect: sourceAspectRatio
+        ) { cropSourceFrame(project: cropSourceProject(), size: sourceSize, sourceAspect: sourceAspectRatio) } : nil
+        if let plan = cropFrame?.renderPlan ?? renderedFrame?.layout.renderPlan,
+           let scene = cropFrame?.semanticScene ?? renderedFrame?.layout.rasterFrameScene {
+            let provider: SharedPreviewPlaybackFrameProvider = { tick in
+                if let cropFrame { return cropFrame }
+                guard let layout = renderedFrame?.layout else { return SharedPreviewPlaybackFrame(renderPlan: plan, semanticScene: scene) }
+                return makePlaybackFrameProvider(evaluation: layout.playbackEvaluation,
+                    cacheHandle: playbackPlanCacheHandle)(tick)
+            }
+            SharedRenderedPreviewView(
+                presentationMode: isCropping ? 1 : 0,
+                screenOutput: playbackController.endpoints?.screenOutput,
+                screenPreferredTransform: playbackController.endpoints?.screenPreferredTransform ?? .identity,
+                cameraOutput: playbackController.endpoints?.cameraOutput,
+                cameraPreferredTransform: playbackController.endpoints?.cameraPreferredTransform ?? .identity,
+                cameraContentCrop: mediaSession.cameraContentCrop,
+                renderTick: activeTick,
+                usesPausedFrame: !playbackController.isPlaying && playbackController.hoverPreviewTime == nil,
+                renderPlan: plan, semanticScene: scene,
+                perspectivePrewarmPlan: isCropping ? nil : perspectivePrewarmPlan,
+                pausedScreenImage: playbackController.pausedScreenImage,
+                pausedCameraImage: playbackController.pausedCameraImage,
+                wallpaperImage: isCropping ? nil : resolvedWallpaperImage,
+                wallpaperVideoURL: isCropping ? nil : resolvedWallpaperVideoURL,
+                stickerImages: isCropping ? [:] : resolvedStickerImages,
+                suppressCameraContent: isCropping || cameraCompositorSuppressed,
+                suppressScreenContent: !isCropping && screenCompositorSuppressed,
+                playbackController: playbackController, playbackFrameProvider: provider,
+                onCameraContentApplied: clearCameraDragPreviewIfIdle,
+                onScreenContentApplied: clearScreenDragPreviewIfIdle
+            )
+            .frame(width: isCropping ? sourceSize.width : canvasSize.width,
+                   height: isCropping ? sourceSize.height : canvasSize.height)
+            .frame(width: canvasSize.width, height: canvasSize.height)
+        }
+    }
+
+    private func focusCanvas() {
+        guard !isCropping else { return }
+        onCanvasFocused()
+        editorStore.selection = .canvas
+    }
+
+    @ViewBuilder
+    private func canvasEditingOverlays(
+        renderedFrame: CanvasRenderedFrame,
+        canvasSize: CGSize,
+        activeTick: EditorPlaybackRenderTick?
+    ) -> some View {
+        let layout = renderedFrame.layout
+        let showsEditingOverlays = CanvasPreviewInteractionPolicy.showsEditingOverlays(
+            isPlaying: playbackController.isPlaying
+        )
+
+        screenSelectionTarget(
+            scene: layout.frameScene.screen,
+            canvasSize: canvasSize
+        )
+        .accessibilityHidden(isScreenSelectionActive)
+
+        if showsEditingOverlays,
+           case .screen = editScope,
+           let contentPosition = editScope.position(in: project),
+           let contentScale = editScope.scale(in: project) {
+            screenInteractionOverlay(
+                scene: layout.frameScene.screen,
+                canvasSize: canvasSize,
+                contentPosition: contentPosition,
+                contentScale: contentScale,
+                scope: editScope
+            )
+            .transaction { $0.animation = nil }
+        }
+
+        if showsEditingOverlays {
+            mosaicSelectionTargets(
+                scene: layout.frameScene,
+                canvasSize: canvasSize,
+                time: renderedFrame.playbackTime
+            )
+        }
+
+        if showsEditingOverlays,
+           hasCameraTrack,
+           !project.camera.isHidden,
+           let cameraEvaluation = layout.scene.camera {
+            cameraInteractionOverlay(
+                in: canvasSize,
+                evaluation: cameraEvaluation,
+                isAvailable: activeTick?.cameraIsAvailable == true,
+                scope: cameraInteractionScope,
+                dragPreviewImage: cameraDragPreviewImage
+            )
+        }
+
+        if showsEditingOverlays,
+           case let .screenMotion(id) = editorStore.selection,
+           let clip = project.timeline.screenMotionClips.first(where: { $0.id == id }),
+           let effect = clip.focusEffect {
+            EditorLinearFocusCanvasOverlay(editorStore: editorStore, clipID: id,
+                effect: effect, screen: layout.frameScene.screen,
+                sourceAspect: sourceAspectRatio, canvasSize: canvasSize,
+                onError: onError)
+                .id(id).zIndex(250)
+        }
+
+        if showsEditingOverlays {
+            frontOverlaySelectionTargets(
+                scene: layout.frameScene,
+                canvasSize: canvasSize,
+                time: renderedFrame.playbackTime
+            )
+            if !isDirectCanvasManipulation {
+                overlayQuickEditor(
+                    scene: layout.frameScene,
+                    canvasSize: canvasSize,
+                    time: renderedFrame.playbackTime
+                )
+                .frame(width: canvasSize.width, height: canvasSize.height)
+                .zIndex(200)
+            }
         }
     }
 
@@ -627,46 +575,7 @@ struct CanvasPreview: View {
             width: CGFloat(crop.width) * sourceSize.width,
             height: CGFloat(crop.height) * sourceSize.height
         )
-        let normalizedProject = cropSourceProject()
-        let sourceFrame = cropSourceFrameCache.frame(
-            normalizedProject: normalizedProject,
-            size: sourceSize,
-            sourceAspect: sourceAspect
-        ) {
-            cropSourceFrame(
-                project: normalizedProject,
-                size: sourceSize,
-                sourceAspect: sourceAspect
-            )
-        }
-
         return ZStack(alignment: .topLeading) {
-            Color.black.opacity(0.64)
-
-            SharedRenderedPreviewView(
-                screenOutput: playbackController.endpoints?.screenOutput,
-                screenPreferredTransform: playbackController.endpoints?
-                    .screenPreferredTransform ?? .identity,
-                cameraOutput: nil,
-                cameraPreferredTransform: .identity,
-                cameraContentCrop: nil,
-                renderTick: playbackController.stationaryRenderTick,
-                usesPausedFrame: !playbackController.isPlaying,
-                renderPlan: sourceFrame.renderPlan,
-                semanticScene: sourceFrame.semanticScene,
-                pausedScreenImage: playbackController.pausedScreenImage,
-                pausedCameraImage: nil,
-                wallpaperImage: nil,
-                wallpaperVideoURL: nil,
-                stickerImages: [:],
-                suppressCameraContent: false,
-                suppressScreenContent: false,
-                playbackController: playbackController,
-                playbackFrameProvider: { _ in sourceFrame }
-            )
-                .frame(width: sourceSize.width, height: sourceSize.height)
-                .position(x: sourceOrigin.x + sourceSize.width / 2, y: sourceOrigin.y + sourceSize.height / 2)
-
             cropDimming(sourceOrigin: sourceOrigin, sourceSize: sourceSize, selection: selectionRect)
 
             RoundedRectangle(cornerRadius: 3, style: .continuous)
@@ -690,7 +599,8 @@ struct CanvasPreview: View {
             }
 
             Text("拖动边缘或四角裁切 · Esc 取消")
-                .font(.caption.weight(.semibold))
+                .font(.appUI(.caption, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.9))
                 .padding(.horizontal, 11)
                 .frame(height: 28)
                 .background(.black.opacity(0.76), in: Capsule())
@@ -704,7 +614,7 @@ struct CanvasPreview: View {
         var cropProject = project
         cropProject.canvas = CanvasStyle(
             aspectRatio: .adaptive,
-            backgroundSource: .solidColor(hex: .black),
+            backgroundSource: .safeFallback,
             padding: 0,
             contentScale: 1,
             contentPosition: NormalizedPoint(x: 0.5, y: 0.5),
@@ -721,7 +631,6 @@ struct CanvasPreview: View {
         cropProject.timeline.cameraMotionClips = []
         cropProject.timeline.mosaicClips = []
         cropProject.timeline.stickerClips = []
-        cropProject.timeline.progressOverlay = nil
         cropProject.openingSequence.isEnabled = false
         cropProject.camera.isHidden = true
         cropProject.cursorStyle.assetID = .hidden
@@ -813,7 +722,7 @@ struct CanvasPreview: View {
         return ZStack {
             RoundedRectangle(cornerRadius: 3, style: .continuous)
                 .fill(.white)
-                .overlay(RoundedRectangle(cornerRadius: 3).stroke(editorAccent, lineWidth: 1.5))
+                .overlay(RoundedRectangle(cornerRadius: 3).stroke(EditorTheme.mediaAccent, lineWidth: 1.5))
                 .frame(width: 14, height: 14)
                 .shadow(color: .black.opacity(0.5), radius: 3, y: 1)
         }
@@ -1047,12 +956,12 @@ struct CanvasPreview: View {
 
             ZStack {
                 Circle()
-                    .fill(editorAccent)
+                    .fill(EditorTheme.mediaAccent)
                     .overlay(Circle().stroke(.white, lineWidth: 1.5))
                     .frame(width: 16, height: 16)
                     .shadow(
                         color: isResizing
-                            ? editorAccent.opacity(0.34)
+                            ? EditorTheme.mediaAccent.opacity(0.34)
                             : .black.opacity(0.45),
                         radius: isResizing ? 6 : 3,
                         y: isResizing ? 0 : 1
@@ -1290,12 +1199,12 @@ struct CanvasPreview: View {
             if isSelected {
                 ZStack {
                     Circle()
-                        .fill(editorAccent)
+                        .fill(EditorTheme.mediaAccent)
                         .overlay(Circle().stroke(.white, lineWidth: 1.5))
                         .frame(width: 16, height: 16)
                         .shadow(
                             color: isResizing
-                                ? editorAccent.opacity(0.34)
+                                ? EditorTheme.mediaAccent.opacity(0.34)
                                 : .black.opacity(0.45),
                             radius: isResizing ? 6 : 3,
                             y: isResizing ? 0 : 1
@@ -1361,4 +1270,89 @@ struct CanvasPreview: View {
         // 摄像头不可用/隐藏的时间段：透明 overlay 不得继续拦截画布拖拽与点选。
         .allowsHitTesting(isAvailable)
     }
+
+    private func clearCameraDragPreviewIfIdle() {
+        // 合成帧已带着摄像头内容落地，覆盖图可以退出了。
+        guard cameraDragOrigin == nil else { return }
+        guard cameraSizeOrigin == nil else { return }
+        cameraDragPreviewImage = nil
+    }
+
+    private func clearScreenDragPreviewIfIdle() {
+        guard screenDragOrigin == nil else { return }
+        guard screenScaleOrigin == nil else { return }
+        screenDragPreviewImage = nil
+    }
+
+    private func makePlaybackFrameProvider(
+        evaluation: CanvasPlaybackEvaluationContext,
+        cacheHandle: EditorCanvasPlaybackPlanCache.Handle?
+    ) -> SharedPreviewPlaybackFrameProvider {
+        { tick in
+            if let cacheHandle,
+               let cached = playbackPlanCache.frame(
+                   at: tick.outputTime,
+                   handle: cacheHandle
+               ) {
+                return cached
+            }
+            return evaluation.frame(at: tick.outputTime)
+        }
+    }
+
+    private func makeRenderedFrame(
+        canvasSize: CGSize,
+        activeTick: EditorPlaybackRenderTick?
+    ) -> CanvasRenderedFrame? {
+        // Crop mode owns a separate, deliberately flat source-only renderer.
+        guard !isCropping else { return nil }
+        let renderScale = previewRenderScale(for: canvasSize)
+        let playbackTracks = playbackTrackCache.tracks(for: project, outputDuration: mediaSession.outputDuration)
+        let playbackTime = interactionPreviewTime()
+            ?? activeTick?.outputTime
+            ?? playbackController.outputTime
+        let layout = previewLayout(
+            canvasSize: canvasSize,
+            renderScale: renderScale,
+            playbackTime: playbackTime,
+            tracks: playbackTracks
+        )
+        return CanvasRenderedFrame(playbackTime: playbackTime, layout: layout)
+    }
+
+    private func interactionPreviewTime() -> TimeInterval? {
+        guard let selection = editorStore.interaction?.selection else { return nil }
+        switch selection {
+        case let .cameraMotion(id):
+            guard let clip = project.timeline.cameraMotionClips.first(where: { $0.id == id }) else {
+                return nil
+            }
+            return clip.timing.endTime - 0.001
+        case let .screenMotion(id):
+            guard let clip = project.timeline.screenMotionClips.first(where: { $0.id == id }) else {
+                return nil
+            }
+            return clip.timing.endTime - 0.001
+        // Overlays are manipulated on the frame the user is already viewing.
+        case .mosaic, .sticker:
+            return nil
+        default:
+            return nil
+        }
+    }
+
+    private func makePerspectivePrewarmPlan(
+        for renderedFrame: CanvasRenderedFrame?
+    ) -> FrameRenderPlan? {
+        guard !playbackController.isPlaying,
+              let renderedFrame,
+              let prewarmTime = perspectivePrewarmTime(
+                  atOrAfter: renderedFrame.playbackTime
+              ) else { return nil }
+        return perspectivePrewarmPlanCache.plan(
+            at: prewarmTime,
+            using: renderedFrame.layout.playbackEvaluation
+        )
+    }
+
 }

@@ -1,5 +1,7 @@
 import AppKit
 import CoreImage
+import CoreText
+import CoreImage.CIFilterBuiltins
 import Foundation
 import RecorderCore
 import SwiftUI
@@ -57,6 +59,26 @@ private final class BackgroundPatternTileCache: @unchecked Sendable {
     }
 }
 
+private final class ScreenChromeTextCache: @unchecked Sendable {
+    private let storage: NSCache<NSString, CIImage> = {
+        let cache = NSCache<NSString, CIImage>()
+        cache.countLimit = 96
+        cache.totalCostLimit = 12 * 1_024 * 1_024
+        return cache
+    }()
+
+    func image(for key: NSString, create: () -> CIImage?) -> CIImage? {
+        if let cached = storage.object(forKey: key) { return cached }
+        guard let created = create() else { return nil }
+        storage.setObject(
+            created,
+            forKey: key,
+            cost: max(Int(created.extent.width * created.extent.height * 4), 1)
+        )
+        return created
+    }
+}
+
 /// The single Core Image lowering of a backend-neutral `FrameScene`.
 ///
 /// A screen-attached cursor is composited into the decorated screen layer
@@ -65,6 +87,7 @@ private final class BackgroundPatternTileCache: @unchecked Sendable {
 /// layer. An axis-aligned quad takes the original 2D path byte-for-byte.
 enum SharedFrameRenderer {
     private static let backgroundPatternTileCache = BackgroundPatternTileCache()
+    private static let screenChromeTextCache = ScreenChromeTextCache()
 
     nonisolated static func render(
         scene: FrameScene,
@@ -167,6 +190,10 @@ enum SharedFrameRenderer {
                 ).composited(over: result).cropped(to: canvasRect)
             case .spotlight:
                 guard screenVisibility > 0.001 else { continue }
+                result = applyingFocusEffect(
+                    scene.screen.focusEffect, source: resources.screen,
+                    screen: scene.screen, to: result, canvasRect: canvasRect
+                )
                 result = applyingSpotlights(
                     scene.screen.mosaics,
                     source: resources.screen,
@@ -255,13 +282,6 @@ enum SharedFrameRenderer {
                         canvasRect: canvasRect
                     )
                 }
-            case .progress:
-                guard let progress = scene.progress else { continue }
-                result = SharedFrameOverlayRenderer.renderProgress(
-                    progress,
-                    over: result,
-                    canvasRect: canvasRect
-                )
             }
         }
         return result.cropped(to: canvasRect)
@@ -287,6 +307,96 @@ enum SharedFrameRenderer {
     /// have not yet been drawn. The authored source rectangle stays untouched
     /// while everything outside it is darkened through the same crop, zoom and
     /// perspective geometry as the recorded screen.
+    private nonisolated static func applyingFocusEffect(
+        _ focus: FrameFocusScene?, source: CIImage, screen: FrameScreenScene,
+        to base: CIImage, canvasRect: CGRect
+    ) -> CIImage {
+        guard let focus, focus.progress > 0.001 else { return base }
+        let sourceExtent = normalized(source).extent
+        let crop = sourceCropRect(sourceExtent: sourceExtent, crop: screen.sourceCrop)
+        let finalRect = coreImageRect(from: screen.finalRect, canvasHeight: canvasRect.height)
+        let baseRect = coreImageRect(from: screen.baseRect, canvasHeight: canvasRect.height)
+        guard crop.width > 1, crop.height > 1, baseRect.width > 0 else { return base }
+        let sourcePoint = CGPoint(x: focus.center.x * sourceExtent.width,
+                                  y: (1 - focus.center.y) * sourceExtent.height)
+        guard crop.contains(sourcePoint) else { return base }
+        let scale = min(baseRect.width / crop.width, baseRect.height / crop.height)
+            * finalRect.width / baseRect.width
+        let placed = CGRect(x: finalRect.midX - crop.width * scale / 2,
+                            y: finalRect.midY - crop.height * scale / 2,
+                            width: crop.width * scale, height: crop.height * scale)
+        let point = CGPoint(x: placed.minX + (sourcePoint.x - crop.minX) * scale,
+                            y: placed.minY + (sourcePoint.y - crop.minY) * scale)
+        let radius = focus.effect.clearHalfWidth(shortEdge: min(placed.width, placed.height))
+        let projectionRect = coreImageRect(from: screen.projectionRect, canvasHeight: canvasRect.height)
+        let sourceMask: CIImage?
+        if focus.effect.shape == .linear {
+            let angle = (focus.effect.angleDegrees ?? 0) * .pi / 180
+            // Angle follows the source image's top-left coordinates.
+            let normal = CGPoint(x: -sin(angle), y: -cos(angle))
+            let feather = focus.effect.featherWidth(shortEdge: min(placed.width, placed.height))
+            func halfPlane(_ sign: CGFloat) -> CIImage? {
+                CIFilter(name: "CILinearGradient", parameters: [
+                    "inputPoint0": CIVector(x: point.x + normal.x * radius * sign,
+                                            y: point.y + normal.y * radius * sign),
+                    "inputPoint1": CIVector(x: point.x + normal.x * (radius + feather) * sign,
+                                            y: point.y + normal.y * (radius + feather) * sign),
+                    "inputColor0": CIColor.white, "inputColor1": CIColor.black,
+                ])?.outputImage
+            }
+            if let positive = halfPlane(1), let negative = halfPlane(-1) {
+                sourceMask = positive.applyingFilter("CIMinimumCompositing",
+                    parameters: [kCIInputBackgroundImageKey: negative])
+            } else { sourceMask = nil }
+        } else {
+            sourceMask = CIFilter(name: "CIRadialGradient", parameters: [
+                "inputCenter": CIVector(cgPoint: point),
+                "inputRadius0": radius,
+                "inputRadius1": radius + max(radius * focus.effect.softness * 1.5, 0.5),
+                "inputColor0": CIColor.white, "inputColor1": CIColor.black,
+            ])?.outputImage
+        }
+        guard let sourceMask else { return base }
+        let mask: CIImage
+        if isIdentityProjection(screen) {
+            mask = sourceMask.cropped(to: canvasRect)
+        } else {
+            let mapping = projectionMapping(projectedQuad: screen.projectedQuad,
+                                            canvasHeight: canvasRect.height)
+            guard let projected = perspectiveTransform(
+                sourceMask.cropped(to: projectionRect), sourceRect: projectionRect,
+                contentExtent: projectionRect, mapping: mapping
+            ) else { return base }
+            mask = projected.composited(over: CIImage(color: .black).cropped(to: canvasRect))
+        }
+        let amount = focus.progress
+        let blurRadius = focus.effect.blur * 28 * min(canvasRect.width, canvasRect.height) / 1080
+        var outside = base
+        if blurRadius > 0.01 {
+            // Only the intentionally defocused branch uses a bounded working
+            // raster. The clear region still samples the original full image.
+            let blurScale = min(1, 1600 / max(canvasRect.width, canvasRect.height))
+            let working = base.transformed(by: CGAffineTransform(scaleX: blurScale, y: blurScale))
+            // Feather is coverage: original pixels inside the solid lines,
+            // one linear transition to the fixed defocused image at the dashed
+            // lines. Applying the same ramp to both radius and coverage made
+            // the former effect quadratic and disconnected from its guides.
+            outside = working.clampedToExtent().applyingFilter("CIGaussianBlur",
+                parameters: [kCIInputRadiusKey: blurRadius * blurScale])
+            outside = outside.transformed(by: CGAffineTransform(scaleX: 1 / blurScale, y: 1 / blurScale))
+                .cropped(to: canvasRect)
+        }
+        if focus.effect.dimming > 0 {
+            outside = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: focus.effect.dimming))
+                .cropped(to: canvasRect).composited(over: outside)
+        }
+        let focused = base.applyingFilter("CIBlendWithMask", parameters: [
+            kCIInputBackgroundImageKey: outside,
+            kCIInputMaskImageKey: mask,
+        ]).cropped(to: canvasRect)
+        return applyingOpacity(focused, amount).composited(over: base).cropped(to: canvasRect)
+    }
+
     private nonisolated static func applyingSpotlights(
         _ mosaics: [FrameMosaicScene],
         source: CIImage,
@@ -336,13 +446,9 @@ enum SharedFrameRenderer {
         case .none:
             roundedMask(rect: finalRect, radius: screen.cornerRadius)
         case let .chrome(chrome):
-            switch chrome.kind {
-            case .devicePhonePortrait, .devicePhoneLandscape,
-                 .deviceTabletPortrait, .deviceTabletLandscape:
-                roundedMask(rect: finalRect, radius: chrome.contentCornerRadius)
-            case .window, .browser:
-                CIImage(color: .white).cropped(to: finalRect)
-            }
+            chrome.contentCornerRadius > 0
+                ? roundedMask(rect: finalRect, radius: chrome.contentCornerRadius)
+                : CIImage(color: .white).cropped(to: finalRect)
         }
         let identityProjection = isIdentityProjection(screen)
         let projectionRect = coreImageRect(
@@ -536,62 +642,61 @@ enum SharedFrameRenderer {
                 )
             )
 
-        // Picture rounding belongs to the plain-picture style. Once window or
-        // browser chrome is selected, recorded pixels fill the opening and the
-        // independent chrome silhouette clips the complete card exactly once.
-        let finalMask: CIImage = switch scene.decoration {
-        case .none:
-            roundedMask(rect: finalRect, radius: scene.cornerRadius)
-        case .chrome:
-            CIImage(color: .white).cropped(to: finalRect)
-        }
-        let crispSource = transformed.applyingFilter(
-            "CIBlendWithMask",
-            parameters: [
-                kCIInputBackgroundImageKey: transparent,
-                kCIInputMaskImageKey: finalMask,
-            ]
-        )
-
         let projectionRect = coreImageRect(
             from: scene.projectionRect,
             canvasHeight: canvasRect.height
         )
-        let projectionCornerRadius: Double
-        let projectionMask: CIImage
-        let chromeLayer: CIImage?
-        var decoratedLayer: CIImage
-        switch scene.decoration {
-        case .none:
-            projectionCornerRadius = scene.cornerRadius
-            projectionMask = finalMask
-            chromeLayer = nil
-            decoratedLayer = crispSource
-        case let .chrome(chrome):
-            projectionCornerRadius = chrome.outerCornerRadius
-            projectionMask = roundedMask(
-                rect: projectionRect,
-                radius: chrome.outerCornerRadius
-            )
-            let layer = screenChromeLayer(
-                chrome,
-                canvasRect: canvasRect,
-                renderExtent: projectionRect
-            )
-            chromeLayer = layer
-            decoratedLayer = crispSource.composited(over: layer)
-                .applyingFilter(
-                    "CIBlendWithMask",
-                    parameters: [
-                        kCIInputBackgroundImageKey: transparent,
-                        kCIInputMaskImageKey: projectionMask,
-                    ]
-                )
+        let projectionCornerRadius: Double = switch scene.decoration {
+        case .none: scene.cornerRadius
+        case let .chrome(chrome): chrome.outerCornerRadius
         }
-        var projectionSourceRect = projectionRect
-        var borderLayer: CIImage?
 
-        if scene.borderWidth > 0 {
+        // The native 3D path below owns its own card/masks. Do not eagerly
+        // rasterize zoomed output-space masks and chrome just to discard them.
+        // These frame-local helpers preserve the exact 2D/fallback geometry,
+        // but allocate only the surfaces actually consumed by that path.
+        var cachedContentMask: CIImage?
+        func contentMask() -> CIImage {
+            if let cachedContentMask { return cachedContentMask }
+            let mask: CIImage = switch scene.decoration {
+            case .none:
+                roundedMask(rect: finalRect, radius: scene.cornerRadius)
+            case let .chrome(chrome):
+                chrome.contentCornerRadius > 0
+                    ? roundedMask(rect: finalRect, radius: chrome.contentCornerRadius)
+                    : CIImage(color: .white).cropped(to: finalRect)
+            }
+            cachedContentMask = mask
+            return mask
+        }
+
+        var cachedProjectionMask: CIImage?
+        func projectionMask() -> CIImage {
+            if let cachedProjectionMask { return cachedProjectionMask }
+            let mask: CIImage = switch scene.decoration {
+            case .none: contentMask()
+            case let .chrome(chrome):
+                roundedMask(rect: projectionRect, radius: chrome.outerCornerRadius)
+            }
+            cachedProjectionMask = mask
+            return mask
+        }
+
+        var cachedChromeLayer: CIImage?
+        func chromeLayer() -> CIImage? {
+            if let cachedChromeLayer { return cachedChromeLayer }
+            guard case let .chrome(chrome) = scene.decoration else { return nil }
+            let layer = screenChromeLayer(
+                chrome, canvasRect: canvasRect, renderExtent: projectionRect
+            )
+            cachedChromeLayer = layer
+            return layer
+        }
+
+        var cachedBorderLayer: CIImage?
+        func borderLayer() -> CIImage? {
+            if let cachedBorderLayer { return cachedBorderLayer }
+            guard scene.borderWidth > 0 else { return nil }
             let borderRect = projectionRect.insetBy(
                 dx: -scene.borderWidth,
                 dy: -scene.borderWidth
@@ -605,14 +710,8 @@ enum SharedFrameRenderer {
                 mask: borderMask,
                 canvasRect: borderRect
             )
-            borderLayer = border
-            // MOT-001: put one outer surface behind the already-clipped screen.
-            // The former ring path added SourceOut + a full-canvas mask to the
-            // very first perspective frame, causing a border-only shader/allocation
-            // spike as 3D motion began. The visible result is identical: opaque
-            // screen/chrome covers the center and only the outer rim remains.
-            decoratedLayer = decoratedLayer.composited(over: border)
-            projectionSourceRect = projectionSourceRect.union(borderRect)
+            cachedBorderLayer = border
+            return border
         }
 
         let attachedCursor: SharedFrameCursorLayer? = if let cursorScene = attachedCursorScene,
@@ -625,9 +724,27 @@ enum SharedFrameRenderer {
         } else {
             nil
         }
-        if let cursor = attachedCursor {
-            decoratedLayer = cursor.image.composited(over: decoratedLayer)
-            projectionSourceRect = projectionSourceRect.union(cursor.footprint)
+        func decoratedLayer() -> CIImage {
+            var layer = transformed.applyingFilter(
+                "CIBlendWithMask",
+                parameters: [
+                    kCIInputBackgroundImageKey: transparent,
+                    kCIInputMaskImageKey: contentMask(),
+                ]
+            )
+            if let chrome = chromeLayer() {
+                layer = layer.composited(over: chrome).applyingFilter(
+                    "CIBlendWithMask",
+                    parameters: [
+                        kCIInputBackgroundImageKey: transparent,
+                        kCIInputMaskImageKey: projectionMask(),
+                    ]
+                )
+            }
+            // Preserve the existing outside border behind the clipped card.
+            if let border = borderLayer() { layer = layer.composited(over: border) }
+            if let cursor = attachedCursor { layer = cursor.image.composited(over: layer) }
+            return layer
         }
 
         let identityProjection = isIdentityProjection(scene)
@@ -635,7 +752,7 @@ enum SharedFrameRenderer {
         if identityProjection {
             // Do not send ordinary 2D frames through a perspective filter:
             // this preserves the previous sampling, border and antialiasing.
-            projectedLayer = decoratedLayer
+            projectedLayer = decoratedLayer()
         } else {
             // Every screen sublayer shares the exact same authored quad. Solve
             // its 8×8 homography once, then reuse it for native pixels, chrome,
@@ -702,7 +819,7 @@ enum SharedFrameRenderer {
                 // preview and export. Masks and vector decoration may be projected
                 // independently; the screen texture itself must be sampled once.
                 var projected = directSource
-                if let chromeLayer,
+                if let chromeLayer = chromeLayer(),
                    let projectedChrome = perspectiveTransform(
                        chromeLayer,
                        sourceRect: projectionRect,
@@ -711,7 +828,7 @@ enum SharedFrameRenderer {
                 ) {
                     projected = projected.composited(over: projectedChrome)
                     if let projectedMask = perspectiveTransform(
-                        projectionMask,
+                        projectionMask(),
                         sourceRect: projectionRect,
                         contentExtent: projectionRect,
                         mapping: projectionMapping
@@ -726,7 +843,7 @@ enum SharedFrameRenderer {
                         )
                     }
                 }
-                if let borderLayer,
+                if let borderLayer = borderLayer(),
                    let projectedBorder = perspectiveTransform(
                        borderLayer,
                        sourceRect: projectionRect,
@@ -749,7 +866,7 @@ enum SharedFrameRenderer {
                 // Invalid or degenerate authored geometry must never blank a
                 // recording. Falling back to the canonical 2D layer is safer
                 // than returning an empty Core Image graph.
-                projectedLayer = decoratedLayer
+                projectedLayer = decoratedLayer()
             }
         }
 
@@ -759,7 +876,7 @@ enum SharedFrameRenderer {
             if identityProjection {
                 // This is exactly the former 2D shadow source. The projected
                 // path below instead derives its shadow from post-warp alpha.
-                shadowMask = projectionMask
+                shadowMask = projectionMask()
             } else {
                 shadowMask = alphaMask(projectedLayer)
             }
@@ -830,44 +947,19 @@ enum SharedFrameRenderer {
             canvasRect: layerExtent
         )
         if chrome.kind.isDevice {
-            var deviceLayer = surface
-            let shortEdge = min(outerRect.width, outerRect.height)
-            let sensorRect: CGRect
-            if chrome.kind.isPhone {
-                let sensorThickness = max(shortEdge * 0.018, 1)
-                let sensorLength = max(shortEdge * 0.16, 7)
-                if chrome.kind.isPortrait {
-                    sensorRect = CGRect(
-                        x: outerRect.midX - sensorLength / 2,
-                        y: toolbarRect.midY - sensorThickness / 2,
-                        width: sensorLength,
-                        height: sensorThickness
-                    )
-                } else {
-                    sensorRect = CGRect(
-                        x: outerRect.minX + shortEdge * 0.028,
-                        y: outerRect.midY - sensorLength / 2,
-                        width: sensorThickness,
-                        height: sensorLength
-                    )
-                }
-            } else {
-                let diameter = max(shortEdge * 0.020, 1.2)
-                sensorRect = CGRect(
-                    x: outerRect.midX - diameter / 2,
-                    y: toolbarRect.midY - diameter / 2,
-                    width: diameter,
-                    height: diameter
-                )
-            }
-            deviceLayer = coloredLayer(
-                color: CIColor(chrome.glyphColor, alpha: 0.72),
-                mask: roundedMask(
-                    rect: sensorRect,
-                    radius: min(sensorRect.width, sensorRect.height) / 2
-                ),
-                canvasRect: layerExtent
-            ).composited(over: deviceLayer)
+            // A restrained, original graphite chassis: continuous metal rim,
+            // uniform bezel and no sensor notch drawn over recorded pixels.
+            let metal = CIFilter(name: "CILinearGradient", parameters: [
+                "inputPoint0": CIVector(x: outerRect.minX, y: outerRect.maxY),
+                "inputPoint1": CIVector(x: outerRect.maxX, y: outerRect.minY),
+                "inputColor0": CIColor(red: 0.52, green: 0.54, blue: 0.56),
+                "inputColor1": CIColor(red: 0.17, green: 0.18, blue: 0.20),
+            ])?.outputImage?.cropped(to: layerExtent) ?? surface
+            let rim = max(min(outerRect.width, outerRect.height) * 0.006, 0.8)
+            let innerRect = outerRect.insetBy(dx: rim, dy: rim)
+            let innerMask = roundedMask(rect: innerRect, radius: max(outerCornerRadius - rim, 0))
+            var deviceLayer = coloredLayer(color: CIColor(red: 0.055, green: 0.06, blue: 0.065),
+                mask: innerMask, canvasRect: layerExtent).composited(over: metal)
             let highlightWidth = max(min(outerRect.width, outerRect.height) * 0.006, 0.8)
             let highlightRect = outerRect.insetBy(dx: highlightWidth * 0.7, dy: highlightWidth * 0.7)
             deviceLayer = coloredLayer(
@@ -940,26 +1032,49 @@ enum SharedFrameRenderer {
             + controlSpacing * 2 + controlDiameter
         switch chrome.kind {
         case .window:
-            let titleWidth = min(toolbarRect.width * 0.22, toolbarRect.height * 3.2)
-            let titleHeight = max(toolbarRect.height * 0.11, 1)
-            let titleRect = CGRect(
-                x: toolbarRect.midX - titleWidth / 2,
-                y: toolbarRect.midY - titleHeight / 2,
-                width: titleWidth,
-                height: titleHeight
-            )
-            layer = coloredLayer(
-                color: CIColor(chrome.glyphColor, alpha: 0.38),
-                mask: roundedMask(rect: titleRect, radius: titleHeight / 2),
-                canvasRect: layerExtent
-            ).composited(over: layer)
+            let title = chrome.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let textLayer = screenChromeTextLayer(
+                text: title,
+                color: chrome.glyphColor,
+                fontSize: max(toolbarRect.height * 0.30, 5),
+                weight: .medium,
+                maximumWidth: max(toolbarRect.width * 0.46, 2),
+                center: CGPoint(x: toolbarRect.midX, y: toolbarRect.midY),
+                clipRect: toolbarRect
+            ) {
+                layer = textLayer.composited(over: layer)
+            } else {
+                let titleWidth = min(toolbarRect.width * 0.22, toolbarRect.height * 3.2)
+                let titleHeight = max(toolbarRect.height * 0.11, 1)
+                let titleRect = CGRect(
+                    x: toolbarRect.midX - titleWidth / 2,
+                    y: toolbarRect.midY - titleHeight / 2,
+                    width: titleWidth,
+                    height: titleHeight
+                )
+                layer = coloredLayer(
+                    color: CIColor(chrome.glyphColor, alpha: 0.38),
+                    mask: roundedMask(rect: titleRect, radius: titleHeight / 2),
+                    canvasRect: layerExtent
+                ).composited(over: layer)
+            }
         case .browser:
             let fieldMargin = max(toolbarRect.height * 0.28, 2)
-            let fieldX = controlsEnd + fieldMargin
-            let fieldWidth = max(toolbarRect.maxX - fieldMargin - fieldX, 2)
-            let fieldHeight = max(toolbarRect.height * 0.52, 2)
+            let availableMinX = controlsEnd + fieldMargin
+            let availableMaxX = toolbarRect.maxX - fieldMargin
+            let availableWidth = max(availableMaxX - availableMinX, 2)
+            let fieldHeight = max(toolbarRect.height * 0.44, 2)
+            let address = chrome.browserAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+            let fontSize = max(fieldHeight * 0.38, 5)
+            let textWidth = screenChromeTextImage(text: address, color: chrome.glyphColor,
+                fontSize: fontSize, weight: .regular)?.extent.width ?? 0
+            // Balanced room for the small leading glyph and a matching right
+            // inset. Short labels stay compact; long ones respect the controls.
+            let fieldWidth = min(max(textWidth + fieldHeight * 1.7, fieldHeight * 3), availableWidth)
+            let fieldCenterX = min(max(toolbarRect.midX, availableMinX + fieldWidth / 2),
+                                   availableMaxX - fieldWidth / 2)
             let fieldRect = CGRect(
-                x: fieldX,
+                x: fieldCenterX - fieldWidth / 2,
                 y: toolbarRect.midY - fieldHeight / 2,
                 width: fieldWidth,
                 height: fieldHeight
@@ -981,6 +1096,17 @@ enum SharedFrameRenderer {
                 mask: roundedMask(rect: glyphRect, radius: glyphDiameter / 2),
                 canvasRect: layerExtent
             ).composited(over: layer)
+            if let textLayer = screenChromeTextLayer(
+                text: address,
+                color: chrome.glyphColor,
+                fontSize: fontSize,
+                weight: .regular,
+                maximumWidth: max(fieldRect.width - fieldHeight * 1.35, 2),
+                center: CGPoint(x: fieldRect.midX, y: fieldRect.midY),
+                clipRect: fieldRect
+            ) {
+                layer = textLayer.composited(over: layer)
+            }
         case .devicePhonePortrait, .devicePhoneLandscape,
              .deviceTabletPortrait, .deviceTabletLandscape:
             break
@@ -993,6 +1119,66 @@ enum SharedFrameRenderer {
                 kCIInputMaskImageKey: outerMask,
             ]
         )
+    }
+
+    private nonisolated static func screenChromeTextLayer(
+        text: String,
+        color: HexColor,
+        fontSize: CGFloat,
+        weight: NSFont.Weight,
+        maximumWidth: CGFloat,
+        center: CGPoint,
+        clipRect: CGRect,
+        alignsLeading: Bool = false
+    ) -> CIImage? {
+        guard !text.isEmpty, fontSize > 0, maximumWidth > 2 else { return nil }
+        guard let image = screenChromeTextImage(text: text, color: color, fontSize: fontSize, weight: weight)
+        else { return nil }
+        let scale = min(maximumWidth / image.extent.width, 1)
+        let scaled = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let targetX = alignsLeading
+            ? center.x - maximumWidth / 2
+            : center.x - scaled.extent.width / 2
+        return scaled
+            .transformed(by: CGAffineTransform(
+                translationX: targetX - scaled.extent.minX,
+                y: center.y - scaled.extent.height / 2 - scaled.extent.minY
+            ))
+            .cropped(to: clipRect)
+    }
+
+    /// Immutable CPU-backed glyph raster: independent of the preview CIContext
+    /// lifetime and reusable by both the browser measurement and export graph.
+    private nonisolated static func screenChromeTextImage(
+        text: String, color: HexColor, fontSize: CGFloat, weight: NSFont.Weight
+    ) -> CIImage? {
+        guard !text.isEmpty, fontSize > 0 else { return nil }
+        let components = color.components
+        let key = String(format: "%@|%.2f|%.3f|%.3f|%.3f|%.2f", text,
+            Double(fontSize), components.red, components.green, components.blue,
+            Double(weight.rawValue)) as NSString
+        return screenChromeTextCache.image(for: key) {
+            let font = NSFont.systemFont(ofSize: fontSize, weight: weight)
+            let attributed = NSAttributedString(string: text, attributes: [
+                NSAttributedString.Key(kCTFontAttributeName as String): font,
+                NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(
+                    red: components.red, green: components.green, blue: components.blue, alpha: 0.86)
+            ])
+            let line = CTLineCreateWithAttributedString(attributed)
+            var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
+            let width = CTLineGetTypographicBounds(line, &ascent, &descent, &leading)
+            let glyphs = CTLineGetBoundsWithOptions(line, .useGlyphPathBounds)
+            let bounds = glyphs.union(CGRect(x: 0, y: -descent, width: width, height: ascent + descent)).integral
+            guard bounds.width > 0, bounds.height > 0, bounds.width < 32768,
+                  let context = CGContext(data: nil, width: Int(bounds.width) + 2,
+                    height: Int(bounds.height) + 2, bitsPerComponent: 8, bytesPerRow: 0,
+                    space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+            context.textPosition = CGPoint(x: 1 - bounds.minX, y: 1 - bounds.minY)
+            CTLineDraw(line, context)
+            guard let image = context.makeImage() else { return nil }
+            return CIImage(cgImage: image)
+        }
     }
 
     private nonisolated static func renderCamera(
@@ -1876,43 +2062,7 @@ enum SharedFrameRenderer {
             return patternImage(preset: preset, canvasRect: canvasRect, scale: scene.patternScale, opacity: scene.patternOpacity)
         case let .dynamicFlow(preset):
             return dynamicFlowImage(preset: preset, canvasRect: canvasRect, scale: scene.patternScale, opacity: scene.patternOpacity, time: time)
-        case let .solidColor(hex):
-            return CIImage(color: CIColor(hex)).cropped(to: canvasRect)
-        case let .gradient(preset):
-            let colors: (CIColor, CIColor)
-            switch preset {
-            case .aurora:
-                colors = (
-                    CIColor(HexColor(rgb24: 0x6A_5A_E0)),
-                    CIColor(HexColor(rgb24: 0x2D_B7_D3))
-                )
-            case .twilight:
-                colors = (
-                    CIColor(HexColor(rgb24: 0x30_2B_63)),
-                    CIColor(HexColor(rgb24: 0xD7_6D_77))
-                )
-            case .sunrise:
-                colors = (
-                    CIColor(HexColor(rgb24: 0xFF_8A_5B)),
-                    CIColor(HexColor(rgb24: 0xFF_D5_6B))
-                )
-            case .graphite:
-                colors = (
-                    CIColor(HexColor(rgb24: 0x12_15_1C)),
-                    CIColor(HexColor(rgb24: 0x45_4B_58))
-                )
-            }
-            return CIFilter(
-                name: "CILinearGradient",
-                parameters: [
-                    "inputPoint0": CIVector(x: canvasRect.minX, y: canvasRect.maxY),
-                    "inputPoint1": CIVector(x: canvasRect.maxX, y: canvasRect.minY),
-                    "inputColor0": colors.0,
-                    "inputColor1": colors.1,
-                ]
-            )?.outputImage?.cropped(to: canvasRect)
-                ?? CIImage(color: colors.0).cropped(to: canvasRect)
-        case .bundledImage, .projectImage, .systemImage, .projectVideo, .systemVideo:
+        case .projectImage, .systemImage, .projectVideo, .systemVideo:
             let defaultColor = CIColor(.defaultBackground)
             return CIImage(color: defaultColor).cropped(to: canvasRect)
         }

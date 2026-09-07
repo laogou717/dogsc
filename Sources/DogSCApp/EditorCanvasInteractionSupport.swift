@@ -273,16 +273,8 @@ extension CanvasPreview {
     }
 
     var previewAspectRatio: CGFloat {
-        switch project.canvas.aspectRatio {
-        case .adaptive:
-            let crop = project.canvas.crop.clamped()
-            let sourceAspect = sourcePixelSize.width / max(sourcePixelSize.height, 1)
-            return max(sourceAspect * CGFloat(crop.width / crop.height), 0.01)
-        case .landscape: return 16 / 9
-        case .standard: return 4 / 3
-        case .portrait: return 9 / 16
-        case .square: return 1
-        }
+        isCropping ? sourceAspectRatio
+            : EditorWorkspaceGeometry.aspectRatio(canvas: project.canvas, sourceSize: sourcePixelSize)
     }
 
     func fittedCanvasSize(in available: CGSize) -> CGSize {

@@ -1,0 +1,7 @@
+{
+  "artwork": "SoftLight.png",
+  "generator": "OpenAI built-in ImageGen",
+  "generated": "2026-09-07",
+  "purpose": "First-launch light-field animation; native logo and UI are rendered separately.",
+  "sha256": "3df5a7c1a6df8c752a340726f11508e4bfdc5dca186636becbaeaefc2f02f5e4"
+}

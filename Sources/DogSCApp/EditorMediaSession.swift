@@ -59,17 +59,23 @@ enum EditorMediaThumbnailClock {
 private final class EditorMediaThumbnailRequest: @unchecked Sendable {
     private let generator: AVAssetImageGenerator
 
-    init(sourceURL: URL, maximumSize: CGSize) {
-        generator = AVAssetImageGenerator(asset: AVURLAsset(url: sourceURL))
-        generator.appliesPreferredTrackTransform = true
-        generator.requestedTimeToleranceBefore = .zero
-        generator.requestedTimeToleranceAfter = .zero
+    init(source: ImmutablePreviewAsset, maximumSize: CGSize, tolerance: TimeInterval = 0) {
+        generator = AVAssetImageGenerator(asset: source.asset)
+        generator.videoComposition = source.videoComposition
+        generator.appliesPreferredTrackTransform = source.videoComposition == nil
+        generator.requestedTimeToleranceBefore = CMTime(seconds: tolerance, preferredTimescale: 600)
+        generator.requestedTimeToleranceAfter = CMTime(seconds: tolerance, preferredTimescale: 600)
         generator.maximumSize = maximumSize
     }
 
     func image(at time: CMTime) async throws -> CGImage {
-        let (image, _) = try await generator.image(at: time)
-        return image
+        try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            let (image, _) = try await generator.image(at: time)
+            return image
+        } onCancel: {
+            self.cancel()
+        }
     }
 
     func cancel() {
@@ -84,16 +90,23 @@ private actor EditorMediaThumbnailDecoder {
         let height: Int
     }
 
-    private var sourceVersion: EditorMediaFileVersion?
+    private let permits = EditorThumbnailPermits(limit: 2)
+    private let cacheLimit: Int
+    private var sourceGeneration: UInt64?
     private var inFlightRequests: [UUID: EditorMediaThumbnailRequest] = [:]
     private var cache: [CacheKey: CGImage] = [:]
     private var cacheOrder: [CacheKey] = []
 
+    init(cacheLimit: Int = 12) { self.cacheLimit = cacheLimit }
+
     func image(
-        source: EditorMediaInput,
+        source: ImmutablePreviewAsset,
+        generation: UInt64,
         at assetTime: TimeInterval,
-        maximumSize: CGSize
+        maximumSize: CGSize,
+        tolerance: TimeInterval = 0
     ) async throws -> CGImage {
+        try Task.checkCancellation()
         guard assetTime.isFinite else { throw CancellationError() }
         let safeSize = CGSize(
             width: max(maximumSize.width.rounded(), 1),
@@ -109,28 +122,34 @@ private actor EditorMediaThumbnailDecoder {
             height: Int(safeSize.height)
         )
 
-        if sourceVersion != source.version {
+        if sourceGeneration != generation {
             cancelInFlightRequests()
-            sourceVersion = source.version
+            sourceGeneration = generation
             cache.removeAll(keepingCapacity: true)
             cacheOrder.removeAll(keepingCapacity: true)
         }
 
         if let cached = cache[cacheKey] { return cached }
+        try await permits.acquire()
+        defer { Task { await permits.release() } }
+        try Task.checkCancellation()
+        guard sourceGeneration == generation else { throw CancellationError() }
+        if let cached = cache[cacheKey] { return cached }
         let requestID = UUID()
         let request = EditorMediaThumbnailRequest(
-            sourceURL: source.url,
-            maximumSize: safeSize
+            source: source,
+            maximumSize: safeSize,
+            tolerance: tolerance
         )
         inFlightRequests[requestID] = request
         defer { inFlightRequests.removeValue(forKey: requestID) }
         let image = try await request.image(at: requestedTime)
         try Task.checkCancellation()
-        guard sourceVersion == source.version else { throw CancellationError() }
+        guard sourceGeneration == generation else { throw CancellationError() }
 
         cache[cacheKey] = image
         cacheOrder.append(cacheKey)
-        if cacheOrder.count > 12 {
+        if cacheOrder.count > cacheLimit {
             cache.removeValue(forKey: cacheOrder.removeFirst())
         }
         return image
@@ -138,7 +157,7 @@ private actor EditorMediaThumbnailDecoder {
 
     func invalidate() {
         cancelInFlightRequests()
-        sourceVersion = nil
+        sourceGeneration = nil
         cache.removeAll(keepingCapacity: false)
         cacheOrder.removeAll(keepingCapacity: false)
     }
@@ -345,6 +364,9 @@ final class EditorMediaSession: ObservableObject {
 
     private let preparation: Preparation
     private let thumbnailDecoder = EditorMediaThumbnailDecoder()
+    private let filmstripDecoder = EditorMediaThumbnailDecoder(cacheLimit: 160)
+    private var filmstripAsset: ImmutablePreviewAsset?
+    private var filmstripAssetGeneration: UInt64?
     private var currentRequest: EditorMediaRequest?
     private var generation: UInt64 = 0
     private var cameraTimingGeneration: UInt64 = 0
@@ -409,18 +431,20 @@ final class EditorMediaSession: ObservableObject {
         atOutputTime outputTime: TimeInterval,
         maximumSize: CGSize = CGSize(width: 640, height: 360)
     ) async -> CGImage? {
-        guard let prepared,
-              let source = prepared.request.source,
-              let assetTime = EditorMediaThumbnailClock.assetTime(
-                atOutputTime: outputTime,
-                timelineMap: prepared.plan.timelineMap,
-                sourceTimeRange: prepared.inventories.source.videoTimeRange
-              )
-        else { return nil }
+        guard let prepared else { return nil }
         let expectedGeneration = prepared.generation
+        let assetTime = EditorPlaybackClockPolicy.clampedTime(
+            outputTime,
+            duration: prepared.outputDuration
+        )
+        let source = ImmutablePreviewAsset(
+            prepared.composition.primaryComposition,
+            videoComposition: prepared.composition.primaryVideoComposition
+        )
         do {
             let image = try await thumbnailDecoder.image(
                 source: source,
+                generation: expectedGeneration,
                 at: assetTime,
                 maximumSize: maximumSize
             )
@@ -430,6 +454,27 @@ final class EditorMediaSession: ObservableObject {
         } catch {
             return nil
         }
+    }
+
+    func filmstripThumbnail(atSourceTime sourceTime: TimeInterval) async -> CGImage? {
+        guard !Task.isCancelled, sourceTime.isFinite, sourceTime >= 0,
+              let prepared, let input = prepared.request.source
+        else { return nil }
+        let expectedGeneration = prepared.generation
+        if filmstripAssetGeneration != expectedGeneration {
+            filmstripAsset = ImmutablePreviewAsset(AVURLAsset(url: input.url))
+            filmstripAssetGeneration = expectedGeneration
+        }
+        guard let source = filmstripAsset else { return nil }
+        do {
+            let image = try await filmstripDecoder.image(
+                source: source, generation: expectedGeneration,
+                at: sourceTime + prepared.plan.primarySourceTimeOffset,
+                maximumSize: CGSize(width: 220, height: 140))
+            try Task.checkCancellation()
+            guard self.prepared?.generation == expectedGeneration else { return nil }
+            return image
+        } catch { return nil }
     }
 
     func prepare(_ request: EditorMediaRequest) async {
@@ -522,6 +567,8 @@ final class EditorMediaSession: ObservableObject {
                     plan: plan,
                     primaryComposition: old.primaryComposition,
                     primaryVideoTrack: old.primaryVideoTrack,
+                    primaryVideoTracks: old.primaryVideoTracks,
+                    primaryVideoComposition: old.primaryVideoComposition,
                     systemAudioTrack: old.systemAudioTrack,
                     microphoneAudioTrack: old.microphoneAudioTrack,
                     cameraComposition: camera?.composition,
@@ -556,9 +603,15 @@ final class EditorMediaSession: ObservableObject {
         currentRequest = nil
         state = .empty
         lastReadyMedia = nil
+        filmstripAsset = nil
+        filmstripAssetGeneration = nil
         latestCameraTimingRequest = nil
         cameraTimingErrorMessage = nil
         let thumbnailDecoder = thumbnailDecoder
-        Task { await thumbnailDecoder.invalidate() }
+        let filmstripDecoder = filmstripDecoder
+        Task {
+            await thumbnailDecoder.invalidate()
+            await filmstripDecoder.invalidate()
+        }
     }
 }

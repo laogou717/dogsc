@@ -22,11 +22,7 @@ final class SharedPreviewWindowVisibilityController: NSObject {
             target: self,
             selector: #selector(displayLinkDidFire(_:))
         )
-        link.preferredFrameRateRange = CAFrameRateRange(
-            minimum: 60,
-            maximum: 60,
-            preferred: 60
-        )
+        configureCadence(link, screen: window.screen)
         link.isPaused = true
         link.add(to: .main, forMode: .common)
         displayLink = link
@@ -40,6 +36,7 @@ final class SharedPreviewWindowVisibilityController: NSObject {
             NSWindow.didDeminiaturizeNotification,
             NSWindow.didBecomeKeyNotification,
             NSWindow.didBecomeMainNotification,
+            NSWindow.didChangeScreenNotification,
         ] {
             center.addObserver(
                 self,
@@ -48,20 +45,14 @@ final class SharedPreviewWindowVisibilityController: NSObject {
                 object: window
             )
         }
-        center.addObserver(
-            self,
-            selector: #selector(windowVisibilityDidChange(_:)),
-            name: NSApplication.didBecomeActiveNotification,
-            object: nil
-        )
+        for name in [NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification,
+                     NSApplication.didHideNotification, NSApplication.didUnhideNotification] {
+            center.addObserver(self, selector: #selector(windowVisibilityDidChange(_:)), name: name, object: nil)
+        }
 
-        // Initial attachment precedes the first WindowServer exposure. Treat
-        // it as foreground; later notifications own real suspension decisions.
-        isSuspended = false
-        view.installPreviewBackingLayerIfNeeded()
-        updatePlaybackState()
-        view.lastSubmittedSignature = nil
-        view.renderCurrentFrame()
+        isSuspended = true
+        updatePresentationVisibility()
+
     }
 
     func updatePlaybackState() {
@@ -86,6 +77,9 @@ final class SharedPreviewWindowVisibilityController: NSObject {
     }
 
     @objc private func windowVisibilityDidChange(_ notification: Notification) {
+        if notification.name == NSWindow.didChangeScreenNotification, let displayLink {
+            configureCadence(displayLink, screen: view?.window?.screen)
+        }
         if notification.name == NSApplication.didBecomeActiveNotification {
             resumePreviewPresentationForForegroundWindow(
                 acceptsExplicitForegroundSignal: true
@@ -114,12 +108,20 @@ final class SharedPreviewWindowVisibilityController: NSObject {
         }
     }
 
+    private func configureCadence(_ link: CADisplayLink, screen: NSScreen?) {
+        let maximum = Float(max(screen?.maximumFramesPerSecond ?? 60, 1))
+        link.preferredFrameRateRange = CAFrameRateRange(
+            minimum: min(60, maximum), maximum: maximum, preferred: maximum)
+    }
+
     private func resumePreviewPresentationForForegroundWindow(
         acceptsExplicitForegroundSignal: Bool = false
     ) {
         guard isSuspended,
               let view,
               let window = view.window,
+              NSApp.isActive,
+              !NSApp.isHidden,
               window.isVisible,
               !window.isMiniaturized,
               acceptsExplicitForegroundSignal
@@ -141,7 +143,8 @@ final class SharedPreviewWindowVisibilityController: NSObject {
         let shouldSuspend = PreviewPresentationVisibilityPolicy.shouldSuspend(
             hasWindow: window != nil,
             isMiniaturized: window?.isMiniaturized ?? false,
-            isVisible: window?.occlusionState.contains(.visible) ?? false
+            isVisible: window?.occlusionState.contains(.visible) ?? false,
+            isApplicationActive: NSApp.isActive && !NSApp.isHidden
         )
         guard shouldSuspend != isSuspended else {
             updatePlaybackState()

@@ -10,8 +10,8 @@ enum EditorExternalAction: Equatable, Sendable {
 
     var interactionPolicy: EditorInteractionEndPolicy {
         // Auto-committing before mouse-up would turn an accidental interruption
-        // into a persisted edit. The first lifecycle contract is intentionally
-        // conservative and can be expanded per action later.
+        // into a persisted edit. The store first resolves controls with an
+        // explicit autosave policy; this fallback applies to transient drags.
         .cancel
     }
 }
@@ -21,9 +21,9 @@ enum EditorInteractionEndPolicy: Equatable, Sendable {
 }
 
 /// Describes what the store did before allowing an external action to proceed.
-/// The first lifecycle pass intentionally cancels drafts instead of committing
-/// them: committing a gesture before mouse-up would change existing behavior.
+/// Autosaving inputs and transient gesture drafts have distinct outcomes.
 enum EditorExternalActionPreparation: Equatable, Sendable {
     case ready
+    case committedDraft
     case cancelledDraft
 }

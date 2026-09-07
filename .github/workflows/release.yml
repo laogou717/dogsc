@@ -15,6 +15,19 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Validate release inputs
+        run: |
+          set -euo pipefail
+          [[ -s ".github/release-notes/${GITHUB_REF_NAME}.md" ]]
+          release_version="${GITHUB_REF_NAME#v}"
+          short_version="${release_version%%-*}"
+          [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)" = "$short_version" ]]
+          build_number="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' Resources/Info.plist)"
+          [[ "$build_number" =~ ^[1-9][0-9]*$ ]]
+          for resource in en.lproj zh-Hans.lproj Fonts Onboarding; do
+            [[ -d "Resources/$resource" ]]
+          done
+
       - name: Import stable signing identity
         env:
           SIGNING_CERTIFICATE_P12: ${{ secrets.DOGSC_SIGNING_CERTIFICATE_P12 }}
@@ -73,11 +86,19 @@ jobs:
           mkdir -p \
             "$app/Contents/MacOS" \
             "$app/Contents/Frameworks" \
-            "$app/Contents/Resources/Wallpapers"
+            "$app/Contents/Resources"
           cp ".build/release/DogSC" "$app/Contents/MacOS/DogSC"
           cp "Resources/Info.plist" "$app/Contents/Info.plist"
           cp "Resources/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
-          ditto "Resources/Wallpapers" "$app/Contents/Resources/Wallpapers"
+          for resource in en.lproj zh-Hans.lproj Fonts Onboarding; do
+            ditto "Resources/$resource" "$app/Contents/Resources/$resource"
+            diff -qr "Resources/$resource" "$app/Contents/Resources/$resource"
+          done
+          for language in en zh-Hans; do
+            plutil -lint "$app/Contents/Resources/$language.lproj/Localizable.strings"
+            plutil -lint "$app/Contents/Resources/$language.lproj/InfoPlist.strings"
+          done
+          (cd "$app/Contents/Resources/Fonts" && shasum -a 256 -c SHA256SUMS)
 
           sparkle_framework="$(
             find .build/artifacts \
@@ -130,15 +151,6 @@ jobs:
             "$embedded_sparkle"
           codesign --verify --deep --strict "$embedded_sparkle"
 
-          release_tag="${GITHUB_REF_NAME#v}"
-          short_version="${release_tag%%-*}"
-          /usr/libexec/PlistBuddy \
-            -c "Set :CFBundleShortVersionString $short_version" \
-            "$app/Contents/Info.plist"
-          /usr/libexec/PlistBuddy \
-            -c "Set :CFBundleVersion $GITHUB_RUN_NUMBER" \
-            "$app/Contents/Info.plist"
-
           codesign \
             --force \
             --options runtime \
@@ -173,11 +185,12 @@ jobs:
           files = [application]
           symlinks = {"Applications": "/Applications"}
           icon_locations = {
-              "DogSC.app": (170, 225),
-              "Applications": (550, 225),
+              "DogSC.app": (188, 176),
+              "Applications": (452, 176),
           }
           hide_extension = ["DogSC.app"]
-          window_rect = ((200, 120), (720, 420))
+          # DMGBackground.png is 1280 × 880 at 144 DPI (640 × 440 points).
+          window_rect = ((200, 120), (640, 440))
           default_view = "icon-view"
           show_status_bar = False
           show_tab_view = False
@@ -187,7 +200,7 @@ jobs:
           show_icon_preview = False
           arrange_by = None
           label_pos = "bottom"
-          text_size = 14
+          text_size = 13
           icon_size = 112
           format = "UDZO"
           compression_level = 9
@@ -261,17 +274,14 @@ jobs:
           grep -F "DogSC-${GITHUB_REF_NAME}-macOS.dmg" "$appcast"
           grep -F 'sparkle:edSignature=' "$appcast"
 
-      - name: Publish release
+      - name: Prepare release draft
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
             "$RUNNER_TEMP/DogSC-${GITHUB_REF_NAME}-macOS.dmg" \
             "$RUNNER_TEMP/appcast.xml" \
-            --latest \
-            --notes "" \
+            --draft \
+            --notes-file ".github/release-notes/${GITHUB_REF_NAME}.md" \
             --title "DogSC $GITHUB_REF_NAME" \
             --verify-tag
-          gh release edit "$GITHUB_REF_NAME" \
-            --latest \
-            --prerelease=false

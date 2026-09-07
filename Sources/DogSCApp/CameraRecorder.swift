@@ -85,7 +85,11 @@ final class CameraRecorder: NSObject,
 
     var onRuntimeFormatChange: (@MainActor (CameraRuntimeFormat) -> Void)? {
         get { syncOnSessionQueue { runtimeFormatHandler } }
-        set { syncOnSessionQueue { runtimeFormatHandler = newValue } }
+        set {
+            // Keep callback changes ordered with start/stop, without making the
+            // switch wait behind a cold device start or teardown on this queue.
+            sessionQueue.async { [self] in runtimeFormatHandler = newValue }
+        }
     }
 
     var onPreviewSampleBuffer: (@Sendable (CMSampleBuffer) -> Void)? {

@@ -1,6 +1,46 @@
 import AppKit
 import Foundation
 import RecorderCore
+import SwiftUI
+
+/// Localizes labels that are assembled as `String` values rather than passed
+/// to SwiftUI as localization keys. Keeping this at the app boundary also
+/// avoids coupling RecorderCore's persisted raw values to the UI language.
+func appLocalized(_ key: String) -> String {
+    Bundle.main.localizedString(forKey: key, value: key, table: nil)
+}
+
+enum AppAppearancePreference: String, CaseIterable, Identifiable {
+    case system
+    case light
+    case dark
+
+    var id: Self { self }
+
+    var label: String {
+        switch self {
+        case .system: appLocalized("跟随系统")
+        case .light: appLocalized("浅色")
+        case .dark: appLocalized("深色")
+        }
+    }
+
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: nil
+        case .light: .light
+        case .dark: .dark
+        }
+    }
+
+    var appKitAppearance: NSAppearance? {
+        switch self {
+        case .system: nil
+        case .light: NSAppearance(named: .aqua)
+        case .dark: NSAppearance(named: .darkAqua)
+        }
+    }
+}
 
 enum RecordingCameraPreviewShape: String, CaseIterable, Identifiable {
     case circle
@@ -11,9 +51,9 @@ enum RecordingCameraPreviewShape: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .circle: return "圆形"
-        case .roundedSquare: return "圆角方形"
-        case .sourceAspect: return "画面比例"
+        case .circle: return appLocalized("圆形")
+        case .roundedSquare: return appLocalized("圆角方形")
+        case .sourceAspect: return appLocalized("画面比例")
         }
     }
 }
@@ -24,6 +64,9 @@ enum RecordingCameraPreviewShape: String, CaseIterable, Identifiable {
 private struct RememberedStickerCreationDefaults: Codable, Equatable {
     var version = 1
     var animation: StickerAnimationPreset
+    /// Optional only for decoding creation defaults written before the shared
+    /// motion model existed. New snapshots always store an explicit value.
+    var animationCurve: ElementMotionCurve?
     var exitAnimation: StickerAnimationPreset?
     var enterDuration: TimeInterval
     var exitDuration: TimeInterval
@@ -34,6 +77,7 @@ private struct RememberedStickerCreationDefaults: Codable, Equatable {
 
     static let standard = Self(
         animation: .pop,
+        animationCurve: .swift,
         exitAnimation: nil,
         enterDuration: 0.7,
         exitDuration: 0.22,
@@ -45,6 +89,7 @@ private struct RememberedStickerCreationDefaults: Codable, Equatable {
 
     init(
         animation: StickerAnimationPreset,
+        animationCurve: ElementMotionCurve? = .swift,
         exitAnimation: StickerAnimationPreset?,
         enterDuration: TimeInterval,
         exitDuration: TimeInterval,
@@ -54,6 +99,7 @@ private struct RememberedStickerCreationDefaults: Codable, Equatable {
         hidesCamera: Bool
     ) {
         self.animation = animation
+        self.animationCurve = animationCurve
         self.exitAnimation = exitAnimation
         self.enterDuration = enterDuration
         self.exitDuration = exitDuration
@@ -67,6 +113,7 @@ private struct RememberedStickerCreationDefaults: Codable, Equatable {
     init(sticker: StickerClip) {
         self.init(
             animation: sticker.animation,
+            animationCurve: sticker.animationCurve,
             exitAnimation: sticker.exitAnimation,
             enterDuration: sticker.enterDuration,
             exitDuration: sticker.exitDuration,
@@ -85,6 +132,7 @@ private struct RememberedStickerCreationDefaults: Codable, Equatable {
 
     func apply(to sticker: inout StickerClip) {
         sticker.animation = animation
+        sticker.animationCurve = animationCurve ?? .swift
         sticker.exitAnimation = exitAnimation
         sticker.enterDuration = enterDuration
         sticker.exitDuration = exitDuration
@@ -107,7 +155,6 @@ struct EditorTimelineTrackVisibility: OptionSet, Equatable, Sendable {
     static let mosaic = Self(rawValue: 1 << 3)
     static let sticker = Self(rawValue: 1 << 4)
     static let overlays = Self(rawValue: mosaic.rawValue | sticker.rawValue)
-    static let progress = Self(rawValue: 1 << 5)
 
     static func initial(for _: RecorderProject) -> Self {
         // Keep the first timeline view focused on cutting plus the default
@@ -124,15 +171,22 @@ extension Notification.Name {
 }
 
 enum AppPreferences {
+    static let appearancePreferenceKey = "app.appearance"
     static let exportCompletionSoundEnabledKey =
         "cn.laogou.dogsc.export-completion-sound-enabled"
     static let previewResolutionModeKey = "editor.previewResolutionMode"
     static let editorTimelinePrimaryLaneHeightKey =
         "editor.timeline.primary-lane-height"
+    private static let editorTimelinePrimaryLaneHeightPrefix =
+        "editor.timeline.primary-lane-height.v2"
     static let editorTimelineHoverPreviewEnabledKey =
         "editor.timeline.hover-preview-enabled"
     private static let editorTimelineTrackVisibilityPrefix =
         "editor.timeline.visible-tracks"
+    private static let editorTimelineTrackVisibilityStablePrefix =
+        "editor.timeline.visible-tracks.v2"
+    private static let editorTimelineZoomPrefix =
+        "editor.timeline.zoom.v1"
     static let editorInspectorVisibleKey = "editor.inspector.visible"
     static let editorInspectorWidthKey = "editor.inspector.content-width"
     static let recordingCameraPreviewShapeKey =
@@ -145,6 +199,28 @@ enum AppPreferences {
         "cn.laogou.dogsc.export-directory"
     private static let stickerCreationDefaultsKey =
         "editor.sticker.last-used-creation-defaults.v1"
+    private static let zoomCreationScaleKey =
+        "editor.zoom.last-used-creation-scale.v1"
+
+    static var appearancePreference: AppAppearancePreference {
+        AppAppearancePreference(
+            rawValue: UserDefaults.standard.string(forKey: appearancePreferenceKey) ?? ""
+        ) ?? .system
+    }
+
+    @MainActor
+    static func applyAppearancePreferenceToOpenWindows() {
+        let appearance = appearancePreference.appKitAppearance
+        let supportedIdentifiers: Set<String> = [
+            "cn.laogou.dogsc.editor-window",
+            "cn.laogou.dogsc.settings-window",
+            "cn.laogou.dogsc.main-window",
+        ]
+        for window in NSApplication.shared.windows where
+            supportedIdentifiers.contains(window.identifier?.rawValue ?? "") {
+            WindowAppearanceTransition.apply(appearance, to: window)
+        }
+    }
 
     static var isExportCompletionSoundEnabled: Bool {
         let defaults = UserDefaults.standard
@@ -166,11 +242,26 @@ enum AppPreferences {
         for project: RecorderProject
     ) -> EditorTimelineTrackVisibility {
         let defaults = UserDefaults.standard
-        let key = timelineTrackVisibilityKey(for: project)
-        guard defaults.object(forKey: key) != nil else {
-            return .initial(for: project)
+        let stableKey = timelineTrackVisibilityKey(for: project)
+        if defaults.object(forKey: stableKey) != nil {
+            return EditorTimelineTrackVisibility(
+                rawValue: defaults.integer(forKey: stableKey)
+            )
         }
-        return EditorTimelineTrackVisibility(rawValue: defaults.integer(forKey: key))
+
+        // The original key used in-memory millisecond precision, but
+        // JSONEncoder's ISO-8601 project date is restored at whole-second
+        // precision. A project therefore received one key while recording and
+        // a different key after reopening. Migrate any matching legacy value
+        // once, then keep using the serialized-stable identity below.
+        if let legacyKey = legacyTimelineTrackVisibilityKey(for: project) {
+            let visibility = EditorTimelineTrackVisibility(
+                rawValue: defaults.integer(forKey: legacyKey)
+            )
+            defaults.set(visibility.rawValue, forKey: stableKey)
+            return visibility
+        }
+        return .initial(for: project)
     }
 
     static func rememberTimelineTrackVisibility(
@@ -183,14 +274,96 @@ enum AppPreferences {
         )
     }
 
-    /// `createdAt` is persisted, survives package renames and does not modify
-    /// the project schema merely to remember editor chrome. Millisecond
-    /// precision is sufficient to distinguish independently created projects.
-    private static func timelineTrackVisibilityKey(for project: RecorderProject) -> String {
-        let createdMilliseconds = Int64(
-            (project.createdAt.timeIntervalSinceReferenceDate * 1_000).rounded()
+    static func timelineZoom(for project: RecorderProject) -> Double {
+        let defaults = UserDefaults.standard
+        let key = "\(editorTimelineZoomPrefix).\(projectPresentationIdentity(for: project))"
+        guard defaults.object(forKey: key) != nil else { return 1 }
+        let value = defaults.double(forKey: key)
+        return EditorTimelineZoomPolicy.clamped(value)
+    }
+
+    static func rememberTimelineZoom(_ zoom: Double, for project: RecorderProject) {
+        let value = EditorTimelineZoomPolicy.clamped(zoom)
+        UserDefaults.standard.set(
+            value,
+            forKey: "\(editorTimelineZoomPrefix).\(projectPresentationIdentity(for: project))"
         )
-        return "\(editorTimelineTrackVisibilityPrefix).\(createdMilliseconds)"
+    }
+
+    /// Newly drawn zoom clips inherit the last scale the user deliberately
+    /// committed on an existing clip. Timing and focus remain unique to the
+    /// new range, so reusing a scale never moves an older composition choice
+    /// into an unrelated part of the recording.
+    static var rememberedZoomCreationScale: Double {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: zoomCreationScaleKey) != nil else {
+            return 1.6
+        }
+        let stored = defaults.double(forKey: zoomCreationScaleKey)
+        guard stored.isFinite else { return 1.6 }
+        return min(max(stored, 1), 6)
+    }
+
+    static func rememberZoomCreationScale(_ scale: Double) {
+        guard scale.isFinite else { return }
+        UserDefaults.standard.set(
+            min(max(scale, 1), 6),
+            forKey: zoomCreationScaleKey
+        )
+    }
+
+    static func timelinePrimaryLaneHeight(for project: RecorderProject) -> Double {
+        let defaults = UserDefaults.standard
+        let key = "\(editorTimelinePrimaryLaneHeightPrefix).\(projectPresentationIdentity(for: project))"
+        let stored: Double
+        if defaults.object(forKey: key) != nil {
+            stored = defaults.double(forKey: key)
+        } else if defaults.object(forKey: editorTimelinePrimaryLaneHeightKey) != nil {
+            // One-time compatibility with the previous global workspace value.
+            stored = defaults.double(forKey: editorTimelinePrimaryLaneHeightKey)
+        } else {
+            stored = Double(EditorTimelineSizing.defaultPrimaryLaneHeight)
+        }
+        return Double(EditorTimelineSizing.clampedPrimaryLaneHeight(CGFloat(stored)))
+    }
+
+    static func rememberTimelinePrimaryLaneHeight(
+        _ height: Double,
+        for project: RecorderProject
+    ) {
+        let value = Double(
+            EditorTimelineSizing.clampedPrimaryLaneHeight(CGFloat(height))
+        )
+        UserDefaults.standard.set(
+            value,
+            forKey: "\(editorTimelinePrimaryLaneHeightPrefix).\(projectPresentationIdentity(for: project))"
+        )
+    }
+
+    /// `createdAt` survives package renames and keeps editor chrome outside
+    /// project.json. Use the precision that actually survives the project's
+    /// ISO-8601 round trip; in-memory sub-second precision is not a stable ID.
+    static func projectPresentationIdentity(for project: RecorderProject) -> String {
+        String(Int64(floor(project.createdAt.timeIntervalSinceReferenceDate)))
+    }
+
+    private static func timelineTrackVisibilityKey(for project: RecorderProject) -> String {
+        "\(editorTimelineTrackVisibilityStablePrefix).\(projectPresentationIdentity(for: project))"
+    }
+
+    private static func legacyTimelineTrackVisibilityKey(
+        for project: RecorderProject
+    ) -> String? {
+        let defaults = UserDefaults.standard
+        let createdSecond = Int64(floor(project.createdAt.timeIntervalSinceReferenceDate))
+        let candidates = defaults.dictionaryRepresentation().keys.compactMap { key -> (String, Int64)? in
+            let prefix = editorTimelineTrackVisibilityPrefix + "."
+            guard key.hasPrefix(prefix),
+                  let milliseconds = Int64(key.dropFirst(prefix.count)),
+                  milliseconds / 1_000 == createdSecond else { return nil }
+            return (key, milliseconds)
+        }
+        return candidates.max { lhs, rhs in lhs.1 < rhs.1 }?.0
     }
 
     /// 固定应用图标：直接从 Bundle 加载 AppIcon.icns。

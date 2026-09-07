@@ -33,17 +33,20 @@ public struct ScreenMotionClip: Codable, Equatable, Identifiable, Sendable {
     public var target: ScreenMotionState
     /// 组合布局预设插入的跨轨道配对 ID；拖动/缩放一侧时另一侧跟随。
     public var groupID: UUID?
+    public var focusEffect: FocusEffect?
 
     public init(
         id: UUID = UUID(),
         timing: TransitionTiming,
         target: ScreenMotionState,
-        groupID: UUID? = nil
+        groupID: UUID? = nil,
+        focusEffect: FocusEffect? = nil
     ) {
         self.id = id
         self.timing = timing
         self.target = target
         self.groupID = groupID
+        self.focusEffect = focusEffect
     }
 }
 
@@ -154,6 +157,12 @@ public struct ScreenMotionTrack: Equatable, Sendable {
                 && (touches || clears)
         }
         usesIndexedEvaluation = timingsAreValid && sequenceIsNonoverlapping
+    }
+
+    public func activeClip(at time: TimeInterval) -> ScreenMotionClip? {
+        guard time.isFinite, let index = lastStartedClipIndex(at: time) else { return nil }
+        let clip = clips[index]
+        return clip.timing.returnDuration > 0 && time >= clip.timing.effectEndTime ? nil : clip
     }
 
     public func sample(

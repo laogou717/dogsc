@@ -47,7 +47,7 @@ final class ExportCancellationLatch: @unchecked Sendable {
 /// Owns one immutable export job and all serialized AVFoundation writer state.
 final class DirectExportPipeline: @unchecked Sendable {
     private let reader: AVAssetReader
-    private let videoOutput: AVAssetReaderTrackOutput
+    private let videoOutput: AVAssetReaderOutput
     private let sourcePreferredTransform: CGAffineTransform
     private let audioReader: AVAssetReader?
     private let audioOutput: AVAssetReaderOutput?
@@ -64,6 +64,8 @@ final class DirectExportPipeline: @unchecked Sendable {
     private let project: RecorderProject
     private let frameRate: OutputFrameRate
     private let outputFrameSchedule: OutputFrameSchedule
+    private let sourceTimelineOffset: CMTime
+    private let projectOutputDuration: TimeInterval
     private let wallpaperImage: CIImage?
     private let wallpaperVideoReader: ExportLoopingWallpaperVideoReader?
     private let stickerImages: [String: CIImage]
@@ -118,6 +120,7 @@ final class DirectExportPipeline: @unchecked Sendable {
         project: RecorderProject,
         cursorSources: [CursorAssetID: CursorRenderSource],
         frameRate: OutputFrameRate,
+        outputRange: MediaTimeRange? = nil,
         cameraContentCrop: NormalizedCrop? = nil,
         progressHandler: (@Sendable (Double) -> Void)?
     ) throws {
@@ -132,8 +135,18 @@ final class DirectExportPipeline: @unchecked Sendable {
         self.canvasSize = canvasSize
         self.project = project
         self.frameRate = frameRate
+        let renderRange = outputRange ?? MediaTimeRange(
+            start: 0,
+            duration: media.plan.outputDuration
+        )!
+        let timelineOffset = CMTime(
+            seconds: renderRange.start,
+            preferredTimescale: 1_000_000_000
+        )
+        sourceTimelineOffset = timelineOffset
+        projectOutputDuration = media.plan.outputDuration
         let outputFrameSchedule = try OutputFrameSchedule(
-            duration: media.plan.outputDuration,
+            duration: renderRange.duration,
             frameRate: frameRate
         )
         self.outputFrameSchedule = outputFrameSchedule
@@ -145,7 +158,8 @@ final class DirectExportPipeline: @unchecked Sendable {
         )
         self.primaryPlan = media.plan.primary
         self.cameraPlan = media.plan.camera
-        self.sourcePreferredTransform = media.primaryVideoTrack.preferredTransform
+        self.sourcePreferredTransform = media.primaryVideoComposition == nil
+            ? media.primaryVideoTrack.preferredTransform : .identity
         self.cameraPreferredTransform = media.cameraVideoTrack?.preferredTransform ?? .identity
         self.wallpaperImage = wallpaperImage
         wallpaperVideoReader = try wallpaperVideo.map {
@@ -155,23 +169,42 @@ final class DirectExportPipeline: @unchecked Sendable {
         self.cursorSources = cursorSources
         cursorMetricsByAssetID = cursorSources.mapValues(\.metrics)
         self.pointerTrack = media.plan.pointer
-        self.zoomTrack = ZoomAnimationTrack(project.zoomAnimations)
+        self.zoomTrack = ZoomAnimationTrack(project.zoomAnimations, outputDuration: media.plan.outputDuration)
         self.screenMotionTrack = ScreenMotionTrack(project.timeline.screenMotionClips)
         self.cameraMotionTrack = CameraMotionTrack(project.timeline.cameraMotionClips)
         self.cameraContentCrop = cameraContentCrop
         self.progressHandler = progressHandler
         reader = try AVAssetReader(asset: media.primaryComposition)
-        reader.timeRange = CMTimeRange(start: .zero, duration: readerDuration)
+        let readerTimeRange = CMTimeRange(
+            start: timelineOffset,
+            duration: readerDuration
+        )
+        reader.timeRange = readerTimeRange
         writer = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
         writer.shouldOptimizeForNetworkUse = true
 
-        videoOutput = AVAssetReaderTrackOutput(
-            track: media.primaryVideoTrack,
-            outputSettings: [
-                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-            ]
-        )
-        videoOutput.alwaysCopiesSampleData = false
+        if let videoComposition = media.primaryVideoComposition {
+            let output = AVAssetReaderVideoCompositionOutput(
+                videoTracks: media.primaryVideoTracks,
+                videoSettings: [
+                    kCVPixelBufferPixelFormatTypeKey as String:
+                        kCVPixelFormatType_32BGRA,
+                ]
+            )
+            output.videoComposition = videoComposition
+            output.alwaysCopiesSampleData = false
+            videoOutput = output
+        } else {
+            let output = AVAssetReaderTrackOutput(
+                track: media.primaryVideoTrack,
+                outputSettings: [
+                    kCVPixelBufferPixelFormatTypeKey as String:
+                        kCVPixelFormatType_32BGRA,
+                ]
+            )
+            output.alwaysCopiesSampleData = false
+            videoOutput = output
+        }
         guard reader.canAdd(videoOutput) else {
             throw VideoExporterError.cannotReadMediaTrack(
                 role: .screenRecording,
@@ -197,6 +230,7 @@ final class DirectExportPipeline: @unchecked Sendable {
                 )
             }
             reader.add(output)
+            reader.timeRange = readerTimeRange
             cameraReader = reader
             cameraOutput = output
         } else {
@@ -273,16 +307,24 @@ final class DirectExportPipeline: @unchecked Sendable {
                 systemVolume: project.audio.isSystemMuted
                     ? 0
                     : Float(min(max(project.audio.systemVolume, 0), 1)),
+                primarySegmentRanges: media.primarySegmentAudioMixRanges(
+                    audio: project.audio,
+                    overrides: project.timeline.primarySegmentAudioOverrides
+                ),
                 microphoneTrack: media.microphoneAudioTrack,
                 microphoneVolume: project.audio.isMicrophoneMuted
                     ? 0
-                    : Float(min(max(project.audio.microphoneVolume, 0), 1))
+                    : Float(min(max(project.audio.microphoneVolume, 0), 1)),
+                requiresTimePitchProcessing: media.requiresAudioTimePitchProcessing
             )
-            output.audioTimePitchAlgorithm = .timeDomain
+            if media.requiresAudioTimePitchProcessing {
+                output.audioTimePitchAlgorithm = .timeDomain
+            }
             guard reader.canAdd(output) else {
                 throw VideoExporterError.exportFailed("无法创建麦克风混音读取器")
             }
             reader.add(output)
+            reader.timeRange = readerTimeRange
             audioReader = reader
             audioOutput = output
 
@@ -412,7 +454,7 @@ final class DirectExportPipeline: @unchecked Sendable {
 
     private func processVideo() {
         guard !hasVideoFinished else { return }
-        let durationSeconds = outputFrameSchedule.duration
+        let durationSeconds = projectOutputDuration
         let totalFrames = outputFrameSchedule.frameCount
         guard totalFrames > 0 else {
             finishVideo(error: nil)
@@ -448,31 +490,41 @@ final class DirectExportPipeline: @unchecked Sendable {
                     finishVideo(error: VideoExporterError.exportFailed("输出帧时间表越界"))
                     return
                 }
-                let targetTime = CMTime(
+                let outputTime = CMTime(
                     value: outputFrame.presentationTimeValue,
                     timescale: outputFrame.presentationTimescale
                 )
+                let targetTime = sourceTimelineOffset + outputTime
                 guard let slice = primaryPlan.slice(atOutputTime: targetTime.seconds) else {
                     finishVideo(error: VideoExporterError.exportFailed("成片时间没有对应的主录屏片段"))
                     return
                 }
+                let sliceStartTime = compositionBoundaryTime(slice.outputStart)
+                let sliceEndTime = compositionBoundaryTime(slice.outputEnd)
                 if currentPrimarySegmentID != slice.segmentID {
                     currentPrimarySegmentID = slice.segmentID
                     currentPixelBuffer = nil
-                    discardVideoSamples(before: slice.outputStart)
+                    discardVideoSamples(before: sliceStartTime)
                 }
                 while let sample = nextVideoSample,
                       sample.presentationTimeStamp <= targetTime,
-                      sample.presentationTimeStamp.seconds < slice.outputEnd {
+                      sample.presentationTimeStamp < sliceEndTime {
                     currentPixelBuffer = sample.imageBuffer
                     nextVideoSample = videoOutput.copyNextSampleBuffer()
                 }
 
                 if currentPixelBuffer == nil,
                    let sample = nextVideoSample,
-                   sample.presentationTimeStamp.seconds >= slice.outputStart,
-                   sample.presentationTimeStamp.seconds < slice.outputEnd {
+                   sample.presentationTimeStamp >= sliceStartTime,
+                   sample.presentationTimeStamp < sliceEndTime {
+                    // A VFR composition can place the first decoded sample a
+                    // fraction after the exact output-grid cut. It is the only
+                    // valid frame for this new slice, so use it immediately —
+                    // and consume it. Leaving the reader cursor on that same
+                    // sample made the following output frame read it again,
+                    // creating a deterministic one-frame freeze after a cut.
                     currentPixelBuffer = sample.imageBuffer
+                    nextVideoSample = videoOutput.copyNextSampleBuffer()
                 }
 
                 guard let sourcePixelBuffer = currentPixelBuffer else {
@@ -497,7 +549,6 @@ final class DirectExportPipeline: @unchecked Sendable {
                     CIImage(cvPixelBuffer: sourcePixelBuffer),
                     preferredTransform: sourcePreferredTransform
                 )
-                let activeCameraSlice = cameraPlan?.slice(atOutputTime: targetTime.seconds)
                 let cameraImage = cameraPixelBuffer(at: targetTime).map { pixelBuffer in
                     let oriented = VideoExporter.orientVideoFrameForDisplay(
                         CIImage(cvPixelBuffer: pixelBuffer),
@@ -512,9 +563,6 @@ final class DirectExportPipeline: @unchecked Sendable {
                     start: slice.outputStart,
                     duration: slice.duration
                 )
-                let cameraRange = activeCameraSlice.flatMap {
-                    MediaTimeRange(start: $0.outputStart, duration: $0.duration)
-                }
                 let normalizedSource = sourceImage.transformed(
                     by: CGAffineTransform(
                         translationX: -sourceImage.extent.minX,
@@ -542,7 +590,7 @@ final class DirectExportPipeline: @unchecked Sendable {
                     screenMotionTrack: screenMotionTrack,
                     cameraMotionTrack: cameraMotionTrack,
                     activePrimaryRange: primaryRange,
-                    activeCameraRange: cameraRange
+                    cameraTimeline: cameraPlan
                 )
                 let cursorSource = renderPlan.scene.cursor.flatMap {
                     cursorSources[$0.assetID]
@@ -580,7 +628,7 @@ final class DirectExportPipeline: @unchecked Sendable {
                     colorSpace: colorProfile.outputColorSpace
                 )
 
-                guard adaptor.append(destinationBuffer, withPresentationTime: targetTime) else {
+                guard adaptor.append(destinationBuffer, withPresentationTime: outputTime) else {
                     if writer.status == .failed || writer.error != nil {
                         finishVideo(error: writer.error
                             ?? VideoExporterError.exportFailed("写入视频帧失败"))
@@ -631,11 +679,12 @@ final class DirectExportPipeline: @unchecked Sendable {
         if currentCameraSegmentID != slice.segmentID {
             let previousFrame = currentCameraPixelBuffer
             currentCameraSegmentID = slice.segmentID
-            discardCameraSamples(before: slice.outputStart)
+            let sliceStartTime = compositionBoundaryTime(slice.outputStart)
+            let sliceEndTime = compositionBoundaryTime(slice.outputEnd)
+            discardCameraSamples(before: sliceStartTime)
             let firstFrameInNextSlice: CVPixelBuffer? = nextCameraSample.flatMap { sample in
-                let sampleTime = sample.presentationTimeStamp.seconds
-                guard sampleTime >= slice.outputStart,
-                      sampleTime < slice.outputEnd else { return nil }
+                guard sample.presentationTimeStamp >= sliceStartTime,
+                      sample.presentationTimeStamp < sliceEndTime else { return nil }
                 return sample.imageBuffer
             }
             currentCameraPixelBuffer = ExportCameraCutContinuity.frame(
@@ -643,31 +692,39 @@ final class DirectExportPipeline: @unchecked Sendable {
                 firstFrameInNextSlice: firstFrameInNextSlice
             )
         }
+        let sliceEndTime = compositionBoundaryTime(slice.outputEnd)
         while let sample = nextCameraSample,
               sample.presentationTimeStamp <= time,
-              sample.presentationTimeStamp.seconds < slice.outputEnd {
+              sample.presentationTimeStamp < sliceEndTime {
             currentCameraPixelBuffer = sample.imageBuffer
             nextCameraSample = cameraOutput.copyNextSampleBuffer()
         }
         if currentCameraPixelBuffer == nil,
            let sample = nextCameraSample,
-           sample.presentationTimeStamp.seconds >= slice.outputStart,
-           sample.presentationTimeStamp.seconds < slice.outputEnd {
+           sample.presentationTimeStamp >= compositionBoundaryTime(slice.outputStart),
+           sample.presentationTimeStamp < sliceEndTime {
             currentCameraPixelBuffer = sample.imageBuffer
         }
         return currentCameraPixelBuffer
     }
 
-    private func discardVideoSamples(before outputTime: TimeInterval) {
+    /// Timeline compositions are authored at 60k. Convert project Doubles back
+    /// to that rational clock before comparing decoded sample timestamps so an
+    /// exact cut sample is not discarded because of its `.seconds` rendering.
+    private func compositionBoundaryTime(_ seconds: TimeInterval) -> CMTime {
+        CMTime(seconds: seconds, preferredTimescale: 60_000)
+    }
+
+    private func discardVideoSamples(before outputTime: CMTime) {
         while let sample = nextVideoSample,
-              sample.presentationTimeStamp.seconds < outputTime {
+              sample.presentationTimeStamp < outputTime {
             nextVideoSample = videoOutput.copyNextSampleBuffer()
         }
     }
 
-    private func discardCameraSamples(before outputTime: TimeInterval) {
+    private func discardCameraSamples(before outputTime: CMTime) {
         while let sample = nextCameraSample,
-              sample.presentationTimeStamp.seconds < outputTime {
+              sample.presentationTimeStamp < outputTime {
             nextCameraSample = cameraOutput?.copyNextSampleBuffer()
         }
     }
@@ -681,7 +738,14 @@ final class DirectExportPipeline: @unchecked Sendable {
                 finishAudio(error: nil)
                 return
             }
-            guard audioInput.append(sample) else {
+            guard let rebasedSample = SampleBufferTimeRetimer.retimed(
+                sample,
+                subtracting: sourceTimelineOffset
+            ) else {
+                finishAudio(error: VideoExporterError.exportFailed("无法重建选区音频时间戳"))
+                return
+            }
+            guard audioInput.append(rebasedSample) else {
                 finishAudio(error: writer.error ?? VideoExporterError.exportFailed("写入音频失败"))
                 return
             }

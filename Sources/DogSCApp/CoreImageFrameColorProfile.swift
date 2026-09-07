@@ -51,10 +51,10 @@ struct CoreImageFrameColorProfile: @unchecked Sendable {
     /// the context against that exact device lets Core Image encode directly
     /// into the drawable instead of creating a CPU-backed CGImage every tick.
     func makeMetalContext(
-        device: MTLDevice,
+        commandQueue: MTLCommandQueue,
         cacheIntermediates: Bool
     ) -> CIContext {
-        CIContext(mtlDevice: device, options: [
+        CIContext(mtlCommandQueue: commandQueue, options: [
             .cacheIntermediates: cacheIntermediates,
             .workingColorSpace: workingColorSpace,
             .outputColorSpace: outputColorSpace,

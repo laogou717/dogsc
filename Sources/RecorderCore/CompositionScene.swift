@@ -87,6 +87,7 @@ public enum ScreenFrameGeometry {
     public static func decorationInsetsAtScaleOne(
         style: ScreenFrameStyle,
         frameScale: Double,
+        toolbarScale: Double = 1,
         fittedWidth: Double,
         fittedHeight: Double,
         styleScale: Double
@@ -94,46 +95,26 @@ public enum ScreenFrameGeometry {
         guard style != .none else { return .zero }
         let safeStyleScale = max(styleScale, 0.000_1)
         let authoredFrameScale = min(max(frameScale, 0.6), 1.6)
+        let authoredToolbarScale = min(max(toolbarScale, 0.65), 1.6)
         let visualScale = safeStyleScale * authoredFrameScale
         switch style {
         case .none:
             return .zero
         case .windowLight, .windowDark, .browserLight, .browserDark:
-            let idealHeight = 46 * visualScale
+            let idealHeight = 46 * visualScale * authoredToolbarScale
             return ScreenDecorationInsets(top: min(
                 max(idealHeight, 4 * safeStyleScale),
                 max(max(fittedHeight, 0) * 0.25, 4 * safeStyleScale)
             ))
-        case .devicePhone, .devicePhonePortrait:
+        case .devicePhone, .devicePhonePortrait, .devicePhoneLandscape:
             let shortEdge = max(min(fittedWidth, fittedHeight), 1)
-            let side = min(max(17 * visualScale, 4 * safeStyleScale), shortEdge * 0.055)
-            let vertical = min(max(21 * visualScale, 5 * safeStyleScale), shortEdge * 0.068)
-            return ScreenDecorationInsets(
-                top: vertical,
-                right: side,
-                bottom: vertical,
-                left: side
-            )
-        case .devicePhoneLandscape:
-            let shortEdge = max(min(fittedWidth, fittedHeight), 1)
-            let horizontal = min(
-                max(21 * visualScale, 5 * safeStyleScale),
-                shortEdge * 0.068
-            )
-            let vertical = min(
-                max(15 * visualScale, 4 * safeStyleScale),
-                shortEdge * 0.050
-            )
-            return ScreenDecorationInsets(
-                top: vertical,
-                right: horizontal,
-                bottom: vertical,
-                left: horizontal
-            )
+            let bezel = min(max(shortEdge * 0.026 * authoredFrameScale, 2 * safeStyleScale), shortEdge * 0.07)
+            return ScreenDecorationInsets(top: bezel, right: bezel, bottom: bezel, left: bezel)
         case .deviceTablet, .deviceTabletPortrait, .deviceTabletLandscape:
             let shortEdge = max(min(fittedWidth, fittedHeight), 1)
-            let side = min(max(14 * visualScale, 4 * safeStyleScale), shortEdge * 0.045)
-            return ScreenDecorationInsets(top: side, right: side, bottom: side, left: side)
+            let bezel = min(max(shortEdge * 0.035 * authoredFrameScale, 2 * safeStyleScale), shortEdge * 0.08)
+            return ScreenDecorationInsets(top: bezel, right: bezel, bottom: bezel, left: bezel)
+
         }
     }
 
@@ -186,6 +167,7 @@ public enum CompositionSceneEvaluator {
         styleScale: Double = 1,
         automaticZoomFocus: NormalizedPoint? = nil,
         inheritedAutomaticZoomFocus: NormalizedPoint? = nil,
+        reanchorAutomaticEntry: Bool = false,
         zoomTrack: ZoomAnimationTrack? = nil,
         screenMotionTrack: ScreenMotionTrack? = nil,
         cameraMotionTrack: CameraMotionTrack? = nil
@@ -220,6 +202,7 @@ public enum CompositionSceneEvaluator {
         let decorationInsetsAtScaleOne = ScreenFrameGeometry.decorationInsetsAtScaleOne(
             style: project.canvas.screenFrame,
             frameScale: project.canvas.screenFrameScale,
+            toolbarScale: project.canvas.screenFrameToolbarScale,
             fittedWidth: fittedRect.width,
             fittedHeight: fittedRect.height,
             styleScale: scale
@@ -276,13 +259,15 @@ public enum CompositionSceneEvaluator {
             at: sampleTime,
             motion: project.motion,
             automaticFocus: automaticZoomFocus,
-            inheritedAutomaticFocus: inheritedAutomaticZoomFocus
+            inheritedAutomaticFocus: inheritedAutomaticZoomFocus,
+            reanchorAutomaticEntry: reanchorAutomaticEntry
         ) ?? ZoomInterpolator.sample(
             animations: project.zoomAnimations,
             at: sampleTime,
             motion: project.motion,
             automaticFocus: automaticZoomFocus,
-            inheritedAutomaticFocus: inheritedAutomaticZoomFocus
+            inheritedAutomaticFocus: inheritedAutomaticZoomFocus,
+            reanchorAutomaticEntry: reanchorAutomaticEntry
         )
         let viewport = ZoomViewportTransform.make(from: zoom, crop: crop)
         let finalRect = CompositionRect(

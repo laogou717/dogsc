@@ -21,12 +21,12 @@ struct EditorInspectorSection<Content: View>: View {
             HStack(spacing: 6) {
                 if let icon {
                     Image(systemName: icon)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Color.white.opacity(0.6))
+                        .font(.appUI(size: 13, weight: .semibold))
+                        .foregroundStyle(EditorTheme.chrome(0.6))
                 }
-                Text(title)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.white.opacity(0.85))
+                Text(appLocalized(title))
+                    .font(.appUI(size: 14, weight: .semibold))
+                    .foregroundStyle(EditorTheme.chrome(0.88))
             }
             .padding(.leading, 2)
 
@@ -34,30 +34,10 @@ struct EditorInspectorSection<Content: View>: View {
                 content
             }
         }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [Color.white.opacity(0.050), Color.white.opacity(0.025)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(
-                    LinearGradient(
-                        colors: [Color.white.opacity(0.09), Color.white.opacity(0.02)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    ),
-                    lineWidth: 0.75
-                )
-        )
+        .padding(.horizontal, 2)
+        .padding(.vertical, 8)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(title)
+        .accessibilityLabel(appLocalized(title))
     }
 }
 
@@ -76,7 +56,7 @@ struct EditorInspectorEmptyState: View {
     var body: some View {
         VStack(spacing: 12) {
             Image(systemName: systemImage)
-                .font(.system(size: 16, weight: .semibold))
+                .font(.appUI(size: 16, weight: .semibold))
                 .foregroundStyle(EditorTheme.platinumAccent.opacity(0.82))
                 .frame(width: 38, height: 38)
                 .background(
@@ -89,19 +69,19 @@ struct EditorInspectorEmptyState: View {
                 }
 
             VStack(spacing: 4) {
-                Text(title)
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .foregroundStyle(Color.white.opacity(0.90))
+                Text(appLocalized(title))
+                    .font(.appUI(size: 12.5, weight: .semibold))
+                    .foregroundStyle(EditorTheme.chrome(0.90))
                 Text(detail)
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(Color.white.opacity(0.48))
+                    .font(.appUI(size: 10.5))
+                    .foregroundStyle(EditorTheme.chrome(0.48))
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             if let actionTitle, let action {
                 Button(action: action) {
-                    Label(actionTitle, systemImage: actionSystemImage)
+                    Label(appLocalized(actionTitle), systemImage: actionSystemImage)
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.editorQuiet)
@@ -113,7 +93,7 @@ struct EditorInspectorEmptyState: View {
             RoundedRectangle(cornerRadius: 13, style: .continuous)
                 .fill(
                     LinearGradient(
-                        colors: [Color.white.opacity(0.048), Color.white.opacity(0.022)],
+                        colors: [EditorTheme.chrome(0.048), EditorTheme.chrome(0.022)],
                         startPoint: .top,
                         endPoint: .bottom
                     )
@@ -121,9 +101,9 @@ struct EditorInspectorEmptyState: View {
         }
         .overlay {
             RoundedRectangle(cornerRadius: 13, style: .continuous)
-                .stroke(Color.white.opacity(0.075), lineWidth: 0.75)
+                .stroke(EditorTheme.chrome(0.075), lineWidth: 0.75)
         }
-        .shadow(color: Color.black.opacity(0.15), radius: 5, y: 2)
+        .shadow(color: EditorTheme.softShadow, radius: 5, y: 2)
         .accessibilityElement(children: .contain)
     }
 }
@@ -134,6 +114,7 @@ struct EditorSegmentedControl<Option: Hashable>: View {
     let options: [Option]
     let title: (Option) -> String
     var icon: (Option) -> String? = { _ in nil }
+    var accessibilityTitle: ((Option) -> String)? = nil
     @Binding var selection: Option
     @Namespace private var segmentNamespace
 
@@ -148,18 +129,9 @@ struct EditorSegmentedControl<Option: Hashable>: View {
                 } label: {
                     ZStack {
                         if isSelected {
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .fill(
-                                    LinearGradient(
-                                        colors: [Color.white.opacity(0.16), Color.white.opacity(0.08)],
-                                        startPoint: .top,
-                                        endPoint: .bottom
-                                    )
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                        .stroke(Color.white.opacity(0.18), lineWidth: 0.75)
-                                )
+                            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                .fill(EditorTheme.cardElevated)
+                                .shadow(color: EditorTheme.softShadow, radius: 3, y: 1)
                                 .matchedGeometryEffect(id: "segmentActiveIndicator", in: segmentNamespace)
                         }
                         Group {
@@ -169,30 +141,30 @@ struct EditorSegmentedControl<Option: Hashable>: View {
                                 Text(title(option))
                             }
                         }
-                        .font(.caption.weight(isSelected ? .semibold : .medium))
+                        .font(.appUI(size: 12, weight: isSelected ? .medium : .regular))
                         .foregroundStyle(
-                            isSelected ? Color.white : Color.secondary
+                            isSelected ? Color.primary : Color.secondary
                         )
                     }
                     .frame(maxWidth: .infinity)
-                    .frame(height: 30)
+                    .frame(height: 34)
                 }
                 .buttonStyle(EditorSegmentedOptionButtonStyle(isSelected: isSelected))
                 .frame(maxWidth: .infinity)
-                .frame(height: 30)
+                .frame(height: 34)
                 .contentShape(Rectangle())
-                .accessibilityLabel(title(option))
+                .accessibilityLabel(accessibilityTitle?(option) ?? title(option))
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
             }
         }
         .padding(3)
         .background(
-            Color.black.opacity(0.28),
+            EditorTheme.chrome(0.035),
             in: RoundedRectangle(cornerRadius: 10, style: .continuous)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(Color.white.opacity(0.06), lineWidth: 0.5)
+                .stroke(EditorTheme.chrome(0.06), lineWidth: 0.5)
         )
     }
 }
@@ -214,7 +186,7 @@ private struct EditorSegmentedOptionButtonStyle: ButtonStyle {
             configuration.label
                 .background(
                     !isSelected && isHovered && isEnabled
-                        ? Color.white.opacity(0.055)
+                        ? EditorTheme.chrome(0.055)
                         : .clear,
                     in: RoundedRectangle(cornerRadius: 7, style: .continuous)
                 )
@@ -266,12 +238,12 @@ struct EditorTileSelector<Option: Hashable>: View {
         }
         .padding(4)
         .background(
-            Color.black.opacity(0.24),
+            EditorTheme.chrome(0.045),
             in: RoundedRectangle(cornerRadius: 12, style: .continuous)
         )
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color.white.opacity(0.06), lineWidth: 0.5)
+                .stroke(EditorTheme.chrome(0.06), lineWidth: 0.5)
         }
     }
 }
@@ -288,13 +260,13 @@ private struct EditorTileSelectorButton: View {
         Button(action: action) {
             HStack(spacing: 6) {
                 Image(systemName: icon)
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.appUI(size: 12, weight: .semibold))
                 Text(title)
-                    .font(.caption.weight(isSelected ? .semibold : .medium))
+                    .font(.appUI(size: 12, weight: isSelected ? .medium : .regular))
                     .lineLimit(1)
             }
             .foregroundStyle(
-                isSelected ? Color.black.opacity(0.88) : Color.white.opacity(isHovered ? 0.95 : 0.70)
+                EditorTheme.chrome(isSelected ? 0.88 : isHovered ? 0.82 : 0.62)
             )
             .frame(maxWidth: .infinity)
             .frame(height: 34)
@@ -303,25 +275,24 @@ private struct EditorTileSelectorButton: View {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .fill(
                             LinearGradient(
-                                colors: [Color.white, EditorTheme.platinumAccent],
+                                colors: [EditorTheme.selectionWash, EditorTheme.selectionWash],
                                 startPoint: .top,
                                 endPoint: .bottom
                             )
                         )
                         .overlay {
                             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .stroke(Color.white.opacity(0.75), lineWidth: 0.75)
+                                .stroke(EditorTheme.selectionTint.opacity(0.15), lineWidth: 0.75)
                         }
                         .matchedGeometryEffect(id: "activeTileSelector", in: namespace)
                 } else if isHovered {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Color.white.opacity(0.075))
+                        .fill(EditorTheme.chrome(0.075))
                 }
             }
             .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .scaleEffect(isHovered && !isSelected ? 1.025 : 1)
         }
-        .buttonStyle(.editorToolbarPress)
+        .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 8, showsHover: false))
         .onHover { hovering in
             withAnimation(SpringMotion.interactive) {
                 isHovered = hovering

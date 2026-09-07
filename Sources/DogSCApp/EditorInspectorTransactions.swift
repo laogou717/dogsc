@@ -94,8 +94,10 @@ struct EditorTransactionalSlider: View {
     let range: ClosedRange<Double>
     let commandScope: EditorInteractionCommandScope
     let actionName: String
+    var title: String? = nil
     var formatValue: ((Double) -> String)? = nil
     var showsFloatingValue = true
+    var scale: EditorSliderScale = .linear
     var onInteractionChanged: (Bool) -> Void = { _ in }
     let onError: (String) -> Void
 
@@ -103,8 +105,10 @@ struct EditorTransactionalSlider: View {
         EditorSlider(
             value: transactionalValue,
             range: range,
+            title: title,
             formatValue: formatValue,
             showsFloatingValue: showsFloatingValue,
+            scale: scale,
             onEditingChanged: { isEditing in
                 onInteractionChanged(isEditing)
                 // 与旧系统滑块同一事务边界：按下开始（幂等），松手提交。
@@ -178,7 +182,13 @@ struct EditorTransactionalSliderRow: View {
     @State private var hasTextPreview = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(spacing: 2) {
+            HStack(spacing: 12) {
+                Text(appLocalized(title))
+                    .font(.appUI(size: 13, weight: .regular))
+                    .foregroundStyle(EditorTheme.chrome(0.76))
+                    .lineLimit(1)
+                Spacer(minLength: 8)
             EditorInspectorParameterReadout(
                 title: title,
                 valueText: format.text(for: value.wrappedValue),
@@ -189,16 +199,22 @@ struct EditorTransactionalSliderRow: View {
                     onPreview: previewTextValue,
                     onCommit: commitTextEditing,
                     onCancel: cancelTextEditing
-                )
+                ),
+                showsTitle: false,
+                isEmbedded: false
             )
+            .frame(width: 66, height: 32)
+            }
             EditorTransactionalSlider(
                 editorStore: editorStore,
                 value: value,
                 range: range,
                 commandScope: commandScope,
                 actionName: title,
+                title: nil,
                 formatValue: { format.text(for: $0) },
                 showsFloatingValue: false,
+                scale: format.sliderScale(in: range),
                 onInteractionChanged: { editing in
                     isSliderEditing = editing
                 },
@@ -381,6 +397,42 @@ func editorTimelineBinding<Value>(
                 onError(error.localizedDescription)
             }
         }
+    )
+}
+
+@MainActor
+func editorPrimarySegmentAudioBinding<Value>(
+    store: EditorStore,
+    segmentID: UUID,
+    get: @escaping (RecorderProject, PrimarySegmentAudioOverrides) -> Value,
+    set: @escaping (inout PrimarySegmentAudioOverrides, Value) -> Void,
+    actionName: String,
+    onError: @escaping (String) -> Void
+) -> Binding<Value> {
+    editorDomainBinding(
+        store: store,
+        commandScope: .selection,
+        get: { project in
+            get(
+                project,
+                project.timeline.primarySegmentAudioOverrides[segmentID]
+                    ?? PrimarySegmentAudioOverrides()
+            )
+        },
+        set: { project, value in
+            var overrides = project.timeline.primarySegmentAudioOverrides[segmentID]
+                ?? PrimarySegmentAudioOverrides()
+            set(&overrides, value)
+            if overrides.isEmpty {
+                project.timeline.primarySegmentAudioOverrides.removeValue(
+                    forKey: segmentID
+                )
+            } else {
+                project.timeline.primarySegmentAudioOverrides[segmentID] = overrides
+            }
+        },
+        replace: { try store.replaceProject(with: $0, actionName: actionName) },
+        onError: onError
     )
 }
 

@@ -3,7 +3,12 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleDevelopmentRegion</key>
-    <string>zh_CN</string>
+    <string>zh-Hans</string>
+    <key>CFBundleLocalizations</key>
+    <array>
+        <string>zh-Hans</string>
+        <string>en</string>
+    </array>
     <key>CFBundleDisplayName</key>
     <string>DogSC</string>
     <key>CFBundleExecutable</key>
@@ -21,7 +26,7 @@
     <key>CFBundleShortVersionString</key>
     <string>0.1.0</string>
     <key>CFBundleVersion</key>
-    <string>4</string>
+    <string>7</string>
     <key>SUFeedURL</key>
     <string>https://github.com/laogou717/dogsc/releases/latest/download/appcast.xml</string>
     <key>SUPublicEDKey</key>

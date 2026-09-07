@@ -21,6 +21,8 @@ struct EditorShortcutCheatsheet: View {
     private let groups: [Group] = [
         Group(title: "播放与浏览", entries: [
             Entry(keys: "空格", action: "播放 / 暂停"),
+            Entry(keys: "← / →", action: "向前 / 向后移动 1 帧"),
+            Entry(keys: "Shift + ← / →", action: "向前 / 向后移动 5 帧"),
             Entry(keys: "悬停时间线", action: "预览所指帧，不移动播放头"),
             Entry(keys: "拖动总览条", action: "快速定位播放头与可视范围"),
             Entry(keys: "滚轮 / 捏合", action: "以指针为锚缩放时间线"),
@@ -30,6 +32,7 @@ struct EditorShortcutCheatsheet: View {
             Entry(keys: "Q", action: "修剪动画起点；未选动画时波纹删除前段"),
             Entry(keys: "W", action: "修剪动画终点；未选动画时波纹删除后段"),
             Entry(keys: "D / Delete", action: "删除当前选中项"),
+            Entry(keys: "⇧ / ⌘ 点击主片段", action: "连续选择 / 增减选择主片段"),
             Entry(keys: "⌥ 点击主片段", action: "在点击处直接切分"),
             Entry(keys: "悬停剪切缝", action: "合并或还原该处剪切"),
         ]),
@@ -44,6 +47,7 @@ struct EditorShortcutCheatsheet: View {
             Entry(keys: "⌘⇧Z", action: "重做"),
             Entry(keys: "⌘O", action: "打开项目"),
             Entry(keys: "⌘E", action: "导出成片"),
+            Entry(keys: "⌥X", action: "导出选中的主片段范围"),
             Entry(keys: "⌥⌘I", action: "显示 / 隐藏检查器"),
             Entry(keys: "Esc", action: "取消裁切 / 中止时间线拖动"),
         ]),
@@ -53,13 +57,13 @@ struct EditorShortcutCheatsheet: View {
         VStack(spacing: 0) {
             HStack {
                 Text("快捷键速查")
-                    .font(.title3.weight(.semibold))
+                    .font(.appUI(.title3, weight: .semibold))
                 Spacer()
                 Button {
                     dismiss()
                 } label: {
                     Image(systemName: "xmark")
-                        .font(.system(size: 11, weight: .bold))
+                        .font(.appUI(size: 11, weight: .bold))
                 }
                 .buttonStyle(.editorDismissIcon)
                 .help("关闭")
@@ -82,7 +86,7 @@ struct EditorShortcutCheatsheet: View {
                                         .padding(.vertical, 4)
                                         .background(
                                             LinearGradient(
-                                                colors: [Color.white.opacity(0.12), Color.white.opacity(0.06)],
+                                                colors: [EditorTheme.chrome(0.12), EditorTheme.chrome(0.06)],
                                                 startPoint: .top,
                                                 endPoint: .bottom
                                             ),
@@ -92,7 +96,7 @@ struct EditorShortcutCheatsheet: View {
                                             RoundedRectangle(cornerRadius: 6, style: .continuous)
                                                 .stroke(
                                                     LinearGradient(
-                                                        colors: [Color.white.opacity(0.24), Color.white.opacity(0.08)],
+                                                        colors: [EditorTheme.chrome(0.24), EditorTheme.chrome(0.08)],
                                                         startPoint: .top,
                                                         endPoint: .bottom
                                                     ),
@@ -102,7 +106,7 @@ struct EditorShortcutCheatsheet: View {
                                         .shadow(color: Color.black.opacity(0.3), radius: 2, y: 1)
                                         .frame(minWidth: 96, alignment: .leading)
                                     Text(entry.action)
-                                        .font(.caption)
+                                        .font(.appUI(.caption))
                                         .foregroundStyle(Color.primary.opacity(0.85))
                                     Spacer(minLength: 0)
                                 }

@@ -61,8 +61,6 @@ struct EditorWallpaperResolver: Sendable {
 
     func resolve(_ source: BackgroundSource) -> URL? {
         switch source {
-        case let .bundledImage(relativePath):
-            return BundledWallpaperLibrary.resolve(relativePath: relativePath)
         case let .projectImage(relativePath):
             guard let projectSession else { return nil }
             return ProjectStore.resolve(
@@ -81,7 +79,7 @@ struct EditorWallpaperResolver: Sendable {
         case let .systemVideo(absolutePath):
             guard FileManager.default.fileExists(atPath: absolutePath) else { return nil }
             return URL(fileURLWithPath: absolutePath)
-        case .gradient, .solidColor, .pattern, .dynamicFlow:
+        case .pattern, .dynamicFlow:
             return nil
         }
     }
@@ -106,6 +104,7 @@ final class EditorHostActions: ObservableObject {
     private let deleteProjectAction: () -> Void
     private let chooseWallpaperAction: () -> BackgroundSource?
     private let importOverlayImageAction: () -> String?
+    private let importOverlayImageFromURLAction: (URL) -> String?
     private let pasteOverlayImageAction: () -> String?
     private let setErrorAction: (String?) -> Void
     private let saveProjectAction: () -> Void
@@ -125,6 +124,7 @@ final class EditorHostActions: ObservableObject {
         deleteProject: @escaping () -> Void,
         chooseWallpaper: @escaping () -> BackgroundSource?,
         importOverlayImage: @escaping () -> String? = { nil },
+        importOverlayImageFromURL: @escaping (URL) -> String? = { _ in nil },
         pasteOverlayImage: @escaping () -> String? = { nil },
         setError: @escaping (String?) -> Void,
         saveProject: @escaping () -> Void = {},
@@ -140,6 +140,7 @@ final class EditorHostActions: ObservableObject {
         deleteProjectAction = deleteProject
         chooseWallpaperAction = chooseWallpaper
         importOverlayImageAction = importOverlayImage
+        importOverlayImageFromURLAction = importOverlayImageFromURL
         pasteOverlayImageAction = pasteOverlayImage
         setErrorAction = setError
         saveProjectAction = saveProject
@@ -179,6 +180,10 @@ final class EditorHostActions: ObservableObject {
 
     func importOverlayImage() -> String? {
         importOverlayImageAction()
+    }
+
+    func importOverlayImage(from url: URL) -> String? {
+        importOverlayImageFromURLAction(url)
     }
 
     func pasteOverlayImage() -> String? {
@@ -232,6 +237,7 @@ struct EditorSessionContext {
     let media: EditorSessionMediaInputs
     let exporter: VideoExporter
     let hostActions: EditorHostActions
+    let projectAssetTransfer: EditorProjectAssetTransfer
 
     private let mediaPreparation: EditorMediaSession.Preparation
     private let wallpaperURLResolver: WallpaperURLResolver
@@ -244,6 +250,7 @@ struct EditorSessionContext {
         media: EditorSessionMediaInputs,
         exporter: VideoExporter,
         hostActions: EditorHostActions,
+        projectAssetTransfer: EditorProjectAssetTransfer,
         mediaPreparation: @escaping EditorMediaSession.Preparation,
         wallpaperURLResolver: @escaping WallpaperURLResolver,
         projectAssetURLResolver: @escaping ProjectAssetURLResolver
@@ -254,6 +261,7 @@ struct EditorSessionContext {
         self.media = media
         self.exporter = exporter
         self.hostActions = hostActions
+        self.projectAssetTransfer = projectAssetTransfer
         self.mediaPreparation = mediaPreparation
         self.wallpaperURLResolver = wallpaperURLResolver
         self.projectAssetURLResolver = projectAssetURLResolver
@@ -262,7 +270,7 @@ struct EditorSessionContext {
     /// Dynamic timeline/media-manifest state comes from the shared document;
     /// file identities and pointer records remain pinned to this generation.
     func mediaRequest(for project: RecorderProject) -> EditorMediaRequest {
-        EditorMediaRequest(
+        return EditorMediaRequest(
             editorSessionID: id,
             source: media.source,
             camera: media.camera,
@@ -353,6 +361,10 @@ extension EditorSessionContext {
                 guard model?.editorSessionID == id.rawValue else { return nil }
                 return model?.chooseOverlayImageAsset()?.relativePath
             },
+            importOverlayImageFromURL: { [weak model] url in
+                guard model?.editorSessionID == id.rawValue else { return nil }
+                return model?.importOverlayImageAsset(from: url)
+            },
             pasteOverlayImage: { [weak model] in
                 guard model?.editorSessionID == id.rawValue else { return nil }
                 return model?.importOverlayImageFromPasteboard()?.relativePath
@@ -412,6 +424,9 @@ extension EditorSessionContext {
             ),
             exporter: model.exporter,
             hostActions: hostActions,
+            projectAssetTransfer: EditorProjectAssetTransfer(
+                session: model.currentSession
+            ),
             mediaPreparation: { request in
                 try await TimelinePreviewCompositionLoader.prepare(request: request)
             },

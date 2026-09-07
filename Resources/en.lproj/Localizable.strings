@@ -1,0 +1,642 @@
+/* DogSC main workflow */
+"3D 倾斜" = "3D Tilt";
+"上一帧" = "Previous Frame";
+"上一帧（←；Shift+← 移动 5 帧）" = "Previous frame (←; Shift+← moves 5 frames)";
+"上下拖动调整时间线高度；双击恢复默认" = "Drag vertically to resize the timeline; double-click to reset";
+"上下控制 X · 左右控制 Y" = "Vertical controls X · Horizontal controls Y";
+"下一帧" = "Next Frame";
+"下一帧（→；Shift+→ 移动 5 帧）" = "Next frame (→; Shift+→ moves 5 frames)";
+"丢帧" = "Dropped Frames";
+"仅保留画布背景与贴图" = "Keep canvas background and stickers only";
+"从 GitHub Release 检查并安装 DogSC 新版本" = "Check GitHub Releases and install DogSC updates";
+"从片头预览" = "Preview from Start";
+"从系统设置返回后会自动检查，无需再点击“检测”。" = "Permission status refreshes automatically after returning from System Settings.";
+"使用默认位置" = "Use Default Location";
+"保存" = "Save";
+"保存位置" = "Save Location";
+"保存失败" = "Save Failed";
+"保存当前为预设" = "Save Current as Preset";
+"保存当前样式…" = "Save Current Style…";
+"保存画布、屏幕外观、摄像头、光标和运镜默认值；不会保存裁切、片段或动画。" = "Saves canvas, screen appearance, camera, cursor, and motion defaults; cuts, clips, and animations are excluded.";
+"先在错位前固定当前，再到错位后调整；两点之间自动平滑重映射。" = "Pin the current sync before the drift, then correct it after; DogSC smoothly remaps between anchors.";
+"光标摆动强度" = "Cursor Sway Strength";
+"入场方式" = "Entrance";
+"全屏" = "Full Screen";
+"全片偏移" = "Global Offset";
+"关闭" = "Close";
+"关闭导出面板" = "Close Export Panel";
+"关闭快捷键速查" = "Close Shortcut Guide";
+"关闭提示" = "Dismiss";
+"关闭错误提示" = "Dismiss Error";
+"关闭首次使用页并显示录制工具" = "Close onboarding and show recording controls";
+"准备好录制" = "Ready to Record";
+"分段同步点" = "Sync Anchors";
+"分辨率" = "Resolution";
+"删除主片段" = "Delete Primary Clip";
+"删除动画" = "Delete Animation";
+"删除同步点" = "Delete Sync Anchor";
+"删除当前项目…" = "Delete Current Project…";
+"删除播放头同步点" = "Delete Sync Anchor at Playhead";
+"删除样式" = "Delete Style";
+"删除缩放动画" = "Delete Zoom Animation";
+"删除该动画" = "Delete Animation";
+"删除这个动画片段" = "Delete This Animation Clip";
+"删除这个片段" = "Delete This Clip";
+"动态模糊" = "Motion Blur";
+"动效节奏" = "Motion Timing";
+"动画样式" = "Animation Style";
+"区域" = "Area";
+"单击选中；拖动移动过渡；拖两端调整时长；右键可删除" = "Click to select; drag to move; drag either edge to resize; right-click to delete";
+"单击选中；拖动移动；拖两端调整保持时间；右键可删除" = "Click to select; drag to move; drag either edge to adjust hold time; right-click to delete";
+"双击添加同步点 · 单击空白取消选中" = "Double-click to add a sync anchor · click empty space to deselect";
+"双击空白处添加同步点；单击空白取消选中；调整后自动试听并返回" = "Double-click empty space to add a sync anchor; click to deselect; adjustments are auditioned automatically.";
+"取消" = "Cancel";
+"只归零全片偏移，保留分段同步点" = "Reset the global offset while keeping sync anchors";
+"只影响录制时的悬浮预览，不改变摄像头源文件或编辑器布局。" = "Only affects the floating preview while recording; the camera source and editor layout stay unchanged.";
+"只有一个元素参与时无需设置间隔。" = "No interval is needed when only one element participates.";
+"只调整原摄像素材在当前蒙版内显示的位置和大小，不移动蒙版本身。" = "Adjusts the source camera image inside the current mask without moving the mask itself.";
+"合并与下一片段" = "Merge with Next Clip";
+"合并与前一片段" = "Merge with Previous Clip";
+"合并与后一片段" = "Merge with Following Clip";
+"圆角" = "Corner Radius";
+"在 Finder 中显示" = "Show in Finder";
+"在 Finder 中显示导出文件" = "Show Exported File in Finder";
+"在 Finder 中显示项目包" = "Show Project Package in Finder";
+"在播放头创建布局动画；播放头位于已有动画内时直接更新" = "Create a layout animation at the playhead, or update the animation already under it.";
+"在播放头固定同步点" = "Pin Sync Anchor at Playhead";
+"在播放头处分割" = "Split at Playhead";
+"在播放头导入贴图" = "Import Sticker at Playhead";
+"在播放头添加出现动画" = "Add Entrance Animation at Playhead";
+"在播放头添加柔化或突出" = "Add Blur or Spotlight at Playhead";
+"在画面上拖动边缘或四角，拖动框内可整体移动。" = "Drag an edge or corner on the canvas; drag inside the frame to move it.";
+"声音先出来、嘴后动：点“画面提前”。每次调整会自动试听，预览与导出使用同一结果。" = "If audio leads the lips, choose Earlier Video. Each change is auditioned automatically and shared by preview and export.";
+"外接设备" = "External Device";
+"如遇录屏黑屏、鼠标无法跟随或无声音，请检查上方未授权项。" = "If recordings are black, cursor tracking fails, or audio is missing, check the permissions above.";
+"完成" = "Done";
+"导入贴图" = "Import Sticker";
+"导出" = "Export";
+"导出内容" = "Export Content";
+"导出取消或失败时不会播放提示音" = "No sound plays when export is cancelled or fails";
+"导出取消或失败时不会播放提示音。" = "No sound plays when export is cancelled or fails.";
+"导出完成" = "Export Complete";
+"导出完成后播放提示音" = "Play a Sound When Export Finishes";
+"导出状态" = "Export Status";
+"导出进度" = "Export Progress";
+"导出项目源文件…" = "Export Project Source Files…";
+"将当前缩放级别应用到全部缩放动画，保留每段的时间和焦点" = "Apply this zoom level to every zoom animation while preserving timing and focus.";
+"居中" = "Center";
+"居中缩放焦点" = "Center Zoom Focus";
+"屏幕样式" = "Screen Style";
+"屏幕素材" = "Screen";
+"左右拖动调整检查器宽度；双击恢复默认" = "Drag horizontally to resize the inspector; double-click to reset";
+"已准备好导出" = "Ready to Export";
+"已安装屏保视频" = "Installed Screen Saver Videos";
+"已授权" = "Allowed";
+"帧率" = "Frame Rate";
+"应用到所有动画片段" = "Apply to All Animation Clips";
+"延后进入" = "Move Later";
+"开场方式" = "Opening Style";
+"开始位置" = "Start Position";
+"开始录制" = "Start Recording";
+"引用本机原始资源，不复制进项目；同款颜色已合并。" = "Uses original resources on this Mac without copying them into the project; matching variants are grouped.";
+"归零" = "Reset";
+"归零 3D 倾斜" = "Reset 3D Tilt";
+"当前" = "Current";
+"当前已隐藏光标。选择一种光标样式后，才需要调整大小、点击动画和移动手感。" = "The cursor is hidden. Choose a cursor style before adjusting its size, click animation, or motion.";
+"当前播放头无法映射到源素材" = "The playhead cannot be mapped to source media";
+"当前桌面" = "Current Desktop";
+"录制系统声音" = "Record System Audio";
+"录制麦克风声音" = "Record Microphone";
+"录屏画面已隐藏，录屏虚化不会再让画布背景变得雾蒙蒙；画布自身设置的壁纸模糊仍会保留。" = "The recording is hidden, so screen blur no longer fogs the canvas background. Canvas wallpaper blur is preserved.";
+"快捷键速查" = "Keyboard Shortcuts";
+"恢复位置与大小" = "Reset Position and Size";
+"恢复全部画面" = "Restore Full Image";
+"恢复剪辑模式" = "Restore Cut Mode";
+"我的摄像头布局预设" = "My Camera Layout Presets";
+"我的预设" = "My Presets";
+"打开系统设置" = "Open System Settings";
+"打开项目…" = "Open Project…";
+"显示%@" = "Show %@";
+"%@菜单" = "%@ Menu";
+"最近项目" = "Recent Projects";
+"暂无最近项目" = "No Recent Projects";
+"导出完成提示音" = "Export Completion Sound";
+"下次录制系统声音" = "Record System Audio Next Time";
+"下次录制麦克风" = "Record Microphone Next Time";
+"下次录制麦克风（%@）" = "Record Microphone Next Time (%@)";
+"退出%@" = "Quit %@";
+"设置…" = "Settings…";
+"设置" = "Settings";
+"打开项目、恢复录制与设置保存位置" = "Open projects, recover recordings, and configure save locations";
+"拖动中部移动；拖动两端调整时长" = "Drag the center to move; drag either edge to resize";
+"拖动以移动素材" = "Drag to Move";
+"拖动以移动，拖右下角圆点调整大小" = "Drag to move; drag the lower-right handle to resize";
+"拖动取色器时会直接更新画面，关闭后自动保存。" = "The canvas updates while you drag the color picker and saves when it closes.";
+"拖动总览快速定位播放头和当前可视范围" = "Drag the overview to position the playhead and visible range";
+"拖动旋转贴图" = "Drag to Rotate Sticker";
+"拖动边缘或四角裁切 · Esc 取消" = "Drag an edge or corner to crop · Esc to cancel";
+"按 Esc 取消" = "Press Esc to Cancel";
+"按 Esc 取消选择" = "Press Esc to Deselect";
+"按住 Control 拖右端自由变速" = "Hold Control and drag the right edge for free speed adjustment";
+"控制新录制是否默认采集系统声音" = "Choose whether new recordings capture system audio by default";
+"提前进入" = "Move Earlier";
+"摄像头初始隐藏；仍可在播放头添加出现动画。开启后可调整布局和外观。" = "The camera starts hidden; you can still add an entrance at the playhead. Enable it to adjust layout and appearance.";
+"摄像头同步点" = "Camera Sync Anchors";
+"摄像头和麦克风只会在你启用它们时询问。" = "Camera and microphone permission is requested only when you enable them.";
+"摄像头画面" = "Camera";
+"摆动强度" = "Sway Strength";
+"支持静态图片和 MOV/MP4 动态背景；视频会循环播放并参与导出。" = "Supports still images and looping MOV/MP4 backgrounds in preview and export.";
+"整张源画面会完整显示；圆圈可到真实四角，成片会自动留出舒适观看距离。" = "The full source stays visible; the focus can reach true corners while the result preserves comfortable framing.";
+"时间线" = "Timeline";
+"时间线总览" = "Timeline Overview";
+"时间线悬浮预览" = "Timeline Skimming";
+"时间线缩放" = "Timeline Zoom";
+"时间线缩放：常用倍率会占用更多滑动空间" = "Timeline zoom: common magnifications use more slider space";
+"显示器" = "Display";
+"显示完整时间线" = "Fit Entire Timeline";
+"显示屏幕 3D 轨道" = "Show Screen 3D Track";
+"显示更多屏保视频" = "Show More Screen Saver Videos";
+"显示更多系统壁纸" = "Show More System Wallpapers";
+"暂不使用摄像头" = "Don't Use Camera";
+"暂不使用麦克风" = "Don't Use Microphone";
+"更多录制操作" = "More Recording Actions";
+"更改…" = "Change…";
+"替换当前项目摄像头…" = "Replace Camera for Current Project…";
+"未发现可录制设备" = "No Recordable Device Found";
+"本机壁纸" = "This Mac's Wallpapers";
+"柔化区域圆角" = "Blur Region Corner Radius";
+"柔化和突出从首帧保持生效；从 0 秒开始的贴图自身入场由全局开场接管，避免两套动画叠加。" = "Blur and spotlight remain active from the first frame. Stickers starting at 0 are introduced by the global opening to avoid doubled animations.";
+"查看自动保存失败原因" = "View Autosave Failure";
+"检查更新" = "Check for Updates";
+"正在保存项目" = "Saving Project";
+"每天检查一次；下载与安装前仍会显示确认界面。" = "Checks once per day; download and installation still require confirmation.";
+"波纹删除播放头之前（Q）" = "Ripple Delete Before Playhead (Q)";
+"波纹删除播放头之后（W）" = "Ripple Delete After Playhead (W)";
+"流畅模式按窗口尺寸合成，完整模式在播放与暂停时都保留源素材细节。" = "Smooth mode composites at window size; Full mode preserves source detail during playback and pause.";
+"流畅模式降低预览分辨率；完整模式保留素材细节" = "Smooth mode lowers preview resolution; Full mode preserves source detail";
+"添加柔化或突出" = "Add Blur or Spotlight";
+"点击以选中，拖动以调整位置" = "Click to select; drag to reposition";
+"点击以选择屏幕" = "Click to Select a Display";
+"点击重命名项目" = "Click to Rename Project";
+"点击颜色" = "Click Color";
+"点击颜色：跟随光标主题" = "Click color: follow cursor theme";
+"焦点位置" = "Focus Position";
+"片段速度" = "Clip Speed";
+"画中画" = "Picture in Picture";
+"画布比例" = "Canvas Aspect Ratio";
+"界面外观" = "Appearance";
+"百分比：200 / 250 / 300 / 350 / 400" = "Percent: 200 / 250 / 300 / 350 / 400";
+"直接拖动八个控制点裁切素材；按 Esc 取消" = "Drag any of the eight handles to crop; press Esc to cancel";
+"知道了" = "Got It";
+"移到废纸篓" = "Move to Trash";
+"窗口" = "Window";
+"管理动画轨道" = "Manage Animation Tracks";
+"粘贴图片" = "Paste Image";
+"系统壁纸" = "System Wallpapers";
+"素材已准备" = "Media Ready";
+"自动检查更新" = "Automatically Check for Updates";
+"自动跟随会优先让鼠标保持在画面内" = "Auto Follow prioritizes keeping the cursor inside the frame";
+"虚化" = "Blur";
+"裁切" = "Crop";
+"裁切模式" = "Crop Mode";
+"记录当前的摄像头位置/大小/形状与录屏画面构图，之后在播放头一键复用。" = "Save the current camera position, size, shape, and screen composition for reuse at the playhead.";
+"设备" = "Device";
+"试听" = "Preview Sound";
+"试听导出完成提示音" = "Preview Export Completion Sound";
+"请输入 6 位十六进制颜色，例如 #D8B26A" = "Enter a six-digit hex color, such as #D8B26A";
+"调整时间线高度" = "Resize Timeline";
+"调整检查器宽度" = "Resize Inspector";
+"贴图" = "Sticker";
+"贴图入场方式" = "Sticker Entrance";
+"贴图动画" = "Sticker Animation";
+"贴图录屏虚化" = "Sticker Screen Blur";
+"贴图退场方式" = "Sticker Exit";
+"叠加" = "Overlays";
+"在“缩放”轨道拖动创建；选中片段后在这里调整" = "Drag on the Zoom track to create one, then select the clip to adjust it here.";
+"屏幕 3D" = "Screen 3D";
+"当前 Mac 没有可读的本地屏保视频；下载后会自动出现在这里。" = "No readable screen saver videos are installed on this Mac. Downloaded videos will appear here automatically.";
+"当前项目仍保留旧版移动设备样机；选择上方任一样式即可替换。" = "This project still uses a retired mobile-device mockup. Choose any style above to replace it.";
+"摄像同步" = "Camera Sync";
+"摄像运动" = "Camera Motion";
+"片段" = "Clip";
+"直接在画布中拖动，拖右下角缩放；动画在“运镜”中添加" = "Drag directly on the canvas and resize from the lower-right corner. Add animation under Motion.";
+"直接在画布中拖动，拖右下角调整大小" = "Drag directly on the canvas and resize from the lower-right corner.";
+"缩放" = "Zoom";
+"自动采用入场方式的反向动作" = "Automatically reverse the entrance animation";
+"预览" = "Preview";
+"跟随 macOS，或者始终使用浅色、深色界面。" = "Follow macOS or always use Light or Dark appearance.";
+"跟随光标主题" = "Follow Cursor Theme";
+"跟随光标主题色彩" = "Follow Cursor Theme Color";
+"轨道" = "Tracks";
+"轨道显示" = "Track Visibility";
+"轨道显示设置" = "Track Visibility Settings";
+"边框会和屏幕、光标一起缩放并进行 3D 变形" = "The frame scales and transforms in 3D with the screen and cursor";
+"过渡" = "Transition";
+"还原开头剪辑" = "Restore Start Trim";
+"还原结尾剪辑" = "Restore End Trim";
+"这段动画只让摄像头原地淡出，位置和形状不参与过渡。" = "This animation fades the camera in place; position and shape do not transition.";
+"进入和退出保持一致；数值越小越干脆，越大越柔和。" = "Entrance and exit match; lower values feel snappier and higher values feel softer.";
+"连接后可直接重新扫描，无需退出当前界面" = "Reconnect and rescan without leaving this screen";
+"连接数据线，并在设备上完成解锁与信任" = "Connect a cable, then unlock and trust this Mac on the device";
+"退场方式" = "Exit";
+"选区导出" = "Export Selection";
+"选择图片或视频…" = "Choose Image or Video…";
+"选择要录制的设备" = "Choose a Device to Record";
+"选择贴图动画" = "Choose Sticker Animation";
+"重命名项目" = "Rename Project";
+"重新录制" = "Record Again";
+"重新扫描" = "Rescan";
+"重新读取本机壁纸" = "Reload This Mac's Wallpapers";
+"重新选择文件夹…" = "Choose Another Folder…";
+"重置" = "Reset";
+"重置取景" = "Reset Framing";
+"重置编辑窗口布局" = "Reset Editor Window Layout";
+"隐藏与虚化会跟随贴图的入场和退场曲线，不会突然切换。" = "Hide and blur follow the sticker's entrance and exit curves without abrupt switches.";
+"隐藏只收起编辑区，不会停用效果" = "Hiding only collapses the editor lane; the effect stays active";
+"隐藏轨道不会停用其中效果" = "Hiding a track does not disable its effects";
+"项目" = "Project";
+"预览分辨率" = "Preview Resolution";
+"麦克风实时音量" = "Live Microphone Level";
+"默认" = "Default";
+"默认录制系统声音" = "Record System Audio by Default";
+"默认录制麦克风声音" = "Record Microphone by Default";
+"默认采集 macOS 系统中各应用程序发出的声音与媒体音频。" = "Capture audio and media playback from macOS apps by default.";
+"默认预览画质" = "Default Preview Quality";
+
+/* Inspector navigation and background navigation values are passed as String. */
+"画面" = "Canvas";
+"开场" = "Opening";
+"运镜" = "Motion";
+"光标" = "Cursor";
+"摄像头" = "Camera";
+"声音" = "Audio";
+"背景" = "Background";
+"布局" = "Layout";
+"外观" = "Appearance";
+"样机" = "Frame";
+"壁纸" = "Wallpaper";
+"网格" = "Grid";
+"动效" = "Motion";
+"自定" = "Custom";
+"通用" = "General";
+"编辑器" = "Editor";
+"录制" = "Recording";
+"权限" = "Permissions";
+"跟随系统" = "System";
+"浅色" = "Light";
+"深色" = "Dark";
+"切换为浅色外观" = "Switch to Light appearance";
+"切换为深色外观" = "Switch to Dark appearance";
+"画质" = "Quality";
+"流畅" = "Smooth";
+"完整" = "Full";
+"切换为流畅预览" = "Switch to Smooth preview";
+"切换为完整预览" = "Switch to Full preview";
+"清晰" = "Clear";
+"切换为清晰预览" = "Switch to Clear preview";
+"圆形" = "Circle";
+"圆角方形" = "Rounded Square";
+"画面比例" = "Source Aspect";
+"适应" = "Fit";
+"低分辨率" = "Low Resolution";
+"完整分辨率" = "Full Resolution";
+"首次使用时询问" = "Ask on First Use";
+"系统限制" = "Restricted";
+"未授权" = "Not Allowed";
+"全片" = "Entire Project";
+"当前片段" = "Current Clip";
+"正在处理…" = "Working…";
+"正在检查设备与权限…" = "Checking Devices and Permissions…";
+"正在创建录制项目…" = "Creating Recording Project…";
+"正在启动摄像头…" = "Starting Camera…";
+"正在启动麦克风…" = "Starting Microphone…";
+"正在等待首个屏幕帧…" = "Waiting for the First Screen Frame…";
+"正在对齐各轨时间轴…" = "Aligning Tracks…";
+"正在结束所有录制轨道…" = "Finalizing Recording Tracks…";
+"正在校验录制素材…" = "Validating Recorded Media…";
+"正在安全丢弃录制…" = "Safely Discarding Recording…";
+"正在打开编辑器…" = "Opening Editor…";
+"屏幕录制" = "Screen Recording";
+"辅助功能" = "Accessibility";
+"录制显示器、窗口或选定区域" = "Record a display, window, or selected area";
+"记录鼠标移动与点击" = "Record pointer movement and clicks";
+"屏幕与系统音频录制" = "Screen & System Audio Recording";
+"iPhone/iPad 屏幕" = "iPhone/iPad Screen";
+"人像" = "Portrait";
+"人物居中" = "Center Stage";
+"演播室灯光" = "Studio Light";
+"手势特效识别" = "Reactions";
+"背景替换" = "Background Replacement";
+"全部系统声音" = "All System Audio";
+"所选窗口 App" = "Selected Window App";
+"形状" = "Shape";
+"位置与尺寸" = "Position & Size";
+"位置与形状" = "Position & Shape";
+"光标样式" = "Cursor Style";
+"全局开场" = "Global Opening";
+"全片音轨" = "Project Audio";
+"出入场" = "Entrance & Exit";
+"动画手感" = "Motion Feel";
+"动画时间" = "Animation Timing";
+"圆角、描边与阴影" = "Corners, Border & Shadow";
+"层级" = "Layer Order";
+"屏幕素材布局" = "Screen Layout";
+"播放头布局动画" = "Layout at Playhead";
+"构图" = "Composition";
+"柔化效果" = "Blur Effect";
+"点击动画" = "Click Animation";
+"点击反馈" = "Click Feedback";
+"片段信息" = "Clip Information";
+"片段操作" = "Clip Actions";
+"画布布局" = "Canvas Layout";
+"目标状态" = "Target State";
+"移动手感" = "Movement Feel";
+"空间姿态" = "Spatial Pose";
+"缩放片段" = "Zoom Clip";
+"背景处理" = "Background Treatment";
+"贴图布局" = "Sticker Layout";
+"运镜类型" = "Motion Type";
+"系统" = "System";
+"麦克风" = "Microphone";
+"线性" = "Linear";
+"聚拢" = "Converge";
+"侧滑" = "Side Slide";
+"轻 3D" = "Light 3D";
+"屏幕" = "Screen";
+"黑曜石网格" = "Obsidian Grid";
+"工程白网格" = "Engineering White Grid";
+"暗夜星阵" = "Midnight Dots";
+"建筑极简点" = "Architectural Dots";
+"立体等角网" = "Isometric Mesh";
+"流金缓移网格" = "Drifting Gold Grid";
+"暖星漫步点阵" = "Warm Starfield";
+"蓝白流体云幕" = "Blue-White Fluid Veil";
+"方形" = "Square";
+"横向" = "Landscape";
+"纵向" = "Portrait";
+"原始比例" = "Original Aspect";
+"聚焦" = "Focus";
+"清晰焦点 · 柔化外围" = "Sharp focus · soft surroundings";
+"启用聚焦" = "Enable Focus";
+"随运镜" = "Framing";
+"随鼠标" = "Cursor";
+"固定" = "Fixed";
+"聚焦位置" = "Focus Position";
+"清晰范围" = "Clear Area";
+"外围虚化" = "Outer Blur";
+"边缘柔和" = "Feather";
+"暗角" = "Vignette";
+"调整聚焦" = "Adjust Focus";
+"只处理录屏与背景，保留摄像头和贴图清晰。随动画进入、退出；暗角可设为 0。" = "Affects the screen and background, keeping camera and stickers sharp. Follows the animation; set vignette to 0 to disable dimming.";
+"平滑" = "Smooth";
+"适中" = "Medium";
+"快速" = "Fast";
+"无" = "None";
+"系统箭头" = "System Arrow";
+"指向手势" = "Pointing Hand";
+"十字准星" = "Crosshair";
+"隐藏" = "Hidden";
+"I 型光标" = "I-Beam";
+"张开手" = "Open Hand";
+"握拳手" = "Closed Hand";
+"禁止" = "Not Allowed";
+"触控圆点" = "Touch Dot";
+
+/* Scene presets and inspector clarity — 2026-09-06 */
+"场景" = "Scene";
+"保存场景" = "Save Scene";
+"场景预设" = "Scene Preset";
+"更新此预设…" = "Update This Preset…";
+"另存为新预设…" = "Save as New Preset…";
+"新录制默认场景" = "Default for New Recordings";
+"沿用上次外观" = "Use Last Appearance";
+"删除预设" = "Delete Preset";
+"已修改" = "Modified";
+"应用场景预设" = "Apply Scene Preset";
+"场景配置" = "Scene Configuration";
+"预设未保存。请确认背景文件可读取后重试。" = "Preset was not saved. Check that the background file is readable and try again.";
+"此预设的背景未包含或已不可用，已保留当前背景。" = "The preset background is missing or unavailable. The current background was kept.";
+"这是旧版外观预设，已保留当前裁切和摄像头显隐。更新此预设后可保存完整场景。" = "This older preset keeps the current crop and camera visibility. Update it to save a complete scene.";
+"摄像头布局已应用；当前项目没有摄像头素材。" = "Camera layout applied. This project has no camera footage.";
+"更新场景预设" = "Update Scene Preset";
+"保存场景预设" = "Save Scene Preset";
+"把这套配置留给下一次录制。" = "Keep this setup for your next recording.";
+"预设名称" = "Preset Name";
+"例如：全屏上下裁切" = "For example: Full Screen, Cropped";
+"这个名称已存在，请换一个名称；更新已有预设请使用“更新此预设”。" = "This name already exists. Choose another name, or use Update This Preset.";
+"画布与屏幕" = "Canvas and Screen";
+"比例、大小、位置、裁切、样机、描边与阴影" = "Aspect ratio, size, position, crop, frame, border and shadow";
+"显隐、布局、形状、外观与蒙版取景" = "Visibility, layout, shape, appearance and framing";
+"光标与运镜" = "Cursor and Motion";
+"光标效果、开场、运动模糊与新动画默认值" = "Cursor effects, opening, motion blur and defaults for new animations";
+"声音与背景" = "Audio and Background";
+"全片音量、静音和背景资源副本" = "Global volume, mute and a copy of the background";
+"保留当前项目的素材、剪辑、分段声音和时间线动画。新录制默认场景可在预设菜单中单独选择。" = "Footage, edits, clip audio and timeline animations stay in the current project. Choose a default for new recordings separately in the preset menu.";
+"正在保存背景与配置…" = "Saving background and settings…";
+"更新预设" = "Update Preset";
+"保存预设" = "Save Preset";
+"检查裁切适配" = "Check Crop Fit";
+"录制尺寸不同，裁切将按比例适配。亮框内的画面会保留。" = "The recording dimensions differ. The crop adapts proportionally; the bright area will be kept.";
+"预览暂不可用，可取消后稍后重试。" = "Preview is unavailable. Cancel and try again shortly.";
+"裁切适配预览" = "Crop Fit Preview";
+"应用后可一次撤销，素材与时间线片段保持原样。" = "Undo the entire change in one step. Footage and timeline clips stay as they are.";
+"应用预设" = "Apply Preset";
+"完整画面" = "Full Frame";
+"保存或复用完整场景配置，包含裁切、屏幕、摄像头、光标和新动画默认值" = "Save or reuse a complete scene: crop, screen, camera, cursor and defaults for new animations";
+"描边不透明度" = "Border Opacity";
+"调整描边不透明度" = "Adjust Border Opacity";
+"将倍率应用到全部缩放" = "Apply Scale to All Zooms";
+"过渡与时间" = "Transitions and Timing";
+"进入时长" = "Enter Duration";
+"退出时长" = "Exit Duration";
+"焦点" = "Focus";
+"返回缩放" = "Back to Zoom";
+"强度以百分比表示" = "Intensity is shown as a percentage";
+"基础外观" = "Base Appearance";
+"基础布局作用于全片；时间线动画可在指定时段覆盖它。" = "The base layout applies throughout. Timeline animations can override it during specific ranges.";
+"缩放联动" = "Link to Screen Zoom";
+"屏幕放大时的摄像头倍率" = "Camera Scale During Zoom";
+"跟随屏幕缩放调整摄像头大小；1 倍保持原大小。" = "Resize the camera as the screen zooms. At 1×, its size stays unchanged.";
+"保存摄像头布局预设" = "Save Camera Layout Preset";
+"片段声音" = "Clip Audio";
+"清除裁切" = "Clear Crop";
+"屏幕裁切" = "Screen Crop";
+"编辑屏幕裁切" = "Edit Screen Crop";
+"保留完整画面" = "Full Frame Kept";
+"背景效果" = "Background Effects";
+"已按可用时间适配" = "Fitted to Available Time";
+"实际进入 %@ · 退出 %@" = "Actual enter %@ · exit %@";
+"保留上方设定；片尾前完成退出，相邻动画紧接时连续衔接。" = "Your settings are retained. Returns finish before the end; touching animations stay continuous.";
+"设定时长均可完整播放。" = "Both transitions can play in full.";
+"继承全片声音设置" = "Inherits Global Audio";
+"已覆盖此段的声音设置" = "Custom Audio for This Clip";
+"定位到此段" = "Go to This Clip";
+"恢复继承" = "Use Global Settings";
+"恢复片段声音继承" = "Restore Global Audio for Clip";
+"播放头在其他位置，当前调整仍只作用于选中片段。" = "The playhead is elsewhere. Changes still apply only to this selected clip.";
+"继承全片设置" = "Inherits Global Settings";
+"仅此片段，自定义设置" = "Custom Settings for This Clip";
+"全片基础布局" = "Base Layout";
+"导出规格" = "Export Specifications";
+"片段长度" = "Clip Length";
+"开始 %@ · 范围 %@" = "Start %@ · Range %@";
+
+/* Inspector layout */
+"背景素材" = "Background source";
+"画面留白" = "Canvas spacing";
+"位置与大小" = "Position & size";
+"可直接在画面中拖动" = "Drag directly in the preview";
+
+"上方画面，下方波形" = "Video above, waveform below";
+
+"画面：上方缩略图，下方波形" = "Video: thumbnails above, waveform below";
+
+"电影" = "Cinema";
+
+"竖向" = "Portrait";
+
+"宽" = "Width";
+
+"高" = "Height";
+
+"应用" = "Apply";
+
+"输入宽高比例，例如 3:2（支持 1:10 至 10:1）" = "Enter an aspect ratio, e.g. 3:2 (1:10 to 10:1)";
+
+"拖动播放头靠近边界时吸附；继续拖动或按住 Shift 可脱开" = "Snap near timeline boundaries; keep dragging or hold Shift to release";
+
+"3:4" = "3:4";
+
+"2.39:1" = "2.39:1";
+
+"1:2.39" = "1:2.39";
+
+"吸附" = "Snap";
+
+"时间线吸附" = "Timeline snapping";
+
+"靠近边界吸附，继续拖动脱开；Shift 临时跳过" = "Snap near edges; drag farther to release, or hold Shift to bypass";
+
+"线性虚化" = "Linear blur";
+
+"清晰带 · 两侧渐变虚化" = "Sharp band · Graduated blur";
+
+"拖动中心移动 · 圆柄旋转 · 双箭头调整范围" = "Drag the center to move, the circular handle to rotate, and arrows to set width";
+
+"移动清晰带" = "Move focus band";
+
+"旋转清晰带" = "Rotate focus band";
+
+"调整清晰范围" = "Adjust focus width";
+
+"随动画进入和退出，摄像头与贴图保持清晰。" = "Follows the animation timing. Camera and stickers remain sharp.";
+
+"界面、声音与文件" = "Appearance, sound and files";
+
+"预览与编辑工作区" = "Preview and editing workspace";
+
+"开始录制时的默认选项" = "Defaults for new recordings";
+
+"管理录制所需的系统权限" = "Manage system permissions for recording";
+
+"仅在成功导出后播放" = "Play only after a successful export";
+
+"项目位置" = "Project folder";
+
+"导出位置" = "Export folder";
+
+"设置（⌘,）" = "Settings (⌘,)";
+
+"在监视器上拖动中心、旋转柄和范围柄" = "Drag the center, rotation and range handles in the preview";
+
+
+"调整线性虚化" = "Adjust linear focus";
+
+"模糊程度" = "Blur amount";
+
+"过渡范围" = "Falloff";
+
+"自适应设备框" = "Adaptive device frame";
+
+"设备框" = "Device";
+
+"纸白画框" = "Paper white frame";
+
+"墨色画框" = "Graphite frame";
+
+"纸白" = "Paper";
+
+"墨框" = "Graphite";
+
+"调整清晰区域" = "Adjust clear region";
+
+"调整羽化范围" = "Adjust feather range";
+
+"拖动虚线调整羽化范围" = "Drag dashed lines to adjust feathering";
+
+"拖动实线调整清晰区域" = "Drag solid lines to adjust the clear region";
+
+"实线调整区域，虚线调整羽化；拖动圆柄旋转" = "Solid lines set the region; dashed lines set feathering. Drag the rotation handle to rotate.";
+
+"羽化范围" = "Feather range";
+
+"还原样式" = "Reset style";
+
+"恢复当前样机的默认外观，保留标题和网址" = "Restore this frame’s default appearance, keeping its title and address";
+
+"拖动清晰区域移动位置" = "Drag the clear region to move it";
+
+/* First-use guide — soft light */
+"完成以下授权，开始录制" = "Allow the following permissions to start recording";
+"返回后自动检查" = "Checked automatically when you return";
+"摄像头和麦克风在启用时再授权" = "Camera and microphone permissions are requested when enabled";
+"打开设置" = "Open Settings";
+"进入 DogSC" = "Enter DogSC";
+"找不到 DogSC？" = "Can’t find DogSC?";
+"把图标拖入“%@”列表，再打开开关。" = "Drag the icon into the “%@” list, then turn it on.";
+"录制屏幕、窗口或区域" = "Record a screen, window, or area";
+"首次使用引导…" = "First-Use Guide…";
+"丝滑录屏" = "Smooth Screen Recording";
+"DogSC 启动动画，按 Esc 跳过" = "DogSC introduction. Press Escape to skip";
+
+"首次使用引导" = "First-Use Guide";
+
+"重看启动动画与授权流程" = "Replay the introduction and permission setup";
+
+/* First-use teaching and silver introduction. */
+"先允许录制屏幕" = "Allow screen recording first";
+"打开系统设置，允许 DogSC 录制屏幕。返回后会自动检查。" = "Open System Settings and allow DogSC to record your screen. Permissions are checked automatically when you return.";
+"让鼠标动作被记录" = "Capture pointer movement";
+"辅助功能用于记录鼠标移动与点击。设置列表里没有 DogSC 时，把下方悬浮条中的图标拖进去，再打开开关。" = "Accessibility captures pointer movement and clicks. If DogSC is missing from the settings list, drag its icon from the helper below into the list, then turn it on.";
+"准备好后，开始录制" = "You’re ready to record";
+"两项必需权限完成后即可进入。摄像头和麦克风会在你启用时再申请权限。" = "Continue once both required permissions are granted. Camera and microphone access is requested only when you enable them.";
+"选择录制范围" = "Choose what to record";
+"录整个屏幕、一个窗口，或自己框选区域。连接的设备也可以作为录制来源。" = "Record an entire display, a window, or a selected area. Connected devices can also be recording sources.";
+"按需开启声音与摄像头" = "Choose your audio and camera";
+"在这里选择麦克风、摄像头和系统声音。只开启这次录制需要的输入。" = "Choose your microphone, camera, and system audio here. Enable only the inputs you need for this recording.";
+"设置保存位置" = "Choose where to save";
+"选择项目位置、格式和画质。已有项目也可以从这里打开，继续编辑。" = "Choose the project location, format, and quality. You can also open an existing project here to continue editing.";
+"从这里选择要调整的内容" = "Choose what to adjust";
+"画面、运镜、光标、摄像头与声音，各自的设置都从左侧进入。" = "Use the tools on the left to adjust the frame, motion, pointer, camera, and audio.";
+"调整画面外观" = "Style your recording";
+"右侧显示当前选项的详细设置。背景、布局与样机的变化会显示在预览中。" = "The inspector on the right shows settings for the current tool. Background, layout, and device styles appear in the preview.";
+"在时间线上剪辑" = "Edit on the timeline";
+"移动播放指针定位内容，拖动片段边缘调整长度。吸附和预览可以在时间线上方开关。" = "Move the playhead to find a moment, then drag clip edges to adjust length. Toggle snapping and hover preview above the timeline.";
+"完成后导出" = "Export when you’re ready";
+"从这里选择导出格式和画质，生成成片。项目会继续保留，方便回来修改。" = "Choose a format and quality to export your video. Your project stays available for further editing.";
+"第 %d 步，共 %d 步" = "Step %d of %d";
+"跳过引导" = "Skip tour";
+"下一步" = "Next";
+"上一步" = "Previous";
+"按 Esc 跳过" = "Press Esc to skip";
+"重看启动动画、授权与当前界面教学" = "Replay the introduction, permissions, and current workspace tour";
+
+"屏幕录制已授权，无需重复设置。可以继续查看下一步。" = "Screen recording is already allowed. Continue to the next step.";
+
+"辅助功能已授权，无需重复设置。可以继续查看下一步。" = "Accessibility is already allowed. Continue to the next step.";
+
+"授权已完成" = "Permissions are ready";
+
+"屏幕录制与辅助功能已就绪。进入后即可选择录制范围；摄像头和麦克风仍在启用时授权。" = "Screen recording and Accessibility are ready. Continue to choose what to record. Camera and microphone access will be requested when you enable them.";
+
+"选择样机；内容圆角、描边与阴影在“布局”中调整。" = "Choose a mockup. Adjust content corners, border, and shadow in Layout.";

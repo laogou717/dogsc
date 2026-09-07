@@ -114,6 +114,7 @@ public struct FrameScreenChromeScene: Equatable, Sendable {
     public var kind: FrameScreenChromeKind
     public var outerRect: CompositionRect
     public var toolbarRect: CompositionRect
+    public var contentRect: CompositionRect
     public var outerCornerRadius: Double
     public var contentCornerRadius: Double
     public var surfaceColor: HexColor
@@ -121,22 +122,28 @@ public struct FrameScreenChromeScene: Equatable, Sendable {
     public var separatorColor: HexColor
     public var fieldColor: HexColor
     public var glyphColor: HexColor
+    public var title: String
+    public var browserAddress: String
 
     public init(
         kind: FrameScreenChromeKind,
         outerRect: CompositionRect,
         toolbarRect: CompositionRect,
+        contentRect: CompositionRect,
         outerCornerRadius: Double,
         contentCornerRadius: Double = 0,
         surfaceColor: HexColor,
         toolbarColor: HexColor,
         separatorColor: HexColor,
         fieldColor: HexColor,
-        glyphColor: HexColor
+        glyphColor: HexColor,
+        title: String = "",
+        browserAddress: String = ""
     ) {
         self.kind = kind
         self.outerRect = outerRect
         self.toolbarRect = toolbarRect
+        self.contentRect = contentRect
         self.outerCornerRadius = max(outerCornerRadius, 0)
         self.contentCornerRadius = max(contentCornerRadius, 0)
         self.surfaceColor = surfaceColor
@@ -144,6 +151,8 @@ public struct FrameScreenChromeScene: Equatable, Sendable {
         self.separatorColor = separatorColor
         self.fieldColor = fieldColor
         self.glyphColor = glyphColor
+        self.title = String(title.prefix(120))
+        self.browserAddress = String(browserAddress.prefix(240))
     }
 }
 
@@ -226,6 +235,7 @@ public struct FrameScreenScene: Equatable, Sendable {
     public var shadow: FrameShadow?
     public var decoration: FrameScreenDecoration
     public var mosaics: [FrameMosaicScene]
+    public var focusEffect: FrameFocusScene?
     public var motion: FrameLayerMotion
     public var opacity: Double
 
@@ -246,6 +256,7 @@ public struct FrameScreenScene: Equatable, Sendable {
         shadow: FrameShadow?,
         decoration: FrameScreenDecoration = .none,
         mosaics: [FrameMosaicScene] = [],
+        focusEffect: FrameFocusScene? = nil,
         motion: FrameLayerMotion = .none,
         opacity: Double = 1
     ) {
@@ -261,6 +272,7 @@ public struct FrameScreenScene: Equatable, Sendable {
         self.shadow = shadow
         self.decoration = decoration
         self.mosaics = mosaics
+        self.focusEffect = focusEffect
         self.motion = motion
         self.opacity = min(max(opacity, 0), 1)
     }
@@ -388,36 +400,6 @@ public struct FrameStickerScene: Equatable, Sendable {
     public var layerIndex: Int
 }
 
-public struct FrameProgressScene: Equatable, Sendable {
-    public var placement: ProgressOverlayPlacement
-    public var position: NormalizedPoint
-    public var width: Double
-    public var bandHeight: Double
-    public var textSize: Double
-    public var thickness: Double
-    public var fraction: Double
-    public var backgroundColor: HexColor
-    public var backgroundOpacity: Double
-    public var trackColor: HexColor
-    public var fillColor: HexColor
-    public var nodeColor: HexColor
-    public var textColor: HexColor
-    public var chapters: [FrameProgressChapterScene]
-    public var opacity: Double
-    public var scale: Double
-    public var offset: NormalizedPoint
-}
-
-public struct FrameProgressChapterScene: Equatable, Sendable {
-    public var fraction: Double
-    public var title: String
-
-    public init(fraction: Double, title: String) {
-        self.fraction = fraction
-        self.title = title
-    }
-}
-
 public enum FrameLayerRole: String, Equatable, Sendable {
     case background
     case screen
@@ -425,7 +407,6 @@ public enum FrameLayerRole: String, Equatable, Sendable {
     case spotlight
     case camera
     case stickers
-    case progress
 }
 
 /// Complete immutable interpretation of one project time. A renderer may read
@@ -439,7 +420,6 @@ public struct FrameScene: Equatable, Sendable {
     public var camera: FrameCameraScene?
     public var cursor: FrameCursorScene?
     public var stickers: [FrameStickerScene]
-    public var progress: FrameProgressScene?
     public var layerOrder: [FrameLayerRole]
 
     public init(
@@ -451,7 +431,6 @@ public struct FrameScene: Equatable, Sendable {
         camera: FrameCameraScene?,
         cursor: FrameCursorScene?,
         stickers: [FrameStickerScene] = [],
-        progress: FrameProgressScene? = nil,
         layerOrder: [FrameLayerRole]
     ) {
         self.time = time
@@ -462,7 +441,6 @@ public struct FrameScene: Equatable, Sendable {
         self.camera = camera
         self.cursor = cursor
         self.stickers = stickers
-        self.progress = progress
         self.layerOrder = layerOrder
     }
 }
@@ -506,16 +484,19 @@ public enum FrameSceneEvaluator {
         screenMotionTrack: ScreenMotionTrack? = nil,
         cameraMotionTrack: CameraMotionTrack? = nil,
         activePrimaryRange: MediaTimeRange? = nil,
-        activeCameraRange: MediaTimeRange? = nil,
+        cameraTimeline: TimelineMediaPlan? = nil,
         color: FrameColorContract = .sdrDesktop
     ) -> FrameRenderPlan {
         let safeDuration = outputDuration.isFinite ? max(outputDuration, 0) : 0
         let safeTime = presentationTime.isFinite
             ? min(max(presentationTime, 0), safeDuration)
             : 0
-        let cameraIsAvailable = activeCameraRange.map {
-            safeTime >= $0.start && safeTime < $0.end
-        } ?? true
+        // The timeline plan owns cut-boundary membership. Rechecking the
+        // selected slice with strict Double comparisons here can contradict
+        // that decision by a few ulps: the plan has already advanced to the
+        // next camera slice, while `safeTime >= slice.outputStart` is false.
+        // That disagreement hides the camera for exactly one exported frame.
+        let cameraIsAvailable = cameraTimeline?.contains(outputTime: safeTime) ?? true
         var current = scene(
             project: project,
             time: safeTime,
@@ -548,9 +529,10 @@ public enum FrameSceneEvaluator {
            descriptor.strength > 0,
            nextTime > safeTime,
            staysInsidePrimary {
-            let nextCameraIsAvailable = activeCameraRange.map {
-                nextTime >= $0.start && nextTime < $0.end
-            } ?? true
+            // Query the complete plan rather than the current slice. The next
+            // motion-blur sample may cross into an adjacent retained segment,
+            // where the camera is still continuously available.
+            let nextCameraIsAvailable = cameraTimeline?.contains(outputTime: nextTime) ?? true
             let next = scene(
                 project: project,
                 time: nextTime,
@@ -599,16 +581,22 @@ public enum FrameSceneEvaluator {
         let width = max(canvasSize.width, 2)
         let height = max(canvasSize.height, 2)
         let sampleTime = time.isFinite ? max(time, 0) : 0
-        let pointer = pointerEvaluation ?? pointerTrack?.evaluation(
-            at: sampleTime,
-            motion: project.motion,
-            style: project.cursorStyle
-        ) ?? PointerTrackEvaluation(position: nil, cursor: nil)
-        let resolvedZoomTrack = zoomTrack ?? ZoomAnimationTrack(project.zoomAnimations)
+        let resolvedZoomTrack = zoomTrack?.bounded(to: outputDuration)
+            ?? ZoomAnimationTrack(project.zoomAnimations, outputDuration: outputDuration)
+        let resolvedScreenTrack = screenMotionTrack ?? ScreenMotionTrack(project.timeline.screenMotionClips)
         let activeZoomClip = resolvedZoomTrack.activeClip(at: sampleTime)
         let activeAutomaticClip = activeZoomClip.flatMap {
             $0.origin == .automatic ? $0 : nil
         }
+        let reanchorsAtCut = activeAutomaticClip.map {
+            pointerTrack?.automaticEntryStartsAfterCut($0) ?? false
+        } ?? false
+        let pointer = (reanchorsAtCut ? nil : pointerEvaluation) ?? pointerTrack?.evaluation(
+            at: sampleTime,
+            motion: project.motion,
+            style: project.cursorStyle,
+            automaticEntry: activeAutomaticClip
+        ) ?? PointerTrackEvaluation(position: nil, cursor: nil)
         // CAM-001...CAM-004: the click group supplies stable initial framing.
         // Pointer activity can move that framing only after its recent range
         // crosses the safe zone, through a separate cached screen spring.
@@ -646,8 +634,9 @@ public enum FrameSceneEvaluator {
             styleScale: styleScale,
             automaticZoomFocus: automaticCameraPosition,
             inheritedAutomaticZoomFocus: inheritedAutomaticCameraPosition,
+            reanchorAutomaticEntry: reanchorsAtCut,
             zoomTrack: resolvedZoomTrack,
-            screenMotionTrack: screenMotionTrack,
+            screenMotionTrack: resolvedScreenTrack,
             cameraMotionTrack: cameraMotionTrack
         )
         // The opening roster must remain stable for its whole duration. Using
@@ -662,7 +651,6 @@ public enum FrameSceneEvaluator {
             guard project.openingSequence.includedElements.contains(element) else { return false }
             switch element {
             case .screen: return true
-            case .progress: return project.timeline.progressOverlay != nil
             case .camera: return hasOpeningCamera
             case .stickers: return hasOpeningSticker
             }
@@ -703,6 +691,11 @@ public enum FrameSceneEvaluator {
         let decoration = screenDecoration(
             style: project.canvas.screenFrame,
             frameScale: project.canvas.screenFrameScale,
+            toolbarScale: project.canvas.screenFrameToolbarScale,
+            outerCornerRadius: project.canvas.screenFrameOuterCornerRadius,
+            contentCornerRadius: project.canvas.screenFrameContentCornerRadius,
+            title: project.canvas.screenFrameTitle,
+            browserAddress: project.canvas.screenFrameBrowserAddress,
             geometry: screenGeometry,
             styleScale: styleScale,
             groupScale: screenOpening.scale
@@ -757,6 +750,11 @@ public enum FrameSceneEvaluator {
             shadow: screenShadow,
             decoration: decoration,
             mosaics: activeMosaics,
+            focusEffect: FocusEffectEvaluator.scene(
+                zoom: activeZoomClip, screen: resolvedScreenTrack.activeClip(at: sampleTime),
+                zoomFocus: geometry.screen.zoom.focus, crop: project.canvas.crop,
+                pointer: pointer.position, time: sampleTime, motion: project.motion
+            ),
             opacity: screenOpening.opacity
         )
         let camera = geometry.camera.map { evaluation in
@@ -834,76 +832,15 @@ public enum FrameSceneEvaluator {
             result.opacity *= stickerOpening.opacity
             return result
         }
-        var progress = project.timeline.progressOverlay.flatMap { overlay in
-            progressScene(
-                overlay,
-                at: sampleTime,
-                outputDuration: outputDuration ?? 0
-            )
-        }
-        if var openingProgress = progress {
-            var sample = openingSample(
-                for: .progress,
-                sequence: project.openingSequence,
-                activeElements: availableOpeningElements,
-                at: sampleTime,
-                canvasWidth: width,
-                canvasHeight: height
-            )
-            let baseBandHeight = max(openingProgress.bandHeight * width / 1_920, 24)
-            let visualHalfHeight = baseBandHeight * sample.scale / 2
-            let progressCenterY: Double = switch openingProgress.placement {
-            case .top:
-                baseBandHeight / 2
-            case .bottom:
-                height - baseBandHeight / 2
-            case .custom:
-                min(
-                    max(openingProgress.position.y * height, baseBandHeight / 2),
-                    height - baseBandHeight / 2
-                )
-            }
-            let travelMargin = max(height * 0.025, 8)
-            switch openingProgress.placement {
-            case .top:
-                // A finished-film bar is already a long horizontal shape. It
-                // should descend as one rigid strip, not shrink and drift like
-                // a floating card.
-                sample.scale = 1
-                sample.offset.y = -(
-                    progressCenterY + visualHalfHeight + travelMargin
-                ) * sample.remaining
-            case .bottom:
-                sample.scale = 1
-                sample.offset.y = (
-                    height - progressCenterY + visualHalfHeight + travelMargin
-                ) * sample.remaining
-            case .custom:
-                // Once the user detaches the bar from an edge there is no
-                // meaningful off-canvas direction. Reveal it in place with a
-                // compact non-linear scale instead of sweeping a full-width
-                // strip across the composition.
-                sample.offset = CompositionPoint(x: 0, y: 0)
-                sample.scale = 0.84 + 0.16 * (1 - sample.remaining)
-            }
-            openingProgress.opacity = sample.opacity
-            openingProgress.scale = sample.scale
-            openingProgress.offset = NormalizedPoint(
-                x: sample.offset.x / width,
-                y: sample.offset.y / height
-            )
-            progress = openingProgress
-        }
         var order: [FrameLayerRole] = [.background, .screen]
         if cursor != nil { order.append(.cursor) }
         // Spotlight is one dimming effect above the complete base picture,
         // not separate treatments for the wallpaper and screen texture.
-        if activeMosaics.contains(where: { $0.style == .spotlight }) {
+        if screen.focusEffect != nil || activeMosaics.contains(where: { $0.style == .spotlight }) {
             order.append(.spotlight)
         }
         if camera != nil, camera?.opacity ?? 0 > 0 { order.append(.camera) }
         if !stickers.isEmpty { order.append(.stickers) }
-        if progress != nil { order.append(.progress) }
         return FrameScene(
             time: sampleTime,
             canvasSize: CompositionSize(width: width, height: height),
@@ -918,7 +855,6 @@ public enum FrameSceneEvaluator {
             camera: camera,
             cursor: cursor,
             stickers: stickers,
-            progress: progress,
             layerOrder: order
         )
     }
@@ -956,8 +892,14 @@ public enum FrameSceneEvaluator {
             // smoother-step spends too much of the trip at near-constant
             // speed. Ease out decisively into the target; exit uses the
             // complementary ease-in path and accelerates away from it.
-            let enterProgress = easeOutQuart(linearEnter)
-            let exitProgress = easeInExitQuart(linearExit)
+            let enterProgress = ElementMotionEvaluator.progress(
+                linearEnter,
+                curve: clip.animationCurve
+            )
+            let exitProgress = ElementMotionEvaluator.progress(
+                linearExit,
+                curve: clip.animationCurve
+            )
             let exitPreset = clip.exitAnimation ?? clip.animation.automaticExit
             let enterVisibility = clip.animation == .none ? 1 : enterProgress
             let exitVisibility = exitPreset == .none ? 1 : exitProgress
@@ -1059,45 +1001,6 @@ public enum FrameSceneEvaluator {
         return (scale, offset)
     }
 
-    private static func progressScene(
-        _ overlay: ProgressOverlay,
-        at time: TimeInterval,
-        outputDuration: TimeInterval
-    ) -> FrameProgressScene? {
-        guard outputDuration.isFinite, outputDuration > 0 else { return nil }
-        let fraction = min(max(time / outputDuration, 0), 1)
-        var chapters = overlay.chapters
-            .filter { $0.time.isFinite && $0.time >= 0 && $0.time <= outputDuration }
-            .sorted { $0.time < $1.time }
-        if chapters.first?.time ?? 1 > 0.000_1 {
-            chapters.insert(ProgressChapter(time: 0, title: ""), at: 0)
-        }
-        return FrameProgressScene(
-            placement: overlay.placement,
-            position: overlay.position,
-            width: min(max(overlay.width, 0.05), 1),
-            bandHeight: min(max(overlay.bandHeight, 28), 180),
-            textSize: min(max(overlay.textSize, 10), 72),
-            thickness: max(overlay.thickness, 1),
-            fraction: fraction,
-            backgroundColor: overlay.backgroundColor,
-            backgroundOpacity: min(max(overlay.backgroundOpacity, 0), 1),
-            trackColor: overlay.trackColor,
-            fillColor: overlay.fillColor,
-            nodeColor: overlay.nodeColor,
-            textColor: overlay.textColor,
-            chapters: chapters.map {
-                FrameProgressChapterScene(
-                    fraction: $0.time / outputDuration,
-                    title: $0.title
-                )
-            },
-            opacity: 1,
-            scale: 1,
-            offset: NormalizedPoint(x: 0, y: 0)
-        )
-    }
-
     private struct OpeningSample {
         var opacity: Double
         var scale: Double
@@ -1142,8 +1045,11 @@ public enum FrameSceneEvaluator {
         )
         let start = effectiveStagger * Double(index)
         let linear = min(max((time - start) / itemDuration, 0), 1)
-        let eased = 1 - pow(1 - linear, 4)
-        let opacity = smootherStep(min(linear * 1.65, 1))
+        let eased = ElementMotionEvaluator.progress(linear, curve: sequence.motionCurve)
+        let opacity = ElementMotionEvaluator.progress(
+            min(linear * 1.65, 1),
+            curve: sequence.motionCurve
+        )
         let remaining = 1 - eased
         // Translation settles quickly enough to feel responsive, while a 3D
         // pose needs to remain visible after the card enters the canvas. The
@@ -1160,12 +1066,6 @@ public enum FrameSceneEvaluator {
         case (.converge, .screen):
             scaleStart = 0.72
             initialOffset = CompositionPoint(x: -canvasWidth * 1.05, y: -canvasHeight * 0.62)
-            rotationX = 0
-            rotationY = 0
-            perspective = 0
-        case (.converge, .progress):
-            scaleStart = 0.82
-            initialOffset = CompositionPoint(x: 0, y: canvasHeight * 0.22)
             rotationX = 0
             rotationY = 0
             perspective = 0
@@ -1187,12 +1087,6 @@ public enum FrameSceneEvaluator {
             rotationX = 0
             rotationY = 0
             perspective = 0
-        case (.sideSlide, .progress):
-            scaleStart = 1
-            initialOffset = CompositionPoint(x: 0, y: canvasHeight * 0.22)
-            rotationX = 0
-            rotationY = 0
-            perspective = 0
         case (.sideSlide, .camera):
             scaleStart = 0.88
             initialOffset = CompositionPoint(x: canvasWidth * 1.15, y: 0)
@@ -1211,12 +1105,6 @@ public enum FrameSceneEvaluator {
             rotationX = 9 * rotationRemaining
             rotationY = -22 * rotationRemaining
             perspective = 0.72 * rotationRemaining
-        case (.light3D, .progress):
-            scaleStart = 0.92
-            initialOffset = CompositionPoint(x: 0, y: canvasHeight * 0.20)
-            rotationX = 0
-            rotationY = 0
-            perspective = 0
         case (.light3D, .camera):
             scaleStart = 0.72
             initialOffset = CompositionPoint(x: canvasWidth * 1.10, y: canvasHeight * 0.16)
@@ -1262,18 +1150,6 @@ public enum FrameSceneEvaluator {
     private static func smootherStep(_ value: Double) -> Double {
         let x = min(max(value, 0), 1)
         return x * x * x * (x * (x * 6 - 15) + 10)
-    }
-
-    private static func easeOutQuart(_ value: Double) -> Double {
-        let x = min(max(value, 0), 1)
-        return 1 - pow(1 - x, 4)
-    }
-
-    /// `remainingProgress` travels from 1 to 0 during exit. This curve keeps
-    /// the first motion subtle near the target, then accelerates out of frame.
-    private static func easeInExitQuart(_ remainingProgress: Double) -> Double {
-        let x = min(max(remainingProgress, 0), 1)
-        return 1 - pow(1 - x, 4)
     }
 
     /// Keep privacy and presentation semantics explicit. Ordinary redaction
@@ -1383,6 +1259,11 @@ public enum FrameSceneEvaluator {
     private static func screenDecoration(
         style: ScreenFrameStyle,
         frameScale: Double,
+        toolbarScale: Double,
+        outerCornerRadius: Double?,
+        contentCornerRadius: Double?,
+        title: String,
+        browserAddress: String,
         geometry: ScreenSceneEvaluation,
         styleScale: Double,
         groupScale: Double = 1
@@ -1400,6 +1281,7 @@ public enum FrameSceneEvaluator {
         let authoredInsets = ScreenFrameGeometry.decorationInsetsAtScaleOne(
             style: style,
             frameScale: frameScale,
+            toolbarScale: toolbarScale,
             fittedWidth: geometry.fittedRect.width,
             fittedHeight: geometry.fittedRect.height,
             styleScale: styleScale
@@ -1440,25 +1322,28 @@ public enum FrameSceneEvaluator {
         case .deviceTabletLandscape: .deviceTabletLandscape
         case .windowLight, .windowDark, .none: .window
         }
-        let outerCornerRadius: Double = switch style {
-        case .devicePhone, .devicePhonePortrait, .devicePhoneLandscape:
-            min(max(34 * scale, 5), min(outerRect.width, outerRect.height) * 0.13)
-        case .deviceTablet, .deviceTabletPortrait, .deviceTabletLandscape:
-            min(max(25 * scale, 4), min(outerRect.width, outerRect.height) * 0.09)
-        default: min(max(14 * scale, 2), topInset * 0.48)
-        }
-        let contentCornerRadius: Double = switch style {
-        case .devicePhone, .devicePhonePortrait, .devicePhoneLandscape:
-            min(max(27 * scale, 4), min(geometry.finalRect.width, geometry.finalRect.height) * 0.11)
-        case .deviceTablet, .deviceTabletPortrait, .deviceTabletLandscape:
-            min(max(17 * scale, 3), min(geometry.finalRect.width, geometry.finalRect.height) * 0.065)
-        default: 0
-        }
+        let authoredOuterRadius = min(max(
+            outerCornerRadius ?? (kind.isDevice ? min(outerRect.width, outerRect.height) * (kind.isPhone ? 0.11 : 0.065) / max(scale, 0.0001) : style.defaultOuterCornerRadius),
+            0
+        ), 160)
+        let outerCornerRadius = min(
+            authoredOuterRadius * scale,
+            min(outerRect.width, outerRect.height) / 2
+        )
+        let authoredContentRadius = min(max(
+            contentCornerRadius ?? (kind.isDevice ? max(outerCornerRadius - min(topInset, leftInset), 0) / max(scale, 0.0001) : style.defaultContentCornerRadius),
+            0
+        ), 160)
+        let contentCornerRadius = min(
+            authoredContentRadius * scale,
+            min(geometry.finalRect.width, geometry.finalRect.height) / 2
+        )
         return .chrome(
             FrameScreenChromeScene(
                 kind: kind,
                 outerRect: outerRect,
                 toolbarRect: toolbarRect,
+                contentRect: geometry.finalRect,
                 outerCornerRadius: outerCornerRadius,
                 contentCornerRadius: contentCornerRadius,
                 surfaceColor: isDark
@@ -1475,7 +1360,9 @@ public enum FrameSceneEvaluator {
                     : HexColor(rgb24: 0xFF_FF_FF),
                 glyphColor: isDark
                     ? HexColor(rgb24: 0xA9_AB_B3)
-                    : HexColor(rgb24: 0x7A_7C_84)
+                    : HexColor(rgb24: 0x7A_7C_84),
+                title: title,
+                browserAddress: browserAddress
             )
         )
     }

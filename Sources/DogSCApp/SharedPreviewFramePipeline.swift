@@ -88,8 +88,7 @@ struct PreviewVisualSignature: Equatable {
               lhs.background == rhs.background,
               lhs.screen == rhs.screen,
               lhs.camera == rhs.camera,
-              lhs.stickers == rhs.stickers,
-              lhs.progress == rhs.progress else {
+              lhs.stickers == rhs.stickers else {
             return false
         }
         if !ignoringCursor, lhs.cursor != rhs.cursor {
@@ -233,13 +232,50 @@ struct PreviewPresentationEpoch: Equatable, Sendable {
     let isPlaying: Bool
 }
 
+/// At an auxiliary-camera gap (for example an inserted standalone primary
+/// video), the camera player must seek before it can vend the first resumed
+/// pixel. A fullscreen camera scene must never reveal the screen layer during
+/// that decoder hand-off; keeping the already presented drawable for a few
+/// milliseconds is visually continuous and does not alter project/export
+/// timing.
+enum PreviewCameraFrameContinuityPolicy {
+    /// A paused seek evaluates the destination scene immediately, while the
+    /// camera's exact frame arrives asynchronously. The screen path already
+    /// keeps its last decoded pixel across that hand-off; applying a stricter
+    /// discontinuity check only to the camera made every timeline click expose
+    /// one screen-only frame. A media-generation change is still a hard
+    /// boundary, and playback never accepts a stale discontinuity.
+    static func canUseCachedFrame(
+        cachedMediaGeneration: UInt64?,
+        cachedDiscontinuityID: UInt64?,
+        currentMediaGeneration: UInt64,
+        currentDiscontinuityID: UInt64,
+        presentationIsPaused: Bool
+    ) -> Bool {
+        guard cachedMediaGeneration == currentMediaGeneration else { return false }
+        return cachedDiscontinuityID == currentDiscontinuityID
+            || presentationIsPaused
+    }
+
+    static func shouldHoldPresentedFrame(
+        scene: FrameScene,
+        cameraIsExpected: Bool,
+        hasCameraFrame: Bool
+    ) -> Bool {
+        // A bubble disappearing is as visible as a fullscreen flash. Hold
+        // the complete presented frame until both required layers are ready.
+        cameraIsExpected && !hasCameraFrame && (scene.camera?.opacity ?? 0) > 0.001
+    }
+}
+
 enum PreviewPresentationVisibilityPolicy {
     static func shouldSuspend(
         hasWindow: Bool,
         isMiniaturized: Bool,
-        isVisible: Bool
+        isVisible: Bool,
+        isApplicationActive: Bool = true
     ) -> Bool {
-        !hasWindow || isMiniaturized || !isVisible
+        !hasWindow || isMiniaturized || !isVisible || !isApplicationActive
     }
 }
 

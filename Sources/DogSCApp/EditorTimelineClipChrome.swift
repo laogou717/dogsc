@@ -51,8 +51,8 @@ enum EditorTimelineClipEmphasis: Equatable {
     var shadowOpacity: Double {
         switch self {
         case .idle, .hovered: 0
-        case .selected: 0.28
-        case .editing: 0.46
+        case .selected: 0.055
+        case .editing: 0.09
         }
     }
 
@@ -73,7 +73,9 @@ extension View {
         overlay {
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .strokeBorder(
-                    Color.white.opacity(emphasis.strokeOpacity),
+                    emphasis == .selected || emphasis == .editing
+                        ? EditorTheme.selectionTint.opacity(0.65)
+                        : EditorTheme.chrome(emphasis.strokeOpacity),
                     lineWidth: emphasis.strokeWidth
                 )
                 .allowsHitTesting(false)

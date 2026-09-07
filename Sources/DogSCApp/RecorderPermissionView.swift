@@ -13,15 +13,15 @@ enum RequiredRecordingPermissionKind: String, CaseIterable, Identifiable, Sendab
 
     var title: String {
         switch self {
-        case .screenRecording: "屏幕录制"
-        case .accessibility: "辅助功能"
+        case .screenRecording: appLocalized("屏幕录制")
+        case .accessibility: appLocalized("辅助功能")
         }
     }
 
     var purpose: String {
         switch self {
-        case .screenRecording: "录制显示器、窗口或选定区域"
-        case .accessibility: "记录鼠标移动与点击"
+        case .screenRecording: appLocalized("录制屏幕、窗口或区域")
+        case .accessibility: appLocalized("记录鼠标移动与点击")
         }
     }
 
@@ -41,8 +41,8 @@ enum RequiredRecordingPermissionKind: String, CaseIterable, Identifiable, Sendab
 
     var settingsListName: String {
         switch self {
-        case .screenRecording: "屏幕与系统音频录制"
-        case .accessibility: "辅助功能"
+        case .screenRecording: appLocalized("屏幕与系统音频录制")
+        case .accessibility: appLocalized("辅助功能")
         }
     }
 
@@ -55,270 +55,7 @@ enum RequiredRecordingPermissionKind: String, CaseIterable, Identifiable, Sendab
     }
 }
 
-/// A real first-run page. Capture selectors do not exist in this hierarchy,
-/// so masks and recording controls cannot appear before required permissions.
-struct RequiredRecordingPermissionView: View {
-    @ObservedObject var model: AppModel
-    @State private var waitsForExplicitStart = false
-    @FocusState private var focusedPermission: RequiredRecordingPermissionKind?
-    @FocusState private var isEntryButtonFocused: Bool
-
-    var body: some View {
-        VStack(spacing: 0) {
-            header
-
-            VStack(spacing: 12) {
-                ForEach(RequiredRecordingPermissionKind.allCases) { permission in
-                    permissionRow(permission)
-                }
-            }
-            .padding(.top, 28)
-
-            HStack(spacing: 8) {
-                Image(systemName: "video.badge.ellipsis")
-                    .foregroundStyle(.secondary)
-                Text("摄像头和麦克风只会在你启用它们时询问。")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.top, 18)
-
-            Spacer(minLength: 24)
-
-            footer
-        }
-        .padding(.horizontal, 42)
-        .padding(.top, 44)
-        .padding(.bottom, 30)
-        .frame(width: 640, height: 460)
-        .background(
-            LinearGradient(
-                colors: [
-                    Color(red: 0.095, green: 0.10, blue: 0.115),
-                    Color(red: 0.052, green: 0.055, blue: 0.065),
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        )
-        // Keep semantic primary/secondary text readable while System Settings
-        // is the active app. Relying on the NSWindow appearance alone lets
-        // SwiftUI resolve inactive content with light-mode text colors.
-        .preferredColorScheme(.dark)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier(RecorderAccessibilityID.permissionGate)
-        .task {
-            // Existing development installs may already have both TCC grants
-            // while this new onboarding has never been completed. Keep that
-            // all-green page visible until the user chooses to enter; a real
-            // first-time flow that starts with a missing grant advances
-            // automatically once the final permission becomes ready.
-            waitsForExplicitStart = model.captureReadiness.hasScreenRecordingPermission
-                && model.hasAccessibilityPermission
-                && !model.hasCompletedRequiredPermissionOnboarding
-            model.beginRequiredPermissionOnboardingIfNeeded()
-
-            while !Task.isCancelled, model.showsRequiredPermissionGate {
-                await model.verifyRequiredRecordingPermissions()
-                if model.hasRequiredRecordingPermissions,
-                   !waitsForExplicitStart {
-                    model.finishRequiredPermissionOnboarding()
-                    return
-                }
-                try? await Task.sleep(for: .seconds(1))
-            }
-        }
-    }
-
-    private var header: some View {
-        HStack(spacing: 18) {
-            Image(nsImage: NSApplication.shared.applicationIconImage)
-                .resizable()
-                .interpolation(.high)
-                .frame(width: 72, height: 72)
-                .shadow(color: .black.opacity(0.35), radius: 12, y: 6)
-
-            VStack(alignment: .leading, spacing: 7) {
-                Text("准备好录制")
-                    .font(.system(size: 28, weight: .bold, design: .rounded))
-                Text("完成两项必需权限，\(AppIdentity.displayName) 才会显示录制工具。")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer()
-        }
-    }
-
-    private func permissionRow(
-        _ permission: RequiredRecordingPermissionKind
-    ) -> some View {
-        let granted = permission.isGranted(in: model)
-        return HStack(spacing: 14) {
-            Image(systemName: permission.systemImage)
-                .font(.system(size: 20, weight: .medium))
-                .foregroundStyle(granted ? Color.green : Color.orange)
-                .frame(width: 34, height: 34)
-                .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 9))
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(permission.title)
-                    .font(.system(size: 14, weight: .semibold))
-                Text(permission.purpose)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer()
-
-            if granted {
-                Label("已授权", systemImage: "checkmark.circle.fill")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.green)
-                    .padding(.horizontal, 11)
-                    .frame(height: 30)
-                    .background(Color.green.opacity(0.10), in: Capsule())
-                    .accessibilityLabel("\(permission.title)已授权")
-            } else {
-                Button {
-                    // Do not leave the clicked control as first responder while
-                    // System Settings is active. SwiftUI otherwise paints its
-                    // focus effect against the full-size titlebar coordinates,
-                    // producing the stray blue strip at the window's top edge.
-                    focusedPermission = nil
-                    NSApplication.shared.keyWindow?.makeFirstResponder(nil)
-                    model.openRequiredPermissionSettings(permission)
-                } label: {
-                    Text("打开系统设置")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Color.black)
-                        .padding(.horizontal, 14)
-                        .frame(height: 32)
-                        .background(
-                            Color(white: 0.90),
-                            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        )
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .strokeBorder(
-                                    focusedPermission == permission
-                                        ? Color.white.opacity(0.90)
-                                        : Color.clear,
-                                    lineWidth: 2
-                                )
-                        }
-                }
-                // The system prominent style removes its light fill when the
-                // window deactivates but retains our dark label. Own the whole
-                // surface so the action stays readable beside System Settings.
-                .buttonStyle(.plain)
-                .focused($focusedPermission, equals: permission)
-                .focusEffectDisabled()
-                .accessibilityLabel("打开\(permission.title)设置")
-            }
-        }
-        .padding(.horizontal, 16)
-        .frame(height: 76)
-        .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 14))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14)
-                .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.75)
-                .allowsHitTesting(false)
-        }
-        .accessibilityElement(children: .contain)
-    }
-
-    @ViewBuilder
-    private var footer: some View {
-        if model.hasRequiredRecordingPermissions {
-            Button {
-                isEntryButtonFocused = false
-                model.finishRequiredPermissionOnboarding()
-            } label: {
-                Label("进入 \(AppIdentity.displayName)", systemImage: "arrow.right")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Color.black)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 42)
-                    .background(
-                        Color.white,
-                        in: RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    )
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 9, style: .continuous)
-                            .strokeBorder(
-                                isEntryButtonFocused
-                                    ? Color.black.opacity(0.32)
-                                    : Color.clear,
-                                lineWidth: 2
-                            )
-                    }
-            }
-            .buttonStyle(.plain)
-            .focused($isEntryButtonFocused)
-            .focusEffectDisabled()
-            .accessibilityHint("关闭首次使用页并显示录制工具")
-        } else {
-            HStack(spacing: 9) {
-                if model.isCheckingRequiredPermissions {
-                    ProgressView().controlSize(.small)
-                } else {
-                    Image(systemName: "arrow.triangle.2.circlepath")
-                        .foregroundStyle(.secondary)
-                }
-                Text("从系统设置返回后会自动检查，无需再点击“检测”。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, alignment: .center)
-            .frame(height: 42)
-        }
-    }
-}
-
-struct PermissionDragAssistantView: View {
-    let permission: RequiredRecordingPermissionKind
-    let applicationURL: URL
-    let onApplicationDragEnded: (Bool) -> Void
-
-    var body: some View {
-        HStack(spacing: 16) {
-            DraggableApplicationIcon(
-                applicationURL: applicationURL,
-                onDragEnded: onApplicationDragEnded
-            )
-                .frame(width: 72, height: 72)
-                .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 15))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 15)
-                        .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.75)
-                }
-
-            VStack(alignment: .leading, spacing: 7) {
-                Text("在列表里找不到 \(AppIdentity.displayName)？")
-                    .font(.system(size: 14, weight: .semibold))
-                Text("把左侧图标拖到“\(permission.settingsListName)”的应用列表，再打开开关。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .padding(.horizontal, 18)
-        .frame(width: 360, height: 116)
-        .background {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color(red: 0.07, green: 0.073, blue: 0.085))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.75)
-                }
-        }
-        .preferredColorScheme(.dark)
-    }
-}
-
-private struct DraggableApplicationIcon: NSViewRepresentable {
+struct DraggableApplicationIcon: NSViewRepresentable {
     let applicationURL: URL
     let onDragEnded: (Bool) -> Void
 
@@ -336,9 +73,10 @@ private struct DraggableApplicationIcon: NSViewRepresentable {
 }
 
 @MainActor
-private final class ApplicationBundleDragView: NSView, NSDraggingSource {
+final class ApplicationBundleDragView: NSView, NSDraggingSource {
     var applicationURL: URL {
         didSet {
+            guard oldValue != applicationURL else { return }
             icon = NSWorkspace.shared.icon(forFile: applicationURL.path)
             needsDisplay = true
         }
@@ -409,19 +147,24 @@ private final class ApplicationBundleDragView: NSView, NSDraggingSource {
 @MainActor
 final class RequiredPermissionWindowController: NSObject, NSWindowDelegate {
     private let model: AppModel
+    private let presentation: PermissionOnboardingPresentation
     private let hostingController: NSHostingController<RequiredRecordingPermissionView>
     private let windowController: NSWindowController
+    private lazy var introduction = FirstLaunchIntroduction(presentation: presentation)
     private lazy var dragAssistant = PermissionDragAssistantWindowController(
         onAcceptedApplicationDrop: { [weak self] in
             self?.yieldToSystemSettingsAuthorization()
         }
     )
     private var hasPositionedWindow = false
+    private var isManualPresentation = false
 
     init(model: AppModel) {
         self.model = model
+        let presentation = PermissionOnboardingPresentation()
+        self.presentation = presentation
         hostingController = NSHostingController(
-            rootView: RequiredRecordingPermissionView(model: model)
+            rootView: RequiredRecordingPermissionView(model: model, presentation: presentation)
         )
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 640, height: 460),
@@ -438,33 +181,50 @@ final class RequiredPermissionWindowController: NSObject, NSWindowDelegate {
         window.isMovableByWindowBackground = true
         window.isReleasedWhenClosed = false
         window.tabbingMode = .disallowed
-        window.animationBehavior = .documentWindow
-        window.appearance = NSAppearance(named: .darkAqua)
+        window.animationBehavior = .none
+        window.appearance = NSAppearance(named: .aqua)
+        window.backgroundColor = PermissionOnboardingStyle.background
+        hostingController.sizingOptions = []
         window.contentViewController = hostingController
+        window.setFrame(NSRect(origin: .zero, size: PermissionOnboardingStyle.size), display: false)
         window.delegate = self
         window.standardWindowButton(.zoomButton)?.isHidden = true
+        configurePage()
     }
 
-    var isVisible: Bool { windowController.window?.isVisible == true }
+    var isVisible: Bool { introduction.isPresenting || windowController.window?.isVisible == true }
+    var isManualGuideActive: Bool { isManualPresentation }
 
     func present() {
         guard let window = windowController.window else { return }
-        guard !window.isVisible else { return }
+        guard !isVisible else { return }
         if !hasPositionedWindow {
             positionAtVisualCenter(window)
             hasPositionedWindow = true
         }
-        NSApplication.shared.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
-        clearAutomaticControlFocus(in: window)
+        let shouldPlay = !UserDefaults.standard.bool(forKey: FirstLaunchIntroduction.seenKey)
+            && !model.hasCompletedRequiredPermissionOnboarding
+        show(window, playIntroduction: shouldPlay)
     }
 
     func hide() {
+        // Readiness publications must not close a manually opened guide.
+        // Preparation/recording phases still always dismiss it.
+        if isManualPresentation, model.phase == .setup || model.phase == .editor { return }
+        if isManualPresentation {
+            isManualPresentation = false
+            configurePage()
+        }
+        FirstUseTourController.controller(for: .permissions).suspend()
+        introduction.cancel()
+        presentation.isTourReady = false
         dragAssistant.hide()
         windowController.window?.orderOut(nil)
+        FirstUseTourController.setPermissionPagePresented(false)
     }
 
     func bringToFront() {
+        guard !introduction.isPresenting else { return }
         guard let window = windowController.window else { return }
         if !hasPositionedWindow {
             positionAtVisualCenter(window)
@@ -476,12 +236,101 @@ final class RequiredPermissionWindowController: NSObject, NSWindowDelegate {
     }
 
     func showDragAssistant(for permission: RequiredRecordingPermissionKind) {
+        FirstUseTourController.controller(for: .permissions).suspend()
+        introduction.cancel()
         dragAssistant.show(
             permission: permission,
-            applicationURL: Bundle.main.bundleURL,
-            referenceWindowFrame: windowController.window?.frame,
-            referenceScreen: windowController.window?.screen
+            applicationURL: Bundle.main.bundleURL
         )
+    }
+
+    /// A real guide preview, without resetting TCC or replacing the project.
+    func presentManually() {
+        guard model.phase == .setup || model.phase == .editor,
+              let window = windowController.window, !introduction.isPresenting else { return }
+        isManualPresentation = true
+        FirstUseTourController.setPermissionPagePresented(true)
+        FirstUseTourController.controller(for: .recorder).suspend()
+        FirstUseTourController.controller(for: .editor).suspend()
+        FirstUseTourController.controller(for: .permissions).replay()
+        configurePage()
+        positionAtVisualCenter(window)
+        hasPositionedWindow = true
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        show(window, playIntroduction: true)
+    }
+
+    private func show(_ window: NSWindow, playIntroduction: Bool) {
+        FirstUseTourController.setPermissionPagePresented(true)
+        NSApp.activate(ignoringOtherApps: true)
+        presentation.isTourReady = false
+        if playIntroduction {
+            introduction.play(over: window) { [weak self, weak window] in
+                guard let self, let window, window.isVisible else { return }
+                self.clearAutomaticControlFocus(in: window)
+                self.presentation.isTourReady = true
+            }
+        } else {
+            window.makeKeyAndOrderFront(nil)
+            clearAutomaticControlFocus(in: window)
+            presentation.isTourReady = true
+        }
+    }
+
+    private func configurePage() {
+        FirstUseTourController.controller(for: .permissions).configurePermissions(
+            access: model.permissionTourAccess, isReview: isManualPresentation,
+            openSettings: { [weak self] step in
+                guard let self else { return }
+                self.openSettings(step == .screen ? .screenRecording : .accessibility)
+            },
+            onContinue: { [weak self] in self?.completePage() },
+            refresh: { [weak model] in
+                guard let model else { return .init(screen: false, accessibility: false) }
+                if model.phase == .setup {
+                    await model.verifyRequiredRecordingPermissions()
+                    // Coalesce with the page/activation check already in flight
+                    // instead of briefly restoring a stale spotlight on return.
+                    while model.isCheckingRequiredPermissions, !Task.isCancelled {
+                        do { try await Task.sleep(for: .milliseconds(50)) }
+                        catch { break }
+                    }
+                } else {
+                    model.refreshRequiredRecordingPermissions()
+                }
+                return model.permissionTourAccess
+            }
+        )
+        hostingController.rootView = RequiredRecordingPermissionView(
+            model: model, presentation: presentation, isReview: isManualPresentation,
+            onContinue: { [weak self] in self?.completePage() },
+            onOpenSettings: { [weak self] permission in self?.openSettings(permission) }
+        )
+    }
+
+    private func completePage() {
+        guard model.hasRequiredRecordingPermissions else { return }
+        let wasReview = isManualPresentation
+        FirstUseTourController.controller(for: .permissions).completePermissions()
+        isManualPresentation = false
+        if model.showsRequiredPermissionGate { model.finishRequiredPermissionOnboarding() }
+        hide()
+        configurePage()
+        WindowCoordinator.resumeWorkspaceAfterPermissionGuide(replay: wasReview)
+    }
+
+    private func openSettings(_ permission: RequiredRecordingPermissionKind) {
+        FirstUseTourController.controller(for: .permissions).beginPermissionSettings(
+            permission == .screenRecording ? .screen : .accessibility
+        )
+        introduction.cancel()
+        if model.phase == .setup {
+            model.openRequiredPermissionSettings(permission)
+        } else if isManualPresentation,
+                  let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(permission.settingsSection)") {
+            NSWorkspace.shared.open(url)
+            showDragAssistant(for: permission)
+        }
     }
 
     /// Once System Settings accepts the dragged app, it may immediately show
@@ -489,8 +338,8 @@ final class RequiredPermissionWindowController: NSObject, NSWindowDelegate {
     /// the front makes that secure field reject typing with the system alert
     /// sound. Put the onboarding window behind the active settings window and
     /// explicitly hand activation back to System Settings. The permission
-    /// poll keeps running and will either advance automatically or leave this
-    /// window ready when the user returns to DogSC.
+    /// poll keeps running, but only updates readiness. Returning to DogSC
+    /// restores the next required step; Continue owns the workspace handoff.
     private func yieldToSystemSettingsAuthorization() {
         windowController.window?.orderBack(nil)
         PermissionDragAssistantWindowController.activateSystemSettings()
@@ -530,17 +379,38 @@ final class RequiredPermissionWindowController: NSObject, NSWindowDelegate {
         dragAssistant.hide()
     }
 
+    func windowDidBecomeKey(_ notification: Notification) {
+        // The user has returned to the permission page. Retain tour progress,
+        // but remove the helper belonging to the System Settings visit.
+        dragAssistant.hide()
+    }
+
     func shutdown() {
+        FirstUseTourController.controller(for: .permissions).suspend()
+        introduction.cancel()
+        presentation.isTourReady = false
         dragAssistant.shutdown()
         windowController.window?.orderOut(nil)
         windowController.window?.contentViewController = nil
         windowController.close()
     }
+
+    func windowWillClose(_ notification: Notification) {
+        let wasReview = isManualPresentation
+        FirstUseTourController.controller(for: .permissions).suspend()
+        introduction.cancel()
+        presentation.isTourReady = false
+        dragAssistant.hide()
+        isManualPresentation = false
+        configurePage()
+        FirstUseTourController.setPermissionPagePresented(false)
+        if wasReview { WindowCoordinator.resumeWorkspaceAfterPermissionGuide(replay: false) }
+    }
 }
 
 @MainActor
 private final class PermissionDragAssistantWindowController {
-    private static let panelSize = NSSize(width: 360, height: 116)
+    private static let panelSize = NSSize(width: 640, height: 116)
     private static let attachmentGap: CGFloat = 10
     private static let screenInset: CGFloat = 12
 
@@ -558,9 +428,7 @@ private final class PermissionDragAssistantWindowController {
 
     func show(
         permission: RequiredRecordingPermissionKind,
-        applicationURL: URL,
-        referenceWindowFrame: NSRect?,
-        referenceScreen: NSScreen?
+        applicationURL: URL
     ) {
         self.permission = permission
         let root = PermissionDragAssistantView(
@@ -578,6 +446,7 @@ private final class PermissionDragAssistantWindowController {
             host = NSHostingController(rootView: root)
             hostingController = host
         }
+        host.sizingOptions = []
 
         let panel: NSPanel
         if let existing = self.panel {
@@ -599,28 +468,19 @@ private final class PermissionDragAssistantWindowController {
             panel.level = .floating
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             panel.tabbingMode = .disallowed
-            panel.appearance = NSAppearance(named: .darkAqua)
+            panel.appearance = NSAppearance(named: .aqua)
             panel.isOpaque = false
             panel.backgroundColor = .clear
             panel.hasShadow = true
-            panel.contentMinSize = Self.panelSize
-            panel.contentMaxSize = Self.panelSize
+            panel.contentMinSize = NSSize(width: 320, height: Self.panelSize.height)
+            panel.contentMaxSize = NSSize(width: 10000, height: Self.panelSize.height)
             self.panel = panel
         }
         panel.contentViewController = host
 
-        if let referenceWindowFrame,
-           let visibleFrame = (referenceScreen ?? NSScreen.main)?.visibleFrame {
-            panel.setFrame(
-                attachedFrame(
-                    to: referenceWindowFrame,
-                    panelSize: panel.frame.size,
-                    visibleFrame: visibleFrame
-                ),
-                display: false
-            )
-        }
-        panel.orderFrontRegardless()
+        // The first visible frame already aligns with System Settings. Do not
+        // flash a fallback-width helper while that application is launching.
+        panel.orderOut(nil)
         beginFollowingSystemSettings()
     }
 
@@ -666,7 +526,7 @@ private final class PermissionDragAssistantWindowController {
     }
 
     private func followSystemSettingsWindow() {
-        guard let panel, panel.isVisible else { return }
+        guard let panel, permission != nil else { return }
 
         if hasSeenSystemSettingsWindow,
            let frontmostIdentifier = NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
@@ -695,8 +555,8 @@ private final class PermissionDragAssistantWindowController {
             panelSize: panel.frame.size,
             visibleFrame: screen.visibleFrame
         )
-        guard panel.frame.origin != target.origin else { return }
-        panel.setFrameOrigin(target.origin)
+        if panel.frame != target { panel.setFrame(target, display: true) }
+        if !panel.isVisible { panel.orderFrontRegardless() }
     }
 
     private func attachedFrame(
@@ -704,13 +564,13 @@ private final class PermissionDragAssistantWindowController {
         panelSize: NSSize,
         visibleFrame: NSRect
     ) -> NSRect {
+        let width = min(referenceFrame.width, max(320, visibleFrame.width - Self.screenInset * 2))
         let minimumX = visibleFrame.minX + Self.screenInset
         let maximumX = max(
-            visibleFrame.maxX - panelSize.width - Self.screenInset,
+            visibleFrame.maxX - width - Self.screenInset,
             minimumX
         )
-        let centeredX = referenceFrame.midX - panelSize.width / 2
-        let x = min(max(centeredX, minimumX), maximumX)
+        let x = min(max(referenceFrame.minX, minimumX), maximumX)
         let belowY = referenceFrame.minY - panelSize.height - Self.attachmentGap
         let aboveY = referenceFrame.maxY + Self.attachmentGap
         let y: CGFloat
@@ -722,7 +582,7 @@ private final class PermissionDragAssistantWindowController {
                 visibleFrame.maxY - panelSize.height - Self.screenInset
             )
         }
-        return NSRect(origin: NSPoint(x: x, y: y), size: panelSize).integral
+        return NSRect(x: x, y: y, width: width, height: Self.panelSize.height).integral
     }
 
     static func activateSystemSettings() {

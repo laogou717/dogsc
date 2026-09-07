@@ -30,7 +30,7 @@ extension EditorPlaybackController {
     }
 
     /// 指针在时间线上移动时调用。只在暂停状态生效；播放中由播放时钟独占
-    /// 画布。目标帧按 scrub 同一节奏（33ms）合并，传输层 seek 落地后才发
+    /// 画布。目标帧等上一帧完成后追赶最新落点，传输层 seek 落地后才发
     /// 布 `hoverPreviewTime`，每次落地只触发一次画布重绘。
     func updateHoverPreview(to requestedTime: TimeInterval) {
         guard !isPlaying, !scrubIsActive, primaryPlayer != nil else { return }
@@ -96,20 +96,14 @@ extension EditorPlaybackController {
     }
 
     private func scheduleHoverSeekIfNeeded() {
-        guard hoverSeekTask == nil else { return }
+        guard hoverSeekTask == nil, hoverSeekInFlightCount == 0,
+              !isPlaying, !scrubIsActive else { return }
         hoverSeekTask = Task { @MainActor [weak self] in
-            do {
-                try await Task.sleep(for: .milliseconds(33))
-            } catch {
-                return
-            }
-            guard let self, !self.isPlaying, !self.scrubIsActive else { return }
+            guard let self, !Task.isCancelled else { return }
             self.hoverSeekTask = nil
-            guard let target = self.hoverSeekCoalescer.takePending() else { return }
+            guard !self.isPlaying, !self.scrubIsActive,
+                  let target = self.hoverSeekCoalescer.takePending() else { return }
             self.performHoverSeek(to: target)
-            if self.hoverSeekCoalescer.pendingTarget != nil {
-                self.scheduleHoverSeekIfNeeded()
-            }
         }
     }
 
@@ -135,6 +129,9 @@ extension EditorPlaybackController {
                 == requestedHoverGeneration
             if belongsToCurrentHoverSession {
                 self.hoverSeekInFlightCount = max(self.hoverSeekInFlightCount - 1, 0)
+            }
+            defer {
+                if belongsToCurrentHoverSession { self.scheduleHoverSeekIfNeeded() }
             }
             guard belongsToCurrentHoverSession,
                   self.seekToken == requestedSeek,

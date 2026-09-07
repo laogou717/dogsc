@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import RecorderCore
 
@@ -172,7 +173,13 @@ enum EditorPrimaryTimelinePresentation {
                 }
             }
             if let retimeDraft, segment.id == retimeDraft.segmentID {
-                playbackRate = min(max(retimeDraft.proposedRate, 1), 20)
+                playbackRate = min(
+                    max(
+                        retimeDraft.proposedRate,
+                        RecordingSegment.minimumPlaybackRate
+                    ),
+                    RecordingSegment.maximumPlaybackRate
+                )
             }
             let displayed = ResolvedRecordingSegment(
                 id: segment.id,
@@ -210,9 +217,9 @@ enum EditorPrimaryTimelinePresentation {
             }
         }
         let minimumOutputTime = segment.outputStart
-            - max(segment.sourceStart - previousSourceEnd, 0)
+            - max(segment.sourceStart - previousSourceEnd, 0) / segment.playbackRate
         let maximumOutputTime = segment.outputEnd
-            + max(nextSourceStart - segment.sourceEnd, 0)
+            + max(nextSourceStart - segment.sourceEnd, 0) / segment.playbackRate
         return PrimarySegmentTrimDraft(
             segmentID: segmentID,
             edge: edge,
@@ -286,7 +293,7 @@ enum EditorPrimaryTimelinePresentation {
         let delta = TimeInterval(translation / laneWidth) * outputDuration
         let retainedDuration = min(
             max(minimumSegmentDuration, 0.000_001),
-            segment.sourceDuration
+            segment.outputDuration
         )
         switch edge {
         case .left:
@@ -357,7 +364,7 @@ enum EditorPrimaryTimelinePresentation {
         let pointerTime = TimeInterval(pointerX / laneWidth) * outputDuration
         let retainedDuration = min(
             max(minimumSegmentDuration, 0.000_001),
-            segment.sourceDuration
+            segment.outputDuration
         )
         switch edge {
         case .left:
@@ -433,6 +440,19 @@ struct EditorTimelineZoomAnchor: Equatable {
 /// timeline and resizes NSScrollView several times before any of those frames
 /// can be shown. Keep the exact accumulated zoom target, but publish at most
 /// once per display frame.
+enum EditorTimelineZoomPolicy {
+    static let minimum = 1.0
+    /// A fixed 480× ceiling still compressed a 30-minute, 60 fps recording to
+    /// roughly seven points per frame on a laptop viewport. The timeline is
+    /// viewport-virtualized, so the document may safely become wide enough for
+    /// frame-accurate edge work without materializing the complete waveform.
+    static let maximum = 4_096.0
+
+    static func clamped(_ value: Double) -> Double {
+        min(max(value.isFinite ? value : minimum, minimum), maximum)
+    }
+}
+
 @MainActor
 final class EditorTimelineZoomInputCoalescer {
     typealias Apply = @MainActor (_ targetZoom: Double, _ pointerViewportX: CGFloat?) -> Void
@@ -443,7 +463,12 @@ final class EditorTimelineZoomInputCoalescer {
     private var flushTask: Task<Void, Never>?
 
     static func targetZoom(from currentZoom: Double, deltaY: CGFloat) -> Double {
-        min(max(currentZoom * pow(1.12, Double(deltaY)), 1), 120)
+        // A wheel notch previously changed scale by only 12%, while trackpad
+        // deltas are usually fractions of one notch. The resulting gesture
+        // needed several long swipes even in the common 1×–8× range.
+        EditorTimelineZoomPolicy.clamped(
+            currentZoom * pow(1.24, Double(deltaY))
+        )
     }
 
     func enqueue(
@@ -467,7 +492,7 @@ final class EditorTimelineZoomInputCoalescer {
         pointerViewportX: CGFloat?,
         apply: @escaping Apply
     ) {
-        pendingTargetZoom = min(max(targetZoom, 1), 120)
+        pendingTargetZoom = EditorTimelineZoomPolicy.clamped(targetZoom)
         latestPointerViewportX = pointerViewportX
         pendingApply = apply
         scheduleFlush()
@@ -478,10 +503,11 @@ final class EditorTimelineZoomInputCoalescer {
 
         flushTask = Task { @MainActor [weak self] in
             do {
-                // One 60 Hz display interval. The editor may itself run on a
-                // 120 Hz panel, but its timeline contents do not need two full
-                // layout passes per video frame.
-                try await Task.sleep(for: .milliseconds(16))
+                // Editing cadence follows the active display, not the media's
+                // frame rate. A 120 Hz panel must not inherit a 60 Hz UI cap.
+                let screen = NSApp.keyWindow?.screen ?? NSApp.mainWindow?.screen ?? NSScreen.main
+                let rate = max(screen?.maximumFramesPerSecond ?? 60, 1)
+                try await Task.sleep(for: .nanoseconds(Int64(1_000_000_000 / rate)))
             } catch {
                 return
             }
@@ -625,7 +651,6 @@ enum EditorTimelineDeleteTarget: Equatable {
     case zoom(UUID)
     case mosaic(UUID)
     case sticker(UUID)
-    case progress
 
     init?(selection: EditorSelection?) {
         switch selection {
@@ -635,7 +660,6 @@ enum EditorTimelineDeleteTarget: Equatable {
         case let .zoom(id): self = .zoom(id)
         case let .mosaic(id): self = .mosaic(id)
         case let .sticker(id): self = .sticker(id)
-        case .progress: self = .progress
         default: return nil
         }
     }
@@ -671,12 +695,16 @@ enum EditorTimelineSelectionReveal {
     static func time(
         for selection: EditorSelection,
         in project: RecorderProject,
-        currentTime: TimeInterval
+        currentTime: TimeInterval,
+        outputDuration: TimeInterval? = nil
     ) -> TimeInterval? {
         let interval: (start: TimeInterval, end: TimeInterval, preferred: TimeInterval)?
         switch selection {
         case let .zoom(id):
-            interval = project.zoomAnimations.first(where: { $0.id == id }).map {
+            let visibleZooms = outputDuration.map {
+                ZoomTransitionResolution.resolve(project.zoomAnimations, outputDuration: $0)
+            } ?? project.zoomAnimations
+            interval = visibleZooms.first(where: { $0.id == id }).map {
                 (
                     start: $0.startTime,
                     end: $0.endTime,
@@ -730,6 +758,7 @@ enum EditorTimelineGestureIntent: Equatable {
     case zoomResize(UUID, leading: Bool)
     case motionCreate(EditorMotionTimelineTrack)
     case motion(EditorMotionTimelineTrack, UUID, EditorMotionTimelineEditMode)
+    case overlayCreate
     case overlay(EditorOverlayTimelineKind, UUID, EditorMotionTimelineEditMode)
 
     var seeksDuringDrag: Bool {

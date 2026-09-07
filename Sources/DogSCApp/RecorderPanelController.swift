@@ -14,7 +14,7 @@ final class DogSCApplicationDelegate: NSObject,
     /// open even though the user explicitly double-clicked a project.
     private var pendingProjectURL: URL?
     private var didFinishLaunching = false
-    private let settingsWindowController = AppSettingsWindowController()
+    private let settingsWindowController = AppSettingsWindowController.shared
     private var settingsShortcutMonitor: Any?
     private var keyWindowObservation: NSObjectProtocol?
 
@@ -76,6 +76,7 @@ final class DogSCApplicationDelegate: NSObject,
 
     func application(_ application: NSApplication, open urls: [URL]) {
         guard let url = urls.first else { return }
+        WindowCoordinator.prepareExternalProjectPresentation()
         let resolution = Self.projectURLToOpen(
             modelIsReady: didFinishLaunching && model != nil,
             pendingURL: pendingProjectURL,
@@ -88,9 +89,6 @@ final class DogSCApplicationDelegate: NSObject,
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
-        // Files can be renamed or removed in Finder while DogSC is inactive.
-        // Keep the system-owned Dock recents honest when the app returns.
-        ProjectStore.synchronizeSystemRecentProjects()
         model?.resumeRequiredPermissionOnboardingAfterActivation()
         refreshMainMenuBindings()
     }
@@ -134,21 +132,23 @@ final class DogSCApplicationDelegate: NSObject,
     /// app actions; repeating the project list here produced two competing
     /// recent-project sections in the same Dock menu.
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
-        ProjectStore.synchronizeSystemRecentProjects()
         let menu = NSMenu(title: AppIdentity.displayName)
         menu.addItem(dockActionItem(
-            title: "显示\(AppIdentity.displayName)",
+            title: String(
+                format: appLocalized("显示%@"),
+                AppIdentity.displayName
+            ),
             symbol: "macwindow",
             action: #selector(showCurrentWindowFromStatusItem(_:))
         ))
         menu.addItem(dockActionItem(
-            title: "打开项目…",
+            title: appLocalized("打开项目…"),
             symbol: "folder",
             action: #selector(openProjectFromDock(_:))
         ))
         menu.addItem(.separator())
         menu.addItem(dockActionItem(
-            title: "设置…",
+            title: appLocalized("设置…"),
             symbol: "gearshape",
             action: #selector(openSettingsFromStatusItem(_:))
         ))
@@ -177,6 +177,7 @@ final class DogSCApplicationDelegate: NSObject,
     @objc private func openRecentProject(_ sender: NSMenuItem) {
         guard let path = sender.representedObject as? String else { return }
         // requestOpenProject 会处理当前阶段（编辑器时先安全保存、录制中提示）。
+        WindowCoordinator.prepareExternalProjectPresentation()
         model?.requestOpenProject(at: URL(fileURLWithPath: path, isDirectory: true))
     }
 
@@ -198,7 +199,9 @@ final class DogSCApplicationDelegate: NSObject,
             button.imageScaling = .scaleProportionallyDown
             button.imagePosition = .imageOnly
             button.toolTip = applicationName
-            button.setAccessibilityLabel("\(applicationName)菜单")
+            button.setAccessibilityLabel(
+                String(format: appLocalized("%@菜单"), applicationName)
+            )
         }
 
         let menu = NSMenu(title: applicationName)
@@ -218,19 +221,27 @@ final class DogSCApplicationDelegate: NSObject,
         let applicationName = AppIdentity.displayName
 
         let showApp = NSMenuItem(
-            title: "显示\(applicationName)",
+            title: String(format: appLocalized("显示%@"), applicationName),
             action: #selector(showCurrentWindowFromStatusItem(_:)),
             keyEquivalent: ""
         )
         showApp.target = self
         menu.addItem(showApp)
 
-        let recentRoot = NSMenuItem(title: "最近项目", action: nil, keyEquivalent: "")
-        let recentMenu = NSMenu(title: "最近项目")
+        let recentRoot = NSMenuItem(
+            title: appLocalized("最近项目"),
+            action: nil,
+            keyEquivalent: ""
+        )
+        let recentMenu = NSMenu(title: appLocalized("最近项目"))
         let summaries = ProjectStore.recentProjectSummaries(limit: 8)
         if summaries.isEmpty {
             recentMenu.addItem(
-                NSMenuItem(title: "暂无最近项目", action: nil, keyEquivalent: "")
+                NSMenuItem(
+                    title: appLocalized("暂无最近项目"),
+                    action: nil,
+                    keyEquivalent: ""
+                )
             )
         } else {
             for summary in summaries {
@@ -250,7 +261,7 @@ final class DogSCApplicationDelegate: NSObject,
         menu.addItem(.separator())
 
         let sound = NSMenuItem(
-            title: "导出完成提示音",
+            title: appLocalized("导出完成提示音"),
             action: #selector(toggleExportCompletionSound(_:)),
             keyEquivalent: ""
         )
@@ -261,7 +272,7 @@ final class DogSCApplicationDelegate: NSObject,
         menu.addItem(.separator())
 
         let systemAudio = NSMenuItem(
-            title: "下次录制系统声音",
+            title: appLocalized("下次录制系统声音"),
             action: #selector(toggleDefaultSystemAudio(_:)),
             keyEquivalent: ""
         )
@@ -275,8 +286,9 @@ final class DogSCApplicationDelegate: NSObject,
             forKey: CaptureDevicePreferenceKey.microphoneName
         )
         let microphone = NSMenuItem(
-            title: microphoneName.map { "下次录制麦克风（\($0)）" }
-                ?? "下次录制麦克风",
+            title: microphoneName.map {
+                String(format: appLocalized("下次录制麦克风（%@）"), $0)
+            } ?? appLocalized("下次录制麦克风"),
             action: #selector(toggleDefaultMicrophone(_:)),
             keyEquivalent: ""
         )
@@ -288,16 +300,25 @@ final class DogSCApplicationDelegate: NSObject,
         menu.addItem(.separator())
 
         let settings = NSMenuItem(
-            title: "设置…",
+            title: appLocalized("设置…"),
             action: #selector(openSettingsFromStatusItem(_:)),
             keyEquivalent: ","
         )
         settings.target = self
         menu.addItem(settings)
+
+        let guide = NSMenuItem(
+            title: appLocalized("首次使用引导…"),
+            action: #selector(openFirstLaunchGuide(_:)),
+            keyEquivalent: ""
+        )
+        guide.target = self
+        guide.isEnabled = FirstLaunchGuideAccess.shared.isAvailable
+        menu.addItem(guide)
         menu.addItem(.separator())
 
         let quit = NSMenuItem(
-            title: "退出\(applicationName)",
+            title: String(format: appLocalized("退出%@"), applicationName),
             action: #selector(quitFromStatusItem(_:)),
             keyEquivalent: "q"
         )
@@ -339,6 +360,10 @@ final class DogSCApplicationDelegate: NSObject,
 
     @objc private func openSettingsFromStatusItem(_ sender: NSMenuItem) {
         settingsWindowController.show()
+    }
+
+    @objc private func openFirstLaunchGuide(_ sender: NSMenuItem) {
+        WindowCoordinator.showFirstLaunchGuide()
     }
 
     private func installSettingsShortcutMonitor() {
@@ -463,7 +488,7 @@ final class DogSCApplicationDelegate: NSObject,
         }
 
         let exportSources = NSMenuItem(
-            title: "导出项目源文件…",
+            title: appLocalized("导出项目源文件…"),
             action: #selector(exportProjectSourceMedia(_:)),
             keyEquivalent: ""
         )
@@ -472,7 +497,7 @@ final class DogSCApplicationDelegate: NSObject,
         fileMenu.addItem(exportSources)
 
         let importAligned = NSMenuItem(
-            title: "替换当前项目摄像头…",
+            title: appLocalized("替换当前项目摄像头…"),
             action: #selector(importCameraReplacement(_:)),
             keyEquivalent: ""
         )
@@ -490,6 +515,9 @@ final class DogSCApplicationDelegate: NSObject,
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(openFirstLaunchGuide(_:)) {
+            return FirstLaunchGuideAccess.shared.isAvailable
+        }
         guard menuItem.action == #selector(exportProjectSourceMedia(_:))
                 || menuItem.action == #selector(importCameraReplacement(_:))
         else { return true }
@@ -509,7 +537,7 @@ final class DogSCApplicationDelegate: NSObject,
 /// prevents title-bar chrome from appearing between phases.
 enum RecorderPanelPolicy {
     static let styleMask: NSWindow.StyleMask = [.borderless]
-    static let setupSize = NSSize(width: setupWindowWidth(), height: 64)
+    static let setupSize = NSSize(width: setupWindowWidth(), height: 80)
     static let progressSize = NSSize(width: 320, height: 46)
     static let savedFrameKey = "recorder.panel.last-frame"
 
@@ -609,7 +637,29 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
 
     var window: NSPanel { panel }
 
+    private func resizeRecordingContent(to width: CGFloat) {
+        guard currentPhase == .recording, width.isFinite,
+              width >= 200, width <= 640,
+              abs(panel.frame.width - width) >= 1 else { return }
+        let size = NSSize(width: width, height: 52)
+        panel.contentMinSize = size
+        panel.contentMaxSize = size
+        // Keep the existing host and warning monitor alive during resizing.
+        panel.setFrame(
+            RecorderPanelPolicy.frame(
+                centeredOn: panel.frame,
+                contentSize: size,
+                visibleFrame: panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
+            ),
+            display: true,
+            animate: false
+        )
+    }
+
     func present(phase: AppPhase) {
+        let phaseChanged = currentPhase != phase
+        let shouldActivateSetup = phaseChanged || !panel.isVisible
+        if phaseChanged { RecorderPopoverPresenter.shared.dismiss() }
         currentPhase = phase
         panel.presentedPhase = phase
         // SwiftUI may rebuild its scene-contributed menu when the editor
@@ -632,11 +682,13 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
             phase: phase,
             selectionActive: selectionIsActive
         ))
-        // Recorder controls are UI, not source material. A shareable setup
-        // panel unnecessarily asks WindowServer to keep this transparent HUD
-        // eligible as a capture surface. Design review opts in explicitly;
-        // real capture keeps one private window surface.
-        panel.sharingType = isDesignReview ? .readOnly : .none
+        // Setup is a normal inspectable UI. Active recording controls remain
+        // excluded; the recorder also excludes this application's PID.
+        if case .setup = phase {
+            panel.sharingType = .readOnly
+        } else {
+            panel.sharingType = isDesignReview ? .readOnly : .none
+        }
         panel.contentMinSize = contentSize
         panel.contentMaxSize = contentSize
 
@@ -689,25 +741,32 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
             panel.setFrame(destination, display: false, animate: false)
             hostingController.rootView = RecorderMainWindowRoot(
                 model: model,
-                phase: phase
+                phase: phase,
+                onRecordingWidthChange: { [weak self] width in
+                    self?.resizeRecordingContent(to: width)
+                }
             )
             panel.contentView?.layoutSubtreeIfNeeded()
             panel.contentView?.needsDisplay = true
+            panel.invalidateShadow()
         }
         CATransaction.commit()
+        if phaseChanged, panel.isVisible { animateRecorderOverlayIn(panel) }
 
         logger.info(
             "phase=\(String(describing: phase), privacy: .public) frame=\(destination.width, privacy: .public)x\(destination.height, privacy: .public)"
         )
-        if phase == .setup {
+        if phase == .setup, shouldActivateSetup {
             NSApplication.shared.activate(ignoringOtherApps: true)
             panel.makeKeyAndOrderFront(nil)
-        } else {
+        } else if phaseChanged || !panel.isVisible {
             panel.orderFrontRegardless()
         }
     }
 
     func setCaptureSelectionActive(_ active: Bool) {
+        if active { FirstUseTourController.controller(for: .recorder).suspend() }
+        else { FirstUseTourController.controller(for: .recorder).resume() }
         selectionIsActive = active
         panel.level = CaptureWindowLevelPolicy.level(for: .recorderPanel(
             phase: currentPhase,
@@ -719,6 +778,7 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
     }
 
     func hide() {
+        FirstUseTourController.controller(for: .recorder).suspend()
         panel.orderOut(nil)
     }
 
@@ -729,6 +789,7 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
     }
 
     func shutdown() {
+        RecorderPopoverPresenter.shared.dismiss()
         panel.orderOut(nil)
         panel.contentViewController = nil
         panel.close()
@@ -738,13 +799,12 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
         panel.identifier = recorderMainWindowIdentifier
         panel.presentedPhase = currentPhase
         panel.contentViewController = hostingController
-        // 悬浮条使用固定深色 HUD 表面；强制 darkAqua 让 SwiftUI 系统色
-        // （Color.primary/.secondary 等）在系统亮色模式下仍解析为亮色文字，
-        // 否则黑底黑字不可见。与 CameraPreviewWindow/区域选择器同一先例。
-        panel.appearance = NSAppearance(named: .darkAqua)
+        panel.appearance = NSAppearance(named: .aqua)
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.hasShadow = false
+        panel.hasShadow = true
+        hostingController.view.wantsLayer = true
+        hostingController.view.layer?.backgroundColor = NSColor.clear.cgColor
         panel.animationBehavior = .none
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false

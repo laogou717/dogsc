@@ -1,0 +1,5 @@
+"CFBundleDisplayName" = "DogSC";
+"CFBundleName" = "DogSC";
+"CFBundleTypeName" = "DogSC 项目";
+"NSCameraUsageDescription" = "用于在录屏中添加摄像头画面，并使用已连接的连续互通相机。";
+"NSMicrophoneUsageDescription" = "用于在录屏中录制麦克风声音。";

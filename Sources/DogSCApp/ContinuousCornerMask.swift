@@ -49,11 +49,11 @@ enum ContinuousCornerMask {
                 path: path
             ) {
                 cache.setObject(
-                    image,
+                    image.image,
                     forKey: cacheKey,
-                    cost: safeWidth * safeHeight * 4
+                    cost: image.cost
                 )
-                baseMask = image
+                baseMask = image.image
             } else {
                 baseMask = fallbackMask(width: rect.width, height: rect.height, radius: clampedRadius)
             }
@@ -66,13 +66,14 @@ enum ContinuousCornerMask {
 
     /// A cached `CIImage(cgImage:)` is still uploaded with `replaceRegion` on
     /// every separate Core Image render. Drawing the same vector mask once into
-    /// an IOSurface-backed pixel buffer lets preview/export import it directly
-    /// into Metal while preserving the continuous-corner geometry.
+    /// an IOSurface-backed coverage buffer lets preview/export import it
+    /// directly into Metal. One byte of coverage replaces four identical BGRA
+    /// channels, without reducing resolution or changing the corner path.
     private nonisolated static func surfaceBackedMask(
         width: Int,
         height: Int,
         path: CGPath
-    ) -> CIImage? {
+    ) -> (image: CIImage, cost: Int)? {
         let attributes = [
             kCVPixelBufferCGImageCompatibilityKey as String: true,
             kCVPixelBufferCGBitmapContextCompatibilityKey as String: true,
@@ -84,7 +85,7 @@ enum ContinuousCornerMask {
             kCFAllocatorDefault,
             width,
             height,
-            kCVPixelFormatType_32BGRA,
+            kCVPixelFormatType_OneComponent8,
             attributes,
             &pixelBuffer
         ) == kCVReturnSuccess,
@@ -92,7 +93,7 @@ enum ContinuousCornerMask {
 
         CVPixelBufferLockBaseAddress(pixelBuffer, [])
         defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let colorSpace = CGColorSpaceCreateDeviceGray()
         guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer),
               let context = CGContext(
                   data: baseAddress,
@@ -101,20 +102,21 @@ enum ContinuousCornerMask {
                   bitsPerComponent: 8,
                   bytesPerRow: CVPixelBufferGetBytesPerRow(pixelBuffer),
                   space: colorSpace,
-                  bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
-                      | CGBitmapInfo.byteOrder32Little.rawValue
+                  bitmapInfo: CGImageAlphaInfo.none.rawValue
               ) else { return nil }
 
         context.clear(CGRect(x: 0, y: 0, width: width, height: height))
         context.setAllowsAntialiasing(true)
         context.setShouldAntialias(true)
-        context.setFillColor(red: 1, green: 1, blue: 1, alpha: 1)
+        context.setFillColor(gray: 1, alpha: 1)
         context.addPath(path)
         context.fillPath()
-        return CIImage(
-            cvPixelBuffer: pixelBuffer,
-            options: [.colorSpace: colorSpace]
-        )
+        // Coverage is linear data, not a gray photograph. Restore white RGB
+        // plus coverage alpha so mask unions, source-out rings and shadows
+        // have exactly the same semantics as the former premultiplied BGRA.
+        let image = CIImage(cvPixelBuffer: pixelBuffer, options: [.colorSpace: NSNull()])
+            .applyingFilter("CIMaskToAlpha")
+        return (image, CVPixelBufferGetDataSize(pixelBuffer))
     }
 
     private nonisolated static func fallbackMask(
@@ -140,11 +142,11 @@ enum ContinuousCornerMask {
 private final class ContinuousCornerMaskCache: @unchecked Sendable {
     private let storage: NSCache<NSString, CIImage> = {
         let cache = NSCache<NSString, CIImage>()
-        // Two large stable screen masks plus smaller border/control masks fit;
-        // a zoom transition that produces many nearby dimensions cannot retain
-        // an unbounded sequence of full-canvas IOSurfaces.
+        // Single-channel coverage keeps at least the former 192 MB BGRA
+        // working set within 64 MB, including IOSurface row alignment. Keep
+        // reuse across playback frames instead of clearing on each pause.
         cache.countLimit = 48
-        cache.totalCostLimit = 192 * 1_024 * 1_024
+        cache.totalCostLimit = 64 * 1_024 * 1_024
         return cache
     }()
 

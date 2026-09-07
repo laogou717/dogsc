@@ -48,11 +48,15 @@ extension SharedRenderedPreviewNSView {
             // their own explicit `insertingIntermediate(cache: true)` boundary,
             // so keep that reuse while allowing all transient frame graphs to
             // be released as soon as their command buffer finishes.
+            guard let commandQueue = device.makeCommandQueue() else {
+                submissionCompletion(false)
+                return
+            }
             self.queueContext = job.colorProfile.makeMetalContext(
-                device: device,
+                commandQueue: commandQueue,
                 cacheIntermediates: false
             )
-            self.queueCommandQueue = device.makeCommandQueue()
+            self.queueCommandQueue = commandQueue
             self.queueDidPrewarmPerspective = false
             self.queuePrewarmedPerspectiveSignatures.removeAll(keepingCapacity: false)
         }
@@ -73,12 +77,24 @@ extension SharedRenderedPreviewNSView {
         guard let rendered = SharedPreviewFramePipeline.render(
                   plan: job.plan,
                   resources: job.resources
-              ),
-              let drawable = job.metalLayer.nextDrawable(),
-              let commandBuffer = commandQueue.makeCommandBuffer() else {
+              ) else {
             submissionCompletion(false)
             return
         }
+        // Track visibility changes resize the monitor while a previous paused
+        // frame can still be waiting on this queue. CAMetalLayer hands that old
+        // job a drawable using the *new* live size; rendering the old bounds
+        // into it fills only one side and leaves a persistent black strip.
+        // Reject the mismatched surface and let the main actor immediately
+        // resubmit the newest scene/size contract.
+        let expectedTextureWidth = max(
+            Int(job.destinationPixelSize.width.rounded()),
+            2
+        )
+        let expectedTextureHeight = max(
+            Int(job.destinationPixelSize.height.rounded()),
+            2
+        )
         let displayBounds = CGRect(
             x: 0,
             y: 0,
@@ -104,13 +120,42 @@ extension SharedRenderedPreviewNSView {
                 by: CGAffineTransform(scaleX: scaleX, y: scaleY)
             )
         }
-        context.render(
-            scaled,
-            to: drawable.texture,
-            commandBuffer: commandBuffer,
-            bounds: displayBounds,
-            colorSpace: job.colorProfile.outputColorSpace
-        )
+        // Resolve and validate before encoding. The Swift texture-provider
+        // callback cannot return nil, whereas a resized/retired CAMetalLayer
+        // legitimately may. Do not force-unwrap or allocate a second full-size
+        // fallback texture merely to use the lazy-provider convenience API.
+        guard let drawable = job.metalLayer.nextDrawable(),
+              drawable.texture.width == expectedTextureWidth,
+              drawable.texture.height == expectedTextureHeight else {
+            submissionCompletion(false)
+            presentationCompletion(false)
+            return
+        }
+        let destination = CIRenderDestination(mtlTexture: drawable.texture, commandBuffer: nil)
+        destination.colorSpace = job.colorProfile.outputColorSpace
+        // Core Image uses a lower-left origin, but a directly presented Metal
+        // drawable stores the top row first. Keep this conversion at the
+        // presentation boundary; false vertically inverts the entire preview.
+        // Do not infer on-screen orientation from legacy offscreen byte order.
+        destination.isFlipped = true
+        // CI owns intermediate command buffers on our presentation queue.
+        // Apple's CIRenderDestination contract warns that forcing every pass
+        // into one client buffer increases latency and peak memory.
+        // A queue-backed context returns after work is queued,
+        // so the subsequent presentation buffer is ordered after all CI work.
+        do {
+            _ = try context.startTask(toRender: scaled, from: displayBounds,
+                                      to: destination, at: .zero)
+        } catch {
+            submissionCompletion(false)
+            presentationCompletion(false)
+            return
+        }
+        guard let commandBuffer = commandQueue.makeCommandBuffer() else {
+            submissionCompletion(false)
+            presentationCompletion(false)
+            return
+        }
         guard PreviewRenderBackpressurePolicy.shouldPresent(
             jobEpochID: job.presentationEpochID,
             latestEpochID: presentationEpochID

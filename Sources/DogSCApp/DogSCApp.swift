@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import CoreGraphics
 import SwiftUI
 
 let recorderMainWindowIdentifier = NSUserInterfaceItemIdentifier(
@@ -21,6 +22,7 @@ private final class EditorFirstMouseHostingView<Content: View>: NSHostingView<Co
 struct DogSCApp: App {
     @NSApplicationDelegateAdaptor(DogSCApplicationDelegate.self)
     private var applicationDelegate
+    @ObservedObject private var guideAccess = FirstLaunchGuideAccess.shared
 
     var body: some Scene {
         // The normal app owns no SwiftUI-created main window. A dedicated
@@ -30,6 +32,14 @@ struct DogSCApp: App {
             AppSettingsView()
         }
         .commands {
+            // Declare this with the scene so SwiftUI retains it when rebuilding
+            // the application menu for a different AppKit key window.
+            CommandGroup(after: .appSettings) {
+                Button("首次使用引导…") {
+                    WindowCoordinator.showFirstLaunchGuide()
+                }
+                .disabled(!guideAccess.isAvailable)
+            }
             CommandGroup(after: .toolbar) {
                 Button("快捷键速查") {
                     EditorMenuBridge.shared.shortcutCheatsheetRequest.send()
@@ -39,12 +49,20 @@ struct DogSCApp: App {
     }
 }
 
+/// The menu and settings entry share the same recording-phase gate.
+@MainActor
+final class FirstLaunchGuideAccess: ObservableObject {
+    static let shared = FirstLaunchGuideAccess()
+    @Published var isAvailable = false
+}
+
 /// Phase-pinned content hosted by `RecorderPanelController`. The controller
 /// swaps this root in the same non-animated transaction that changes panel size,
 /// so SwiftUI never negotiates an intermediate recorder width.
 struct RecorderMainWindowRoot: View {
     @ObservedObject var model: AppModel
     let phase: AppPhase
+    var onRecordingWidthChange: (CGFloat) -> Void = { _ in }
 
     var body: some View {
         Group {
@@ -58,7 +76,7 @@ struct RecorderMainWindowRoot: View {
                     accessibilityIdentifier: RecorderAccessibilityID.phasePreparing
                 )
             case .recording:
-                RecordingBar(model: model)
+                RecordingBar(model: model, onContentWidthChange: onRecordingWidthChange)
             case .finishing:
                 RecorderPhaseProgressView(
                     title: model.recorderTransitionStage.title,
@@ -69,13 +87,15 @@ struct RecorderMainWindowRoot: View {
                 // The panel is already ordered out for this phase; a compact root
                 // remains available only to keep the generic host type stable.
                 RecorderPhaseProgressView(
-                    title: "正在打开编辑器…",
+                    title: appLocalized("正在打开编辑器…"),
                     phase: .editor,
                     accessibilityIdentifier: "recorder.phase.editor-transition"
                 )
             }
         }
+        .font(.appUI(.body))
         .modifier(RecorderSystemWindowDragModifier())
+        .preferredColorScheme(.light)
     }
 }
 
@@ -101,15 +121,16 @@ struct RecorderPhaseProgressView: View {
     var body: some View {
         HStack(spacing: 10) {
             ProgressView().controlSize(.small)
-            Text(title).font(.callout.weight(.medium))
+            Text(title).font(.appUI(.callout, weight: .medium))
         }
+        .foregroundStyle(RecorderStyle.ink)
         .frame(width: 320, height: 46)
         .background(
-            Capsule().fill(Color(red: 0.055, green: 0.058, blue: 0.067))
+            Capsule().fill(LinearGradient(colors: [.white, RecorderStyle.silver], startPoint: .top, endPoint: .bottom))
         )
         .overlay {
             Capsule()
-                .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.75)
+                .strokeBorder(.white.opacity(0.9), lineWidth: 0.75)
                 .allowsHitTesting(false)
         }
         .accessibilityElement(children: .contain)
@@ -131,17 +152,46 @@ private struct EditorSessionHost: View {
     var body: some View {
         EditorView(context: contextProvider.context)
             .id(contextProvider.context.id)
-            .preferredColorScheme(.dark)
+        // NSWindow owns appearance so native and SwiftUI chrome change in
+        // the same transition, before either tree redraws in the new theme.
     }
 }
 
 @MainActor
 enum WindowCoordinator {
+    static func showFirstLaunchGuide() {
+        guard FirstLaunchGuideAccess.shared.isAvailable,
+              let permissionWindowController else { return }
+        // Settings is floating; otherwise it would cover the normal-level
+        // permission window as soon as the full-screen introduction disappears.
+        AppSettingsWindowController.shared.hideForFirstLaunchGuide()
+        RecorderPopoverPresenter.shared.dismiss()
+        recorderPanelController?.hide()
+        permissionWindowController.presentManually()
+    }
+
+    static func resumeWorkspaceAfterPermissionGuide(replay: Bool) {
+        guard let model else { return }
+        if replay {
+            FirstUseTourController.controller(for: .recorder).prepareReplay()
+            FirstUseTourController.controller(for: .editor).prepareReplay()
+        }
+        apply(phase: model.phase, model: model)
+        bringCurrentWindowFront()
+        let kind: FirstUseTourKind = model.phase == .editor ? .editor : .recorder
+        FirstUseTourController.controller(for: kind).resume()
+    }
+
     private static let editorWindowController = EditorWindowController()
     private static var recorderPanelController: RecorderPanelController?
     private static var permissionWindowController: RequiredPermissionWindowController?
     private static var presentationObservation: AnyCancellable?
     private static weak var model: AppModel?
+    /// A project opened by Finder or the Dock recent-items menu should appear
+    /// on the system main display. AppKit's global frame autosave otherwise
+    /// restores the last editor display for every project, which makes a cold
+    /// right-click open look permanently pinned to a secondary monitor.
+    private static var pendingExternalProjectVisibleFrame: NSRect?
 
     static func install(model: AppModel) {
         self.model = model
@@ -172,9 +222,17 @@ enum WindowCoordinator {
     }
 
     private static func apply(phase: AppPhase, model: AppModel) {
+        let guideAvailable = phase == .setup || phase == .editor
+        if FirstLaunchGuideAccess.shared.isAvailable != guideAvailable {
+            FirstLaunchGuideAccess.shared.isAvailable = guideAvailable
+        }
         guard let recorderPanelController,
               let permissionWindowController else { return }
         permissionWindowController.refreshDragAssistantState()
+        // Readiness changes during a manual review must not bring the existing
+        // floating recorder/editor back above the unfinished permission page.
+        if permissionWindowController.isManualGuideActive,
+           phase == .setup || phase == .editor { return }
         if phase != .setup {
             recorderPanelController.setCaptureSelectionActive(false)
         }
@@ -192,7 +250,12 @@ enum WindowCoordinator {
             // The active recording/open-project flow is owned by AppModel. Its
             // editor keeps using that same document and workspace so close,
             // project replacement and save all cross one persistence barrier.
-            editorWindowController.show(model: model)
+            let preferredVisibleFrame = pendingExternalProjectVisibleFrame
+            pendingExternalProjectVisibleFrame = nil
+            editorWindowController.show(
+                model: model,
+                preferredVisibleFrame: preferredVisibleFrame
+            )
         case .setup, .preparing, .recording, .finishing:
             editorWindowController.closeForPhaseChange()
             recorderPanelController.present(phase: phase)
@@ -218,13 +281,33 @@ enum WindowCoordinator {
     }
 
     static func bringCurrentWindowFront() {
-        if model?.phase == .editor {
+        if permissionWindowController?.isManualGuideActive == true {
+            permissionWindowController?.bringToFront()
+        } else if model?.phase == .editor {
             editorWindowController.bringToFront()
         } else if model?.showsRequiredPermissionGate == true {
             permissionWindowController?.bringToFront()
         } else {
             recorderPanelController?.bringToFront()
         }
+    }
+
+    static func prepareExternalProjectPresentation() {
+        guard let visibleFrame = systemMainScreen()?.visibleFrame else { return }
+        if editorWindowController.moveVisibleWindow(to: visibleFrame) {
+            pendingExternalProjectVisibleFrame = nil
+        } else {
+            pendingExternalProjectVisibleFrame = visibleFrame
+        }
+    }
+
+    private static func systemMainScreen() -> NSScreen? {
+        let displayID = UInt32(CGMainDisplayID())
+        return NSScreen.screens.first { screen in
+            (screen.deviceDescription[
+                NSDeviceDescriptionKey("NSScreenNumber")
+            ] as? NSNumber)?.uint32Value == displayID
+        } ?? NSScreen.screens.first
     }
 
     static func showPermissionDragAssistant(
@@ -296,11 +379,32 @@ private final class EditorWindowController: NSObject, NSWindowDelegate {
     private var isClosingForPhaseChange = false
     private var isRequestingProjectClose = false
 
-    func show(model: AppModel) {
+    /// Finder/Dock project opens are explicit navigation requests. If an editor
+    /// already exists, move that same authoritative window to the system main
+    /// display instead of leaving it on the autosaved secondary display.
+    func moveVisibleWindow(to visibleFrame: NSRect) -> Bool {
+        guard let window = windowController?.window else { return false }
+        window.setFrame(
+            centeredFrame(preserving: window.frame, inside: visibleFrame),
+            display: true
+        )
+        return true
+    }
+
+    func show(model: AppModel, preferredVisibleFrame: NSRect? = nil) {
         self.model = model
 
         if let window = windowController?.window {
             NSApplication.shared.activate(ignoringOtherApps: true)
+            if let preferredVisibleFrame {
+                window.setFrame(
+                    centeredFrame(
+                        preserving: window.frame,
+                        inside: preferredVisibleFrame
+                    ),
+                    display: true
+                )
+            }
             if window.isMiniaturized {
                 window.deminiaturize(nil)
             }
@@ -328,14 +432,12 @@ private final class EditorWindowController: NSObject, NSWindowDelegate {
             defer: false
         )
         window.identifier = recorderEditorWindowIdentifier
-        window.title = "\(AppIdentity.displayName) 编辑器"
+        window.title = "\(AppIdentity.displayName) \(appLocalized("编辑器"))"
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
-        // 编辑器同样是固定深色表面（appBackground 为常量 RGB）；强制
-        // darkAqua 保证亮色系统下 Color.primary/.secondary 仍解析为亮色。
-        window.appearance = NSAppearance(named: .darkAqua)
-        window.backgroundColor = .black
+        window.appearance = AppPreferences.appearancePreference.appKitAppearance
+        window.backgroundColor = .windowBackgroundColor
         window.hasShadow = true
         window.animationBehavior = .none
         window.isMovableByWindowBackground = false
@@ -350,11 +452,31 @@ private final class EditorWindowController: NSObject, NSWindowDelegate {
         let restoredFrame = window.setFrameUsingName(
             AppPreferences.editorWindowFrameAutosaveName
         )
+        if let preferredVisibleFrame {
+            window.setFrame(
+                centeredFrame(
+                    preserving: window.frame,
+                    inside: preferredVisibleFrame
+                ),
+                display: false
+            )
+        }
         _ = window.setFrameAutosaveName(
             AppPreferences.editorWindowFrameAutosaveName
         )
-        if !restoredFrame {
-            window.center()
+        if !restoredFrame, preferredVisibleFrame == nil {
+            let visibleFrame = systemMainScreen()?.visibleFrame
+            if let visibleFrame {
+                window.setFrame(
+                    centeredFrame(
+                        preserving: window.frame,
+                        inside: visibleFrame
+                    ),
+                    display: false
+                )
+            } else {
+                window.center()
+            }
         }
 
         let controller = NSWindowController(window: window)
@@ -506,7 +628,7 @@ private final class EditorWindowController: NSObject, NSWindowDelegate {
 
     private func editorInitialFrame() -> NSRect {
         let desired = NSSize(width: 1728, height: 900)
-        guard let visibleFrame = NSScreen.main?.visibleFrame else {
+        guard let visibleFrame = systemMainScreen()?.visibleFrame else {
             return NSRect(origin: .zero, size: desired)
         }
         return NSRect(
@@ -519,12 +641,37 @@ private final class EditorWindowController: NSObject, NSWindowDelegate {
     }
 
     private func editorMinimumSize() -> NSSize {
-        guard let visibleFrame = NSScreen.main?.visibleFrame else {
+        guard let visibleFrame = systemMainScreen()?.visibleFrame else {
             return NSSize(width: 1120, height: 680)
         }
         return NSSize(
             width: min(1120, max(visibleFrame.width - 24, 840)),
             height: min(680, max(visibleFrame.height - 24, 640))
         )
+    }
+
+    private func centeredFrame(
+        preserving frame: NSRect,
+        inside visibleFrame: NSRect
+    ) -> NSRect {
+        let size = NSSize(
+            width: min(frame.width, visibleFrame.width),
+            height: min(frame.height, visibleFrame.height)
+        )
+        return NSRect(
+            x: visibleFrame.midX - size.width / 2,
+            y: visibleFrame.midY - size.height / 2,
+            width: size.width,
+            height: size.height
+        ).integral
+    }
+
+    private func systemMainScreen() -> NSScreen? {
+        let displayID = UInt32(CGMainDisplayID())
+        return NSScreen.screens.first { screen in
+            (screen.deviceDescription[
+                NSDeviceDescriptionKey("NSScreenNumber")
+            ] as? NSNumber)?.uint32Value == displayID
+        } ?? NSScreen.screens.first
     }
 }
