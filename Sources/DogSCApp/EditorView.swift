@@ -125,6 +125,7 @@ struct EditorView: View {
     @State var pendingStylePreset: EditorStylePreset?
     @State private var spaceKeyMonitor: Any?
     @State private var titleEditingMouseMonitor: Any?
+    @State private var titleInputRegion = EditorTextInputRegion()
     @State private var isEditingTitle = false
     @State private var titleDraft = ""
     /// Sync repair is an exceptional workflow, not a permanent editor lane.
@@ -136,7 +137,7 @@ struct EditorView: View {
     private var previewResolutionMode = EditorPreviewResolutionMode.low
     @State private var preferredTimelineHeight: CGFloat?
     @State private var isEditorActive = true
-    @State private var workspaceWidth: CGFloat = 1510
+    @State private var workspaceScreenSize = NSScreen.main?.visibleFrame.size
     @State private var isWorkspaceReflowing = false
     @State private var workspaceReflowTask: Task<Void, Never>?
     @FocusState private var titleFieldFocused: Bool
@@ -171,28 +172,33 @@ struct EditorView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            editorToolbar
-            GeometryReader { geometry in
-                VStack(spacing: 0) {
-                    GeometryReader { workspace in
-                        editorWorkspace(size: workspace.size)
-                    }
-                    .background { EditorWorkspaceGrid() }
+        GeometryReader { window in
+            let layout = EditorWorkspaceLayout(size: window.size, screenSize: workspaceScreenSize)
+            VStack(spacing: 0) {
+                editorToolbar(layout: layout)
+                GeometryReader { geometry in
+                    VStack(spacing: 0) {
+                        GeometryReader { workspace in
+                            editorWorkspace(size: workspace.size, layout: layout)
+                        }
+                        .background { EditorWorkspaceGrid() }
 
-                    Color.clear.frame(height: 12)
-                    timeline(panelHeight: resolvedTimelinePanelHeight(availableHeight: geometry.size.height))
-                        .modifier(EditorFloatingSurface())
-                        .firstUseTourTarget("editor.timeline", in: .editor, highlight: .rounded(24))
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 16)
+                        Color.clear.frame(height: layout.timelineGap)
+                        timeline(panelHeight: layout.timelineHeight(
+                            preferred: preferredTimelineHeight,
+                            availableHeight: geometry.size.height
+                        ), layout: layout)
+                            .modifier(EditorFloatingSurface(cornerRadius: layout.surfaceRadius))
+                            .firstUseTourTarget("editor.timeline", in: .editor, highlight: .rounded(layout.surfaceRadius))
+                            .padding(.horizontal, layout.outerInset)
+                            .padding(.bottom, layout.outerInset)
+                    }
+                    .frame(width: geometry.size.width, height: geometry.size.height, alignment: .top)
                 }
-                .frame(width: geometry.size.width, height: geometry.size.height, alignment: .top)
-                .onAppear { workspaceWidth = geometry.size.width }
-                .onChange(of: geometry.size.width) { _, width in workspaceWidth = width }
             }
         }
-        .frame(minWidth: 1120, minHeight: 680)
+        .frame(minWidth: EditorWorkspaceLayout.minimumWindowSize.width,
+               minHeight: EditorWorkspaceLayout.minimumWindowSize.height)
         .frame(idealWidth: 1510, idealHeight: 980)
         .background(appBackground)
         // 界面交互使用铂金强调；橙/红/绿只表达内容身份与录制状态。
@@ -220,7 +226,8 @@ struct EditorView: View {
                 onActivityChanged: { active in
                     isEditorActive = active
                     playbackController.setPreviewActive(active)
-                }
+                },
+                onScreenSizeChanged: { workspaceScreenSize = $0 }
             )
             .frame(width: 0, height: 0)
         }
@@ -276,13 +283,12 @@ struct EditorView: View {
                 }
             )
         }
-        .alert("场景预设", isPresented: Binding(
+        .appDialog(isPresented: Binding(
             get: { stylePresetNotice != nil },
             set: { if !$0 { stylePresetNotice = nil } }
         )) {
-            Button("好", role: .cancel) { stylePresetNotice = nil }
-        } message: {
-            Text(stylePresetNotice ?? "")
+            AppDialog(title: "场景预设", message: stylePresetNotice ?? "", symbol: "rectangle.3.group",
+                      actions: [.init(id: "acknowledge", title: "知道了", role: .primary)])
         }
         .onReceive(EditorMenuBridge.shared.exportRequest) { _ in
             // 菜单栏 ⌘E 与工具栏导出按钮同一条路径。
@@ -505,12 +511,12 @@ struct EditorView: View {
         Binding(get: { selectedInspector }, set: { selectedInspector = $0 })
     }
 
-    private func editorWorkspace(size: CGSize) -> some View {
-        let minimumGap: CGFloat = size.width < 1250 ? 38 : 60
-        let edge: CGFloat = size.width < 1250 ? 24 : 40
+    private func editorWorkspace(size: CGSize, layout: EditorWorkspaceLayout) -> some View {
+        let minimumGap = layout.workspaceGap
+        let edge = layout.workspaceEdge
         let innerWidth = max(size.width - edge * 2, 1)
-        let availableWidth = max(innerWidth - 72 - minimumGap * 2 - resolvedInspectorContentWidth, 160)
-        let availableHeight = max(size.height - 32 - 46, 80)
+        let availableWidth = max(innerWidth - layout.railWidth - minimumGap * 2 - layout.inspectorWidth, 160)
+        let availableHeight = max(size.height - 32 - layout.canvasToolbarOffset, 80)
         var workspaceCanvas = editorStore.previewProject.canvas
         if isCropping {
             workspaceCanvas.aspectRatio = .adaptive
@@ -523,7 +529,9 @@ struct EditorView: View {
         let canvasWidth = min(availableWidth, availableHeight * ratio)
         let canvasHeight = canvasWidth / ratio
         // The user prefers the two floating tool surfaces anchored to the workspace edges.
-        let gap = max((innerWidth - 72 - resolvedInspectorContentWidth - canvasWidth) / 2, minimumGap)
+        let columnWidth = layout.isCompact ? availableWidth : canvasWidth
+        let panelHeight = layout.value(regular: canvasHeight, compact: availableHeight)
+        let gap = max((innerWidth - layout.railWidth - layout.inspectorWidth - columnWidth) / 2, minimumGap)
         return HStack(alignment: .top, spacing: gap) {
             EditorWorkspaceToolRail(
                 selection: Binding(get: { selectedInspector }, set: { selectedInspector = $0 }),
@@ -532,19 +540,26 @@ struct EditorView: View {
                 audioAvailable: sourceHasAudio || microphoneHasAudio,
                 cursorAvailable: !context.media.pointerEvents.isEmpty
             )
-            .firstUseTourTarget("editor.tools", in: .editor, highlight: .rounded(24))
-            .frame(height: canvasHeight)
-            .padding(.top, 46)
-            VStack(spacing: 8) {
-                canvasToolbar
-                previewArea.frame(height: canvasHeight).clipped()
+            .editorChromeScale(layout.chromeScale)
+            .firstUseTourTarget("editor.tools", in: .editor, highlight: .rounded(layout.surfaceRadius))
+            .frame(height: panelHeight)
+            .padding(.top, layout.canvasToolbarOffset)
+            VStack(spacing: 8 * layout.chromeScale) {
+                canvasToolbar.editorChromeScale(layout.chromeScale)
+                    .zIndex(1)
+                previewArea.frame(width: canvasWidth, height: canvasHeight).clipped()
+                    // Clipping trims pixels, not the hit regions of enlarged
+                    // screen/camera overlays. Fence them inside the monitor.
+                    .contentShape(Rectangle())
+                    .frame(maxHeight: .infinity)
             }
-            .frame(width: canvasWidth)
-            editorInspector
-                .frame(height: canvasHeight)
-                .modifier(EditorFloatingSurface())
-                .firstUseTourTarget("editor.inspector", in: .editor, highlight: .rounded(24))
-                .padding(.top, 46)
+            .frame(width: columnWidth, height: panelHeight + 48 * layout.chromeScale)
+            editorInspector(contentWidth: layout.inspectorLogicalWidth)
+                .editorChromeScale(layout.chromeScale)
+                .frame(width: layout.inspectorWidth, height: panelHeight)
+                .modifier(EditorFloatingSurface(cornerRadius: layout.surfaceRadius))
+                .firstUseTourTarget("editor.inspector", in: .editor, highlight: .rounded(layout.surfaceRadius))
+                .padding(.top, layout.canvasToolbarOffset)
         }
         .padding(.horizontal, edge)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -570,9 +585,7 @@ struct EditorView: View {
             .action("在 Finder 中显示项目包") { hostActions.revealProjectInFinder() },
             .separator,
             .action("导出项目源文件…", isEnabled: context.media.source != nil) { hostActions.exportProjectSourceMedia() },
-            .action("替换当前项目摄像头…", isEnabled: editorStore.project.media?.camera != nil) { hostActions.importCameraReplacement() },
-            .separator,
-            .action("删除当前项目…") { hostActions.deleteProject() }
+            .action("替换当前项目摄像头…", isEnabled: editorStore.project.media?.camera != nil) { hostActions.importCameraReplacement() }
         ]) {
             HStack(spacing: 4) {
                 Image(systemName: "folder").font(.appUI(size: 17))
@@ -583,12 +596,24 @@ struct EditorView: View {
         .accessibilityIdentifier("editor.project.menu")
     }
 
-    private var editorToolbar: some View {
+    private func editorToolbar(layout: EditorWorkspaceLayout) -> some View {
         ZStack {
             EditorWindowChromeInteraction().accessibilityHidden(true)
-            HStack(spacing: 12) {
+            HStack(spacing: layout.value(regular: 12, compact: 8)) {
                 projectMenu
-                titleEditor.frame(maxWidth: 360, alignment: .leading)
+                HStack(spacing: 5) {
+                    titleEditor
+                    Button { hostActions.deleteProject() } label: {
+                        Image(systemName: "trash").font(.appUI(size: 14))
+                            .foregroundStyle(.secondary).frame(width: 32, height: 36)
+                    }
+                    .buttonStyle(.editorToolbarPress)
+                    .disabled(isCropping || isEditingTitle)
+                    .help("删除当前项目…")
+                    .accessibilityLabel("删除当前项目")
+                    .accessibilityIdentifier("editor.project.delete")
+                }
+                .frame(maxWidth: layout.value(regular: 360, compact: 220), alignment: .leading)
                 persistenceIndicator
                 Spacer(minLength: 20)
                 HStack(spacing: 0) {
@@ -605,10 +630,11 @@ struct EditorView: View {
                     .disabled(isCropping || undoManager?.canRedo != true)
                     .help("重做（⌘⇧Z）").accessibilityLabel("重做")
                 }
-                .padding(2).background(EditorTheme.cardElevated, in: RoundedRectangle(cornerRadius: 13))
+                .padding(4).background(EditorTheme.cardElevated, in: RoundedRectangle(cornerRadius: 13))
                 .overlay(RoundedRectangle(cornerRadius: 13).strokeBorder(EditorTheme.hairline, lineWidth: 0.75))
-                stylePresetControl(compact: false)
+                stylePresetControl(compact: layout.isCompact)
                     .disabled(isCropping || isSavingStylePreset)
+                    .padding(4)
                     .background(EditorTheme.cardElevated, in: RoundedRectangle(cornerRadius: 13))
                     .overlay(RoundedRectangle(cornerRadius: 13).strokeBorder(EditorTheme.hairline, lineWidth: 0.75))
                     .help("保存或复用完整场景配置")
@@ -631,7 +657,7 @@ struct EditorView: View {
             }
             .padding(.horizontal, 20)
         }
-        .frame(height: 72)
+        .frame(height: layout.toolbarHeight)
         .background(EditorTheme.panelSurface.opacity(0.88))
     }
 
@@ -647,10 +673,7 @@ struct EditorView: View {
                 .disabled(mediaSession.outputDuration <= 0)
                 EditorActionMenu(title: "预览选项", items: [
                     .action("完整分辨率", isOn: previewResolutionMode == .full) { previewResolutionMode = .full },
-                    .action("清晰预览", isOn: previewResolutionMode == .low) { previewResolutionMode = .low },
-                    .separator,
-                    .action("动态模糊", isOn: editorStore.project.motion.frameMotionBlur.isEnabled,
-                            isEnabled: mediaSession.outputDuration > 0) { toggleFrameMotionBlur() }
+                    .action("清晰预览", isOn: previewResolutionMode == .low) { previewResolutionMode = .low }
                 ]) { EditorToolbarIconSurface(systemName: "slider.horizontal.3") }
             }
         }
@@ -744,8 +767,14 @@ struct EditorView: View {
                 .textFieldStyle(.plain).font(.appUI(size: 15, weight: .medium))
                 .padding(.horizontal, 10).frame(height: 36)
                 .background(EditorTheme.cardElevated, in: RoundedRectangle(cornerRadius: 9))
-                .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(EditorTheme.selectionTint.opacity(0.5)))
+                .background(EditorTextInputRegionAnchor(region: titleInputRegion))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 9)
+                        .strokeBorder(EditorTheme.selectionTint.opacity(0.5))
+                        .allowsHitTesting(false)
+                }
                 .focused($titleFieldFocused)
+                .accessibilityIdentifier("editor.project.title-input")
                 .onSubmit(commitTitleEdit)
                 .onChange(of: titleFieldFocused) { _, focused in
                     if !focused { commitTitleEdit() }
@@ -764,7 +793,8 @@ struct EditorView: View {
                     Image(systemName: "pencil")
                         .font(.appUI(size: 12)).foregroundStyle(.tertiary)
                 }
-                .padding(.vertical, 8).contentShape(Rectangle())
+                .padding(.horizontal, 10).frame(height: 36)
+                .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
             }
             .buttonStyle(.editorToolbarPress)
             .accessibilityLabel("重命名项目").accessibilityValue(projectDisplayTitle)
@@ -777,6 +807,7 @@ struct EditorView: View {
     }
 
     private func commitTitleEdit() {
+        guard isEditingTitle else { return }
         let trimmed = titleDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         isEditingTitle = false
         titleFieldFocused = false
@@ -875,17 +906,6 @@ struct EditorView: View {
                 return false
             }
             return type.conforms(to: .image)
-        }
-    }
-
-
-    private func toggleFrameMotionBlur() {
-        var motion = editorStore.project.motion
-        motion.frameMotionBlur.isEnabled.toggle()
-        do {
-            try editorStore.replaceMotion(with: motion, actionName: "切换动态模糊")
-        } catch {
-            hostActions.reportError(error.localizedDescription)
         }
     }
 
@@ -1111,7 +1131,7 @@ struct EditorView: View {
         .accessibilityValue(showsProgress ? "处理中" : "需要注意")
     }
 
-    private func timeline(panelHeight: CGFloat) -> some View {
+    private func timeline(panelHeight: CGFloat, layout: EditorWorkspaceLayout) -> some View {
         EditorTimelineView(
             editorStore: editorStore,
             mediaSession: mediaSession,
@@ -1119,6 +1139,7 @@ struct EditorView: View {
             isCameraSyncEditing: isCameraSyncEditing && selectedInspector == .camera,
             windowDeactivationRevision: windowDeactivationRevision,
             panelHeight: panelHeight,
+            layout: layout,
             visibleTracks: timelineTrackVisibilityBinding,
             selectedPrimarySegmentIDs: $selectedPrimarySegmentIDs,
             onError: hostActions.reportError,
@@ -1128,28 +1149,15 @@ struct EditorView: View {
         .disabled(isCropping)
     }
 
-    private func resolvedTimelinePanelHeight(availableHeight: CGFloat) -> CGFloat {
-        // Grow upward by the actual sum of visible rows, including overlay
-        // lanes and camera sync. Only a genuinely small window needs scrolling.
-        // The budget is measured below the toolbar, without a stale height
-        // preference or a percentage cap that clips ordinary expanded tracks.
-        let minimumWorkspaceHeight: CGFloat = 320
-        let surroundingSpacing: CGFloat = 12 + 16
-        let budget = max(availableHeight - minimumWorkspaceHeight - surroundingSpacing, 170)
-        return min((preferredTimelineHeight ?? 300).rounded(.up), budget)
-    }
-
-    private func updatePreferredTimelineHeight(_ height: CGFloat) {
+    private func updatePreferredTimelineHeight(_ height: CGFloat, animated: Bool) {
         guard preferredTimelineHeight != height else { return }
-        guard preferredTimelineHeight != nil else {
-            preferredTimelineHeight = height
+        guard preferredTimelineHeight != nil, animated else {
+            var transaction = Transaction()
+            transaction.animation = nil
+            withTransaction(transaction) { preferredTimelineHeight = height }
             return
         }
         performWorkspaceReflow { preferredTimelineHeight = height }
-    }
-
-    private var resolvedInspectorContentWidth: CGFloat {
-        min(max(workspaceWidth * 0.23, 384), 432)
     }
 
     private var timelineTrackVisibilityBinding: Binding<EditorTimelineTrackVisibility> {
@@ -1173,6 +1181,8 @@ struct EditorView: View {
     private func installSpaceKeyMonitor() {
         guard spaceKeyMonitor == nil else { return }
         spaceKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.window?.identifier?.rawValue
+                    == "cn.laogou.dogsc.editor-window", NSApp.modalWindow == nil else { return event }
             if event.keyCode == 53, isCropping {
                 discardCrop()
                 return nil
@@ -1280,7 +1290,8 @@ struct EditorView: View {
         ) { event in
             guard event.window?.identifier?.rawValue
                     == "cn.laogou.dogsc.editor-window" else { return event }
-            let targetsTextInput = mouseEventTargetsTextInput(event)
+            let targetsTextInput = (isEditingTitle && titleInputRegion.contains(event))
+                || mouseEventTargetsTextInput(event)
 
             // NSTextView keeps its caret even after the user resumes working
             // on empty inspector/timeline chrome. End any editable field when
@@ -1308,18 +1319,11 @@ struct EditorView: View {
     }
 
     private func mouseEventTargetsTextInput(_ event: NSEvent) -> Bool {
-        guard let contentView = event.window?.contentView else { return false }
-        let point = contentView.convert(event.locationInWindow, from: nil)
-        var candidate = contentView.hitTest(point)
-        while let view = candidate {
-            if view is NSTextField { return true }
-            if let textView = view as? NSTextView, textView.isEditable { return true }
-            candidate = view.superview
-        }
-        return false
+        guard let window = event.window else { return false }
+        return EditorTextInputHitTesting.targetsTextInput(at: event.locationInWindow, in: window)
     }
 
-    private var editorInspector: some View {
+    private func editorInspector(contentWidth: CGFloat) -> some View {
         EditorInspectorView(
             editorStore: editorStore,
             mediaSession: mediaSession,
@@ -1330,7 +1334,7 @@ struct EditorView: View {
             visibleTimelineTracks: timelineTrackVisibilityBinding,
             isCropping: cropPresentation.inspectorMode == .cropInspector,
             cropDraft: cropDraftBinding,
-            contentWidth: resolvedInspectorContentWidth,
+            contentWidth: contentWidth,
             onChooseWallpaper: hostActions.chooseWallpaper,
             onChooseDesktopWallpaper: hostActions.importDesktopWallpaper,
             onError: hostActions.reportError

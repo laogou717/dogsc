@@ -34,6 +34,8 @@ struct RecorderButtonStyle: ButtonStyle {
             .foregroundStyle(primary ? .white : RecorderStyle.ink)
             .background(primary ? AnyShapeStyle(Color(white: configuration.isPressed ? 0.16 : 0.24)) : AnyShapeStyle(Color.white), in: RoundedRectangle(cornerRadius: 11))
             .overlay { RoundedRectangle(cornerRadius: 11).strokeBorder(RecorderStyle.line, lineWidth: 0.75) }
+            .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 11),
+                              color: primary ? .white.opacity(0.65) : EditorTheme.chrome(0.40))
             .shadow(color: RecorderStyle.lift.opacity(configuration.isPressed ? 0.3 : 0.8), radius: configuration.isPressed ? 1 : 4, y: 2)
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
             .animation(.easeOut(duration: 0.14), value: configuration.isPressed)
@@ -130,6 +132,7 @@ struct RecorderCirclePressStyle: ButtonStyle {
                         .fill(.black.opacity(isEnabled ? (configuration.isPressed ? 0.10 : hovered ? 0.065 : 0) : 0))
                         .allowsHitTesting(false)
                 }
+                .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                 .scaleEffect(configuration.isPressed && isEnabled ? 0.95 : 1)
                 .onHover { hovered = $0 }
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: hovered)

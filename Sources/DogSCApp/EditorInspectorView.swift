@@ -1224,31 +1224,14 @@ struct EditorInspectorView: View {
     @ViewBuilder
     var motionInspector: some View {
         VStack(alignment: .leading, spacing: 14) {
-            EditorInspectorSection("运镜类型") {
+            if motionInspectorMode == .zoom, let index = selectedZoomAnimationIndex {
                 EditorSegmentedControl(
-                    options: EditorMotionInspectorMode.allCases,
-                    title: { $0 == .screen3D ? "屏幕 3D" : "缩放" },
-                    icon: { $0 == .screen3D ? "cube.transparent" : "scope" },
-                    selection: Binding(
-                        get: { motionInspectorMode },
-                        set: { mode in
-                            motionInspectorMode = mode
-                            switch mode {
-                            case .zoom:
-                                if case .zoom = editorStore.selection { return }
-                                if editorStore.selection != .zoomTrack {
-                                    editorStore.selection = .zoomTrack
-                                }
-                            case .screen3D:
-                                if case .screenMotion = editorStore.selection { return }
-                                if editorStore.selection != .screenMotionTrack {
-                                    editorStore.selection = .screenMotionTrack
-                                }
-                            }
-                        }
-                    )
+                    options: [ZoomKeyframeOrigin.automatic, .manual],
+                    title: { $0 == .automatic ? "自动跟随" : "手动定位" },
+                    selection: zoomAnimationOriginBinding(index)
                 )
-
+            } else {
+                motionTypeSelector
             }
 
             if motionInspectorMode == .zoom {
@@ -1285,6 +1268,34 @@ struct EditorInspectorView: View {
         }
     }
 
+    var motionTypeSelector: some View {
+        EditorInspectorSection("运镜类型") {
+            EditorSegmentedControl(
+                options: EditorMotionInspectorMode.allCases,
+                title: { $0 == .screen3D ? "屏幕 3D" : "缩放" },
+                icon: { $0 == .screen3D ? "cube.transparent" : "scope" },
+                selection: Binding(
+                    get: { motionInspectorMode },
+                    set: { mode in
+                        motionInspectorMode = mode
+                        switch mode {
+                        case .zoom:
+                            if case .zoom = editorStore.selection { return }
+                            if editorStore.selection != .zoomTrack {
+                                editorStore.selection = .zoomTrack
+                            }
+                        case .screen3D:
+                            if case .screenMotion = editorStore.selection { return }
+                            if editorStore.selection != .screenMotionTrack {
+                                editorStore.selection = .screenMotionTrack
+                            }
+                        }
+                    }
+                )
+            )
+        }
+    }
+
     var zoomInspector: some View {
         VStack(alignment: .leading, spacing: 14) {
             if let index = selectedZoomAnimationIndex {
@@ -1316,11 +1327,7 @@ struct EditorInspectorView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 12) {
-                    EditorSegmentedControl(
-                        options: [ZoomKeyframeOrigin.automatic, .manual],
-                        title: { $0 == .automatic ? "自动跟随" : "手动定位" },
-                        selection: zoomAnimationOriginBinding(index)
-                    )
+                    motionTypeSelector
 
                     sliderRow(
                         "放大比例",

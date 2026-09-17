@@ -19,11 +19,11 @@ struct PreviewRenderJob: @unchecked Sendable {
     /// The display-link deadline this playback frame was evaluated for.
     /// Stationary frames have no deadline and present immediately.
     let presentationHostTime: CFTimeInterval?
+    let diagnostics: PreviewFrameDiagnostics.Frame?
     let plan: FrameRenderPlan
-    /// An actual project 3D frame evaluated at the same raster size. It is
-    /// rendered offscreen after the visible paused frame so playback never
-    /// discovers the full-size perspective allocation on its first 3D tick.
-    let perspectivePrewarmPlan: FrameRenderPlan?
+    /// A bounded set of upcoming combined effect plans. Prepared only after
+    /// paused idle, at the selected full raster size, without another decoder.
+    let effectPrewarmPlans: [FrameRenderPlan]
     let resources: SharedFrameRenderResources
     let canvasSize: CompositionSize
     /// Actual on-screen drawable size. The editor may display a 4K project in
@@ -158,6 +158,53 @@ struct PreviewCursorContentsSignature: Equatable {
     let assetID: CursorAssetID
     let width: Int
     let height: Int
+
+    /// Rotation/projective basis arithmetic can turn an exact 110 pixels into
+    /// 110.00000000000003. Do not allocate another bitmap for that roundoff.
+    static func pixelDimension(_ value: CGFloat) -> Int {
+        guard value.isFinite, value > 0 else { return 1 }
+        return max(Int(ceil(value - 0.000_001)), 1)
+    }
+}
+
+/// Keep a few recently used cursor shapes/sizes for hover and zoom changes.
+/// This cache owns only tiny preview bitmaps, never full-canvas textures.
+struct PreviewCursorBitmapCache {
+    private struct Entry {
+        let signature: PreviewCursorContentsSignature
+        let image: CGImage
+        var cost: Int { image.bytesPerRow * image.height }
+    }
+
+    private var entries: [Entry] = []
+    private var totalCost = 0
+    private let costLimit = 2 * 1_024 * 1_024
+    private let countLimit = 12
+
+    mutating func image(
+        for signature: PreviewCursorContentsSignature,
+        make: () -> CGImage?
+    ) -> CGImage? {
+        if let index = entries.firstIndex(where: { $0.signature == signature }) {
+            let entry = entries.remove(at: index)
+            entries.append(entry)
+            return entry.image
+        }
+        guard let image = make() else { return nil }
+        let entry = Entry(signature: signature, image: image)
+        guard entry.cost <= costLimit else { return image }
+        while entries.count >= countLimit || totalCost + entry.cost > costLimit {
+            totalCost -= entries.removeFirst().cost
+        }
+        entries.append(entry)
+        totalCost += entry.cost
+        return image
+    }
+
+    mutating func reset() {
+        entries.removeAll(keepingCapacity: false)
+        totalCost = 0
+    }
 }
 
 /// Keeps the editor's time-invariant background as one stable Core Image
@@ -295,64 +342,6 @@ enum PreviewLayerRetirementPolicy {
     }
 }
 
-/// Structural identity of the expensive full-size 3D Core Image graph.
-/// Animation time, position, scale and quad coordinates deliberately do not
-/// participate: those values change parameters of an already-compiled graph,
-/// not the filter/texture families it must allocate. Editing only a transition
-/// duration therefore cannot launch another 5K prewarm beside Play.
-struct PreviewPerspectivePrewarmSignature: Equatable, Hashable, Sendable {
-    let destinationWidth: Int
-    let destinationHeight: Int
-    let hasProjectedBorder: Bool
-    let hasProjectedShadow: Bool
-    let hasScreenChrome: Bool
-    let hasRasterCursor: Bool
-    let hasCamera: Bool
-    let hasCameraBorder: Bool
-    let hasCameraShadow: Bool
-    let hasBackgroundBlur: Bool
-
-    init?(plan: FrameRenderPlan, destinationPixelSize: CGSize) {
-        let scene = plan.scene
-        guard !SharedFrameRenderer.isIdentityProjection(scene.screen) else {
-            return nil
-        }
-        destinationWidth = max(Int(destinationPixelSize.width.rounded()), 2)
-        destinationHeight = max(Int(destinationPixelSize.height.rounded()), 2)
-        hasProjectedBorder = scene.screen.borderWidth > 0
-        hasProjectedShadow = (scene.screen.shadow?.opacity ?? 0) > 0
-        if case .chrome = scene.screen.decoration {
-            hasScreenChrome = true
-        } else {
-            hasScreenChrome = false
-        }
-        hasRasterCursor = scene.cursor != nil && scene.layerOrder.contains(.cursor)
-        hasCamera = (scene.camera?.opacity ?? 0) > 0
-        hasCameraBorder = (scene.camera?.borderWidth ?? 0) > 0
-        hasCameraShadow = (scene.camera?.shadow?.opacity ?? 0) > 0
-        hasBackgroundBlur = scene.background.blurRadius > 0
-    }
-}
-
-enum PreviewPerspectivePrewarmPolicy {
-    /// Give a just-edited paused frame a short quiet interval. If the user
-    /// presses Play immediately, the epoch changes and the retired full-size
-    /// warm-up is skipped instead of competing with the first playback frame.
-    static let idleDelay: TimeInterval = 0.12
-
-    static func shouldRun(
-        jobGeneration: UInt64,
-        latestGeneration: UInt64,
-        jobEpochID: UInt64,
-        latestEpochID: UInt64,
-        colorContractMatches: Bool
-    ) -> Bool {
-        jobGeneration == latestGeneration
-            && jobEpochID == latestEpochID
-            && colorContractMatches
-    }
-}
-
 enum PreviewRenderBackpressurePolicy {
     static func maximumInFlight(
         isPausedFrame: Bool,
@@ -434,7 +423,7 @@ enum SharedPreviewFramePipeline {
             height: cursor.layout.size.height
         )
         if cursor.isClicking {
-            let footprint = max(cursor.layout.clickDiameter, cursor.layout.size.height * 2.5) * cursor.clickScale
+            let footprint = max(cursor.layout.clickDiameter, cursor.layout.clickEffectHeight * 2.5) * cursor.clickScale
             let radius = footprint / 2
             cursorRect = cursorRect.union(CGRect(
                 x: cursor.layout.pointer.x - radius,

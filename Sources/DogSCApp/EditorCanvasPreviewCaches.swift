@@ -55,35 +55,27 @@ final class EditorCanvasPlaybackTrackCache {
     }
 }
 
-/// One exact future 3D prewarm request. `CanvasPreview` may recompute its body
-/// for hover, focus and selection chrome without changing any render input.
-/// Keeping this cache non-observable avoids publishing another SwiftUI update,
-/// while the complete playback context makes stale-plan reuse impossible.
+/// Cache only a few semantic plans, never decoded frames or full-size pixels.
+/// Hover/focus updates reuse these inputs; editing an effect invalidates them.
 @MainActor
-final class EditorCanvasPerspectivePrewarmPlanCache {
-    private struct Input: Equatable, Sendable {
-        let playbackEvaluation: CanvasPlaybackEvaluationContext
-        let playbackTime: TimeInterval
+final class EditorCanvasEffectPrewarmPlanCache {
+    private struct Input: Equatable {
+        let evaluation: CanvasPlaybackEvaluationContext
+        let times: [TimeInterval]
     }
-
     private var input: Input?
-    private var renderPlan: FrameRenderPlan?
+    private var renderPlans: [FrameRenderPlan] = []
 
-    func plan(
-        at playbackTime: TimeInterval,
-        using playbackEvaluation: CanvasPlaybackEvaluationContext
-    ) -> FrameRenderPlan {
-        let nextInput = Input(
-            playbackEvaluation: playbackEvaluation,
-            playbackTime: playbackTime
-        )
-        if input == nextInput, let renderPlan {
-            return renderPlan
-        }
-        let nextPlan = playbackEvaluation.frame(at: playbackTime).renderPlan
-        input = nextInput
-        renderPlan = nextPlan
-        return nextPlan
+    func plans(
+        around time: TimeInterval,
+        using evaluation: CanvasPlaybackEvaluationContext
+    ) -> [FrameRenderPlan] {
+        let next = Input(evaluation: evaluation,
+                         times: PreviewAnimationPreparation.prewarmTimes(around: time, using: evaluation))
+        if input == next { return renderPlans }
+        renderPlans = next.times.map { evaluation.frame(at: $0).renderPlan }
+        input = next
+        return renderPlans
     }
 }
 
@@ -172,25 +164,30 @@ final class EditorCanvasPlaybackPlanCache {
             invalidate()
         }
 
+        if isPlaying || isInteracting {
+            preparationTask?.cancel()
+            preparationTask = nil
+        }
         guard let nextRange else { return nil }
         let nextInput = Input(evaluation: evaluation, frameRange: nextRange)
 
         if isPlaying || isInteracting {
-            preparationTask?.cancel()
-            preparationTask = nil
-            guard input == nextInput else { return nil }
+            // Advancing the playhead changes the prospective cache range,
+            // not the validity of already-prepared entries. Keep the handle
+            // while its evaluation context matches; out-of-range reads miss.
+            guard input?.evaluation == evaluation, !frames.isEmpty else { return nil }
             return Handle(
                 generation: generation,
-                frameRate: max(evaluation.frameRate, 1)
+                frameRate: PreviewAnimationCadence.framesPerSecond
             )
         }
 
-        if input != nextInput {
+        if input != nextInput || (preparationTask == nil && frames.count < nextInput.frameRange.count) {
             startPreparation(for: nextInput)
         }
         return Handle(
             generation: generation,
-            frameRate: max(evaluation.frameRate, 1)
+            frameRate: PreviewAnimationCadence.framesPerSecond
         )
     }
 
@@ -218,8 +215,9 @@ final class EditorCanvasPlaybackPlanCache {
         generation &+= 1
         let requestedGeneration = generation
         preparationTask?.cancel()
+        if input != nextInput { frames.removeAll(keepingCapacity: true) }
         input = nextInput
-        frames.removeAll(keepingCapacity: true)
+        let completedIndices = Set(frames.keys)
 
         preparationTask = Task.detached(priority: .utility) { [weak self] in
             do {
@@ -231,12 +229,13 @@ final class EditorCanvasPlaybackPlanCache {
                 return
             }
 
-            let frameRate = max(nextInput.evaluation.frameRate, 1)
+            let frameRate = PreviewAnimationCadence.framesPerSecond
             var batch: [IndexedFrame] = []
             batch.reserveCapacity(8)
 
             for index in nextInput.frameRange {
                 guard !Task.isCancelled else { return }
+                guard !completedIndices.contains(index) else { continue }
                 let time = Double(index) / Double(frameRate)
                 batch.append(IndexedFrame(
                     index: index,
@@ -298,29 +297,7 @@ final class EditorCanvasPlaybackPlanCache {
         let now = min(max(requestedTime.isFinite ? requestedTime : 0, 0), duration)
         let horizonEnd = min(now + 8, duration)
 
-        var intervals: [(start: TimeInterval, end: TimeInterval)] = []
-        intervals.reserveCapacity(
-            evaluation.zoomTrack.animations.count
-                + evaluation.screenMotionTrack.clips.count
-                + evaluation.cameraMotionTrack.clips.count
-                + evaluation.project.timeline.mosaicClips.count
-                + evaluation.project.timeline.stickerClips.count
-        )
-        intervals.append(contentsOf: evaluation.zoomTrack.animations.map {
-            ($0.startTime, $0.effectEndTime)
-        })
-        intervals.append(contentsOf: evaluation.screenMotionTrack.clips.map {
-            ($0.timing.startTime, $0.timing.effectEndTime)
-        })
-        intervals.append(contentsOf: evaluation.cameraMotionTrack.clips.map {
-            ($0.timing.startTime, $0.timing.effectEndTime)
-        })
-        intervals.append(contentsOf: evaluation.project.timeline.mosaicClips.map {
-            ($0.timing.startTime, $0.timing.endTime)
-        })
-        intervals.append(contentsOf: evaluation.project.timeline.stickerClips.map {
-            ($0.timing.startTime, $0.timing.endTime)
-        })
+        let intervals = PreviewAnimationPreparation.intervals(using: evaluation)
 
         guard let interval = intervals.lazy
             .filter({ $0.end > now && $0.start <= horizonEnd })
@@ -330,7 +307,7 @@ final class EditorCanvasPlaybackPlanCache {
             })
         else { return nil }
 
-        let frameRate = max(evaluation.frameRate, 1)
+        let frameRate = PreviewAnimationCadence.framesPerSecond
         let frameDuration = 1 / Double(frameRate)
         let start = max(now, interval.start - 0.20)
         // Most authored enters/returns complete within a second. A 2.5-second

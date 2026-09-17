@@ -170,26 +170,6 @@ public enum FrameScreenDecoration: Equatable, Sendable {
     }
 }
 
-/// One-frame displacement used by the layer-local motion treatment. Values are
-/// authored in the scene's top-left canvas coordinate system.
-public struct FrameLayerMotion: Equatable, Sendable {
-    public var deltaX: Double
-    public var deltaY: Double
-    public var strength: Double
-
-    public init(deltaX: Double, deltaY: Double, strength: Double) {
-        self.deltaX = deltaX.isFinite ? deltaX : 0
-        self.deltaY = deltaY.isFinite ? deltaY : 0
-        self.strength = min(max(strength.isFinite ? strength : 0, 0), 1)
-    }
-
-    public static let none = FrameLayerMotion(deltaX: 0, deltaY: 0, strength: 0)
-
-    public var distance: Double {
-        hypot(deltaX, deltaY) * strength
-    }
-}
-
 public struct FrameMosaicScene: Equatable, Sendable {
     public var sourceRect: NormalizedOverlayRect
     public var cornerRadius: Double
@@ -236,7 +216,6 @@ public struct FrameScreenScene: Equatable, Sendable {
     public var decoration: FrameScreenDecoration
     public var mosaics: [FrameMosaicScene]
     public var focusEffect: FrameFocusScene?
-    public var motion: FrameLayerMotion
     public var opacity: Double
 
     public var projectionRect: CompositionRect {
@@ -257,7 +236,6 @@ public struct FrameScreenScene: Equatable, Sendable {
         decoration: FrameScreenDecoration = .none,
         mosaics: [FrameMosaicScene] = [],
         focusEffect: FrameFocusScene? = nil,
-        motion: FrameLayerMotion = .none,
         opacity: Double = 1
     ) {
         self.sourceCrop = sourceCrop.clamped()
@@ -273,7 +251,6 @@ public struct FrameScreenScene: Equatable, Sendable {
         self.decoration = decoration
         self.mosaics = mosaics
         self.focusEffect = focusEffect
-        self.motion = motion
         self.opacity = min(max(opacity, 0), 1)
     }
 }
@@ -287,7 +264,6 @@ public struct FrameCameraScene: Equatable, Sendable {
     public var shadow: FrameShadow?
     public var opacity: Double
     public var isMirrored: Bool
-    public var motion: FrameLayerMotion
 
     public init(
         rect: CompositionRect,
@@ -297,8 +273,7 @@ public struct FrameCameraScene: Equatable, Sendable {
         borderColor: HexColor = .white,
         shadow: FrameShadow?,
         opacity: Double,
-        isMirrored: Bool,
-        motion: FrameLayerMotion = .none
+        isMirrored: Bool
     ) {
         self.rect = rect
         self.contentFill = contentFill
@@ -308,7 +283,6 @@ public struct FrameCameraScene: Equatable, Sendable {
         self.shadow = shadow
         self.opacity = min(max(opacity, 0), 1)
         self.isMirrored = isMirrored
-        self.motion = motion
     }
 }
 
@@ -335,7 +309,6 @@ public struct FrameCursorScene: Equatable, Sendable {
     public var rotationRadians: Double
     public var shadow: FrameShadow?
     public var attachment: FrameCursorAttachment
-    public var motion: FrameLayerMotion
 
     public var effectiveClickColor: HexColor {
         clickColor ?? metrics.clickColor
@@ -354,8 +327,7 @@ public struct FrameCursorScene: Equatable, Sendable {
         clickScale: Double = 1.0,
         rotationRadians: Double = 0,
         shadow: FrameShadow?,
-        attachment: FrameCursorAttachment = .screen,
-        motion: FrameLayerMotion = .none
+        attachment: FrameCursorAttachment = .screen
     ) {
         self.assetID = assetID
         self.metrics = metrics
@@ -370,7 +342,6 @@ public struct FrameCursorScene: Equatable, Sendable {
         self.rotationRadians = rotationRadians.isFinite ? rotationRadians : 0
         self.shadow = shadow
         self.attachment = attachment
-        self.motion = motion
     }
 }
 
@@ -445,8 +416,7 @@ public struct FrameScene: Equatable, Sendable {
     }
 }
 
-/// One output-frame request. Motion treatment is already lowered into the
-/// scene's moving layers, so preview and export consume one identical scene.
+/// One output-frame request. Preview and export consume one identical scene.
 public struct FrameRenderPlan: Equatable, Sendable {
     public var presentationTime: TimeInterval
     public var outputDuration: TimeInterval
@@ -469,6 +439,50 @@ public struct FrameRenderPlan: Equatable, Sendable {
 /// The only project-aware per-frame interpreter. Render backends receive the
 /// resulting immutable plan and API-specific media-frame handles separately.
 public enum FrameSceneEvaluator {
+    /// A preview may reuse an expensive video-frame plan at 30/60 Hz, but the
+    /// pointer still belongs to the display-link clock. Re-evaluate only its
+    /// recorded path, visibility, shape and click phase against that plan's
+    /// screen geometry; never quantize those to the cached video-frame time.
+    public static func refreshingCursor(
+        in plan: FrameRenderPlan,
+        at presentationTime: TimeInterval,
+        project: RecorderProject,
+        pointerTrack: ProjectPointerTrack?,
+        cursorMetrics: CursorAssetMetrics?,
+        cursorMetricsByAssetID: [CursorAssetID: CursorAssetMetrics],
+        zoomTrack: ZoomAnimationTrack
+    ) -> FrameRenderPlan {
+        let time = presentationTime.isFinite
+            ? min(max(presentationTime, 0), plan.outputDuration) : 0
+        let activeAutomaticClip = zoomTrack.activeClip(at: time).flatMap {
+            $0.origin == .automatic ? $0 : nil
+        }
+        let pointer = pointerTrack?.evaluation(
+            at: time,
+            motion: project.motion,
+            style: project.cursorStyle,
+            automaticEntry: activeAutomaticClip
+        )
+        var result = plan
+        result.presentationTime = time
+        // Keep the cached video/background phase. Advancing scene.time here
+        // would also re-render a full-canvas animated wallpaper at cursor Hz.
+        result.scene.cursor = cursorScene(
+            sample: pointer?.cursor,
+            project: project,
+            metrics: cursorMetrics,
+            metricsByAssetID: cursorMetricsByAssetID,
+            screen: plan.scene.screen,
+            canvasSize: plan.scene.canvasSize
+        )
+        result.scene.layerOrder.removeAll { $0 == .cursor }
+        if result.scene.cursor != nil,
+           let screenIndex = result.scene.layerOrder.firstIndex(of: .screen) {
+            result.scene.layerOrder.insert(.cursor, at: screenIndex + 1)
+        }
+        return result
+    }
+
     public static func renderPlan(
         project: RecorderProject,
         presentationTime: TimeInterval,
@@ -483,7 +497,6 @@ public enum FrameSceneEvaluator {
         zoomTrack: ZoomAnimationTrack? = nil,
         screenMotionTrack: ScreenMotionTrack? = nil,
         cameraMotionTrack: CameraMotionTrack? = nil,
-        activePrimaryRange: MediaTimeRange? = nil,
         cameraTimeline: TimelineMediaPlan? = nil,
         color: FrameColorContract = .sdrDesktop
     ) -> FrameRenderPlan {
@@ -497,7 +510,7 @@ public enum FrameSceneEvaluator {
         // next camera slice, while `safeTime >= slice.outputStart` is false.
         // That disagreement hides the camera for exactly one exported frame.
         let cameraIsAvailable = cameraTimeline?.contains(outputTime: safeTime) ?? true
-        var current = scene(
+        let current = scene(
             project: project,
             time: safeTime,
             outputDuration: safeDuration,
@@ -512,48 +525,6 @@ public enum FrameSceneEvaluator {
             cameraMotionTrack: cameraMotionTrack,
             color: color
         )
-        let descriptor = project.motion.frameMotionBlur
-        // Derive blur from the layer's outgoing motion. Sampling the previous
-        // frame left a non-zero trail on the exact animation endpoint, then
-        // removed it one frame later; borders and shadows consequently looked
-        // as if they popped after the movement had already finished.
-        let nextTime = min(
-            safeTime + 1 / Double(max(frameRate, 1)),
-            safeDuration
-        )
-        let staysInsidePrimary = activePrimaryRange.map {
-            safeTime >= $0.start && safeTime < $0.end
-                && nextTime >= $0.start && nextTime < $0.end
-        } ?? true
-        if descriptor.isEnabled,
-           descriptor.strength > 0,
-           nextTime > safeTime,
-           staysInsidePrimary {
-            // Query the complete plan rather than the current slice. The next
-            // motion-blur sample may cross into an adjacent retained segment,
-            // where the camera is still continuously available.
-            let nextCameraIsAvailable = cameraTimeline?.contains(outputTime: nextTime) ?? true
-            let next = scene(
-                project: project,
-                time: nextTime,
-                outputDuration: safeDuration,
-                canvasSize: canvasSize,
-                sourceAspectRatio: sourceAspectRatio,
-                cameraSourceSize: nextCameraIsAvailable ? cameraSourceSize : nil,
-                pointerTrack: pointerTrack,
-                cursorMetrics: cursorMetrics,
-                cursorMetricsByAssetID: cursorMetricsByAssetID,
-                zoomTrack: zoomTrack,
-                screenMotionTrack: screenMotionTrack,
-                cameraMotionTrack: cameraMotionTrack,
-                color: color
-            )
-            current = applyingLayerMotion(
-                to: current,
-                toward: next,
-                strength: descriptor.strength
-            )
-        }
         return FrameRenderPlan(
             presentationTime: safeTime,
             outputDuration: safeDuration,
@@ -805,8 +776,7 @@ public enum FrameSceneEvaluator {
             metrics: cursorMetrics,
             metricsByAssetID: cursorMetricsByAssetID,
             screen: screen,
-            canvasSize: CompositionSize(width: width, height: height),
-            styleScale: styleScale
+            canvasSize: CompositionSize(width: width, height: height)
         )
         var stickers = stickerScenes(
             project.timeline.stickerClips,
@@ -1188,74 +1158,6 @@ public enum FrameSceneEvaluator {
         return min(enter, exit)
     }
 
-    private static func applyingLayerMotion(
-        to current: FrameScene,
-        toward next: FrameScene,
-        strength: Double
-    ) -> FrameScene {
-        var result = current
-        let cornerDeltas = zip(
-            next.screen.projectedQuad.corners,
-            current.screen.projectedQuad.corners
-        ).map { nextPoint, currentPoint in
-            (
-                x: nextPoint.x - currentPoint.x,
-                y: nextPoint.y - currentPoint.y
-            )
-        }
-        if let dominant = cornerDeltas.max(by: {
-            hypot($0.x, $0.y) < hypot($1.x, $1.y)
-        }) {
-            result.screen.motion = FrameLayerMotion(
-                deltaX: dominant.x,
-                deltaY: dominant.y,
-                strength: strength
-            )
-        }
-        if let currentCamera = current.camera,
-           let nextCamera = next.camera {
-            let cameraDeltas = [
-                (
-                    x: nextCamera.rect.x - currentCamera.rect.x,
-                    y: nextCamera.rect.y - currentCamera.rect.y
-                ),
-                (
-                    x: nextCamera.rect.x + nextCamera.rect.width
-                        - currentCamera.rect.x - currentCamera.rect.width,
-                    y: nextCamera.rect.y - currentCamera.rect.y
-                ),
-                (
-                    x: nextCamera.rect.x + nextCamera.rect.width
-                        - currentCamera.rect.x - currentCamera.rect.width,
-                    y: nextCamera.rect.y + nextCamera.rect.height
-                        - currentCamera.rect.y - currentCamera.rect.height
-                ),
-                (
-                    x: nextCamera.rect.x - currentCamera.rect.x,
-                    y: nextCamera.rect.y + nextCamera.rect.height
-                        - currentCamera.rect.y - currentCamera.rect.height
-                ),
-            ]
-            let cameraMotion = cameraDeltas.max {
-                hypot($0.x, $0.y) < hypot($1.x, $1.y)
-            } ?? (x: 0, y: 0)
-            result.camera?.motion = FrameLayerMotion(
-                deltaX: cameraMotion.x,
-                deltaY: cameraMotion.y,
-                strength: strength
-            )
-        }
-        if let currentCursor = current.cursor,
-           let nextCursor = next.cursor {
-            result.cursor?.motion = FrameLayerMotion(
-                deltaX: nextCursor.layout.pointer.x - currentCursor.layout.pointer.x,
-                deltaY: nextCursor.layout.pointer.y - currentCursor.layout.pointer.y,
-                strength: strength
-            )
-        }
-        return result
-    }
-
     private static func screenDecoration(
         style: ScreenFrameStyle,
         frameScale: Double,
@@ -1373,8 +1275,7 @@ public enum FrameSceneEvaluator {
         metrics: CursorAssetMetrics?,
         metricsByAssetID: [CursorAssetID: CursorAssetMetrics],
         screen: FrameScreenScene,
-        canvasSize: CompositionSize,
-        styleScale: Double
+        canvasSize: CompositionSize
     ) -> FrameCursorScene? {
         guard let sample else { return nil }
         let assetID = project.cursorStyle.assetID == .automatic
@@ -1411,10 +1312,10 @@ public enum FrameSceneEvaluator {
             rotationRadians: sample.rotationRadians,
             shadow: FrameShadow(
                 opacity: 0.42,
-                radius: max(layout.size.height * 1.5 / 44, 0.5),
+                radius: max(layout.clickEffectHeight * 1.5 / 44, 0.5),
                 offset: CompositionPoint(
                     x: 0,
-                    y: max(layout.size.height / 44, 0.5)
+                    y: max(layout.clickEffectHeight / 44, 0.5)
                 )
             )
         )

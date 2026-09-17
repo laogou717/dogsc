@@ -54,57 +54,6 @@ enum SharedFrameOverlayRenderer {
         return result
     }
 
-    nonisolated static func motionBlurred(
-        _ image: CIImage,
-        motion: FrameLayerMotion,
-        canvasRect: CGRect
-    ) -> CIImage {
-        // Motion blur is a trail around a moving layer, not a replacement for
-        // the layer itself. Clamping a full screen image before CIMotionBlur
-        // extended its bright edge pixels across the canvas and turned fast
-        // motion into an opaque white smear. Keep the authored layer sharp,
-        // blur only its transparent-backed footprint, then place the sharp
-        // layer back above that trail.
-        let distance = max(motion.distance, 0)
-        let radius = min(distance * 0.50, 16)
-        let trailOpacity = 0.30 * min(max(distance / 5, 0), 1)
-        guard radius >= 0.02, trailOpacity >= 0.001 else {
-            return image.cropped(to: canvasRect)
-        }
-        let angle = atan2(-motion.deltaY, motion.deltaX)
-        let blurredTrail = image
-            .applyingFilter(
-                "CIMotionBlur",
-                parameters: [
-                    kCIInputRadiusKey: radius,
-                    kCIInputAngleKey: angle,
-                ]
-            )
-            .cropped(to: canvasRect)
-        // The sharp layer already owns its border, chrome and shadow. Remove
-        // their current footprint from the trail so moving frames cannot make
-        // those decorations temporarily darker/brighter and then pop on the
-        // first static frame.
-        let trail = blurredTrail
-            .applyingFilter(
-                "CISourceOutCompositing",
-                parameters: [kCIInputBackgroundImageKey: image]
-            )
-            .cropped(to: canvasRect)
-            .applyingFilter(
-                "CIColorMatrix",
-                parameters: [
-                    "inputRVector": CIVector(x: trailOpacity, y: 0, z: 0, w: 0),
-                    "inputGVector": CIVector(x: 0, y: trailOpacity, z: 0, w: 0),
-                    "inputBVector": CIVector(x: 0, y: 0, z: trailOpacity, w: 0),
-                    "inputAVector": CIVector(x: 0, y: 0, z: 0, w: trailOpacity),
-                ]
-            )
-        return image.cropped(to: canvasRect)
-            .composited(over: trail)
-            .cropped(to: canvasRect)
-    }
-
     nonisolated static func renderSticker(
         source: CIImage,
         scene: FrameStickerScene,
@@ -128,7 +77,10 @@ enum SharedFrameOverlayRenderer {
             width: width,
             height: height
         )
-        let transparent = CIImage(color: .clear).cropped(to: canvasRect)
+        // The card is still allowed to extend beyond the canvas before its
+        // authored rotation. Only eliminate known-transparent padding so the
+        // rotation and opacity filters do not process a canvas-sized card.
+        let transparent = CIImage(color: .clear).cropped(to: target)
         let scale = width / normalizedSource.extent.width
         var image = normalizedSource
             .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
@@ -148,7 +100,7 @@ enum SharedFrameOverlayRenderer {
                 kCIInputBackgroundImageKey: transparent,
                 kCIInputMaskImageKey: mask,
             ]
-        )
+        ).cropped(to: target)
         if scene.borderWidth > 0 {
             let border = max(scene.borderWidth * canvasRect.width / 1_920, 0.5)
             let outerMask = roundedMask(
@@ -178,7 +130,6 @@ enum SharedFrameOverlayRenderer {
                     "CIGaussianBlur",
                     parameters: [kCIInputRadiusKey: shadowRadius]
                 )
-                .cropped(to: canvasRect)
             let shadow = coloredLayer(
                 color: color(.black, alpha: scene.shadowOpacity),
                 mask: shadowMask,
@@ -233,15 +184,22 @@ enum SharedFrameOverlayRenderer {
         mask: CIImage,
         canvasRect: CGRect
     ) -> CIImage {
-        let foreground = CIImage(color: color).cropped(to: canvasRect)
-        let transparent = CIImage(color: .clear).cropped(to: canvasRect)
+        // Preserve the former canvas clipping (including before a sticker's
+        // rotation), but do not turn its local border/shadow into a full-canvas
+        // intermediate just by adding a transparent background.
+        let extent = canvasRect.intersection(mask.extent)
+        guard !extent.isEmpty, !extent.isNull else {
+            return CIImage(color: .clear).cropped(to: .zero)
+        }
+        let foreground = CIImage(color: color).cropped(to: extent)
+        let transparent = CIImage(color: .clear).cropped(to: extent)
         return foreground.applyingFilter(
             "CIBlendWithMask",
             parameters: [
                 kCIInputBackgroundImageKey: transparent,
                 kCIInputMaskImageKey: mask,
             ]
-        )
+        ).cropped(to: extent)
     }
 
     private nonisolated static func ringMask(
@@ -249,10 +207,14 @@ enum SharedFrameOverlayRenderer {
         inner: CIImage,
         canvasRect: CGRect
     ) -> CIImage {
-        outer.applyingFilter(
+        let extent = canvasRect.intersection(outer.extent)
+        guard !extent.isEmpty, !extent.isNull else {
+            return CIImage(color: .clear).cropped(to: .zero)
+        }
+        return outer.applyingFilter(
             "CISourceOutCompositing",
             parameters: [kCIInputBackgroundImageKey: inner]
-        ).cropped(to: canvasRect)
+        ).cropped(to: extent)
     }
 
     private nonisolated static func color(

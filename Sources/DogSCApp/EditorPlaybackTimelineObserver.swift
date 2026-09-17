@@ -4,6 +4,7 @@ struct EditorPlaybackTimelineSnapshot: Equatable {
     let outputTime: TimeInterval
     let duration: TimeInterval
     let isPlaying: Bool
+    var allowsViewportReveal = true
 }
 
 @MainActor

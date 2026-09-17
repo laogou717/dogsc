@@ -21,7 +21,7 @@ struct SharedRenderedPreviewView: NSViewRepresentable {
     /// Evaluation at the playhead. This drives colour/resource identity while
     /// interaction overlays use the corresponding scene in `CanvasPreviewLayout`.
     let semanticScene: FrameScene
-    var perspectivePrewarmPlan: FrameRenderPlan? = nil
+    var effectPrewarmPlans: [FrameRenderPlan] = []
     let pausedScreenImage: NSImage?
     let pausedCameraImage: NSImage?
     let wallpaperImage: NSImage?
@@ -52,6 +52,10 @@ struct SharedRenderedPreviewView: NSViewRepresentable {
 
     private func update(_ view: SharedRenderedPreviewNSView) {
         view.preparePresentationTransition(presentationMode)
+        view.configurePlayback(
+            controller: playbackController,
+            frameProvider: playbackFrameProvider
+        )
         view.update(
             screenOutput: screenOutput,
             screenPreferredTransform: screenPreferredTransform,
@@ -62,7 +66,7 @@ struct SharedRenderedPreviewView: NSViewRepresentable {
             usesPausedFrame: usesPausedFrame,
             renderPlan: renderPlan,
             semanticScene: semanticScene,
-            perspectivePrewarmPlan: perspectivePrewarmPlan,
+            effectPrewarmPlans: effectPrewarmPlans,
             pausedScreenImage: pausedScreenImage,
             pausedCameraImage: pausedCameraImage,
             wallpaperImage: wallpaperImage,
@@ -71,10 +75,6 @@ struct SharedRenderedPreviewView: NSViewRepresentable {
             suppressCameraContent: suppressCameraContent,
             suppressScreenContent: suppressScreenContent
         )
-        view.configurePlayback(
-            controller: playbackController,
-            frameProvider: playbackFrameProvider
-        )
         view.onCameraContentApplied = onCameraContentApplied
         view.onScreenContentApplied = onScreenContentApplied
     }
@@ -82,12 +82,6 @@ struct SharedRenderedPreviewView: NSViewRepresentable {
 
 @MainActor
 final class SharedRenderedPreviewNSView: NSView {
-    #if DEBUG
-    private static let logger = Logger(
-        subsystem: "cn.laogou.dogsc",
-        category: "editor-preview"
-    )
-    #endif
     weak var playbackController: EditorPlaybackController?
     private var playbackFrameProvider: SharedPreviewPlaybackFrameProvider?
     private let windowVisibilityController = SharedPreviewWindowVisibilityController()
@@ -103,7 +97,7 @@ final class SharedRenderedPreviewNSView: NSView {
     private var usesPausedFrame = false
     private var renderPlan: FrameRenderPlan?
     private var semanticScene: FrameScene?
-    private var perspectivePrewarmPlan: FrameRenderPlan?
+    private var effectPrewarmPlans: [FrameRenderPlan] = []
     private var suppressCameraContent = false
     private var suppressScreenContent = false
     var onCameraContentApplied: (() -> Void)?
@@ -135,6 +129,7 @@ final class SharedRenderedPreviewNSView: NSView {
     /// so zooms stay crisp). Only the size, not the 60-120 Hz position,
     /// invalidates the cache.
     private var cursorContentsSignature: PreviewCursorContentsSignature?
+    private var cursorBitmapCache = PreviewCursorBitmapCache()
 
     private var screenFrame: CIImage?
     private var cameraFrame: CIImage?
@@ -157,13 +152,9 @@ final class SharedRenderedPreviewNSView: NSView {
     private var cursorFrame: CIImage?
     private var contentRevision: UInt64 = 0
     var lastSubmittedSignature: PreviewVisualSignature?
-    #if DEBUG
-    private var cadenceWindowStartedAt = CACurrentMediaTime()
-    private var cadenceDisplayTicks = 0
-    private var cadenceSubmittedFrames = 0
-    private var cadencePresentedFrames = 0
-    private var cadenceCoalescedFrames = 0
-    #endif
+    private var lastSubmittedPrewarmPlans: [FrameRenderPlan] = []
+    private let frameDiagnostics = PreviewFrameDiagnostics.configured()
+    private var currentDiagnosticFrame: PreviewFrameDiagnostics.Frame?
 
     private var colorContract: FrameColorContract?
     private var colorProfile: CoreImageFrameColorProfile?
@@ -197,9 +188,8 @@ final class SharedRenderedPreviewNSView: NSView {
     nonisolated(unsafe) var queueContext: CIContext?
     nonisolated(unsafe) var queueColorContract: FrameColorContract?
     nonisolated(unsafe) var queueCommandQueue: MTLCommandQueue?
-    nonisolated(unsafe) var queueDidPrewarmPerspective = false
-    nonisolated(unsafe) var queuePrewarmedPerspectiveSignatures = Set<
-        PreviewPerspectivePrewarmSignature
+    nonisolated(unsafe) var queuePreparedEffectSignatures = Set<
+        PreviewEffectPrewarmSignature
     >()
 
     override func makeBackingLayer() -> CALayer {
@@ -263,6 +253,7 @@ final class SharedRenderedPreviewNSView: NSView {
         cursorAssetID = nil
         cursorOverlayAppearance = nil
         cursorContentsSignature = nil
+        cursorBitmapCache.reset()
         cursorImageLayer.contents = nil
         cursorImageLayer.isHidden = true
         cursorClickGradientLayer.isHidden = true
@@ -271,7 +262,8 @@ final class SharedRenderedPreviewNSView: NSView {
         cursorClickAccentLayer.isHidden = true
         renderPlan = nil
         semanticScene = nil
-        perspectivePrewarmPlan = nil
+        effectPrewarmPlans = []
+        lastSubmittedPrewarmPlans = []
         colorContract = nil
         colorProfile = nil
         onCameraContentApplied = nil
@@ -302,8 +294,7 @@ final class SharedRenderedPreviewNSView: NSView {
             queueContext = nil
             queueColorContract = nil
             queueCommandQueue = nil
-            queueDidPrewarmPerspective = false
-            queuePrewarmedPerspectiveSignatures.removeAll(keepingCapacity: false)
+            queuePreparedEffectSignatures.removeAll(keepingCapacity: false)
         }
     }
 
@@ -345,21 +336,20 @@ final class SharedRenderedPreviewNSView: NSView {
         // frame first access to this display-link budget, then move the native
         // playhead/overview/time label from the exact same sample.
         defer { playbackController.flushDeferredNativeTimelineNotification() }
-        #if DEBUG
-        cadenceDisplayTicks += 1
-        #endif
+        let evaluationStarted = frameDiagnostics == nil ? 0 : CACurrentMediaTime()
         let frame = playbackFrameProvider(tick)
+        let evaluationMS = frameDiagnostics == nil ? 0 : (CACurrentMediaTime() - evaluationStarted) * 1_000
         applyFrameContract(
             renderTick: tick,
             usesPausedFrame: false,
             renderPlan: frame.renderPlan,
             semanticScene: frame.semanticScene,
-            perspectivePrewarmPlan: nil
+            effectPrewarmPlans: []
         )
+        currentDiagnosticFrame = frameDiagnostics?.beginFrame(
+            epoch: presentationEpochID, outputTime: tick.outputTime,
+            target: link.targetTimestamp, evaluationMS: evaluationMS)
         renderCurrentFrame(presentationHostTime: link.targetTimestamp)
-        #if DEBUG
-        logCadenceIfDue()
-        #endif
     }
 
     func update(
@@ -372,7 +362,7 @@ final class SharedRenderedPreviewNSView: NSView {
         usesPausedFrame: Bool,
         renderPlan: FrameRenderPlan,
         semanticScene: FrameScene,
-        perspectivePrewarmPlan: FrameRenderPlan?,
+        effectPrewarmPlans: [FrameRenderPlan],
         pausedScreenImage: NSImage?,
         pausedCameraImage: NSImage?,
         wallpaperImage: NSImage?,
@@ -453,12 +443,40 @@ final class SharedRenderedPreviewNSView: NSView {
         self.cameraContentCrop = cameraContentCrop
         self.suppressCameraContent = suppressCameraContent
         self.suppressScreenContent = suppressScreenContent
+        // All playing paths use the same provider/grid, including SwiftUI
+        // updates at an equal timestamp. A newer native tick must never be
+        // rewound by a stale inspector/layout snapshot.
+        if !usesPausedFrame, let requested = renderTick, requested.isPlaying,
+           let playbackFrameProvider {
+            let effectiveTick: EditorPlaybackRenderTick
+            if let latest = self.renderTick, latest.isPlaying,
+               latest.mediaGeneration == requested.mediaGeneration,
+               latest.discontinuityID == requested.discontinuityID,
+               latest.outputTime > requested.outputTime {
+                effectiveTick = latest
+            } else {
+                effectiveTick = requested
+            }
+            let frame = playbackFrameProvider(effectiveTick)
+            applyFrameContract(
+                renderTick: effectiveTick,
+                usesPausedFrame: false,
+                renderPlan: frame.renderPlan,
+                semanticScene: frame.semanticScene,
+                effectPrewarmPlans: []
+            )
+            // UI-triggered resource changes are not another display-link
+            // measurement of the same frame.
+            currentDiagnosticFrame = nil
+            renderCurrentFrame()
+            return
+        }
         applyFrameContract(
             renderTick: renderTick,
             usesPausedFrame: usesPausedFrame,
             renderPlan: renderPlan,
             semanticScene: semanticScene,
-            perspectivePrewarmPlan: perspectivePrewarmPlan
+            effectPrewarmPlans: effectPrewarmPlans
         )
         renderCurrentFrame()
     }
@@ -468,17 +486,8 @@ final class SharedRenderedPreviewNSView: NSView {
         usesPausedFrame: Bool,
         renderPlan: FrameRenderPlan,
         semanticScene: FrameScene,
-        perspectivePrewarmPlan: FrameRenderPlan?
+        effectPrewarmPlans: [FrameRenderPlan]
     ) {
-        let planCursorAssetID = renderPlan.scene.cursor?.assetID
-            ?? semanticScene.cursor?.assetID
-        if cursorAssetID != planCursorAssetID {
-            cursorAssetID = planCursorAssetID
-            cursorFrame = planCursorAssetID
-                .flatMap { CursorAssetLibrary.resolvedAsset(for: $0) }
-                .flatMap { $0.renderSource()?.image }
-            contentRevision &+= 1
-        }
         if self.renderTick?.mediaGeneration != renderTick?.mediaGeneration {
             // The controller swaps a fully prepared transport generation in
             // one turn, but AVPlayerItemVideoOutput can still need a display
@@ -502,6 +511,7 @@ final class SharedRenderedPreviewNSView: NSView {
         self.renderTick = renderTick
         wallpaperVideoPlayback.synchronize(to: renderTick)
         self.usesPausedFrame = usesPausedFrame
+        if usesPausedFrame { currentDiagnosticFrame = nil }
         let nextPresentationEpoch = PreviewPresentationEpoch(
             mediaGeneration: renderTick?.mediaGeneration,
             discontinuityID: renderTick?.discontinuityID,
@@ -513,7 +523,7 @@ final class SharedRenderedPreviewNSView: NSView {
         }
         self.renderPlan = renderPlan
         self.semanticScene = semanticScene
-        self.perspectivePrewarmPlan = perspectivePrewarmPlan.map(
+        self.effectPrewarmPlans = effectPrewarmPlans.map(
             SharedPreviewFramePipeline.rasterPlan
         )
     }
@@ -546,6 +556,17 @@ final class SharedRenderedPreviewNSView: NSView {
             scene: semanticScene,
             separatesCursor: separatesCursor
         )
+
+        // Independent cursor layers only need their small on-screen bitmap.
+        // Prepare the larger compositor source only when the cursor actually
+        // enters that backend (e.g. behind the camera or a focus effect).
+        if !separatesCursor,
+           let assetID = renderPlan.scene.cursor?.assetID ?? semanticScene.cursor?.assetID,
+           cursorAssetID != assetID || cursorFrame == nil {
+            cursorAssetID = assetID
+            cursorFrame = CursorAssetLibrary.resolvedAsset(for: assetID)?.renderSource()?.image
+            contentRevision &+= 1
+        }
 
         if let renderTick, let screenOutput,
            let decoded = decodedFrame(
@@ -679,7 +700,9 @@ final class SharedRenderedPreviewNSView: NSView {
             destinationPixelSize: destinationPixelSize,
             colorContract: semanticScene.color
         )
-        guard signature != lastSubmittedSignature else { return }
+        guard signature != lastSubmittedSignature
+            || (usesPausedFrame && effectPrewarmPlans != lastSubmittedPrewarmPlans)
+        else { return }
         // 最多一个在途渲染：渲染跟不上输入（如 3D 播放每帧都推新任务）时
         // 只记脏标记，完成后追渲染最新状态，队列绝不积压、延迟不滚雪球。
         // MOT-001: inspector sliders can publish dozens of full-resolution 3D
@@ -694,23 +717,20 @@ final class SharedRenderedPreviewNSView: NSView {
         guard renderInFlightCount < allowedInFlightCount else {
             renderDirty = true
             renderDirtyPresentationHostTime = presentationHostTime
-            #if DEBUG
-            cadenceCoalescedFrames += 1
-            #endif
+            if let timing = currentDiagnosticFrame { timing.owner.coalesced(timing) }
             return
         }
         renderInFlightCount += 1
-        #if DEBUG
-        cadenceSubmittedFrames += 1
-        #endif
         lastSubmittedSignature = signature
+        lastSubmittedPrewarmPlans = effectPrewarmPlans
         renderGeneration &+= 1
         let job = PreviewRenderJob(
             generation: renderGeneration,
             presentationEpochID: presentationEpochID,
             presentationHostTime: presentationHostTime,
+            diagnostics: currentDiagnosticFrame?.enqueued(),
             plan: renderPlan,
-            perspectivePrewarmPlan: usesPausedFrame ? perspectivePrewarmPlan : nil,
+            effectPrewarmPlans: usesPausedFrame ? effectPrewarmPlans : [],
             resources: resources,
             canvasSize: semanticScene.canvasSize,
             destinationPixelSize: destinationPixelSize,
@@ -735,7 +755,7 @@ final class SharedRenderedPreviewNSView: NSView {
                 },
                 presentationCompletion: { [weak self] presented in
                     DispatchQueue.main.async { [weak self] in
-                        self?.finishRenderPresentation(
+                        self?.finishRenderCompletion(
                             job: job,
                             presented: presented
                         )
@@ -745,7 +765,7 @@ final class SharedRenderedPreviewNSView: NSView {
         }
     }
 
-    /// PRE-002/CUR-002: update the synthetic pointer as two tiny Core
+    /// PRE-002/CUR-002: update the synthetic pointer as small Core
     /// Animation layers. Publishing its 60 Hz position through @State forced
     /// SwiftUI to lay out the complete editor window (including the timeline)
     /// on every display refresh. The raster compositor still owns the cursor
@@ -803,10 +823,8 @@ final class SharedRenderedPreviewNSView: NSView {
             cursorOverlayAppearance = appearance
         }
         let imageRect = CompositionRect(
-            x: layout.origin.x,
-            y: layout.origin.y,
-            width: layout.size.width,
-            height: layout.size.height
+            x: layout.origin.x, y: layout.origin.y,
+            width: layout.size.width, height: layout.size.height
         )
         guard applyProjectedGeometry(
             to: cursorImageLayer,
@@ -835,13 +853,11 @@ final class SharedRenderedPreviewNSView: NSView {
             hypot(transform.c, transform.d)
         )
         let backingScale = window?.backingScaleFactor ?? 2
-        let pixelWidth = max(
-            Int(ceil(imageRect.width * viewScale * backingScale)),
-            1
+        let pixelWidth = PreviewCursorContentsSignature.pixelDimension(
+            layout.size.width * viewScale * backingScale
         )
-        let pixelHeight = max(
-            Int(ceil(imageRect.height * viewScale * backingScale)),
-            1
+        let pixelHeight = PreviewCursorContentsSignature.pixelDimension(
+            layout.size.height * viewScale * backingScale
         )
         let contentsSignature = PreviewCursorContentsSignature(
             assetID: appearance.assetID,
@@ -849,12 +865,11 @@ final class SharedRenderedPreviewNSView: NSView {
             height: pixelHeight
         )
         if cursorContentsSignature != contentsSignature {
-            guard let contents = CursorAssetLibrary
-                .resolvedAsset(for: appearance.assetID)?
-                .rasterizedPixelImage(
-                    width: pixelWidth,
-                    height: pixelHeight
-                ) else {
+            let contents = cursorBitmapCache.image(for: contentsSignature) {
+                CursorAssetLibrary.resolvedAsset(for: appearance.assetID)?
+                    .rasterizedPixelImage(width: pixelWidth, height: pixelHeight)
+            }
+            guard let contents else {
                 cursorImageLayer.contents = nil
                 cursorImageLayer.isHidden = true
                 cursorClickGradientLayer.isHidden = true
@@ -876,7 +891,7 @@ final class SharedRenderedPreviewNSView: NSView {
             if let clickGeom = CursorRenderGeometry.clickGeometry(
                 style: cursor.clickStyle,
                 progress: progress,
-                baseHeight: layout.size.height,
+                baseHeight: layout.clickEffectHeight,
                 opacityMultiplier: cursor.clickOpacity,
                 scaleMultiplier: cursor.clickScale
             ) {
@@ -1184,13 +1199,10 @@ final class SharedRenderedPreviewNSView: NSView {
         }
     }
 
-    private func finishRenderPresentation(
+    private func finishRenderCompletion(
         job: PreviewRenderJob,
         presented: Bool
     ) {
-        #if DEBUG
-        if presented { cadencePresentedFrames += 1 }
-        #endif
         if presented, renderGeneration == job.generation {
             if job.includesCamera { onCameraContentApplied?() }
             if job.includesScreen { onScreenContentApplied?() }
@@ -1198,29 +1210,6 @@ final class SharedRenderedPreviewNSView: NSView {
             lastAppliedIncludesScreen = job.includesScreen
         }
     }
-
-    #if DEBUG
-    private func logCadenceIfDue() {
-        let now = CACurrentMediaTime()
-        let elapsed = now - cadenceWindowStartedAt
-        guard elapsed >= 1 else { return }
-        let ticks = Double(cadenceDisplayTicks) / elapsed
-        let submitted = Double(cadenceSubmittedFrames) / elapsed
-        let presented = Double(cadencePresentedFrames) / elapsed
-        let message = "preview cadence: "
-            + "displayTicks=\(String(format: "%.1f", ticks))fps "
-            + "submitted=\(String(format: "%.1f", submitted))fps "
-            + "presented=\(String(format: "%.1f", presented))fps "
-            + "coalesced=\(cadenceCoalescedFrames) "
-            + "inFlight=\(renderInFlightCount)"
-        Self.logger.notice("\(message, privacy: .public)")
-        cadenceWindowStartedAt = now
-        cadenceDisplayTicks = 0
-        cadenceSubmittedFrames = 0
-        cadencePresentedFrames = 0
-        cadenceCoalescedFrames = 0
-    }
-    #endif
 
     private func decodedFrame(
         output: AVPlayerItemVideoOutput,

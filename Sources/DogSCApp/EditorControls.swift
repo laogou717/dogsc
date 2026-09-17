@@ -411,7 +411,6 @@ struct EditorPairedParameterReadouts: View {
 struct EditorToggle: View {
     @Binding var isOn: Bool
     var title: String? = nil
-    @State private var isHovered = false
 
     @ViewBuilder
     var body: some View {
@@ -421,19 +420,9 @@ struct EditorToggle: View {
                     isOn.toggle()
                 }
             } label: {
-                HStack {
-                    Text(appLocalized(title)).font(.appUI(.caption))
-                    Spacer(minLength: 8)
-                    toggleIndicator
-                }
-                .contentShape(Rectangle())
+                Text(appLocalized(title)).font(.appUI(.caption))
             }
-            .buttonStyle(.editorToolbarPress)
-            .onHover { hovering in
-                withAnimation(SpringMotion.interactive) {
-                    isHovered = hovering
-                }
-            }
+            .buttonStyle(EditorToggleButtonStyle(isOn: isOn, showsTitle: true))
             .accessibilityLabel(appLocalized(title))
             .accessibilityValue(isOn ? "开启" : "关闭")
             .accessibilityAddTraits(.isToggle)
@@ -443,70 +432,107 @@ struct EditorToggle: View {
                     isOn.toggle()
                 }
             } label: {
-                toggleIndicator
-                    .contentShape(Rectangle())
+                EmptyView()
             }
-            .buttonStyle(.editorToolbarPress)
-            .onHover { hovering in
-                withAnimation(SpringMotion.interactive) {
-                    isHovered = hovering
-                }
-            }
+            .buttonStyle(EditorToggleButtonStyle(isOn: isOn, showsTitle: false))
             .accessibilityAddTraits(.isToggle)
             .accessibilityValue(isOn ? "开启" : "关闭")
         }
     }
+}
 
-    private var toggleIndicator: some View {
-        ZStack(alignment: isOn ? .trailing : .leading) {
-            Capsule(style: .continuous)
-                .fill(
-                    isOn
-                        ? LinearGradient(
-                            colors: [EditorTheme.selectionTint, EditorTheme.selectionTint],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                        : LinearGradient(
-                            colors: [EditorTheme.chrome(0.12), EditorTheme.chrome(0.08)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                )
-                .overlay(
-                    Capsule(style: .continuous)
-                        .stroke(
-                            EditorTheme.chrome(
-                                isOn ? (isHovered ? 0.55 : 0.35)
-                                    : (isHovered ? 0.18 : 0.08)
-                            ),
-                            lineWidth: 0.75
-                        )
-                )
-            Circle()
-                .fill(
-                    isOn
-                        ? LinearGradient(
-                            colors: [EditorTheme.onAccent, EditorTheme.onAccent],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                        : LinearGradient(
-                            colors: [Color.white, Color(white: 0.92)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                )
-                .shadow(color: EditorTheme.softShadow, radius: 2, y: 1)
-                .padding(2)
+/// The row owns activation, but only the capsule owns visual feedback.
+/// Do not reuse toolbar press styling here: it transforms the entire label.
+private struct EditorToggleButtonStyle: ButtonStyle {
+    let isOn: Bool
+    let showsTitle: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        Surface(configuration: configuration, isOn: isOn, showsTitle: showsTitle)
+    }
+
+    private struct Surface: View {
+        @Environment(\.isEnabled) private var isEnabled
+        @State private var isHovered = false
+        let configuration: Configuration
+        let isOn: Bool
+        let showsTitle: Bool
+
+        private var isPressed: Bool { isEnabled && configuration.isPressed }
+        private var showsHover: Bool { isEnabled && isHovered }
+
+        var body: some View {
+            HStack {
+                if showsTitle {
+                    configuration.label
+                    Spacer(minLength: 8)
+                }
+                toggleIndicator
+            }
+            .contentShape(RoundedRectangle(cornerRadius: showsTitle ? 0 : 11, style: .continuous))
+            .opacity(isEnabled ? 1 : 0.48)
+            .onHover { isHovered = $0 }
         }
-        .frame(width: 40, height: 22)
-        .shadow(
-            color: EditorTheme.chrome(isHovered && isOn ? 0.14 : 0),
-            radius: 4
-        )
-        .animation(SpringMotion.interactive, value: isOn)
-        .animation(SpringMotion.interactive, value: isHovered)
+
+        private var toggleIndicator: some View {
+            ZStack(alignment: isOn ? .trailing : .leading) {
+                Capsule(style: .continuous)
+                    .fill(
+                        isOn
+                            ? LinearGradient(
+                                colors: [EditorTheme.selectionTint, EditorTheme.selectionTint],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                            : LinearGradient(
+                                colors: [EditorTheme.chrome(0.12), EditorTheme.chrome(0.08)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                    )
+                    .overlay(
+                        Capsule(style: .continuous)
+                            .stroke(
+                                EditorTheme.chrome(
+                                    isOn ? (showsHover ? 0.55 : 0.35)
+                                        : (showsHover ? 0.18 : 0.08)
+                                ),
+                                lineWidth: 0.75
+                            )
+                    )
+                Circle()
+                    .fill(
+                        isOn
+                            ? LinearGradient(
+                                colors: [EditorTheme.onAccent, EditorTheme.onAccent],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                            : LinearGradient(
+                                colors: [Color.white, Color(white: 0.92)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                    )
+                    .shadow(color: EditorTheme.softShadow, radius: 2, y: 1)
+                    .padding(2)
+            }
+            .frame(width: 40, height: 22)
+            .overlay {
+                Capsule(style: .continuous)
+                    .fill(EditorTheme.chrome(isPressed ? 0.12 : 0))
+                    .allowsHitTesting(false)
+            }
+            .appKeyboardFocus(in: Capsule(style: .continuous))
+            .scaleEffect(isPressed ? 0.97 : 1)
+            .shadow(
+                color: EditorTheme.chrome(showsHover && isOn ? 0.14 : 0),
+                radius: 4
+            )
+            .animation(SpringMotion.interactive, value: isOn)
+            .animation(SpringMotion.interactive, value: showsHover)
+            .animation(SpringMotion.snappy, value: isPressed)
+        }
     }
 }
 
@@ -727,6 +753,7 @@ private struct EditorStepButtonStyle: ButtonStyle {
                         )
                 }
                 .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                 .scaleEffect(configuration.isPressed && isEnabled ? 0.90 : 1)
                 .onHover { hovering in
                     withAnimation(SpringMotion.interactive) {
@@ -787,6 +814,7 @@ struct EditorQuietButtonStyle: ButtonStyle {
                 )
                 .shadow(color: EditorTheme.softShadow.opacity(isHovered ? 1 : 0.4), radius: 3, y: 1)
                 .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .scaleEffect(configuration.isPressed && isEnabled ? 0.97 : 1.0)
                 .opacity(isEnabled ? 1 : 0.46)
                 .onHover { isHovered = $0 }
@@ -855,6 +883,7 @@ struct EditorPrimaryButtonStyle: ButtonStyle {
                 )
                 .shadow(color: EditorTheme.softShadow, radius: 5, y: 2)
                 .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 11, style: .continuous))
                 .scaleEffect(configuration.isPressed && isEnabled ? 0.96 : 1.0)
                 .onHover { isHovered = $0 }
                 .animation(SpringMotion.interactive, value: isHovered)
@@ -892,6 +921,7 @@ struct EditorGhostButtonStyle: ButtonStyle {
                         )
                 )
                 .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                 .scaleEffect(configuration.isPressed && isEnabled ? 0.97 : 1.0)
                 .opacity(isEnabled ? 1 : 0.44)
                 .onHover { isHovered = $0 }
@@ -920,6 +950,7 @@ struct EditorToolbarPressButtonStyle: ButtonStyle {
         var body: some View {
             configuration.label
                 .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: cornerStyle))
+                .appKeyboardFocus(in: RoundedRectangle(cornerRadius: cornerRadius, style: cornerStyle))
                 .overlay {
                     RoundedRectangle(cornerRadius: cornerRadius, style: cornerStyle)
                         .fill(EditorTheme.chrome(isEnabled ? (configuration.isPressed ? 0.12 : hovered && showsHover ? 0.065 : 0) : 0))
@@ -976,6 +1007,7 @@ struct EditorDismissIconButtonStyle: ButtonStyle {
                         )
                 }
                 .contentShape(Circle())
+                .appKeyboardFocus(in: Circle())
                 .scaleEffect(
                     !isEnabled ? 1
                         : configuration.isPressed ? 0.88
@@ -1033,6 +1065,7 @@ struct EditorWarningButtonStyle: ButtonStyle {
                         )
                 }
                 .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .scaleEffect(
                     !isEnabled ? 1
                         : configuration.isPressed ? 0.95
@@ -1125,6 +1158,7 @@ struct EditorDestructiveButtonStyle: ButtonStyle {
                         )
                 )
                 .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                 .scaleEffect(configuration.isPressed && isEnabled ? 0.985 : 1)
                 .onHover { hovering in
                     withAnimation(SpringMotion.interactive) {
@@ -1178,6 +1212,7 @@ struct EditorDestructiveIconButtonStyle: ButtonStyle {
                         )
                 )
                 .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                 .scaleEffect(configuration.isPressed && isEnabled ? 0.93 : 1)
                 .onHover { hovering in
                     withAnimation(SpringMotion.interactive) {
@@ -1215,6 +1250,7 @@ struct EditorThumbnailButtonStyle: ButtonStyle {
                     y: isHovered && isEnabled ? 4 : 1
                 )
                 .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                 .opacity(isEnabled ? 1 : 0.44)
                 .onHover { hovering in
                     withAnimation(SpringMotion.interactive) {

@@ -66,7 +66,7 @@ struct CanvasPreview: View {
     @State var resolvedStickerImages: [String: NSImage] = [:]
     @State var playbackTrackCache: EditorCanvasPlaybackTrackCache
     @State var playbackPlanCache: EditorCanvasPlaybackPlanCache
-    @State var perspectivePrewarmPlanCache: EditorCanvasPerspectivePrewarmPlanCache
+    @State var effectPrewarmPlanCache: EditorCanvasEffectPrewarmPlanCache
     @State var cropSourceFrameCache: EditorCanvasCropSourceFrameCache
     /// Reuses one Core Image context for all direct-manipulation snapshots in
     /// this editor session. The renderer is released with the canvas instead
@@ -143,8 +143,8 @@ struct CanvasPreview: View {
         _playbackPlanCache = State(
             initialValue: EditorCanvasPlaybackPlanCache()
         )
-        _perspectivePrewarmPlanCache = State(
-            initialValue: EditorCanvasPerspectivePrewarmPlanCache()
+        _effectPrewarmPlanCache = State(
+            initialValue: EditorCanvasEffectPrewarmPlanCache()
         )
         _cropSourceFrameCache = State(
             initialValue: EditorCanvasCropSourceFrameCache()
@@ -202,7 +202,7 @@ struct CanvasPreview: View {
                     canvasSize: rasterCanvasSize,
                     activeTick: activeTick
                 )
-                let perspectivePrewarmPlan = isEditorActive ? makePerspectivePrewarmPlan(for: renderedFrame) : nil
+                let effectPrewarmPlans = isEditorActive ? makeEffectPrewarmPlans(for: renderedFrame) : []
                 let playbackPlanCacheHandle = renderedFrame.flatMap {
                     playbackPlanCache.prepare(
                         around: playbackController.outputTime,
@@ -217,10 +217,13 @@ struct CanvasPreview: View {
                     rasterCanvasSize: rasterCanvasSize,
                     activeTick: activeTick,
                     renderedFrame: renderedFrame,
-                    perspectivePrewarmPlan: perspectivePrewarmPlan,
+                    effectPrewarmPlans: effectPrewarmPlans,
                     playbackPlanCacheHandle: playbackPlanCacheHandle
                 )
                 .frame(width: liveCanvasSize.width, height: liveCanvasSize.height)
+                // A projected/zoomed object's transparent hit shape may extend
+                // beyond the monitor even when its pixels are clipped below.
+                .contentShape(Rectangle())
                 .overlay {
                     if !isEditorActive {
                         EditorTheme.sleepingMonitor.allowsHitTesting(false).accessibilityHidden(true)
@@ -331,7 +334,7 @@ struct CanvasPreview: View {
         rasterCanvasSize: CGSize,
         activeTick: EditorPlaybackRenderTick?,
         renderedFrame: CanvasRenderedFrame?,
-        perspectivePrewarmPlan: FrameRenderPlan?,
+        effectPrewarmPlans: [FrameRenderPlan],
         playbackPlanCacheHandle: EditorCanvasPlaybackPlanCache.Handle?
     ) -> some View {
         ZStack {
@@ -342,7 +345,7 @@ struct CanvasPreview: View {
                 .onTapGesture(perform: focusCanvas)
 
             monitorSurface(canvasSize: liveCanvasSize, activeTick: activeTick,
-                renderedFrame: renderedFrame, perspectivePrewarmPlan: perspectivePrewarmPlan,
+                renderedFrame: renderedFrame, effectPrewarmPlans: effectPrewarmPlans,
                 playbackPlanCacheHandle: playbackPlanCacheHandle)
                 .allowsHitTesting(false)
 
@@ -363,7 +366,7 @@ struct CanvasPreview: View {
 
     @ViewBuilder
     private func monitorSurface(canvasSize: CGSize, activeTick: EditorPlaybackRenderTick?,
-        renderedFrame: CanvasRenderedFrame?, perspectivePrewarmPlan: FrameRenderPlan?,
+        renderedFrame: CanvasRenderedFrame?, effectPrewarmPlans: [FrameRenderPlan],
         playbackPlanCacheHandle: EditorCanvasPlaybackPlanCache.Handle?) -> some View {
         let sourceSize = aspectFittedSize(aspectRatio: sourceAspectRatio,
             inside: CGSize(width: max(canvasSize.width - 36, 2), height: max(canvasSize.height - 36, 2)))
@@ -388,7 +391,7 @@ struct CanvasPreview: View {
                 renderTick: activeTick,
                 usesPausedFrame: !playbackController.isPlaying && playbackController.hoverPreviewTime == nil,
                 renderPlan: plan, semanticScene: scene,
-                perspectivePrewarmPlan: isCropping ? nil : perspectivePrewarmPlan,
+                effectPrewarmPlans: isCropping ? [] : effectPrewarmPlans,
                 pausedScreenImage: playbackController.pausedScreenImage,
                 pausedCameraImage: playbackController.pausedCameraImage,
                 wallpaperImage: isCropping ? nil : resolvedWallpaperImage,
@@ -491,37 +494,6 @@ struct CanvasPreview: View {
                 .zIndex(200)
             }
         }
-    }
-
-    /// Pick a stable non-identity frame from the next active 3D screen-motion
-    /// clip. This is evaluation only; the preview surface reuses its currently
-    /// decoded pixels to warm the real-size renderer without seeking media.
-    func perspectivePrewarmTime(
-        atOrAfter playbackTime: TimeInterval
-    ) -> TimeInterval? {
-        let clip = project.timeline.screenMotionClips.lazy
-            .filter { clip in
-                clip.timing.endTime > playbackTime
-                    && (
-                        abs(clip.target.rotationX) > 0.001
-                            || abs(clip.target.rotationY) > 0.001
-                            || abs(clip.target.rotationZ) > 0.001
-                    )
-            }
-            .min { lhs, rhs in
-                lhs.timing.startTime < rhs.timing.startTime
-            }
-        guard let clip else { return nil }
-        let leadIn = min(clip.timing.leadInDuration, clip.timing.duration)
-        let authoredOffset = max(leadIn * 0.35, 1.0 / 30.0)
-        let lastInsideClip = max(
-            clip.timing.startTime,
-            clip.timing.endTime - 0.001
-        )
-        return min(
-            max(playbackTime, clip.timing.startTime + authoredOffset),
-            lastInsideClip
-        )
     }
 
     func screenSelectionTarget(
@@ -1294,9 +1266,9 @@ struct CanvasPreview: View {
                    at: tick.outputTime,
                    handle: cacheHandle
                ) {
-                return cached
+                return evaluation.refreshingCursor(in: cached, at: tick.outputTime)
             }
-            return evaluation.frame(at: tick.outputTime)
+            return evaluation.playbackFrame(at: tick.outputTime)
         }
     }
 
@@ -1341,16 +1313,15 @@ struct CanvasPreview: View {
         }
     }
 
-    private func makePerspectivePrewarmPlan(
+    private func makeEffectPrewarmPlans(
         for renderedFrame: CanvasRenderedFrame?
-    ) -> FrameRenderPlan? {
+    ) -> [FrameRenderPlan] {
         guard !playbackController.isPlaying,
-              let renderedFrame,
-              let prewarmTime = perspectivePrewarmTime(
-                  atOrAfter: renderedFrame.playbackTime
-              ) else { return nil }
-        return perspectivePrewarmPlanCache.plan(
-            at: prewarmTime,
+              editorStore.interaction == nil,
+              !isCropping,
+              let renderedFrame else { return [] }
+        return effectPrewarmPlanCache.plans(
+            around: renderedFrame.playbackTime,
             using: renderedFrame.layout.playbackEvaluation
         )
     }

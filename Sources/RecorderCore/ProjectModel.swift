@@ -1230,10 +1230,6 @@ public struct CameraStyle: Codable, Equatable, Sendable {
 public struct MotionStyle: Codable, Equatable, Sendable {
     public var screen: ScreenMotionStyle
     public var cursor: CursorMotionStyle
-    /// Decode-only compatibility scalar from the first project format. New
-    /// editing and rendering use `frameMotionBlur` exclusively.
-    public var motionBlur: Double
-    public var frameMotionBlur: MotionBlurDescriptor
     public var screenSpringMass: Double
     public var screenSpringStiffness: Double
     public var screenSpringDamping: Double
@@ -1245,12 +1241,11 @@ public struct MotionStyle: Codable, Equatable, Sendable {
     /// Project-owned creation default. Older projects can still inherit the
     /// app's remembered magnification until they author or apply a preset.
     public var defaultZoomScale: Double?
+    public var defaultScreenMotion: ScreenMotionCreationStyle?
 
     public init(
         screen: ScreenMotionStyle = .focused,
         cursor: CursorMotionStyle = .smooth,
-        motionBlur: Double = 0.2,
-        frameMotionBlur: MotionBlurDescriptor = MotionBlurDescriptor(),
         screenSpringMass: Double = 2.4,
         screenSpringStiffness: Double = 210,
         screenSpringDamping: Double = 42,
@@ -1259,12 +1254,11 @@ public struct MotionStyle: Codable, Equatable, Sendable {
         cursorSpringDamping: Double = 66,
         defaultZoomEasing: ZoomEasingPreset = .spring,
         defaultZoomTransitionDuration: TimeInterval = 0.7,
-        defaultZoomScale: Double? = nil
+        defaultZoomScale: Double? = nil,
+        defaultScreenMotion: ScreenMotionCreationStyle? = nil
     ) {
         self.screen = screen
         self.cursor = cursor
-        self.motionBlur = motionBlur
-        self.frameMotionBlur = frameMotionBlur
         self.screenSpringMass = screenSpringMass
         self.screenSpringStiffness = screenSpringStiffness
         self.screenSpringDamping = screenSpringDamping
@@ -1274,21 +1268,14 @@ public struct MotionStyle: Codable, Equatable, Sendable {
         self.defaultZoomEasing = defaultZoomEasing
         self.defaultZoomTransitionDuration = min(max(defaultZoomTransitionDuration, 0), 5)
         self.defaultZoomScale = defaultZoomScale
-    }
-
-    /// New recordings use the inexpensive layer-local motion treatment by
-    /// default. Existing projects retain the switch persisted in their file.
-    public func preparedForNewRecording() -> MotionStyle {
-        var result = self
-        result.frameMotionBlur.isEnabled = true
-        return result
+        self.defaultScreenMotion = defaultScreenMotion
     }
 
     private enum CodingKeys: String, CodingKey {
-        case screen, cursor, motionBlur, frameMotionBlur
+        case screen, cursor
         case screenSpringMass, screenSpringStiffness, screenSpringDamping
         case cursorSpringMass, cursorSpringStiffness, cursorSpringDamping
-        case defaultZoomEasing, defaultZoomTransitionDuration, defaultZoomScale
+        case defaultZoomEasing, defaultZoomTransitionDuration, defaultZoomScale, defaultScreenMotion
     }
 
     public init(from decoder: any Decoder) throws {
@@ -1296,11 +1283,6 @@ public struct MotionStyle: Codable, Equatable, Sendable {
         self.init(
             screen: try container.decodeIfPresent(ScreenMotionStyle.self, forKey: .screen) ?? .focused,
             cursor: try container.decodeIfPresent(CursorMotionStyle.self, forKey: .cursor) ?? .smooth,
-            motionBlur: try container.decodeIfPresent(Double.self, forKey: .motionBlur) ?? 0.2,
-            frameMotionBlur: try container.decodeIfPresent(
-                MotionBlurDescriptor.self,
-                forKey: .frameMotionBlur
-            ) ?? MotionBlurDescriptor(isEnabled: false),
             screenSpringMass: try container.decodeIfPresent(Double.self, forKey: .screenSpringMass) ?? 2.4,
             screenSpringStiffness: try container.decodeIfPresent(Double.self, forKey: .screenSpringStiffness) ?? 210,
             screenSpringDamping: try container.decodeIfPresent(Double.self, forKey: .screenSpringDamping) ?? 42,
@@ -1312,7 +1294,8 @@ public struct MotionStyle: Codable, Equatable, Sendable {
                 TimeInterval.self,
                 forKey: .defaultZoomTransitionDuration
             ) ?? 0.7,
-            defaultZoomScale: try container.decodeIfPresent(Double.self, forKey: .defaultZoomScale)
+            defaultZoomScale: try container.decodeIfPresent(Double.self, forKey: .defaultZoomScale),
+            defaultScreenMotion: try container.decodeIfPresent(ScreenMotionCreationStyle.self, forKey: .defaultScreenMotion)
         )
     }
 }

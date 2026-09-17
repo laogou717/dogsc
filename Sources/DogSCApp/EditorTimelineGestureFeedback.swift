@@ -458,35 +458,7 @@ extension EditorTimelineView {
         draggedID: UUID,
         pointerX: CGFloat
     ) -> (oldIndex: Int, destination: Int, insertionTime: TimeInterval)? {
-        guard let map = timelineMap,
-              let oldIndex = map.segments.firstIndex(where: { $0.id == draggedID })
-        else { return nil }
-        let clampedX = min(max(pointerX, 0), max(timelineContentWidth, 1))
-        guard let targetIndex = map.segments.indices.min(by: { lhs, rhs in
-            let lhsCenter = CGFloat(
-                (map.segments[lhs].outputStart + map.segments[lhs].outputDuration / 2)
-                    / max(timelineDuration, 0.001)
-            ) * timelineContentWidth
-            let rhsCenter = CGFloat(
-                (map.segments[rhs].outputStart + map.segments[rhs].outputDuration / 2)
-                    / max(timelineDuration, 0.001)
-            ) * timelineContentWidth
-            return abs(lhsCenter - clampedX) < abs(rhsCenter - clampedX)
-        }) else { return nil }
-        let target = map.segments[targetIndex]
-        let targetCenter = CGFloat(
-            (target.outputStart + target.outputDuration / 2)
-                / max(timelineDuration, 0.001)
-        ) * timelineContentWidth
-        var destination = targetIndex + (clampedX >= targetCenter ? 1 : 0)
-        if oldIndex < destination { destination -= 1 }
-        destination = min(max(destination, 0), map.segments.count - 1)
-        var reordered = map.segments
-        let moved = reordered.remove(at: oldIndex)
-        reordered.insert(moved, at: destination)
-        let insertionTime = reordered.prefix(destination).reduce(0) {
-            $0 + $1.outputDuration
-        }
-        return (oldIndex, destination, insertionTime)
+        guard let draft = primaryReorderDraft, draft.segmentID == draggedID else { return nil }
+        return (draft.originalIndex, draft.destination, draft.insertionTime)
     }
 }

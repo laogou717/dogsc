@@ -115,6 +115,7 @@ struct AppSettingsView: View {
         .background(EditorTheme.panelSurface)
         .font(.appUI(.body))
         .tint(editorAccent)
+        .appControlFocusAppearance()
         .onChange(of: appearancePreference) { _, _ in
             AppPreferences.applyAppearancePreferenceToOpenWindows()
         }

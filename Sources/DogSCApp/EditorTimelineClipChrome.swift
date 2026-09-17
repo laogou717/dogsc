@@ -74,10 +74,17 @@ extension View {
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .strokeBorder(
                     emphasis == .selected || emphasis == .editing
-                        ? EditorTheme.selectionTint.opacity(0.65)
-                        : EditorTheme.chrome(emphasis.strokeOpacity),
+                        ? EditorTheme.selectionTint
+                        : EditorTheme.chrome(),
                     lineWidth: emphasis.strokeWidth
                 )
+                // Animate only the ink. Animating the whole clip here also
+                // springs its new bounds when a split, trim or drop changes
+                // geometry in the same update as selection/emphasis.
+                .animation(.easeOut(duration: 0.12)) { border in
+                    border.opacity(emphasis == .selected || emphasis == .editing
+                        ? 0.65 : emphasis.strokeOpacity)
+                }
                 .allowsHitTesting(false)
         }
         .shadow(
@@ -85,6 +92,5 @@ extension View {
             radius: emphasis.shadowRadius,
             y: emphasis == .editing ? 2 : 1
         )
-        .animation(SpringMotion.interactive, value: emphasis)
     }
 }

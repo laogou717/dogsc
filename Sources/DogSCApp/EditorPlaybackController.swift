@@ -254,11 +254,14 @@ final class EditorPlaybackController: ObservableObject {
         nativeTimelineObservers.remove(observer)
     }
 
+    private var allowsTimelineViewportReveal = true
+
     private var nativeTimelineSnapshot: EditorPlaybackTimelineSnapshot {
         EditorPlaybackTimelineSnapshot(
             outputTime: latestOutputTime,
             duration: duration,
-            isPlaying: isPlaying
+            isPlaying: isPlaying,
+            allowsViewportReveal: allowsTimelineViewportReveal
         )
     }
 
@@ -774,7 +777,10 @@ final class EditorPlaybackController: ObservableObject {
 
     private func startPlaybackFromCurrentPosition() {
         guard isPreviewActive, canPlay, let primaryPlayer else { return }
-        if hoverPreviewTime != nil {
+        if hoverPreviewTime != nil || primarySeekIsPending || scrubIsActive {
+            // 悬浮预览或拖动定位尚未完成时，先准确落到逻辑播放头再启动。
+            cancelScrubScheduling()
+            scrubIsActive = false
             // 悬浮预览期间传输层物理位置停在所指帧；无摄像头路径的
             // playTransport() 会从该位置起播。先走“精确 seek + 完成后
             // 恢复播放”的既有编排，从播放头起播。
@@ -879,8 +885,15 @@ final class EditorPlaybackController: ObservableObject {
         }
     }
 
-    func pause() {
+    func pause(revealingPlayhead: Bool = true) {
         guard isPlaying else { return }
+        // Editing a visible timeline object must not scroll away from the
+        // pointer merely because editing also stops playback. Carry this
+        // intent in the synchronous pause notification, then restore it for
+        // the next explicit transport action.
+        let previousReveal = allowsTimelineViewportReveal
+        allowsTimelineViewportReveal = revealingPlayhead
+        defer { allowsTimelineViewportReveal = previousReveal }
         playbackStartToken &+= 1
         cameraSeekToken &+= 1
         cameraSeekIsPending = false

@@ -76,7 +76,7 @@ enum SharedFrameCursorRenderer {
             if let clickGeom = CursorRenderGeometry.clickGeometry(
                 style: scene.clickStyle,
                 progress: progress,
-                baseHeight: layout.size.height,
+                baseHeight: layout.clickEffectHeight,
                 opacityMultiplier: scene.clickOpacity,
                 scaleMultiplier: scene.clickScale
             ) {

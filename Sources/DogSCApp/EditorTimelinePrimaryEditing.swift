@@ -351,7 +351,7 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
         )
         return ZStack(alignment: .leading) {
             if let draggedPrimarySegmentID,
-               abs(primarySegmentDragTranslation) > 0.01 {
+               let floating = primaryDisplaySegments.first(where: { $0.id == draggedPrimarySegmentID }) {
                 clipWaveforms(
                     width: visibleWindow.width,
                     outputStart: visibleWindow.outputStart,
@@ -362,30 +362,32 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
                         width: width,
                         duration: duration,
                         visibleWindow: visibleWindow,
-                        including: { $0.id != draggedPrimarySegmentID }
+                        including: { $0.id != draggedPrimarySegmentID },
+                        excludingFloatingSegment: true
                     )
                 }
                 .offset(x: visibleWindow.documentOriginX)
 
-                // The dragged clip owns its waveform pixels. Move the source
-                // and its mask together so the audio preview never appears to
-                // stay behind and then snap back when the drop commits.
-                clipWaveforms(
-                    width: visibleWindow.width,
-                    outputStart: visibleWindow.outputStart,
-                    outputDuration: visibleWindow.outputDuration
-                )
-                .mask {
-                    clipWaveformMask(
-                        width: width,
-                        duration: duration,
-                        visibleWindow: visibleWindow,
-                        including: { $0.id == draggedPrimarySegmentID }
-                    )
+                let floatingWidth = max(CGFloat(floating.outputDuration / max(duration, 0.001)) * width, 1)
+                let floatingOrigin = CGFloat(floating.outputStart / max(duration, 0.001)) * width
+                    + primaryFloatingTranslation(width: width, duration: duration)
+                let drawStart = max(floatingOrigin, visibleWindow.documentOriginX)
+                let drawEnd = min(floatingOrigin + floatingWidth,
+                    visibleWindow.documentOriginX + visibleWindow.width)
+                if drawEnd > drawStart {
+                    let drawWidth = drawEnd - drawStart
+                    let sourceFraction = Double((drawStart - floatingOrigin) / floatingWidth)
+                    clipWaveforms(width: drawWidth,
+                        outputStart: floating.outputStart + floating.outputDuration * sourceFraction,
+                        outputDuration: floating.outputDuration * Double(drawWidth / floatingWidth))
+                        .mask {
+                            RoundedRectangle(cornerRadius: 4)
+                                .padding(.leading, drawStart <= floatingOrigin ? min(5, floatingWidth * 0.22) : 0)
+                                .padding(.trailing, drawEnd >= floatingOrigin + floatingWidth ? min(5, floatingWidth * 0.22) : 0)
+                                .padding(.top, 3).padding(.bottom, 2)
+                        }
+                        .offset(x: drawStart)
                 }
-                .offset(
-                    x: visibleWindow.documentOriginX + primarySegmentDragTranslation
-                )
             } else {
                 clipWaveforms(
                     width: visibleWindow.width,
@@ -415,7 +417,8 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
         width: CGFloat,
         duration: TimeInterval,
         visibleWindow: EditorTimelineWaveformPresentation.VisibleWindow,
-        including: @escaping (ResolvedRecordingSegment) -> Bool
+        including: @escaping (ResolvedRecordingSegment) -> Bool,
+        excludingFloatingSegment: Bool = false
     ) -> some View {
         Canvas { context, size in
             var retainedSegments = Path()
@@ -448,6 +451,12 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
                     cornerSize: CGSize(width: 4, height: 4)
                 )
             }
+            if excludingFloatingSegment, let draft = primaryReorderDraft {
+                let start = CGFloat(draft.original.outputStart / safeDuration) * width
+                    + primarySegmentDragTranslation - windowStart
+                let span = CGFloat(draft.original.outputDuration / safeDuration) * width
+                context.clip(to: Path(CGRect(x: start, y: 0, width: span, height: size.height)), options: .inverse)
+            }
             context.fill(retainedSegments, with: .color(.white))
         }
     }
@@ -471,10 +480,11 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
     }
 
     var waveformMediaPlan: ProjectTimelineMediaPlan? {
-        guard primaryTrimDraft != nil || primaryRetimeDraft != nil,
-              let video = mediaSession.inventories.source.videoTimeRange else {
-            return mediaSession.mediaPlan
-        }
+        // A committed edit updates clip geometry immediately, while the media
+        // session intentionally retains its previous plan until AVFoundation
+        // is ready. Always map cached PCM through the displayed sequence,
+        // including the first frame after the gesture draft is cleared.
+        guard let video = mediaSession.inventories.source.videoTimeRange else { return nil }
         return derivedPresentationCache.waveformPlan(segments: primaryDisplaySegments,
             manifest: editorStore.project.media, video: video,
             system: mediaSession.inventories.source.audioTimeRange,
@@ -560,7 +570,12 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
         )
     }
 
+    var displayedEffectTimeline: ProjectTimeline {
+        primaryReorderPreviewTimeline ?? editorStore.previewProject.timeline
+    }
+
     var primaryDisplaySegments: [ResolvedRecordingSegment] {
+        if let primaryReorderDraft { return primaryReorderDraft.segments }
         guard let timelineMap else { return [] }
         return EditorPrimaryTimelinePresentation.displaySegments(
             from: timelineMap,
@@ -891,20 +906,10 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
         removePrimarySegment(id: selectedPrimarySegmentID)
     }
 
-    func movePrimarySegment(
-        _ draggedID: UUID,
-        relativeTo targetID: UUID,
-        placeAfterTarget: Bool
-    ) {
+    func movePrimarySegment(_ draggedID: UUID, toIndex destination: Int) {
         guard let map = timelineMap,
               let oldIndex = map.segments.firstIndex(where: { $0.id == draggedID }),
-              let targetIndex = map.segments.firstIndex(where: { $0.id == targetID }) else {
-            return
-        }
-        var destination = targetIndex + (placeAfterTarget ? 1 : 0)
-        if oldIndex < destination { destination -= 1 }
-        destination = min(max(destination, 0), map.segments.count - 1)
-        guard destination != oldIndex else { return }
+              map.segments.indices.contains(destination), destination != oldIndex else { return }
         do {
             try editorStore.movePrimarySegment(
                 id: draggedID,
@@ -940,56 +945,53 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
         duration: TimeInterval
     ) {
         if draggedPrimarySegmentID == nil {
+            guard let map = timelineMap,
+                  let draft = PrimarySegmentReorderDraft(segmentID: segmentID, segments: map.segments)
+            else { return }
             timelineSnap.reset()
+            primaryReorderDraft = draft
             draggedPrimarySegmentID = segmentID
         }
-        guard draggedPrimarySegmentID == segmentID else { return }
-        guard let segment = primaryDisplaySegments.first(where: { $0.id == segmentID }) else { return }
+        guard draggedPrimarySegmentID == segmentID, var draft = primaryReorderDraft else { return }
+        let segment = draft.original
         let rawDelta = Double(translation / max(laneWidth, 1)) * duration
         let delta = magneticDelta(rawDelta, start: segment.outputStart,
-            end: segment.outputStart + segment.outputDuration, mode: .move,
-            width: laneWidth, duration: duration)
+            end: segment.outputEnd, mode: .move, width: laneWidth, duration: duration)
         primarySegmentDragTranslation = CGFloat(delta / max(duration, 0.001)) * laneWidth
         primarySegmentDragDocumentX = documentX + primarySegmentDragTranslation - translation
+        draft.update(translation: delta)
+        if draft.destination != primaryReorderDraft?.destination {
+            primaryReorderDraft = draft
+            // Reuse the same pure remapping as the commit, only when crossing
+            // a slot. Do not rebuild playback media or create undo steps while
+            // the pointer is still moving.
+            primaryReorderPreviewTimeline = try? ProjectTimelineEditing.movePrimarySegment(
+                in: editorStore.previewProject.timeline, segmentID: segmentID,
+                toIndex: draft.destination, fullSourceDuration: fullSourceDuration)
+        }
+    }
+
+    func primaryFloatingTranslation(width: CGFloat, duration: TimeInterval) -> CGFloat {
+        primaryReorderDraft?.floatingTranslation(primarySegmentDragTranslation,
+            laneWidth: width, duration: duration) ?? primarySegmentDragTranslation
     }
 
     func finishPrimarySegmentDrag(
         segmentID: UUID,
+        translation: CGFloat,
         documentX: CGFloat,
         laneWidth: CGFloat,
         duration: TimeInterval
     ) {
         defer { endPrimarySegmentDrag() }
-        guard draggedPrimarySegmentID == segmentID,
-              laneWidth > 0,
-              duration > 0 else { return }
-
-        let x = min(max(primarySegmentDragDocumentX ?? documentX, 0), laneWidth)
-        let segments = primaryDisplaySegments
-        guard let target = segments.min(by: { lhs, rhs in
-            let lhsCenter = EditorPrimarySegmentGeometry.centerX(
-                of: lhs,
-                laneWidth: laneWidth,
-                timelineDuration: duration
-            )
-            let rhsCenter = EditorPrimarySegmentGeometry.centerX(
-                of: rhs,
-                laneWidth: laneWidth,
-                timelineDuration: duration
-            )
-            return abs(lhsCenter - x) < abs(rhsCenter - x)
-        }), target.id != segmentID else { return }
-
-        let targetCenter = EditorPrimarySegmentGeometry.centerX(
-            of: target,
-            laneWidth: laneWidth,
-            timelineDuration: duration
-        )
-        movePrimarySegment(
-            segmentID,
-            relativeTo: target.id,
-            placeAfterTarget: x >= targetCenter
-        )
+        guard draggedPrimarySegmentID == segmentID, laneWidth > 0, duration > 0 else { return }
+        updatePrimarySegmentDrag(segmentID: segmentID, translation: translation,
+            documentX: documentX, laneWidth: laneWidth, duration: duration)
+        guard let draft = primaryReorderDraft,
+              timelineMap?.segments == draft.originalSegments else { return }
+        // Commit the exact order already displayed; never pick another target
+        // from neighbour positions which have moved in the meantime.
+        movePrimarySegment(segmentID, toIndex: draft.destination)
     }
 
     func removePrimarySegment(id: UUID) {

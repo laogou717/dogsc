@@ -120,6 +120,22 @@ public struct TransitionTiming: Codable, Equatable, Sendable {
     public var returnDuration: TimeInterval
     /// 剪切跨过回落起点时保留的回落相位；0 = 从目标开始回落，1 = 已回到基础状态。
     public var returnProgressOffset: Double
+    /// Authored durations survive ripple fitting and temporary adjacency.
+    public var preferredLeadInDuration: TimeInterval?
+    public var preferredReturnDuration: TimeInterval?
+
+    public var requestedLeadInDuration: TimeInterval { preferredLeadInDuration ?? leadInDuration }
+
+    public func requestedReturnDuration(defaultTransition: TimeInterval = 0.7) -> TimeInterval {
+        preferredReturnDuration ?? (returnDuration > 0.000_1 ? returnDuration : max(defaultTransition, 0))
+    }
+
+    public mutating func preserveTransitionIntent(defaultTransition: TimeInterval = 0.7) {
+        if preferredLeadInDuration == nil { preferredLeadInDuration = leadInDuration }
+        if preferredReturnDuration == nil {
+            preferredReturnDuration = requestedReturnDuration(defaultTransition: defaultTransition)
+        }
+    }
 
     public init(
         startTime: TimeInterval,
@@ -129,7 +145,9 @@ public struct TransitionTiming: Codable, Equatable, Sendable {
         customCurve: ZoomBezierCurve = .cubic,
         returnDuration: TimeInterval = 0,
         leadInProgressOffset: Double = 0,
-        returnProgressOffset: Double = 0
+        returnProgressOffset: Double = 0,
+        preferredLeadInDuration: TimeInterval? = nil,
+        preferredReturnDuration: TimeInterval? = nil
     ) {
         self.startTime = startTime
         self.duration = duration
@@ -139,6 +157,8 @@ public struct TransitionTiming: Codable, Equatable, Sendable {
         self.customCurve = customCurve
         self.returnDuration = min(max(returnDuration, 0), 5)
         self.returnProgressOffset = min(max(returnProgressOffset, 0), 1)
+        self.preferredLeadInDuration = preferredLeadInDuration
+        self.preferredReturnDuration = preferredReturnDuration
     }
 
     public var endTime: TimeInterval {
@@ -157,6 +177,7 @@ public struct TransitionTiming: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case startTime, duration, leadInDuration, leadInProgressOffset
         case easing, customCurve, returnDuration, returnProgressOffset
+        case preferredLeadInDuration, preferredReturnDuration
     }
 
     public init(from decoder: any Decoder) throws {
@@ -179,6 +200,8 @@ public struct TransitionTiming: Codable, Equatable, Sendable {
             max(try container.decodeIfPresent(TimeInterval.self, forKey: .returnDuration) ?? 0, 0),
             5
         )
+        preferredLeadInDuration = try container.decodeIfPresent(TimeInterval.self, forKey: .preferredLeadInDuration)
+        preferredReturnDuration = try container.decodeIfPresent(TimeInterval.self, forKey: .preferredReturnDuration)
         returnProgressOffset = min(
             max(try container.decodeIfPresent(Double.self, forKey: .returnProgressOffset) ?? 0, 0),
             1

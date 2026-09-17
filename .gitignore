@@ -5,3 +5,10 @@
 DerivedData/
 *.xcuserstate
 导出/
+.env
+.env.*
+*.p12
+*.pfx
+*.keychain-db
+*.dogscproject/
+*.silkyproject/

@@ -21,13 +21,13 @@ private struct CanvasQuickMenuLabel: View {
         .padding(.horizontal, 7)
         .frame(height: 30)
         .background(
-            Color.white.opacity(isHovered ? 0.10 : 0.055),
+            EditorTheme.chrome(isHovered ? 0.10 : 0.055),
             in: RoundedRectangle(cornerRadius: 7, style: .continuous)
         )
         .overlay {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .stroke(
-                    Color.white.opacity(isHovered ? 0.18 : 0.09),
+                    EditorTheme.chrome(isHovered ? 0.18 : 0.09),
                     lineWidth: 0.75
                 )
         }
@@ -149,7 +149,7 @@ extension CanvasPreview {
                     systemImage: "circle.lefthalf.filled"
                 )
                     .font(.appUI(size: 10, weight: .medium))
-                    .foregroundStyle(Color.white.opacity(0.68))
+                    .foregroundStyle(EditorTheme.chrome(0.68))
                 EditorSlider(
                     value: quickMosaicBinding(
                         id: clip.id,
@@ -179,7 +179,7 @@ extension CanvasPreview {
                 Divider().frame(height: 22)
                 Label("圆角", systemImage: "square")
                     .font(.appUI(size: 10, weight: .medium))
-                    .foregroundStyle(Color.white.opacity(0.68))
+                    .foregroundStyle(EditorTheme.chrome(0.68))
                 EditorSlider(
                     value: quickMosaicBinding(
                         id: clip.id,
@@ -221,7 +221,7 @@ extension CanvasPreview {
                 Divider().frame(height: 22)
                 Label("虚化", systemImage: "drop.halffull")
                     .font(.appUI(size: 10, weight: .medium))
-                    .foregroundStyle(Color.white.opacity(clip.hidesScreen ? 0.30 : 0.68))
+                    .foregroundStyle(EditorTheme.chrome(clip.hidesScreen ? 0.30 : 0.68))
                 EditorSlider(
                     value: quickStickerBinding(
                         id: clip.id,
@@ -277,7 +277,7 @@ extension CanvasPreview {
             .font(.appUI(size: 11, weight: .medium))
             .padding(.horizontal, 11)
             .frame(height: 48)
-            .foregroundStyle(Color.white.opacity(0.94))
+            .foregroundStyle(EditorTheme.chrome(0.94))
             .background(
                 EditorTheme.cardElevated.opacity(0.94),
                 in: RoundedRectangle(cornerRadius: 11, style: .continuous)

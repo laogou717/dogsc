@@ -150,7 +150,11 @@ struct ScreenMotionTargetInspector: View {
                         onDurationChanged: { value in updateDraft { $0.timing.duration = value } },
                         onDurationEnded: { commitDraft(actionName: "调整屏幕 3D 时长") },
                         onDurationCancelled: { editorStore.cancelInteraction() },
-                        onLeadInChanged: { value in updateDraft { $0.timing.leadInDuration = value } },
+                        onLeadInChanged: { value in updateDraft {
+                        $0.timing.leadInDuration = value
+                        $0.timing.preferredLeadInDuration = value
+                        $0.timing.leadInProgressOffset = 0
+                    } },
                         onLeadInEnded: { commitDraft(actionName: "调整屏幕 3D 过渡") },
                         onLeadInCancelled: { editorStore.cancelInteraction() }
                     )
@@ -325,7 +329,11 @@ struct CameraMotionTargetInspector: View {
                         onDurationChanged: { value in updateDraft { $0.timing.duration = value } },
                         onDurationEnded: { commitDraft(actionName: "调整摄像运动时长") },
                         onDurationCancelled: { editorStore.cancelInteraction() },
-                        onLeadInChanged: { value in updateDraft { $0.timing.leadInDuration = value } },
+                        onLeadInChanged: { value in updateDraft {
+                        $0.timing.leadInDuration = value
+                        $0.timing.preferredLeadInDuration = value
+                        $0.timing.leadInProgressOffset = 0
+                    } },
                         onLeadInEnded: { commitDraft(actionName: "调整摄像运动过渡") },
                         onLeadInCancelled: { editorStore.cancelInteraction() }
                     )

@@ -27,7 +27,7 @@ final class RecorderPopoverPresenter {
             let y = below >= visible.minY ? below : min(anchorRect.maxY + 10, visible.maxY - newHeight)
             panel.setFrame(NSRect(x: panel.frame.minX, y: y, width: width, height: newHeight), display: true)
             panel.invalidateShadow()
-        }.preferredColorScheme(.light))
+        }.preferredColorScheme(.light).appControlFocusAppearance())
         let height = min(max(host.view.fittingSize.height, 80), maxHeight)
         let x = min(max(anchorRect.midX - width / 2, visible.minX), visible.maxX - width)
         let below = anchorRect.minY - height - 10

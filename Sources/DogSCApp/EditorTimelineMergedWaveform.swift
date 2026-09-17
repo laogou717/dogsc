@@ -1,3 +1,4 @@
+import Foundation
 import RecorderCore
 import SwiftUI
 
@@ -24,12 +25,13 @@ struct EditorTimelineMergedWaveform: View {
         if let microphone, let microphonePlan {
             channels.append(.init(data: microphone, plan: microphonePlan, gains: microphoneGains))
         }
-        return .init(channels: channels, count: min(max(Int(ceil(width)), 2), 8192),
+        return .init(channels: channels, count: min(max(Int(ceil(width / 2)), 2), 4096),
                      start: outputStart, duration: outputDuration)
     }
 
     var body: some View {
         WaveformEnvelopeCanvas(request: request, expansion: expanded ? 1 : 0)
+            .equatable()
             .frame(width: width, height: height)
             .animation(SpringMotion.fluid, value: expanded)
             .allowsHitTesting(false)
@@ -39,7 +41,13 @@ struct EditorTimelineMergedWaveform: View {
 /// Drawing consumes one immutable draft and the already-decoded peak buffers.
 /// There is no detached sampling task whose stale result can trail a trim,
 /// and no PCM decode or SwiftUI state publication inside the drawing pass.
-private struct WaveformEnvelopeCanvas: View, @MainActor Animatable {
+private struct WaveformEnvelopeCanvas: View, @MainActor Animatable, @MainActor Equatable {
+    @State private var envelopeCache = WaveformEnvelopeCache()
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.request == rhs.request && lhs.expansion == rhs.expansion
+    }
+
     let request: WaveformEnvelopeRequest
     var expansion: CGFloat
     var animatableData: CGFloat {
@@ -48,11 +56,29 @@ private struct WaveformEnvelopeCanvas: View, @MainActor Animatable {
     }
     var body: some View {
         let ink = EditorTheme.chrome(0.56)
+        let cache = envelopeCache
         Canvas(rendersAsynchronously: true) { context, size in
-            guard let samples = request.sample() else { return }
+            guard let samples = cache.samples(for: request) else { return }
             let shape = WaveformEnvelopeShape(samples: samples, expansion: expansion)
             context.fill(shape.path(in: CGRect(origin: .zero, size: size)), with: .color(ink))
         }
+    }
+}
+
+/// One immutable envelope per visible window. Drawing can run asynchronously;
+/// lock only protects this small, local cache and never holds media/decoder state.
+private final class WaveformEnvelopeCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var request: WaveformEnvelopeRequest?
+    private var values: [Double]?
+
+    func samples(for request: WaveformEnvelopeRequest) -> [Double]? {
+        lock.lock()
+        defer { lock.unlock() }
+        if self.request == request { return values }
+        let sampled = request.sample()
+        if let sampled { self.request = request; values = sampled }
+        return sampled
     }
 }
 
@@ -88,7 +114,7 @@ private struct WaveformEnvelopeRequest: Equatable, Sendable {
         let step = duration / Double(count)
         for index in values.indices {
             if index.isMultiple(of: 128), Task.isCancelled { return nil }
-            // Take the peak across each pixel interval, not just its midpoint.
+            // Take the peak across each drawing cell, not just its midpoint.
             // Both sources contribute to one envelope; their own timing and
             // mute/volume settings are respected before the visual merge.
             for fraction in [0.2, 0.5, 0.8] {

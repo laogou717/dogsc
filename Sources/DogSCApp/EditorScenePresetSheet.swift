@@ -44,7 +44,7 @@ struct EditorScenePresetSheet: View {
                 }
                 .font(.appUI(.caption))
                 configurationRow("person.crop.rectangle", "摄像头", "显隐、布局、形状、外观与蒙版取景")
-                configurationRow("cursorarrow.motionlines", "光标与运镜", "光标效果、开场、运动模糊与新动画默认值")
+                configurationRow("cursorarrow.motionlines", "光标与运镜", "光标效果、开场与新动画默认值")
                 configurationRow("speaker.wave.2", "声音与背景", "全片音量、静音和背景资源副本")
             }
             .padding(16)
@@ -75,6 +75,7 @@ struct EditorScenePresetSheet: View {
         .padding(24)
         .frame(width: 480)
         .background(EditorTheme.panelSurface)
+        .appControlFocusAppearance()
         .interactiveDismissDisabled(isSaving)
         .onAppear { nameFocused = true }
     }
@@ -155,6 +156,7 @@ struct EditorScenePresetPreview: View {
         .padding(24)
         .frame(width: 500)
         .background(EditorTheme.panelSurface)
+        .appControlFocusAppearance()
         .task {
             if let image = await mediaSession.thumbnail(atOutputTime: outputTime) {
                 thumbnail = NSImage(cgImage: image, size: .zero)

@@ -8,12 +8,14 @@ struct EditorWindowLifecycleBridge: NSViewRepresentable {
     let projectTitle: String
     let onResignKey: @MainActor () -> Void
     var onActivityChanged: @MainActor (Bool) -> Void = { _ in }
+    var onScreenSizeChanged: @MainActor (CGSize?) -> Void = { _ in }
 
     func makeNSView(context: Context) -> WindowObservationView {
         WindowObservationView(
             projectTitle: projectTitle,
             onResignKey: onResignKey,
-            onActivityChanged: onActivityChanged
+            onActivityChanged: onActivityChanged,
+            onScreenSizeChanged: onScreenSizeChanged
         )
     }
 
@@ -21,6 +23,7 @@ struct EditorWindowLifecycleBridge: NSViewRepresentable {
         view.projectTitle = projectTitle
         view.onResignKey = onResignKey
         view.onActivityChanged = onActivityChanged
+        view.onScreenSizeChanged = onScreenSizeChanged
         view.updateWindowTitle()
     }
 
@@ -34,16 +37,20 @@ final class WindowObservationView: NSView {
     var onResignKey: @MainActor () -> Void
     var onActivityChanged: @MainActor (Bool) -> Void
     private var observers: [NSObjectProtocol] = []
+    var onScreenSizeChanged: @MainActor (CGSize?) -> Void
+    private var lastScreenSize: CGSize?
     private var lastActivity: Bool?
 
     init(
         projectTitle: String,
         onResignKey: @escaping @MainActor () -> Void,
-        onActivityChanged: @escaping @MainActor (Bool) -> Void
+        onActivityChanged: @escaping @MainActor (Bool) -> Void,
+        onScreenSizeChanged: @escaping @MainActor (CGSize?) -> Void
     ) {
         self.projectTitle = projectTitle
         self.onResignKey = onResignKey
         self.onActivityChanged = onActivityChanged
+        self.onScreenSizeChanged = onScreenSizeChanged
         super.init(frame: .zero)
     }
 
@@ -74,7 +81,26 @@ final class WindowObservationView: NSView {
                 MainActor.assumeIsolated { self?.updateActivity() }
             })
         }
+        for name in [NSWindow.didChangeScreenNotification, NSWindow.didChangeBackingPropertiesNotification] {
+            observers.append(center.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.updateScreenSize() }
+            })
+        }
+        observers.append(center.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.updateScreenSize() }
+            })
+        updateScreenSize()
         updateActivity()
+    }
+
+    private func updateScreenSize() {
+        guard let size = window?.screen?.visibleFrame.size, size != lastScreenSize else { return }
+        lastScreenSize = size
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.lastScreenSize == size else { return }
+            self.onScreenSizeChanged(size)
+        }
     }
 
     private func updateActivity() {
@@ -105,6 +131,7 @@ final class WindowObservationView: NSView {
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         observers.removeAll()
         lastActivity = nil
+        lastScreenSize = nil
     }
 }
 

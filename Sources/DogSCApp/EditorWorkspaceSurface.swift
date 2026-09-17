@@ -169,20 +169,37 @@ struct RecorderPanelSurface: ViewModifier {
 }
 
 struct EditorSoftRaisedButtonStyle: ButtonStyle {
-    @Environment(\.isEnabled) private var isEnabled
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .foregroundStyle(EditorTheme.chrome(isEnabled ? 0.88 : 0.28))
-            .background {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(configuration.isPressed ? EditorTheme.panelRaised : EditorTheme.cardElevated)
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .strokeBorder(EditorTheme.chrome(0.065), lineWidth: 0.75)
-                    }
-            }
-            .shadow(color: EditorTheme.softShadow.opacity(0.5), radius: 4, y: 2)
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
-            .animation(SpringMotion.interactive, value: configuration.isPressed)
+    func makeBody(configuration: Configuration) -> some View { Surface(configuration: configuration) }
+
+    private struct Surface: View {
+        @Environment(\.isEnabled) private var isEnabled
+        @State private var isHovered = false
+        let configuration: ButtonStyleConfiguration
+
+        var body: some View {
+            configuration.label
+                .foregroundStyle(EditorTheme.chrome(isEnabled ? 0.88 : 0.28))
+                .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .background {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(configuration.isPressed && isEnabled
+                            ? EditorTheme.panelRaised : EditorTheme.cardElevated)
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(EditorTheme.chrome(isHovered && isEnabled ? 0.045 : 0))
+                        }
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .strokeBorder(EditorTheme.chrome(isHovered && isEnabled ? 0.10 : 0.065), lineWidth: 0.75)
+                        }
+                        .allowsHitTesting(false)
+                }
+                .shadow(color: EditorTheme.softShadow.opacity(isHovered && isEnabled ? 0.8 : 0.5), radius: 4, y: 2)
+                .scaleEffect(configuration.isPressed && isEnabled ? 0.97 : 1)
+                .onHover { isHovered = $0 }
+                .onChange(of: isEnabled) { _, enabled in if !enabled { isHovered = false } }
+                .animation(SpringMotion.interactive, value: isHovered)
+                .animation(SpringMotion.interactive, value: configuration.isPressed)
+        }
     }
 }

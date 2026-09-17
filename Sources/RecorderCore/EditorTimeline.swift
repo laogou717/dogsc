@@ -295,6 +295,9 @@ public enum EditorTimelineMath {
             var patched = clip
             patched.preserveTransitionIntent(defaultTransition: defaultExit)
             patched.exitDuration = min(requested, max(available, 0))
+            if patched.exitDuration > clip.exitDuration + 0.000_001 {
+                patched.exitProgressOffset = 0
+            }
             if patched != clip { patches.append(patched) }
         }
         if let predecessor { appendPatch(for: predecessor, followedBy: edited) }
@@ -347,6 +350,11 @@ public enum EditorTimelineMath {
         var moved = animation
         moved.startTime = start
         moved.endTime = start + animation.duration
+        if abs(start - animation.startTime) > 0.000_001 {
+            moved.preserveTransitionIntent(defaultTransition: defaultExit)
+            moved.enterProgressOffset = 0
+            moved.exitProgressOffset = 0
+        }
         return moved
     }
 
@@ -388,6 +396,10 @@ public enum EditorTimelineMath {
                 start = snapped
             }
             resized.startTime = start
+            if abs(start - animation.startTime) > 0.000_001 {
+                resized.preserveTransitionIntent(defaultTransition: defaultExit)
+                resized.enterProgressOffset = 0
+            }
         }
         if let proposedEnd {
             let lowerBound = animation.startTime + minimumDuration
@@ -407,6 +419,10 @@ public enum EditorTimelineMath {
                 end = snapped
             }
             resized.endTime = end
+            if abs(end - animation.endTime) > 0.000_001 {
+                resized.preserveTransitionIntent(defaultTransition: defaultExit)
+                resized.exitProgressOffset = 0
+            }
         }
         return resized
     }
@@ -662,7 +678,9 @@ public enum EditorTimelineMath {
             duration: e - s,
             leadInDuration: fittedLeadIn,
             easing: easing,
-            returnDuration: fittedReturn
+            returnDuration: fittedReturn,
+            preferredLeadInDuration: min(max(leadInDuration ?? (e - s), 0), 5),
+            preferredReturnDuration: min(max(returnDuration, 0), 5)
         )
     }
 
@@ -799,13 +817,16 @@ public enum EditorTimelineMath {
                 abs($0.timing.startTime - clip.timing.endTime)
                     <= ZoomInterpolator.adjacencyTolerance
             } ?? false
-            guard !touchesSuccessor,
-                  clip.timing.returnDuration <= 0.000_1 else { return }
-            let available = next.map { $0.timing.startTime - clip.timing.endTime }
-                ?? max(defaultReturn, 0)
+            guard !touchesSuccessor else { return }
             var patched = clip.timing
-            patched.returnDuration = min(max(defaultReturn, 0), max(available, 0))
-            patches.append((clip.id, patched))
+            patched.preserveTransitionIntent(defaultTransition: defaultReturn)
+            let requested = patched.requestedReturnDuration(defaultTransition: defaultReturn)
+            let available = next.map { $0.timing.startTime - clip.timing.endTime } ?? requested
+            patched.returnDuration = min(requested, max(available, 0))
+            if patched.returnDuration > clip.timing.returnDuration + 0.000_001 {
+                patched.returnProgressOffset = 0
+            }
+            if patched != clip.timing { patches.append((clip.id, patched)) }
         }
         if let predecessor { appendPatch(for: predecessor, followedBy: edited) }
         appendPatch(for: edited, followedBy: successor)

@@ -790,20 +790,23 @@ public enum ProjectTimelineEditing {
         let predecessorID = removedIndex > 0 ? ordered[removedIndex - 1].id : nil
         var result = timeline
         result.screenMotionClips.removeAll { $0.id == id }
-        // 删除让前一段成为"结尾"：没有回落时长时补上默认回落（受剩余间隙限制），
-        // 仍与后一段相接的片段不动。
+        sortScreenMotion(&result.screenMotionClips)
+        // A removed successor frees room for the originally authored return.
         if let predecessorID,
-           let index = result.screenMotionClips.firstIndex(where: { $0.id == predecessorID }),
-           result.screenMotionClips[index].timing.returnDuration <= 0.000_1 {
+           let index = result.screenMotionClips.firstIndex(where: { $0.id == predecessorID }) {
+            let original = result.screenMotionClips[index].timing
+            var timing = original
+            timing.preserveTransitionIntent(defaultTransition: defaultReturn)
+            let requested = timing.requestedReturnDuration(defaultTransition: defaultReturn)
             let available = result.screenMotionClips.indices.contains(index + 1)
-                ? result.screenMotionClips[index + 1].timing.startTime
-                    - result.screenMotionClips[index].timing.endTime
-                : defaultReturn
+                ? result.screenMotionClips[index + 1].timing.startTime - timing.endTime
+                : requested
             if available > ZoomInterpolator.adjacencyTolerance {
-                result.screenMotionClips[index].timing.returnDuration = min(
-                    max(defaultReturn, 0),
-                    max(available, 0)
-                )
+                timing.returnDuration = min(requested, max(available, 0))
+                if timing.returnDuration > original.returnDuration + 0.000_001 {
+                    timing.returnProgressOffset = 0
+                }
+                result.screenMotionClips[index].timing = timing
             }
         }
         try validate(result)
@@ -858,19 +861,23 @@ public enum ProjectTimelineEditing {
         let predecessorID = removedIndex > 0 ? ordered[removedIndex - 1].id : nil
         var result = timeline
         result.cameraMotionClips.removeAll { $0.id == id }
-        // 与屏幕动画一致：删除让前一段成为结尾时补上受限默认回落。
+        sortCameraMotion(&result.cameraMotionClips)
+        // A removed successor frees room for the originally authored return.
         if let predecessorID,
-           let index = result.cameraMotionClips.firstIndex(where: { $0.id == predecessorID }),
-           result.cameraMotionClips[index].timing.returnDuration <= 0.000_1 {
+           let index = result.cameraMotionClips.firstIndex(where: { $0.id == predecessorID }) {
+            let original = result.cameraMotionClips[index].timing
+            var timing = original
+            timing.preserveTransitionIntent(defaultTransition: defaultReturn)
+            let requested = timing.requestedReturnDuration(defaultTransition: defaultReturn)
             let available = result.cameraMotionClips.indices.contains(index + 1)
-                ? result.cameraMotionClips[index + 1].timing.startTime
-                    - result.cameraMotionClips[index].timing.endTime
-                : defaultReturn
+                ? result.cameraMotionClips[index + 1].timing.startTime - timing.endTime
+                : requested
             if available > ZoomInterpolator.adjacencyTolerance {
-                result.cameraMotionClips[index].timing.returnDuration = min(
-                    max(defaultReturn, 0),
-                    max(available, 0)
-                )
+                timing.returnDuration = min(requested, max(available, 0))
+                if timing.returnDuration > original.returnDuration + 0.000_001 {
+                    timing.returnProgressOffset = 0
+                }
+                result.cameraMotionClips[index].timing = timing
             }
         }
         try validate(result)

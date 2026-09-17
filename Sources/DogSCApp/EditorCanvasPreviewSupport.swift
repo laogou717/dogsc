@@ -24,7 +24,6 @@ struct CanvasPlaybackEvaluationContext: Equatable, Sendable {
     let rasterCanvasSize: CompositionSize
     let sourceAspectRatio: Double
     let cameraSourceSize: CompositionSize?
-    let primaryPlan: TimelineMediaPlan?
     let cameraPlan: TimelineMediaPlan?
     let pointerTrack: ProjectPointerTrack?
     let cursorMetrics: CursorAssetMetrics?
@@ -33,11 +32,33 @@ struct CanvasPlaybackEvaluationContext: Equatable, Sendable {
     let screenMotionTrack: ScreenMotionTrack
     let cameraMotionTrack: CameraMotionTrack
 
+    func refreshingCursor(
+        in cached: SharedPreviewPlaybackFrame,
+        at presentationTime: TimeInterval
+    ) -> SharedPreviewPlaybackFrame {
+        let plan = FrameSceneEvaluator.refreshingCursor(
+            in: cached.renderPlan,
+            at: presentationTime,
+            project: project,
+            pointerTrack: pointerTrack,
+            cursorMetrics: cursorMetrics,
+            cursorMetricsByAssetID: cursorMetricsByAssetID,
+            zoomTrack: zoomTrack
+        )
+        return SharedPreviewPlaybackFrame(renderPlan: plan, semanticScene: plan.scene)
+    }
+
+    /// Cached and uncached animation plans use the same 60 Hz grid, independent
+    /// of the export's 30/60/120 fps setting. The pointer and media clock retain
+    /// the exact display timestamp. Paused inspection still uses exact `frame`.
+    func playbackFrame(at presentationTime: TimeInterval) -> SharedPreviewPlaybackFrame {
+        refreshingCursor(
+            in: frame(at: PreviewAnimationCadence.sampleTime(presentationTime)),
+            at: presentationTime
+        )
+    }
+
     func frame(at presentationTime: TimeInterval) -> SharedPreviewPlaybackFrame {
-        let primarySlice = primaryPlan?.slice(atOutputTime: presentationTime)
-        let primaryRange = primarySlice.flatMap {
-            MediaTimeRange(start: $0.outputStart, duration: $0.duration)
-        }
         let plan = FrameSceneEvaluator.renderPlan(
             project: project,
             presentationTime: presentationTime,
@@ -52,7 +73,6 @@ struct CanvasPlaybackEvaluationContext: Equatable, Sendable {
             zoomTrack: zoomTrack,
             screenMotionTrack: screenMotionTrack,
             cameraMotionTrack: cameraMotionTrack,
-            activePrimaryRange: primaryRange,
             cameraTimeline: cameraPlan
         )
         // Reuse the already-evaluated presentation scene instead of running

@@ -156,13 +156,8 @@ enum SharedFrameRenderer {
                     over: transparent,
                     canvasRect: canvasRect
                 ) else { return result }
-                let screenLayer = SharedFrameOverlayRenderer.motionBlurred(
-                    renderedScreen,
-                    motion: scene.screen.motion,
-                    canvasRect: canvasRect
-                )
                 result = applyingOpacity(
-                    screenLayer,
+                    renderedScreen,
                     screenVisibility
                 ).composited(over: result).cropped(to: canvasRect)
             case .cursor:
@@ -179,13 +174,8 @@ enum SharedFrameRenderer {
                     over: transparent,
                     canvasRect: canvasRect
                 )
-                let movedCursorLayer = SharedFrameOverlayRenderer.motionBlurred(
-                    cursorLayer,
-                    motion: cursorScene.motion,
-                    canvasRect: canvasRect
-                )
                 result = applyingOpacity(
-                    movedCursorLayer,
+                    cursorLayer,
                     screenVisibility
                 ).composited(over: result).cropped(to: canvasRect)
             case .spotlight:
@@ -214,13 +204,8 @@ enum SharedFrameRenderer {
                     over: transparent,
                     canvasRect: canvasRect
                 )
-                let movedCamera = SharedFrameOverlayRenderer.motionBlurred(
-                    cameraLayer,
-                    motion: cameraScene.motion,
-                    canvasRect: canvasRect
-                )
                 visibleCameraLayer = applyingOpacity(
-                    movedCamera,
+                    cameraLayer,
                     cameraVisibility
                 )
                 result = visibleCameraLayer!
@@ -585,7 +570,6 @@ enum SharedFrameRenderer {
         over background: CIImage,
         canvasRect: CGRect
     ) -> CIImage? {
-        let transparent = CIImage(color: .clear).cropped(to: canvasRect)
         let normalizedSource = SharedFrameOverlayRenderer.applyingMosaics(
             scene.mosaics,
             to: normalized(source)
@@ -725,21 +709,32 @@ enum SharedFrameRenderer {
             nil
         }
         func decoratedLayer() -> CIImage {
+            let mask = contentMask()
+            // Transparent canvas-sized backings made a moving 2D card carry
+            // the complete output raster into every later blend and shadow.
+            // Keep the same output-space mask and source sampling, but discard
+            // only pixels that are already clear outside their intersection.
+            let contentExtent = transformed.extent.intersection(mask.extent)
             var layer = transformed.applyingFilter(
                 "CIBlendWithMask",
                 parameters: [
-                    kCIInputBackgroundImageKey: transparent,
-                    kCIInputMaskImageKey: contentMask(),
+                    kCIInputBackgroundImageKey: CIImage(color: .clear)
+                        .cropped(to: contentExtent),
+                    kCIInputMaskImageKey: mask,
                 ]
-            )
+            ).cropped(to: contentExtent)
             if let chrome = chromeLayer() {
+                let outerMask = projectionMask()
+                let cardExtent = layer.extent.union(chrome.extent)
+                    .intersection(outerMask.extent)
                 layer = layer.composited(over: chrome).applyingFilter(
                     "CIBlendWithMask",
                     parameters: [
-                        kCIInputBackgroundImageKey: transparent,
-                        kCIInputMaskImageKey: projectionMask(),
+                        kCIInputBackgroundImageKey: CIImage(color: .clear)
+                            .cropped(to: cardExtent),
+                        kCIInputMaskImageKey: outerMask,
                     ]
-                )
+                ).cropped(to: cardExtent)
             }
             // Preserve the existing outside border behind the clipped card.
             if let border = borderLayer() { layer = layer.composited(over: border) }
@@ -870,7 +865,7 @@ enum SharedFrameRenderer {
             }
         }
 
-        var screenLayer = CIImage(color: .clear).cropped(to: canvasRect)
+        var screenLayer = projectedLayer
         if let shadow = scene.shadow, shadow.opacity > 0 {
             let shadowMask: CIImage
             if identityProjection {
@@ -891,15 +886,24 @@ enum SharedFrameRenderer {
                     "CIGaussianBlur",
                     parameters: [kCIInputRadiusKey: shadow.radius]
                 )
-                .cropped(to: canvasRect)
-            screenLayer = coloredLayer(
+            let shadowLayer = coloredLayer(
                 color: CIColor(shadow.color, alpha: shadow.opacity),
                 mask: translatedShadow,
                 canvasRect: canvasRect
-            ).composited(over: screenLayer)
+            )
+            screenLayer = projectedLayer.composited(over: shadowLayer)
         }
-        screenLayer = projectedLayer.composited(over: screenLayer)
-        return screenLayer.composited(over: background).cropped(to: canvasRect)
+        // Do not expand a small opening card back into a transparent 5K
+        // image before the caller applies its entrance opacity. Projection,
+        // attached decoration and the complete Gaussian support are retained
+        // until this final, existing canvas boundary.
+        let visibleExtent = screenLayer.extent.intersection(canvasRect)
+        guard !visibleExtent.isEmpty, !visibleExtent.isNull else {
+            return CIImage(color: .clear).cropped(to: .zero)
+        }
+        return screenLayer
+            .composited(over: background.cropped(to: visibleExtent))
+            .cropped(to: visibleExtent)
     }
 
     /// Draws original vector chrome with no bundled third-party artwork. The
@@ -1191,16 +1195,18 @@ enum SharedFrameRenderer {
             from: scene.rect,
             canvasHeight: canvasRect.height
         )
-        let transparent = CIImage(color: .clear).cropped(to: canvasRect)
+        let transparent = CIImage(color: .clear).cropped(to: contentRect)
         let cameraMask = roundedMask(rect: contentRect, radius: scene.cornerRadius)
         let borderOuterRect = contentRect.insetBy(
             dx: -scene.borderWidth,
             dy: -scene.borderWidth
         )
-        let borderOuterMask = roundedMask(
-            rect: borderOuterRect,
-            radius: scene.cornerRadius + scene.borderWidth
-        )
+        let borderOuterMask = scene.borderWidth > 0
+            ? roundedMask(
+                rect: borderOuterRect,
+                radius: scene.cornerRadius + scene.borderWidth
+            )
+            : cameraMask
         var cameraLayer = transparent
 
         if let shadow = scene.shadow, shadow.opacity > 0 {
@@ -1215,7 +1221,6 @@ enum SharedFrameRenderer {
                     "CIGaussianBlur",
                     parameters: [kCIInputRadiusKey: shadow.radius]
                 )
-                .cropped(to: canvasRect)
             cameraLayer = coloredLayer(
                 color: CIColor(shadow.color, alpha: shadow.opacity),
                 mask: shadowMask,
@@ -1229,7 +1234,7 @@ enum SharedFrameRenderer {
                 mask: ringMask(
                     outer: borderOuterMask,
                     inner: cameraMask,
-                    canvasRect: canvasRect
+                    canvasRect: borderOuterRect
                 ),
                 canvasRect: canvasRect
             )
@@ -1280,7 +1285,7 @@ enum SharedFrameRenderer {
                 kCIInputBackgroundImageKey: transparent,
                 kCIInputMaskImageKey: cameraMask,
             ]
-        )
+        ).cropped(to: contentRect)
         cameraLayer = clipped.composited(over: cameraLayer)
         let visibleLayer = scene.opacity >= 0.999
             ? cameraLayer
@@ -2089,15 +2094,24 @@ enum SharedFrameRenderer {
         mask: CIImage,
         canvasRect: CGRect
     ) -> CIImage {
-        let foreground = CIImage(color: color).cropped(to: canvasRect)
-        let transparent = CIImage(color: .clear).cropped(to: canvasRect)
+        // A masked color is transparent outside the mask. Keeping the whole
+        // canvas as its extent makes a small camera shadow, border, or chrome
+        // control travel through subsequent filters as a full-resolution layer.
+        // Restrict only that known-clear area; mask density and blur support
+        // remain unchanged, and the caller still owns its original canvas clip.
+        let extent = canvasRect.intersection(mask.extent)
+        guard !extent.isEmpty, !extent.isNull else {
+            return CIImage(color: .clear).cropped(to: .zero)
+        }
+        let foreground = CIImage(color: color).cropped(to: extent)
+        let transparent = CIImage(color: .clear).cropped(to: extent)
         return foreground.applyingFilter(
             "CIBlendWithMask",
             parameters: [
                 kCIInputBackgroundImageKey: transparent,
                 kCIInputMaskImageKey: mask,
             ]
-        )
+        ).cropped(to: extent)
     }
 
     private nonisolated static func ringMask(

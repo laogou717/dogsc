@@ -215,6 +215,7 @@ enum AppPreferences {
             "cn.laogou.dogsc.editor-window",
             "cn.laogou.dogsc.settings-window",
             "cn.laogou.dogsc.main-window",
+            "dogsc.recording-completion",
         ]
         for window in NSApplication.shared.windows where
             supportedIdentifiers.contains(window.identifier?.rawValue ?? "") {
@@ -302,6 +303,18 @@ enum AppPreferences {
         let stored = defaults.double(forKey: zoomCreationScaleKey)
         guard stored.isFinite else { return 1.6 }
         return min(max(stored, 1), 6)
+    }
+
+    static var rememberedScreenMotionCreationStyle: ScreenMotionCreationStyle? {
+        guard let data = UserDefaults.standard.data(forKey: "editor.screenMotionCreationStyle"),
+              let style = try? JSONDecoder().decode(ScreenMotionCreationStyle.self, from: data),
+              style.isValid else { return nil }
+        return style
+    }
+
+    static func rememberScreenMotionCreationStyle(_ style: ScreenMotionCreationStyle) {
+        guard style.isValid, let data = try? JSONEncoder().encode(style) else { return }
+        UserDefaults.standard.set(data, forKey: "editor.screenMotionCreationStyle")
     }
 
     static func rememberZoomCreationScale(_ scale: Double) {

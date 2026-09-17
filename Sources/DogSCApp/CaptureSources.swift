@@ -120,6 +120,7 @@ struct CaptureSelectionPrimaryButtonStyle: ButtonStyle {
         configuration.label.foregroundStyle(.white)
             .background(Color(white: configuration.isPressed ? 0.16 : 0.24), in: RoundedRectangle(cornerRadius: 12))
             .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(.white.opacity(0.12), lineWidth: 0.75) }
+            .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 12), color: .white.opacity(0.65))
             .shadow(color: .black.opacity(0.12), radius: configuration.isPressed ? 2 : 5, y: 3)
             .scaleEffect(configuration.isPressed ? 0.98 : 1)
     }
@@ -130,6 +131,7 @@ struct CaptureSelectionSecondaryButtonStyle: ButtonStyle {
         configuration.label.foregroundStyle(Color(white: 0.25))
             .background(Color(white: configuration.isPressed ? 0.92 : 0.99), in: RoundedRectangle(cornerRadius: 12))
             .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(.black.opacity(0.06), lineWidth: 0.75) }
+            .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 12))
             .shadow(color: .black.opacity(0.08), radius: configuration.isPressed ? 1 : 4, y: 2)
             .scaleEffect(configuration.isPressed ? 0.98 : 1)
     }

@@ -210,8 +210,9 @@ enum CursorAssetLibrary {
     /// Keep the inspector deliberately small. Automatic playback still needs
     /// every runtime system cursor below, but those internal forms are not
     /// separate style choices: “系统” follows them as the recording changes.
+    /// Keep explicit hiding available alongside the two visible styles.
     static var availableAssets: [ResolvedCursorAsset] {
-        cachedAllAssets.filter { $0.id == .automatic || $0.id == .touchDot }
+        cachedAllAssets.filter { $0.id == .automatic || $0.id == .touchDot || $0.id == .hidden }
     }
 
     static var renderAssets: [ResolvedCursorAsset] {
@@ -316,7 +317,7 @@ enum CursorAssetLibrary {
             touchDotAsset(),
             ResolvedCursorAsset(
                 id: .hidden,
-                displayName: "隐藏",
+                displayName: "始终隐藏",
                 image: nil,
                 metrics: CursorAssetMetrics(
                     hotspot: CursorAssetPoint(x: 0.5, y: 0.5),
@@ -414,7 +415,8 @@ enum CursorAssetLibrary {
                     y: min(max(Double(cursor.hotSpot.y) / height, 0), 1)
                 ),
                 intrinsicSize: CursorAssetSize(width: width, height: height),
-                clickColor: clickColor
+                clickColor: clickColor,
+                scaleReferenceHeight: max(Double(NSCursor.arrow.image.size.height), 1)
             ),
             vectorSource: image.flatMap {
                 vectorSource(

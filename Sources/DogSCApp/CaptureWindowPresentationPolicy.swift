@@ -5,6 +5,7 @@ enum CaptureWindowPresentationRole: Equatable {
     case selectionOverlay
     case recordingGuideOverlay
     case recorderPanel(phase: AppPhase, selectionActive: Bool)
+    case recorderMemo
 }
 
 /// The only owner of capture-window level arithmetic. Selection and recording
@@ -20,6 +21,8 @@ enum CaptureWindowLevelPolicy {
 
     static func level(for role: CaptureWindowPresentationRole) -> NSWindow.Level {
         switch role {
+        case .recorderMemo:
+            NSWindow.Level(rawValue: activeRecorderLevel.rawValue + 1)
         case .selectionOverlay, .recordingGuideOverlay:
             overlayLevel
         case let .recorderPanel(phase, selectionActive):
@@ -28,7 +31,7 @@ enum CaptureWindowLevelPolicy {
                 activeRecorderLevel
             case .preparing, .recording:
                 activeRecorderLevel
-            case .setup, .finishing, .editor:
+            case .setup, .finishing, .editor, .recordingComplete:
                 .floating
             }
         }

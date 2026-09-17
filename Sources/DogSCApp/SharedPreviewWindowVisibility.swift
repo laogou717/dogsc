@@ -109,9 +109,13 @@ final class SharedPreviewWindowVisibilityController: NSObject {
     }
 
     private func configureCadence(_ link: CADisplayLink, screen: NSScreen?) {
-        let maximum = Float(max(screen?.maximumFramesPerSecond ?? 60, 1))
+        // A full-resolution effects graph must not silently double its work on
+        // a 120/144 Hz display. This is a presentation budget, not an export
+        // frame-rate or pixel-resolution change; the OS still owns scheduling.
+        let maximum = Float(min(max(screen?.maximumFramesPerSecond ?? 60, 1),
+                                PreviewAnimationCadence.framesPerSecond))
         link.preferredFrameRateRange = CAFrameRateRange(
-            minimum: min(60, maximum), maximum: maximum, preferred: maximum)
+            minimum: maximum, maximum: maximum, preferred: maximum)
     }
 
     private func resumePreviewPresentationForForegroundWindow(

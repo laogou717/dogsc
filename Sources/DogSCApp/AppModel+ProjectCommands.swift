@@ -18,15 +18,18 @@ extension AppModel {
         hidesDesktopFiles: Bool? = nil,
         hidesDock: Bool? = nil
     ) {
-        guard phase == .recording,
-              let run = recordingRuns.active,
-              run.plan.configuration.source != .window,
-              run.plan.configuration.source != .device else { return }
+        // The preparation popover edits the next recording's configuration.
+        // Persist it even when no stream exists; only the live filter update
+        // below depends on an active display/area recording.
         let previous = configuration
         captureSetup.setSurfaceVisibility(
             hidesDesktopFiles: hidesDesktopFiles,
             hidesDock: hidesDock
         )
+        guard phase == .recording,
+              let run = recordingRuns.active,
+              run.plan.configuration.source != .window,
+              run.plan.configuration.source != .device else { return }
         var updated = run.plan.configuration
         updated.hidesDesktopFiles = configuration.hidesDesktopFiles
         updated.hidesDock = configuration.hidesDock
@@ -66,7 +69,69 @@ extension AppModel {
         requestCloseProject()
     }
 
+    /// Choosing Edit is the only completion-card action that creates the
+    /// editor. Media and the project already crossed the stop/save boundary.
+    func editCompletedRecording() {
+        guard phase == .recordingComplete,
+              !isResolvingCompletedRecording,
+              !AppDialogPresenter.isPresenting,
+              currentSession != nil, recordingURL != nil else { return }
+        recorderTransitionStage = .openingEditor
+        phase = .editor
+    }
+
+    @discardableResult
+    func saveCompletedRecording() async -> Bool {
+        await persistCompletedRecording(resumingLiveInputs: true)
+    }
+
+    /// X, Escape, and the window-close command all use this one decision.
+    /// Merely dismissing the card never implicitly discards its project.
+    func requestCloseCompletedRecording(relativeTo owner: NSWindow? = nil) async {
+        _ = await resolveCompletedRecordingClose(relativeTo: owner, terminating: false)
+    }
+
+    /// Called by the application delegate's terminate-later path. A failed
+    /// save/trash operation returns false and keeps this same completion card.
+    func confirmCompletedRecordingForTermination(relativeTo owner: NSWindow? = nil) async -> Bool {
+        await resolveCompletedRecordingClose(relativeTo: owner, terminating: true)
+    }
+
+    private func resolveCompletedRecordingClose(relativeTo owner: NSWindow?, terminating: Bool) async -> Bool {
+        guard phase == .recordingComplete,
+              !isResolvingCompletedRecording,
+              !AppDialogPresenter.isPresenting,
+              let sessionURL = currentSession?.packageURL else { return false }
+        let response = AppDialogPresenter.run(AppDialog(
+            title: "保留这次录制吗？",
+            message: "保存项目以便稍后编辑，或将这次录制移到废纸篓。",
+            symbol: "record.circle", itemTitle: project.title,
+            actions: [
+                .init(id: "cancel", title: "取消", role: .cancel),
+                .init(id: "delete", title: "移到废纸篓", role: .destructive),
+                .init(id: "save", title: "保存项目", role: .primary)
+            ]
+        ), relativeTo: owner)
+        guard phase == .recordingComplete,
+              currentSession?.packageURL == sessionURL,
+              !isResolvingCompletedRecording else { return false }
+        switch response.actionID {
+        case "save":
+            return await persistCompletedRecording(resumingLiveInputs: !terminating)
+        case "delete":
+            return await discardCompletedRecording(resumingLiveInputs: !terminating)
+        default:
+            return false
+        }
+    }
+
     func requestCloseProject() {
+        if phase == .recordingComplete {
+            Task { @MainActor [weak self] in
+                await self?.requestCloseCompletedRecording()
+            }
+            return
+        }
         guard phase == .editor else { return }
         guard currentSession != nil else {
             closeProject()
@@ -74,22 +139,22 @@ extension AppModel {
         }
         if offersDiscardForUntouchedRecording,
            !currentRecordingHasEditorChanges {
-            let alert = NSAlert()
-            alert.messageText = "保留这次录制吗？"
-            alert.informativeText = "这次录制还没有做任何编辑。录制素材已经安全落盘，也可以直接移到废纸篓。"
-            alert.alertStyle = .warning
-            alert.addButton(withTitle: "保留项目")
-            alert.addButton(withTitle: "删除项目")
-            alert.addButton(withTitle: "取消")
-            alert.buttons[1].hasDestructiveAction = true
-
-            switch alert.runModal() {
-            case .alertFirstButtonReturn:
-                closePersistedProjectWithoutLocationPrompt()
-            case .alertSecondButtonReturn:
-                deleteCurrentProjectAndClose()
-            default:
-                break
+            let sessionURL = currentSession?.packageURL
+            let response = AppDialogPresenter.run(AppDialog(
+                title: "保留这次录制吗？",
+                message: "录制已安全保存，还没有进行编辑。保留项目，或将这次录制移到废纸篓。",
+                symbol: "record.circle", itemTitle: project.title,
+                actions: [
+                    .init(id: "cancel", title: "取消", role: .cancel),
+                    .init(id: "delete", title: "移到废纸篓", role: .destructive),
+                    .init(id: "keep", title: "保留项目", role: .primary)
+                ]
+            ))
+            guard phase == .editor, currentSession?.packageURL == sessionURL else { return }
+            switch response.actionID {
+            case "keep": closePersistedProjectWithoutLocationPrompt()
+            case "delete": deleteCurrentProjectAndClose()
+            default: break
             }
             return
         }
@@ -113,36 +178,40 @@ extension AppModel {
             return
         }
 
-        let alert = NSAlert()
-        alert.messageText = "关闭项目前要保存吗？"
-        alert.informativeText = "可以把录制保存为项目，或删除这次录制的所有素材。"
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "保存项目…")
-        alert.addButton(withTitle: "删除项目")
-        alert.addButton(withTitle: "取消")
-        alert.buttons[1].hasDestructiveAction = true
-
-        switch alert.runModal() {
-        case .alertFirstButtonReturn:
+        let sessionURL = currentSession?.packageURL
+        let response = AppDialogPresenter.run(AppDialog(
+            title: "关闭项目前要保存吗？",
+            message: "保存为项目，方便继续编辑；也可以将这次录制移到废纸篓。",
+            symbol: "folder", itemTitle: project.title,
+            actions: [
+                .init(id: "cancel", title: "取消", role: .cancel),
+                .init(id: "delete", title: "移到废纸篓", role: .destructive),
+                .init(id: "save", title: "保存项目…", role: .primary)
+            ]
+        ))
+        guard phase == .editor, currentSession?.packageURL == sessionURL else { return }
+        switch response.actionID {
+        case "save":
             guard let destination = chooseProjectSaveDestination() else { return }
             saveCurrentProject(to: destination, closeAfterSave: true)
-        case .alertSecondButtonReturn:
-            deleteCurrentProjectAndClose()
-        default:
-            break
+        case "delete": deleteCurrentProjectAndClose()
+        default: break
         }
     }
 
     func requestDeleteCurrentProject() {
-        guard phase == .editor, currentSession != nil else { return }
-        let alert = NSAlert()
-        alert.messageText = "删除这个项目？"
-        alert.informativeText = "项目包和其中的屏幕、摄像头及声音素材会移到废纸篓。"
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "删除项目")
-        alert.addButton(withTitle: "取消")
-        alert.buttons[0].hasDestructiveAction = true
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard phase == .editor, let sessionURL = currentSession?.packageURL else { return }
+        let response = AppDialogPresenter.run(AppDialog(
+            title: "删除这个项目？",
+            message: "项目和其中的录制素材将移到废纸篓，需要时可从废纸篓恢复。",
+            symbol: "trash", itemTitle: project.title,
+            actions: [
+                .init(id: "cancel", title: "取消", role: .cancel),
+                .init(id: "delete", title: "移到废纸篓", role: .destructive)
+            ]
+        ))
+        guard response.actionID == "delete", phase == .editor,
+              currentSession?.packageURL == sessionURL else { return }
         deleteCurrentProjectAndClose()
     }
 
@@ -163,6 +232,12 @@ extension AppModel {
     }
 
     func saveCurrentProject() {
+        if phase == .recordingComplete {
+            Task { @MainActor [weak self] in
+                await self?.saveCompletedRecording()
+            }
+            return
+        }
         guard let destination = chooseProjectSaveDestination() else { return }
         saveCurrentProject(to: destination, closeAfterSave: false)
     }
@@ -183,7 +258,7 @@ extension AppModel {
         }
     }
 
-    func closeProject() {
+    func closeProject(resumingLiveInputs: Bool = true) {
         guard currentSession == nil else {
             errorMessage = "项目保存或关闭屏障尚未完成。"
             return
@@ -214,7 +289,7 @@ extension AppModel {
         // remains source-safe, matching the cold-launch choice.
         project = EditorStylePresetStore.applyingLastUsedStyle(to: nextRecordingBaseline)
         captureSetup.reset()
-        resumeLiveInputIndicatorsForSetup()
+        if resumingLiveInputs { resumeLiveInputIndicatorsForSetup() }
         phase = .setup
         refreshRecentProjects()
     }
@@ -443,7 +518,7 @@ extension AppModel {
         ) else { return }
 
         let sessionPath = session.packageURL.standardizedFileURL.path
-        let sessionID = editorSessionID
+        let sessionURL = editorSessionID
         isMediaExchangeRunning = true
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -456,7 +531,7 @@ extension AppModel {
                         session: session
                     )
                 }.value
-                guard editorSessionID == sessionID,
+                guard editorSessionID == sessionURL,
                       currentSession?.packageURL.standardizedFileURL.path == sessionPath,
                       var media = project.media else {
                     await ProjectPackageDisposal.removeIfPresent(imported.folderURL)
@@ -582,6 +657,10 @@ extension AppModel {
                 at: packageURL,
                 projectToFlush: currentSession == nil ? nil : projectSnapshot
             )
+        case .recordingComplete:
+            // Finder, recent projects and menu commands must not replace a
+            // take while its completion decision is still pending.
+            WindowCoordinator.bringCurrentWindowFront()
         case .preparing, .recording, .finishing:
             errorMessage = "录制准备、录制或写入期间不能打开其他项目。请先结束当前操作。"
         }

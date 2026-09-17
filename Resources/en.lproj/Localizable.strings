@@ -11,7 +11,7 @@
 "从 GitHub Release 检查并安装 DogSC 新版本" = "Check GitHub Releases and install DogSC updates";
 "从片头预览" = "Preview from Start";
 "从系统设置返回后会自动检查，无需再点击“检测”。" = "Permission status refreshes automatically after returning from System Settings.";
-"使用默认位置" = "Use Default Location";
+"使用默认位置" = "Use Default";
 "保存" = "Save";
 "保存位置" = "Save Location";
 "保存失败" = "Save Failed";
@@ -42,7 +42,6 @@
 "删除该动画" = "Delete Animation";
 "删除这个动画片段" = "Delete This Animation Clip";
 "删除这个片段" = "Delete This Clip";
-"动态模糊" = "Motion Blur";
 "动效节奏" = "Motion Timing";
 "动画样式" = "Animation Style";
 "区域" = "Area";
@@ -247,7 +246,7 @@
 "重新录制" = "Record Again";
 "重新扫描" = "Rescan";
 "重新读取本机壁纸" = "Reload This Mac's Wallpapers";
-"重新选择文件夹…" = "Choose Another Folder…";
+"重新选择文件夹…" = "Choose Folder…";
 "重置" = "Reset";
 "重置取景" = "Reset Framing";
 "重置编辑窗口布局" = "Reset Editor Window Layout";
@@ -428,7 +427,7 @@
 "比例、大小、位置、裁切、样机、描边与阴影" = "Aspect ratio, size, position, crop, frame, border and shadow";
 "显隐、布局、形状、外观与蒙版取景" = "Visibility, layout, shape, appearance and framing";
 "光标与运镜" = "Cursor and Motion";
-"光标效果、开场、运动模糊与新动画默认值" = "Cursor effects, opening, motion blur and defaults for new animations";
+"光标效果、开场与新动画默认值" = "Cursor effects, opening and defaults for new animations";
 "声音与背景" = "Audio and Background";
 "全片音量、静音和背景资源副本" = "Global volume, mute and a copy of the background";
 "保留当前项目的素材、剪辑、分段声音和时间线动画。新录制默认场景可在预设菜单中单独选择。" = "Footage, edits, clip audio and timeline animations stay in the current project. Choose a default for new recordings separately in the preset menu.";
@@ -640,3 +639,58 @@
 "屏幕录制与辅助功能已就绪。进入后即可选择录制范围；摄像头和麦克风仍在启用时授权。" = "Screen recording and Accessibility are ready. Continue to choose what to record. Camera and microphone access will be requested when you enable them.";
 
 "选择样机；内容圆角、描边与阴影在“布局”中调整。" = "Choose a mockup. Adjust content corners, border, and shadow in Layout.";
+
+/* App-owned confirmation and notice cards */
+"保留这次录制吗？" = "Keep this recording?";
+"录制已安全保存，还没有进行编辑。保留项目，或将这次录制移到废纸篓。" = "The recording is safely saved and has not been edited. Keep the project or move it to the Trash.";
+"保留项目" = "Keep Project";
+"关闭项目前要保存吗？" = "Save before closing?";
+"保存为项目，方便继续编辑；也可以将这次录制移到废纸篓。" = "Save a project to continue editing later, or move this recording to the Trash.";
+"保存项目…" = "Save Project…";
+"删除这个项目？" = "Delete this project?";
+"项目和其中的录制素材将移到废纸篓，需要时可从废纸篓恢复。" = "The project and its recordings will move to the Trash. You can restore them from there.";
+"删除当前项目" = "Delete Current Project";
+"保存布局预设" = "Save Layout Preset";
+"记录摄像头与画面的构图，之后可在播放头位置复用。同名预设会被替换。" = "Save the camera and screen layout to reuse at the playhead. A preset with the same name will be replaced.";
+"停止当前录制并重新开始？" = "Start a new recording?";
+"将这次录制移到废纸篓？" = "Move this recording to the Trash?";
+"当前录制将移到废纸篓，随后使用相同设置重新开始。" = "The current recording will move to the Trash, then a new recording will start with the same settings.";
+"当前录制和相关素材将移到废纸篓，随后返回录制条。" = "This recording and its media will move to the Trash, then you will return to the recording bar.";
+"操作未完成" = "Could Not Complete";
+"无法更新录制画面" = "Could Not Update Recording";
+"录制、剪辑，让画面自然出彩。" = "Record, edit, and bring your screen to life.";
+"版本" = "Version";
+
+// Recording completion
+"录制完成" = "Recording complete";
+"关闭录制结果" = "Close recording result";
+"录制画面预览" = "Recorded frame preview";
+"预览暂不可用" = "Preview unavailable";
+"进入编辑" = "Open editor";
+"保存项目以便稍后编辑，或将这次录制移到废纸篓。" = "Save the project to edit later, or move this recording to the Trash.";
+"无法删除项目：项目仍在写入，请稍后重试。" = "Cannot delete the project while it is being saved. Try again shortly.";
+
+/* Cursor visibility */
+"始终隐藏" = "Always Hide";
+"光标已始终隐藏" = "Cursor Always Hidden";
+"预览和导出均不显示光标及点击反馈。选择“系统”或“触控圆点”可恢复。" = "The cursor and click effects are hidden in preview and export. Select System or Touch Dot to show them again.";
+
+/* Recording memo */
+"备忘录" = "Memo";
+"仅自己可见" = "Only visible to you";
+"打开备忘录" = "Open Memo";
+"收起备忘录" = "Hide Memo";
+"编辑备忘录" = "Edit Memo";
+"阅读" = "Read";
+"写下或粘贴要讲的内容…" = "Write or paste your talking points…";
+"自动保存到本机" = "Saved on this Mac";
+"背景不透明度" = "Background opacity";
+"备忘录背景不透明度" = "Memo background opacity";
+"备忘录文稿" = "Memo text";
+"缩小备忘录字号" = "Decrease Memo Text Size";
+"放大备忘录字号" = "Increase Memo Text Size";
+"切换到阅读，避免误改文稿" = "Read without accidentally editing your script";
+"编辑" = "Edit";
+
+"吸附已关" = "Snap off";
+"吸附已关闭，点击开启片段边界吸附" = "Snapping is off. Click to align clips to timeline boundaries.";

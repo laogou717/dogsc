@@ -16,6 +16,7 @@ enum AppPhase: Equatable {
     case preparing
     case recording
     case finishing
+    case recordingComplete
     case editor
 
     /// Device preferences may create live camera/microphone sessions. Only the
@@ -207,6 +208,10 @@ final class AppModel: ObservableObject {
     @Published var availableCameraResolutions: [CameraCaptureResolution] = []
     @Published var cameraRuntimeFormat: CameraRuntimeFormat?
     @Published var errorMessage: String?
+    /// Completion decisions own the current project until their persistence
+    /// barrier finishes. Keep the completion card present and disable repeat
+    /// actions instead of briefly opening an editor or another recording.
+    @Published var isResolvingCompletedRecording = false
     /// Non-fatal mid-recording interruptions (e.g. microphone unplugged).
     /// Merged into the stop-reporting message once recording finalizes.
     var recordingInterruptionWarnings: [String] = []
@@ -531,11 +536,6 @@ final class AppModel: ObservableObject {
                 // 让 WindowServer 和编码器刚释放资源就立刻再次抢占，用户按下
                 // 录制后也会白等三秒。真实试录保留为显式诊断入口；正常入口
                 // 只做上面的权限/设备预检，运行期错误由录制状态机即时上报。
-                // Start every new project from the intentionally chosen motion
-                // defaults without inheriting the previous project's edits.
-                if EditorStylePresetStore.defaultPresetID == nil {
-                    project.motion = project.motion.preparedForNewRecording()
-                }
                 recorderTransitionStage = .creatingProject
                 let recordingCreatedAt = Date()
                 project.createdAt = recordingCreatedAt
@@ -1043,8 +1043,8 @@ final class AppModel: ObservableObject {
                 currentRecordingHasEditorChanges = false
                 exporter.resetResultForNewEditorSession()
                 editorSessionID = UUID()
-                recorderTransitionStage = .openingEditor
-                phase = .editor
+                recorderTransitionStage = .idle
+                phase = .recordingComplete
             } else {
                 refreshRecentProjects()
                 resumeLiveInputIndicatorsForSetup()

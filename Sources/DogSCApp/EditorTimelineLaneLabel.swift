@@ -6,6 +6,7 @@ struct EditorTimelineLaneLabel: View {
     let title: String
     let symbol: String
     var onHide: (() -> Void)?
+    var horizontalInset: CGFloat = 16
 
     var body: some View {
         HStack(spacing: 8) {
@@ -34,7 +35,7 @@ struct EditorTimelineLaneLabel: View {
                 }
             }
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, horizontalInset)
         .frame(maxHeight: .infinity)
     }
 }
@@ -43,21 +44,31 @@ extension EditorTimelineView {
     var timelineRowGrid: some View {
         let rowHeights = [timelineRulerHeight, primaryVideoHeight + 12]
             + (showsCameraSyncTimeline ? [cameraSyncTimelineHeight] : [])
-            + (showsZoomTimeline ? [CGFloat(56)] : [])
+            + (showsZoomTimeline ? [zoomTimelineHeight] : [])
             + (showsScreenMotionTimeline ? [motionTimelineHeight] : [])
             + (showsCameraMotionTimeline ? [motionTimelineHeight] : [])
             + (showsOverlayTimeline ? [overlayTimelineHeight] : [])
         return Canvas { context, size in
-            var lines = Path()
+            var trackDividers = Path()
             var y: CGFloat = 0
-            for height in rowHeights {
+            // Only separate adjacent rows; the final lane flows into the
+            // overview gutter instead of enclosing it as another empty row.
+            for (index, height) in rowHeights.dropLast().enumerated() {
                 y += height
-                lines.move(to: CGPoint(x: 0, y: y - 0.5))
-                lines.addLine(to: CGPoint(x: size.width, y: y - 0.5))
+                var divider = Path()
+                divider.move(to: CGPoint(x: 0, y: y - 0.5))
+                divider.addLine(to: CGPoint(x: size.width, y: y - 0.5))
+                if index == 0 {
+                    context.stroke(divider, with: .color(EditorTheme.chrome(0.085)), lineWidth: 0.5)
+                } else {
+                    trackDividers.addPath(divider)
+                }
             }
-            lines.move(to: CGPoint(x: timelineLabelWidth - 0.5, y: 0))
-            lines.addLine(to: CGPoint(x: timelineLabelWidth - 0.5, y: size.height))
-            context.stroke(lines, with: .color(EditorTheme.chrome(0.085)), lineWidth: 0.5)
+            context.stroke(trackDividers, with: .color(EditorTheme.chrome(0.055)), lineWidth: 0.5)
+            var labelDivider = Path()
+            labelDivider.move(to: CGPoint(x: timelineLabelWidth - 0.5, y: 0))
+            labelDivider.addLine(to: CGPoint(x: timelineLabelWidth - 0.5, y: size.height))
+            context.stroke(labelDivider, with: .color(EditorTheme.chrome(0.07)), lineWidth: 0.5)
         }
         .allowsHitTesting(false)
     }

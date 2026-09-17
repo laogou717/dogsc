@@ -6,14 +6,14 @@ import UniformTypeIdentifiers
 extension EditorTimelineView {
 var screenMotionTimelineClips: [EditorMotionTimelineClip] {
         derivedPresentationCache.screenMotionClips(
-            clips: editorStore.previewProject.timeline.screenMotionClips,
+            clips: displayedEffectTimeline.screenMotionClips,
             duration: timelineDuration
         )
     }
 
     var cameraMotionTimelineClips: [EditorMotionTimelineClip] {
         derivedPresentationCache.cameraMotionClips(
-            clips: editorStore.previewProject.timeline.cameraMotionClips,
+            clips: displayedEffectTimeline.cameraMotionClips,
             duration: timelineDuration
         )
     }
@@ -49,8 +49,9 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
                 )
             }
 
-            ForEach(visibleClipIndices, id: \.self) { index in
-                let clip = clips[index]
+            ForEach(visibleClipIndices.map { (index: $0, clip: clips[$0]) }, id: \.clip.id) { item in
+                let index = item.index
+                let clip = item.clip
                 let visibleStart = min(max(clip.timing.startTime, 0), duration)
                 let visibleEnd = min(max(clip.timing.endTime, visibleStart), duration)
                 let startX = CGFloat(visibleStart / max(duration, 0.001)) * width
@@ -463,7 +464,7 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
                 endTimelineGesture(intent)
                 return
             }
-            playbackController.pause()
+            playbackController.pause(revealingPlayhead: false)
             beginMotionGestureIfNeeded(
                 clip: clip,
                 mode: .move,
@@ -482,7 +483,7 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
                 endTimelineGesture(intent)
                 return
             }
-            playbackController.pause()
+            playbackController.pause(revealingPlayhead: false)
             beginMotionGestureIfNeeded(clip: clip, mode: mode, duration: duration)
             guard motionGestureOrigin != nil else {
                 endTimelineGesture(intent)
@@ -537,21 +538,24 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
         duration: TimeInterval
     ) {
         let track = drag.track
+        let style = track == .screen
+            ? (editorStore.project.motion.defaultScreenMotion ?? AppPreferences.rememberedScreenMotionCreationStyle)
+            : nil
         guard let timing = EditorTimelineMath.fitMotionTiming(
             start: drag.start,
             end: drag.end,
             among: track == .screen ? screenMotionTimelineClips : cameraMotionTimelineClips,
             timing: { $0.timing },
             duration: duration,
-            easing: editorStore.project.motion.defaultZoomEasing,
-            returnDuration: editorStore.project.motion.defaultZoomTransitionDuration,
-            leadInDuration: editorStore.project.motion.defaultZoomTransitionDuration,
+            easing: style?.easing ?? editorStore.project.motion.defaultZoomEasing,
+            returnDuration: style?.returnDuration ?? editorStore.project.motion.defaultZoomTransitionDuration,
+            leadInDuration: style?.leadInDuration ?? editorStore.project.motion.defaultZoomTransitionDuration,
             itemsAreOrdered: true
         ) else { return }
         do {
             switch track {
             case .screen:
-                let clip = ScreenMotionClip(
+                let clip = style?.clip(timing: timing) ?? ScreenMotionClip(
                     timing: timing,
                     target: ScreenMotionState(
                         position: NormalizedPoint(x: 0.5, y: 0.5),
@@ -844,11 +848,8 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
         }
         do {
             _ = try editorStore.commitInteraction(actionName: actionName)
-            activateTimelineSelection(
-                origin.clip.track == .screen
-                    ? .screenMotion(origin.clip.id)
-                    : .cameraMotion(origin.clip.id)
-            )
+            // Editing time ranges preserves the user's playhead.
+            // Explicit selection remains the only reveal action.
         } catch {
             editorStore.cancelInteraction()
             onError(error.localizedDescription)
@@ -971,11 +972,15 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
         let t = min(max(time, timing.startTime + 0.05), timing.endTime - 0.05)
         guard t > timing.startTime + 0.000_1, t < timing.endTime - 0.000_1 else { return nil }
         var left = timing
+        left.preserveTransitionIntent()
         left.duration = t - timing.startTime
         left.leadInDuration = min(timing.leadInDuration, left.duration)
         left.returnDuration = 0
+        left.returnProgressOffset = 0
         let leadInEnd = timing.startTime + min(timing.leadInDuration, timing.duration)
         var right = timing
+        right.preserveTransitionIntent()
+        right.leadInProgressOffset = 0
         right.startTime = t
         right.duration = timing.endTime - t
         // 过渡期切开：保留剩余过渡（曲线与原片段一致）；保持期切开：给默认
@@ -1020,12 +1025,14 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
         var project = editorStore.project
         let defaultReturn = project.motion.defaultZoomTransitionDuration
         var newTiming = clip.timing
+        newTiming.preserveTransitionIntent(defaultTransition: defaultReturn)
         switch edge {
         case .left:
             let newStart = time
             let remainingDuration = clip.timing.endTime - newStart
             guard remainingDuration >= EditorMotionTimelinePresentation.minimumDuration else { return }
             newTiming.startTime = newStart
+            newTiming.leadInProgressOffset = 0
             newTiming.duration = remainingDuration
             newTiming.leadInDuration = min(clip.timing.leadInDuration, remainingDuration)
             newTiming.returnDuration = min(clip.timing.returnDuration, remainingDuration)
@@ -1034,6 +1041,7 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
             let remainingDuration = newEnd - clip.timing.startTime
             guard remainingDuration >= EditorMotionTimelinePresentation.minimumDuration else { return }
             newTiming.duration = remainingDuration
+            newTiming.returnProgressOffset = 0
             newTiming.leadInDuration = min(clip.timing.leadInDuration, remainingDuration)
             newTiming.returnDuration = min(clip.timing.returnDuration, remainingDuration)
         }

@@ -17,7 +17,7 @@ let editorOverlayClip = Color(red: 0.58, green: 0.37, blue: 0.31)
 let editorClipAmberTop = Color(red: 0.82, green: 0.56, blue: 0.22)
 let editorClipAmberBottom = Color(red: 0.65, green: 0.42, blue: 0.14)
 
-func setupWindowWidth() -> CGFloat { 666 }
+func setupWindowWidth() -> CGFloat { 714 }
 func recordingWindowWidth(recordsMicrophone: Bool) -> CGFloat {
     // Initial size only; the live bar reports its actual localized width.
     312
@@ -150,47 +150,39 @@ struct SetupView: View {
             model.refreshCaptureReadiness()
             model.refreshCaptureDevicesInBackground()
         }
-        .alert(
-            AppIdentity.displayName,
-            isPresented: Binding(
-                get: { model.errorMessage != nil },
-                set: { if !$0 { model.errorMessage = nil } }
-            )
-        ) {
-            if model.errorMessage?.hasPrefix("保存目录不可用") == true {
-                Button("重新选择文件夹…") {
-                    model.errorMessage = nil
-                    model.chooseProjectsFolder()
-                }
-                Button("使用默认位置") {
+        .appDialog(isPresented: Binding(
+            get: { model.errorMessage != nil },
+            set: { if !$0 { model.errorMessage = nil } }
+        )) { setupErrorDialog }
+    }
+
+    private var setupErrorDialog: AppDialog {
+        let message = model.errorMessage ?? "未知错误"
+        let actions: [AppDialog.Action]
+        if message.hasPrefix("保存目录不可用") {
+            actions = [
+                .init(id: "cancel", title: "取消", role: .cancel),
+                .init(id: "default", title: "使用默认位置") { _ in
                     UserDefaults.standard.removeObject(forKey: ProjectStore.projectsFolderDefaultsKey)
                     model.refreshRecentProjects()
-                    model.errorMessage = nil
-                }
-            } else if model.errorMessage?.hasPrefix("没有摄像头采集权限") == true {
-                Button("打开系统设置") {
-                    model.errorMessage = nil
-                    model.openCameraPrivacySettings()
-                }
-                Button("暂不使用摄像头", role: .cancel) {
-                    model.selectCamera(nil)
-                    model.errorMessage = nil
-                }
-            } else if model.errorMessage?.hasPrefix("没有麦克风权限") == true {
-                Button("打开系统设置") {
-                    model.errorMessage = nil
-                    model.openMicrophonePrivacySettings()
-                }
-                Button("暂不使用麦克风", role: .cancel) {
-                    model.selectMicrophone(nil)
-                    model.errorMessage = nil
-                }
-            } else {
-                Button("知道了", role: .cancel) { model.errorMessage = nil }
-            }
-        } message: {
-            Text(model.errorMessage ?? "未知错误")
+                },
+                .init(id: "choose", title: "重新选择文件夹…", role: .primary) { _ in model.chooseProjectsFolder() }
+            ]
+        } else if message.hasPrefix("没有摄像头采集权限") {
+            actions = [
+                .init(id: "cancel", title: "暂不使用摄像头", role: .cancel) { _ in model.selectCamera(nil) },
+                .init(id: "settings", title: "打开系统设置", role: .primary) { _ in model.openCameraPrivacySettings() }
+            ]
+        } else if message.hasPrefix("没有麦克风权限") {
+            actions = [
+                .init(id: "cancel", title: "暂不使用麦克风", role: .cancel) { _ in model.selectMicrophone(nil) },
+                .init(id: "settings", title: "打开系统设置", role: .primary) { _ in model.openMicrophonePrivacySettings() }
+            ]
+        } else {
+            actions = [.init(id: "acknowledge", title: "知道了", role: .primary)]
         }
+        return AppDialog(title: "操作未完成", message: message, symbol: "exclamationmark.circle", actions: actions)
+
     }
 
 }
@@ -224,37 +216,35 @@ struct RecordingBar: View {
         .preferredColorScheme(.light)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(RecorderAccessibilityID.phaseRecording)
-        .confirmationDialog(
-            pendingAction == .restart ? "停止当前录制并重新开始？" : "将这次录制移到废纸篓？",
-            isPresented: Binding(
-                get: { pendingAction != nil },
-                set: { if !$0 { pendingAction = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            if pendingAction == .restart {
-                Button("重新录制", role: .destructive) {
-                    pendingAction = nil
-                    model.restartCurrentRecording()
-                }
-            } else {
-                Button("移到废纸篓", role: .destructive) {
-                    pendingAction = nil
-                    model.discardCurrentRecording()
-                }
-            }
-            Button("取消", role: .cancel) { pendingAction = nil }
-        }
-        .alert(
-            "无法更新录制画面",
-            isPresented: Binding(
-                get: { model.errorMessage?.hasPrefix("无法更新录制画面") == true },
-                set: { if !$0 { model.errorMessage = nil } }
+        .appDialog(isPresented: Binding(
+            get: { pendingAction != nil },
+            set: { if !$0 { pendingAction = nil } }
+        )) {
+            let restarting = pendingAction == .restart
+            let runID = model.recordingRuns.active?.id
+            return AppDialog(
+                title: restarting ? "停止当前录制并重新开始？" : "将这次录制移到废纸篓？",
+                message: restarting
+                    ? "当前录制将移到废纸篓，随后使用相同设置重新开始。"
+                    : "当前录制和相关素材将移到废纸篓，随后返回录制条。",
+                symbol: restarting ? "arrow.counterclockwise" : "trash",
+                actions: [
+                    .init(id: "cancel", title: "取消", role: .cancel),
+                    .init(id: "confirm", title: restarting ? "重新录制" : "移到废纸篓", role: .destructive) { _ in
+                        guard model.recordingRuns.active?.id == runID else { return }
+                        if restarting { model.restartCurrentRecording() }
+                        else { model.discardCurrentRecording() }
+                    }
+                ]
             )
-        ) {
-            Button("知道了", role: .cancel) { model.errorMessage = nil }
-        } message: {
-            Text(model.errorMessage ?? "未知错误")
+        }
+        .appDialog(isPresented: Binding(
+            get: { model.errorMessage?.hasPrefix("无法更新录制画面") == true },
+            set: { if !$0 { model.errorMessage = nil } }
+        )) {
+            AppDialog(title: "无法更新录制画面", message: model.errorMessage ?? "未知错误",
+                      symbol: "exclamationmark.circle",
+                      actions: [.init(id: "acknowledge", title: "知道了", role: .primary)])
         }
         .onAppear {
             qualityWarningMonitor.consume(
@@ -310,6 +300,7 @@ struct RecordingBar: View {
 
     private var recordingActions: some View {
         HStack(spacing: 8) {
+            RecorderMemoButton(size: 34)
             recordingActionButton(icon: model.isRecordingPaused ? "play.fill" : "pause.fill",
                 accessibilityLabel: model.isRecordingPaused ? "继续录制" : "暂停录制",
                 accessibilityIdentifier: RecorderAccessibilityID.recordingPauseResume,

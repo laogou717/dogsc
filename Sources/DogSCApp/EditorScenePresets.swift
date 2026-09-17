@@ -50,7 +50,7 @@ extension EditorView {
             .buttonStyle(.editorToolbarPress)
             .focusEffectDisabled()
             .popover(isPresented: $showsScenePresetPopover, arrowEdge: .bottom) {
-                scenePresetMenu.focusEffectDisabled()
+                scenePresetMenu.appControlFocusAppearance()
             }
         }
     }

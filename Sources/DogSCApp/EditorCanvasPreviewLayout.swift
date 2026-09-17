@@ -125,7 +125,6 @@ extension CanvasPreview {
                         CompositionSize(width: Double($0.width), height: Double($0.height))
                     }
                     : nil,
-                primaryPlan: mediaPlan?.primary,
                 cameraPlan: mediaPlan?.camera,
                 pointerTrack: mediaPlan?.pointer,
                 cursorMetrics: cursorMetrics,

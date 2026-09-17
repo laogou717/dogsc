@@ -48,6 +48,7 @@ extension SharedRenderedPreviewNSView {
         // 60 Hz producer that measured only 43-46 completed frames/s. Let the
         // display link own pacing and keep drawable acquisition non-blocking.
         layer.displaySyncEnabled = false
+        layer.presentsWithTransaction = false
         layer.allowsNextDrawableTimeout = true
         layer.isOpaque = false
         layer.backgroundColor = NSColor.clear.cgColor
@@ -67,6 +68,9 @@ extension SharedRenderedPreviewNSView {
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        cursorClickGradientLayer.removeFromSuperlayer()
+        cursorClickSecondaryLayer.removeFromSuperlayer()
+        cursorClickAccentLayer.removeFromSuperlayer()
         cursorClickLayer.removeFromSuperlayer()
         cursorImageLayer.removeFromSuperlayer()
         if let previewLayer = layer as? CAMetalLayer {
@@ -190,6 +194,9 @@ extension SharedRenderedPreviewNSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         previewLayer.masksToBounds = true
+        previewLayer.addSublayer(cursorClickGradientLayer)
+        previewLayer.addSublayer(cursorClickSecondaryLayer)
+        previewLayer.addSublayer(cursorClickAccentLayer)
         previewLayer.addSublayer(cursorClickLayer)
         previewLayer.addSublayer(cursorImageLayer)
         CATransaction.commit()

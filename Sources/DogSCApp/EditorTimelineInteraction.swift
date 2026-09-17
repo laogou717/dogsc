@@ -10,6 +10,57 @@ final class EditorTimelineHoverPreviewGate {
     var isEnabled = true
 }
 
+/// Reorder geometry is a gesture-local preview; the project changes once on
+/// drop. Thresholds use the original lane, so moving neighbours cannot move
+/// their own hit targets back under the pointer and oscillate the order.
+struct PrimarySegmentReorderDraft: Equatable {
+    let segmentID: UUID
+    let originalSegments: [ResolvedRecordingSegment]
+    let originalIndex: Int
+    private(set) var destination: Int
+    private(set) var segments: [ResolvedRecordingSegment]
+
+    init?(segmentID: UUID, segments: [ResolvedRecordingSegment]) {
+        guard let index = segments.firstIndex(where: { $0.id == segmentID }) else { return nil }
+        self.segmentID = segmentID
+        originalSegments = segments
+        originalIndex = index
+        destination = index
+        self.segments = segments
+    }
+
+    var original: ResolvedRecordingSegment { originalSegments[originalIndex] }
+    var insertionTime: TimeInterval { segments[destination].outputStart }
+
+    mutating func update(translation: TimeInterval) {
+        guard translation.isFinite else { return }
+        let center = original.outputStart + original.outputDuration / 2 + translation
+        let next = originalSegments.reduce(0) { count, segment in
+            count + (segment.id != segmentID
+                && segment.outputStart + segment.outputDuration / 2 < center ? 1 : 0)
+        }
+        guard next != destination else { return }
+        destination = next
+        var order = originalSegments
+        let moved = order.remove(at: originalIndex)
+        order.insert(moved, at: next)
+        var start: TimeInterval = 0
+        segments = order.map { segment in
+            let placed = ResolvedRecordingSegment(id: segment.id,
+                sourceStart: segment.sourceStart, sourceDuration: segment.sourceDuration,
+                playbackRate: segment.playbackRate, outputStart: start)
+            start += placed.outputDuration
+            return placed
+        }
+    }
+
+    func floatingTranslation(_ translation: CGFloat, laneWidth: CGFloat,
+                             duration: TimeInterval) -> CGFloat {
+        translation + CGFloat((original.outputStart - insertionTime)
+            / max(duration, 0.001)) * laneWidth
+    }
+}
+
 struct PrimarySegmentTrimDraft: Equatable {
     let segmentID: UUID
     let edge: RecordingSegmentTrimEdge
@@ -707,7 +758,7 @@ enum EditorTimelineSelectionReveal {
             interval = visibleZooms.first(where: { $0.id == id }).map {
                 (
                     start: $0.startTime,
-                    end: $0.endTime,
+                    end: min($0.effectEndTime, outputDuration ?? $0.effectEndTime),
                     preferred: $0.startTime + min($0.enterDuration, $0.endTime - $0.startTime)
                 )
             }

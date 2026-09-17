@@ -26,15 +26,20 @@ public struct CursorAssetMetrics: Equatable, Sendable {
     public var hotspot: CursorAssetPoint
     public var intrinsicSize: CursorAssetSize
     public var clickColor: HexColor
+    /// Image-space height that maps to the user's canonical cursor size.
+    /// System shapes share the arrow's reference, preserving native proportions.
+    public var scaleReferenceHeight: Double
 
     public init(
         hotspot: CursorAssetPoint,
         intrinsicSize: CursorAssetSize,
-        clickColor: HexColor
+        clickColor: HexColor,
+        scaleReferenceHeight: Double? = nil
     ) {
         self.hotspot = hotspot
         self.intrinsicSize = intrinsicSize
         self.clickColor = clickColor
+        self.scaleReferenceHeight = scaleReferenceHeight ?? intrinsicSize.height
     }
 }
 
@@ -110,19 +115,23 @@ public struct CursorRenderLayout: Equatable, Sendable {
     public var pointer: CompositionPoint
     public var clickDiameter: Double
     public var clickLineWidth: Double
+    /// Click feedback keeps the user's chosen size when the cursor shape changes.
+    public var clickEffectHeight: Double
 
     public init(
         origin: CompositionPoint,
         size: CursorAssetSize,
         pointer: CompositionPoint,
         clickDiameter: Double,
-        clickLineWidth: Double
+        clickLineWidth: Double,
+        clickEffectHeight: Double? = nil
     ) {
         self.origin = origin
         self.size = size
         self.pointer = pointer
         self.clickDiameter = clickDiameter
         self.clickLineWidth = clickLineWidth
+        self.clickEffectHeight = clickEffectHeight ?? size.height
     }
 }
 
@@ -145,19 +154,23 @@ public enum CursorRenderGeometry {
               metrics.intrinsicSize.width.isFinite,
               metrics.intrinsicSize.height.isFinite,
               metrics.intrinsicSize.width > 0,
-              metrics.intrinsicSize.height > 0 else {
+              metrics.intrinsicSize.height > 0,
+              metrics.scaleReferenceHeight.isFinite,
+              metrics.scaleReferenceHeight > 0 else {
             return nil
         }
 
         let multiplier = min(max(styleSize, 0.25), 6)
-        let height = max(
+        let referenceHeight = max(
             canvasShortEdge * canonicalHeight / canonicalShortEdge * multiplier,
             1
         )
-        let width = height * metrics.intrinsicSize.width / metrics.intrinsicSize.height
+        let imageScale = referenceHeight / metrics.scaleReferenceHeight
+        let height = metrics.intrinsicSize.height * imageScale
+        let width = metrics.intrinsicSize.width * imageScale
         let hotspotX = min(max(metrics.hotspot.x, 0), 1)
         let hotspotY = min(max(metrics.hotspot.y, 0), 1)
-        let lineWidth = max(height * 0.08, canvasShortEdge * 2 / canonicalShortEdge)
+        let lineWidth = max(referenceHeight * 0.08, canvasShortEdge * 2 / canonicalShortEdge)
         return CursorRenderLayout(
             origin: CompositionPoint(
                 x: pointer.x - width * hotspotX,
@@ -165,8 +178,9 @@ public enum CursorRenderGeometry {
             ),
             size: CursorAssetSize(width: width, height: height),
             pointer: pointer,
-            clickDiameter: height * 1.45,
-            clickLineWidth: lineWidth
+            clickDiameter: referenceHeight * 1.45,
+            clickLineWidth: lineWidth,
+            clickEffectHeight: referenceHeight
         )
     }
 

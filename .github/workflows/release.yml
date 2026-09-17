@@ -81,13 +81,14 @@ jobs:
         run: |
           set -euo pipefail
           swift build -c release --product DogSC
+          binary_dir="$(swift build -c release --show-bin-path)"
 
           app="$RUNNER_TEMP/DogSC.app"
           mkdir -p \
             "$app/Contents/MacOS" \
             "$app/Contents/Frameworks" \
             "$app/Contents/Resources"
-          cp ".build/release/DogSC" "$app/Contents/MacOS/DogSC"
+          cp "$binary_dir/DogSC" "$app/Contents/MacOS/DogSC"
           cp "Resources/Info.plist" "$app/Contents/Info.plist"
           cp "Resources/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
           for resource in en.lproj zh-Hans.lproj Fonts Onboarding; do

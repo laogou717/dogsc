@@ -52,10 +52,9 @@ enum EditorMediaThumbnailClock {
     }
 }
 
-/// A single-use generator request. AVAssetImageGenerator is not Sendable, so
-/// it must never be passed directly out of the decoder actor. This private
-/// owner is unchecked only at the framework boundary and never shares its
-/// generator with another request.
+/// An exclusively leased generator. The actor reuses idle decoders so a filmstrip
+/// does not reopen a hardware decode session for every picture. A cancelled
+/// lease is discarded; its generator is never shared with another request.
 private final class EditorMediaThumbnailRequest: @unchecked Sendable {
     private let generator: AVAssetImageGenerator
 
@@ -88,7 +87,16 @@ private actor EditorMediaThumbnailDecoder {
         let timeValue: Int64
         let width: Int
         let height: Int
+        let toleranceValue: Int64
     }
+
+    private struct IdleDecoder {
+        let width: Int
+        let height: Int
+        let toleranceValue: Int64
+        let request: EditorMediaThumbnailRequest
+    }
+    private var idleDecoders: [IdleDecoder] = []
 
     private let permits = EditorThumbnailPermits(limit: 2)
     private let cacheLimit: Int
@@ -119,7 +127,8 @@ private actor EditorMediaThumbnailDecoder {
         let cacheKey = CacheKey(
             timeValue: requestedTime.value,
             width: Int(safeSize.width),
-            height: Int(safeSize.height)
+            height: Int(safeSize.height),
+            toleranceValue: Int64(floor(max(tolerance, 0) * 600))
         )
 
         if sourceGeneration != generation {
@@ -129,29 +138,49 @@ private actor EditorMediaThumbnailDecoder {
             cacheOrder.removeAll(keepingCapacity: true)
         }
 
-        if let cached = cache[cacheKey] { return cached }
+        if let cached = cachedImage(for: cacheKey) { return cached }
         try await permits.acquire()
         defer { Task { await permits.release() } }
         try Task.checkCancellation()
         guard sourceGeneration == generation else { throw CancellationError() }
-        if let cached = cache[cacheKey] { return cached }
+        if let cached = cachedImage(for: cacheKey) { return cached }
         let requestID = UUID()
-        let request = EditorMediaThumbnailRequest(
-            source: source,
-            maximumSize: safeSize,
-            tolerance: tolerance
-        )
+        let request: EditorMediaThumbnailRequest
+        if let index = idleDecoders.firstIndex(where: {
+            $0.width == cacheKey.width && $0.height == cacheKey.height
+                && $0.toleranceValue == cacheKey.toleranceValue
+        }) {
+            request = idleDecoders.remove(at: index).request
+        } else {
+            // Replace an idle configuration instead of retaining two unused
+            // decoders alongside the two permitted active requests.
+            if !idleDecoders.isEmpty { idleDecoders.removeFirst() }
+            request = EditorMediaThumbnailRequest(source: source, maximumSize: safeSize,
+                tolerance: Double(cacheKey.toleranceValue) / 600)
+        }
         inFlightRequests[requestID] = request
         defer { inFlightRequests.removeValue(forKey: requestID) }
         let image = try await request.image(at: requestedTime)
         try Task.checkCancellation()
         guard sourceGeneration == generation else { throw CancellationError() }
 
+        if idleDecoders.count < 2 {
+            idleDecoders.append(IdleDecoder(width: cacheKey.width, height: cacheKey.height,
+                toleranceValue: cacheKey.toleranceValue, request: request))
+        }
         cache[cacheKey] = image
+        cacheOrder.removeAll { $0 == cacheKey }
         cacheOrder.append(cacheKey)
         if cacheOrder.count > cacheLimit {
             cache.removeValue(forKey: cacheOrder.removeFirst())
         }
+        return image
+    }
+
+    private func cachedImage(for key: CacheKey) -> CGImage? {
+        guard let image = cache[key] else { return nil }
+        cacheOrder.removeAll { $0 == key }
+        cacheOrder.append(key)
         return image
     }
 
@@ -163,6 +192,7 @@ private actor EditorMediaThumbnailDecoder {
     }
 
     private func cancelInFlightRequests() {
+        idleDecoders.removeAll()
         inFlightRequests.values.forEach { $0.cancel() }
         inFlightRequests.removeAll(keepingCapacity: true)
     }
@@ -366,7 +396,8 @@ final class EditorMediaSession: ObservableObject {
     private let thumbnailDecoder = EditorMediaThumbnailDecoder()
     private let filmstripDecoder = EditorMediaThumbnailDecoder(cacheLimit: 160)
     private var filmstripAsset: ImmutablePreviewAsset?
-    private var filmstripAssetGeneration: UInt64?
+    private var filmstripInput: EditorMediaInput?
+    private var filmstripSourceGeneration: UInt64 = 0
     private var currentRequest: EditorMediaRequest?
     private var generation: UInt64 = 0
     private var cameraTimingGeneration: UInt64 = 0
@@ -456,21 +487,24 @@ final class EditorMediaSession: ObservableObject {
         }
     }
 
-    func filmstripThumbnail(atSourceTime sourceTime: TimeInterval) async -> CGImage? {
+    func filmstripThumbnail(atSourceTime sourceTime: TimeInterval,
+                            tolerance: TimeInterval) async -> CGImage? {
         guard !Task.isCancelled, sourceTime.isFinite, sourceTime >= 0,
               let prepared, let input = prepared.request.source
         else { return nil }
         let expectedGeneration = prepared.generation
-        if filmstripAssetGeneration != expectedGeneration {
+        if filmstripInput != input {
             filmstripAsset = ImmutablePreviewAsset(AVURLAsset(url: input.url))
-            filmstripAssetGeneration = expectedGeneration
+            filmstripInput = input
+            filmstripSourceGeneration &+= 1
         }
+        let sourceGeneration = filmstripSourceGeneration
         guard let source = filmstripAsset else { return nil }
         do {
             let image = try await filmstripDecoder.image(
-                source: source, generation: expectedGeneration,
+                source: source, generation: sourceGeneration,
                 at: sourceTime + prepared.plan.primarySourceTimeOffset,
-                maximumSize: CGSize(width: 220, height: 140))
+                maximumSize: CGSize(width: 220, height: 140), tolerance: tolerance)
             try Task.checkCancellation()
             guard self.prepared?.generation == expectedGeneration else { return nil }
             return image
@@ -604,7 +638,8 @@ final class EditorMediaSession: ObservableObject {
         state = .empty
         lastReadyMedia = nil
         filmstripAsset = nil
-        filmstripAssetGeneration = nil
+        filmstripInput = nil
+        filmstripSourceGeneration &+= 1
         latestCameraTimingRequest = nil
         cameraTimingErrorMessage = nil
         let thumbnailDecoder = thumbnailDecoder

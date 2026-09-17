@@ -99,6 +99,7 @@ private struct ExportPrimaryActionStyle: ButtonStyle {
             .foregroundStyle(EditorTheme.onAccent)
             .padding(.horizontal, 22).frame(height: 42)
             .background(EditorTheme.platinumAccent, in: RoundedRectangle(cornerRadius: 13))
+            .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 13), color: EditorTheme.onAccent.opacity(0.65))
             .opacity(isEnabled ? (configuration.isPressed ? 0.8 : 1) : 0.32)
             .scaleEffect(configuration.isPressed ? 0.98 : 1)
             .animation(SpringMotion.interactive, value: configuration.isPressed)
@@ -171,12 +172,14 @@ struct ExportSheet: View {
                                 .font(.appUI(size: 12)).foregroundStyle(.secondary)
                         }
                         if let range = exportScope.outputRange { exportRangeSummary(range) }
-                    }.padding(1)
-                }.scrollIndicators(.hidden).frame(width: 376)
+                    }
+                    .padding(1)
+                    .padding(.bottom, 8)
+                }.scrollIndicators(.automatic).frame(width: 376)
                 Rectangle().fill(EditorTheme.hairline).frame(width: 1)
                 exportPreviewSummary.frame(maxWidth: .infinity, alignment: .topLeading)
             }
-            .padding(28).frame(height: 430)
+            .padding(28).frame(height: 460)
             Divider().overlay(EditorTheme.hairline)
             VStack(alignment: .leading, spacing: 14) {
                 if showsExportStatusRegion { exportStatusRegion }
@@ -210,7 +213,7 @@ struct ExportSheet: View {
         }
         .frame(width: 840)
         .background(EditorTheme.panelSurface)
-        .focusEffectDisabled()
+        .appControlFocusAppearance()
         .animation(SpringMotion.fluid, value: selectedOutputKind)
         .interactiveDismissDisabled(exporter.isExporting)
         .onAppear {
@@ -254,7 +257,10 @@ struct ExportSheet: View {
                         .font(.appUI(size: 11)).lineLimit(1).truncationMode(.middle)
                     Spacer(minLength: 4)
                     Image(systemName: "chevron.right").font(.appUI(size: 9))
-                }.foregroundStyle(.secondary).padding(.vertical, 4)
+                }
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 12)
+                .frame(height: 32)
             }.buttonStyle(.editorToolbarPress).disabled(exporter.isExporting)
                 .accessibilityLabel("保存位置").accessibilityValue(selectedOutputDirectory ?? "尚未选择")
         }

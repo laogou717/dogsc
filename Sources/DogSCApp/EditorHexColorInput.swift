@@ -96,7 +96,7 @@ struct EditorHexColorInput: View {
                 .accessibilityLabel("选择\(title)")
                 .help("打开\(title)取色器")
                 .popover(isPresented: $showsPicker, arrowEdge: .trailing) {
-                    pickerPopover
+                    pickerPopover.appControlFocusAppearance()
                 }
 
                 TextField(

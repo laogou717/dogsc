@@ -45,7 +45,7 @@ enum EditorOverlayTimingEditing {
 
 extension EditorTimelineView {
     var overlayTimelineClips: [TimelineOverlayClip] {
-        let mosaics = editorStore.previewProject.timeline.mosaicClips.map {
+        let mosaics = displayedEffectTimeline.mosaicClips.map {
             TimelineOverlayClip(
                 id: $0.id,
                 timing: $0.timing,
@@ -55,7 +55,7 @@ extension EditorTimelineView {
                 layerIndex: -1
             )
         }
-        let orderedStickers = editorStore.previewProject.timeline.stickerClips
+        let orderedStickers = displayedEffectTimeline.stickerClips
             .sorted {
                 $0.layerIndex == $1.layerIndex
                     ? $0.id.uuidString < $1.id.uuidString
@@ -507,7 +507,7 @@ extension EditorTimelineView {
             endTimelineGesture(intent)
             return
         }
-        playbackController.pause()
+        playbackController.pause(revealingPlayhead: false)
         let selection = clip.kind.selection(id: clip.id)
         editorStore.beginInteraction(tool: .select, selection: selection)
         timelineInteractionID = editorStore.interaction?.id
@@ -576,7 +576,7 @@ extension EditorTimelineView {
                     ? drag.kind.moveActionName
                     : drag.kind.resizeActionName
             )
-            activateTimelineSelection(drag.kind.selection(id: drag.id))
+            // A move/resize is not an instruction to seek to this object.
         } catch {
             editorStore.cancelInteraction()
             onError(error.localizedDescription)

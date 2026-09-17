@@ -1325,6 +1325,23 @@ final class EditorStore: ObservableObject {
             AppPreferences.rememberZoomCreationScale(updatedZoom.scale)
         }
 
+        if !restoresSelection,
+           case let .screenMotion(id) = selectionBeforeApply,
+           project.timeline.sourceSequence == nextProject.timeline.sourceSequence,
+           let previous = project.timeline.screenMotionClips.first(where: { $0.id == id }),
+           let updated = nextProject.timeline.screenMotionClips.first(where: { $0.id == id }) {
+            let style = ScreenMotionCreationStyle(clip: updated)
+            if style.isValid, style != ScreenMotionCreationStyle(clip: previous) {
+                let before = nextProject.motion
+                var after = before
+                after.defaultScreenMotion = style
+                let defaults = ProjectCommand.replaceMotion(before: before, after: after)
+                try ProjectReducer.apply(defaults, to: &nextProject)
+                appliedCommand = .batch([appliedCommand, defaults])
+                AppPreferences.rememberScreenMotionCreationStyle(style)
+            }
+        }
+
         // End the preview transaction before publishing the persisted snapshot,
         // so observers can never render a new project through an old draft.
         endInteraction()

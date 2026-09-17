@@ -83,7 +83,7 @@ struct RecorderMainWindowRoot: View {
                     phase: .finishing,
                     accessibilityIdentifier: RecorderAccessibilityID.phaseFinishing
                 )
-            case .editor:
+            case .editor, .recordingComplete:
                 // The panel is already ordered out for this phase; a compact root
                 // remains available only to keep the generic host type stable.
                 RecorderPhaseProgressView(
@@ -94,6 +94,7 @@ struct RecorderMainWindowRoot: View {
             }
         }
         .font(.appUI(.body))
+        .appControlFocusAppearance()
         .modifier(RecorderSystemWindowDragModifier())
         .preferredColorScheme(.light)
     }
@@ -152,6 +153,7 @@ private struct EditorSessionHost: View {
     var body: some View {
         EditorView(context: contextProvider.context)
             .id(contextProvider.context.id)
+            .appControlFocusAppearance()
         // NSWindow owns appearance so native and SwiftUI chrome change in
         // the same transition, before either tree redraws in the new theme.
     }
@@ -166,6 +168,7 @@ enum WindowCoordinator {
         // permission window as soon as the full-screen introduction disappears.
         AppSettingsWindowController.shared.hideForFirstLaunchGuide()
         RecorderPopoverPresenter.shared.dismiss()
+        RecorderMemoController.shared.hide()
         recorderPanelController?.hide()
         permissionWindowController.presentManually()
     }
@@ -183,6 +186,7 @@ enum WindowCoordinator {
     }
 
     private static let editorWindowController = EditorWindowController()
+    private static let completionWindowController = RecordingCompletionWindowController()
     private static var recorderPanelController: RecorderPanelController?
     private static var permissionWindowController: RequiredPermissionWindowController?
     private static var presentationObservation: AnyCancellable?
@@ -222,6 +226,9 @@ enum WindowCoordinator {
     }
 
     private static func apply(phase: AppPhase, model: AppModel) {
+        if model.showsRequiredPermissionGate || (phase != .setup && phase != .preparing && phase != .recording) {
+            RecorderMemoController.shared.hide()
+        }
         let guideAvailable = phase == .setup || phase == .editor
         if FirstLaunchGuideAccess.shared.isAvailable != guideAvailable {
             FirstLaunchGuideAccess.shared.isAvailable = guideAvailable
@@ -236,7 +243,11 @@ enum WindowCoordinator {
         if phase != .setup {
             recorderPanelController.setCaptureSelectionActive(false)
         }
+        if phase != .recordingComplete {
+            completionWindowController.close()
+        }
         if model.showsRequiredPermissionGate {
+            completionWindowController.close()
             editorWindowController.closeForPhaseChange()
             recorderPanelController.hide()
             permissionWindowController.present()
@@ -245,6 +256,15 @@ enum WindowCoordinator {
 
         permissionWindowController.hide()
         switch phase {
+        case .recordingComplete:
+            editorWindowController.closeForPhaseChange()
+            let capturedScreen = NSScreen.screens.first { screen in
+                (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")]
+                    as? NSNumber)?.uint32Value == model.project.capture.displayID
+            }
+            let preferredScreen = capturedScreen ?? recorderPanelController.window.screen
+            recorderPanelController.present(phase: phase)
+            completionWindowController.show(model: model, preferredScreen: preferredScreen)
         case .editor:
             recorderPanelController.present(phase: phase)
             // The active recording/open-project flow is owned by AppModel. Its
@@ -263,11 +283,21 @@ enum WindowCoordinator {
     }
 
     static func beginCaptureSourceSelection() {
+        RecorderMemoController.shared.suspendForSelection()
         recorderPanelController?.setCaptureSelectionActive(true)
     }
 
     static func endCaptureSourceSelection() {
         recorderPanelController?.setCaptureSelectionActive(false)
+        if let owner = recorderPanelController?.window {
+            RecorderMemoController.shared.resumeAfterSelection(relativeTo: owner)
+        }
+    }
+
+    static func toggleRecorderMemo() {
+        guard let model, model.phase == .setup || model.phase == .recording,
+              let owner = recorderPanelController?.window else { return }
+        RecorderMemoController.shared.toggle(relativeTo: owner)
     }
 
     static func recorderDisplayID() -> UInt32? {
@@ -285,6 +315,8 @@ enum WindowCoordinator {
             permissionWindowController?.bringToFront()
         } else if model?.phase == .editor {
             editorWindowController.bringToFront()
+        } else if model?.phase == .recordingComplete {
+            completionWindowController.bringToFront()
         } else if model?.showsRequiredPermissionGate == true {
             permissionWindowController?.bringToFront()
         } else {
@@ -350,7 +382,9 @@ enum WindowCoordinator {
     }
 
     static func shutdown() {
+        RecorderMemoController.shared.shutdown()
         presentationObservation = nil
+        completionWindowController.close()
         editorWindowController.closeForPhaseChange()
         permissionWindowController?.shutdown()
         permissionWindowController = nil
@@ -446,7 +480,7 @@ private final class EditorWindowController: NSObject, NSWindowDelegate {
         window.tabbingMode = .disallowed
         window.sharingType = .readOnly
         window.collectionBehavior = [.managed]
-        window.minSize = editorMinimumSize()
+        window.contentMinSize = editorMinimumSize()
         window.contentViewController = hostingController
         window.delegate = self
         let restoredFrame = window.setFrameUsingName(
@@ -641,13 +675,9 @@ private final class EditorWindowController: NSObject, NSWindowDelegate {
     }
 
     private func editorMinimumSize() -> NSSize {
-        guard let visibleFrame = systemMainScreen()?.visibleFrame else {
-            return NSSize(width: 1120, height: 680)
-        }
-        return NSSize(
-            width: min(1120, max(visibleFrame.width - 24, 840)),
-            height: min(680, max(visibleFrame.height - 24, 640))
-        )
+        // Match SwiftUI's content minimum on every display. A window created
+        // on a large monitor must still fit when moved to a small one.
+        EditorWorkspaceLayout.minimumWindowSize
     }
 
     private func centeredFrame(

@@ -270,11 +270,20 @@ public enum CompositionSceneEvaluator {
             reanchorAutomaticEntry: reanchorAutomaticEntry
         )
         let viewport = ZoomViewportTransform.make(from: zoom, crop: crop)
+        // Placement centres the complete card. Keep that same centre while
+        // magnifying it: asymmetric chrome (such as a browser toolbar) must
+        // not grow away from the already-centred content rectangle. The
+        // source-space focus still supplies the authored viewport travel.
+        let decorationGrowth = manualScale * (viewport.scale - 1) / 2
         let finalRect = CompositionRect(
             x: baseRect.midX - baseRect.width * viewport.scale / 2
-                + viewport.translation.x * baseRect.width,
+                + viewport.translation.x * baseRect.width
+                + (decorationInsetsAtScaleOne.left - decorationInsetsAtScaleOne.right)
+                    * decorationGrowth,
             y: baseRect.midY - baseRect.height * viewport.scale / 2
-                + viewport.translation.y * baseRect.height,
+                + viewport.translation.y * baseRect.height
+                + (decorationInsetsAtScaleOne.top - decorationInsetsAtScaleOne.bottom)
+                    * decorationGrowth,
             width: baseRect.width * viewport.scale,
             height: baseRect.height * viewport.scale
         )

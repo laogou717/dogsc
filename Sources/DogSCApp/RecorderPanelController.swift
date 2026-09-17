@@ -17,6 +17,7 @@ final class DogSCApplicationDelegate: NSObject,
     private let settingsWindowController = AppSettingsWindowController.shared
     private var settingsShortcutMonitor: Any?
     private var keyWindowObservation: NSObjectProtocol?
+    private var isWaitingForRecordingCompletionDecision = false
 
     /// Pure launch-order policy kept separate from AppKit callbacks so a cold
     /// open always consumes the pending project exactly once.
@@ -105,6 +106,21 @@ final class DogSCApplicationDelegate: NSObject,
         _ sender: NSApplication
     ) -> Bool {
         false
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let model, model.phase == .recordingComplete else { return .terminateNow }
+        guard !isWaitingForRecordingCompletionDecision,
+              !model.isResolvingCompletedRecording,
+              !AppDialogPresenter.isPresenting else { return .terminateCancel }
+        isWaitingForRecordingCompletionDecision = true
+        let owner = sender.keyWindow
+        Task { @MainActor [weak self] in
+            let shouldTerminate = await model.confirmCompletedRecordingForTermination(relativeTo: owner)
+            self?.isWaitingForRecordingCompletionDecision = false
+            sender.reply(toApplicationShouldTerminate: shouldTerminate)
+        }
+        return .terminateLater
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -370,6 +386,7 @@ final class DogSCApplicationDelegate: NSObject,
         guard settingsShortcutMonitor == nil else { return }
         settingsShortcutMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
             [weak self] event in
+            guard NSApp.modalWindow == nil else { return event }
             let modifiers = event.modifierFlags.intersection([
                 .command, .shift, .option, .control,
             ])
@@ -382,7 +399,14 @@ final class DogSCApplicationDelegate: NSObject,
 
     @objc private func openAboutFromApplicationMenu(_ sender: NSMenuItem) {
         NSApplication.shared.activate(ignoringOtherApps: true)
-        NSApplication.shared.orderFrontStandardAboutPanel(sender)
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
+        _ = AppDialogPresenter.run(AppDialog(
+            title: AppIdentity.displayName,
+            message: "\(appLocalized("录制、剪辑，让画面自然出彩。"))\n\n\(appLocalized("版本")) \(version) (\(build))\n© laogou",
+            showsAppIcon: true,
+            actions: [.init(id: "acknowledge", title: "好", role: .primary)]
+        ))
     }
 
     /// SwiftUI contributes the standard application submenu, but this app's
@@ -555,7 +579,7 @@ enum RecorderPanelPolicy {
                 width: recordingWindowWidth(recordsMicrophone: recordsMicrophone),
                 height: 52
             )
-        case .editor:
+        case .editor, .recordingComplete:
             nil
         }
     }
@@ -658,7 +682,10 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
 
     func present(phase: AppPhase) {
         let phaseChanged = currentPhase != phase
-        let shouldActivateSetup = phaseChanged || !panel.isVisible
+        // Saving a corner result should return the recorder quietly while
+        // the user's other application keeps its typing focus.
+        let returnsFromCompletion = currentPhase == .recordingComplete && phase == .setup
+        let shouldActivateSetup = (phaseChanged || !panel.isVisible) && !returnsFromCompletion
         if phaseChanged { RecorderPopoverPresenter.shared.dismiss() }
         currentPhase = phase
         panel.presentedPhase = phase

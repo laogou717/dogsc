@@ -21,6 +21,7 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                 derivedPresentationCache.zoomSegmentIndex(for: zoomGestureOrigin?.id),
             ].compactMap { $0 }
         )
+        let visibleSegments = visibleSegmentIndices.map { (index: $0, clip: segments[$0]) }
         return ZStack(alignment: .leading) {
             timelineLaneSurface(
                 tint: editorZoomClip,
@@ -32,8 +33,9 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                     documentWidth: width
                 )
             }
-            ForEach(visibleSegmentIndices, id: \.self) { index in
-                let segment = segments[index]
+            ForEach(visibleSegments, id: \.clip.id) { item in
+                let index = item.index
+                let segment = item.clip
                 let startX = CGFloat(segment.startTime / max(duration, 0.001)) * width
                 let segmentWidth = max(
                     CGFloat((segment.endTime - segment.startTime) / max(duration, 0.001)) * width,
@@ -53,6 +55,8 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                     isSelected: isSelected,
                     isHovered: isHovered
                 )
+                let label = "\(appLocalized("缩放")) \(String(format: "%.1f", segment.scale))× · "
+                    + (segment.origin == .manual ? "手动" : "自动")
                 ZStack {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(
@@ -67,10 +71,7 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                         )
                         .overlay {
                             if segmentWidth > 86 {
-                                Text(
-                                    "\(appLocalized("缩放")) \(String(format: "%.1f", segment.scale))× · "
-                                        + (segment.origin == .manual ? "手动" : "自动")
-                                )
+                                Text(label)
                                 .font(.appUI(size: 12, weight: .medium))
                                 .foregroundStyle(EditorTheme.chrome(0.74))
                                 .lineLimit(1)
@@ -89,7 +90,7 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                         .allowsHitTesting(false)
                     }
                 }
-                .frame(width: segmentWidth, height: 42)
+                .frame(width: segmentWidth, height: zoomBarHeight)
                 .offset(x: startX)
                 .zIndex(emphasis == .editing ? 4 : isSelected ? 3 : isHovered ? 1 : 0)
                 .contentShape(Rectangle())
@@ -140,12 +141,12 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                         RoundedRectangle(cornerRadius: 7)
                             .stroke(EditorTheme.chrome(0.8), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
                     )
-                    .frame(width: rangeWidth, height: 42)
+                    .frame(width: rangeWidth, height: zoomBarHeight)
                     .offset(x: startX)
                     .allowsHitTesting(false)
             }
         }
-        .frame(width: width, height: 56, alignment: .leading)
+        .frame(width: width, height: zoomTimelineHeight, alignment: .leading)
         .contentShape(Rectangle())
         // 整条轨道只挂这一个手势：按下时按命中区域（手柄/片段/空白）分发为
         // 调整、移动或创建。此前背景创建手势与片段手势作为兄弟手势相互竞争，
@@ -173,6 +174,8 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
             duration: duration,
             selectedID: selectedZoomID,
             hoveredID: hoveredZoomID,
+            trackHeight: Double(zoomTimelineHeight),
+            barHeight: Double(zoomBarHeight),
             segmentsAreOrdered: true
         )
         guard zone == .empty else { return nil }
@@ -359,6 +362,8 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
             duration: duration,
             selectedID: selectedZoomID,
             hoveredID: hoveredZoomID,
+            trackHeight: Double(zoomTimelineHeight),
+            barHeight: Double(zoomBarHeight),
             segmentsAreOrdered: true
         )
         switch zone {
@@ -381,7 +386,7 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                 endTimelineGesture(intent)
                 return
             }
-            playbackController.pause()
+            playbackController.pause(revealingPlayhead: false)
             beginSelectingZoom(segment)
             zoomGestureOrigin = clip
             editorStore.beginInteraction(tool: .editZoom, selection: .zoom(id))
@@ -395,7 +400,7 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                 endTimelineGesture(intent)
                 return
             }
-            playbackController.pause()
+            playbackController.pause(revealingPlayhead: false)
             beginSelectingZoom(segment)
             zoomGestureOrigin = clip
             editorStore.beginInteraction(tool: .editZoom, selection: .zoom(id))
@@ -406,7 +411,7 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
 
     var timelineZoomSegments: [TimelineZoomSegment] {
         derivedPresentationCache.zoomSegments(
-            animations: editorStore.previewProject.zoomAnimations,
+            animations: displayedEffectTimeline.zoomClips,
             duration: timelineDuration
         )
     }
@@ -439,12 +444,8 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
     }
 
     func commitZoomInteraction() {
-        let selection = editorStore.selection
         do {
             _ = try editorStore.commitInteraction(actionName: "调整缩放")
-            if case .zoom = selection, let selection {
-                activateTimelineSelection(selection)
-            }
         } catch {
             editorStore.cancelInteraction()
             onError(error.localizedDescription)
@@ -774,7 +775,7 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
     }
 
     func removeTimelineTarget(_ target: EditorTimelineDeleteTarget) {
-        withAnimation(SpringMotion.snappy) {
+        withTransaction(Transaction(animation: nil)) {
             switch target {
             case let .primarySegment(id):
                 removePrimarySegment(id: id)
@@ -1015,6 +1016,8 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
         draggedPrimarySegmentID = nil
         primarySegmentDragTranslation = 0
         primarySegmentDragDocumentX = nil
+        primaryReorderDraft = nil
+        primaryReorderPreviewTimeline = nil
     }
 
     var hasTransientTimelineGesture: Bool {

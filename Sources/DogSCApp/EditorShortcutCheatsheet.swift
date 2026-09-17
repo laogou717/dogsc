@@ -119,5 +119,6 @@ struct EditorShortcutCheatsheet: View {
         }
         .frame(width: 440, height: 480)
         .background(EditorTheme.panelSurface)
+        .appControlFocusAppearance()
     }
 }

@@ -332,6 +332,8 @@ extension ProjectTimelineEditing {
         deleting deletion: OutputDeletion,
         deletesOutputTail: Bool
     ) throws -> TransitionTiming? {
+        var timing = timing
+        timing.preserveTransitionIntent()
         if timing.effectEndTime <= deletion.start + epsilon {
             return timing
         }
@@ -490,6 +492,7 @@ extension ProjectTimelineEditing {
             // return at the new junction, from the still-zoomed near side.
             result[index].exitProgressOffset = old.endTime >= deletion.start - epsilon
                 && old.endTime < deletion.end - epsilon ? 0 : old.exitProgressOffset
+            if old.exitDuration <= epsilon { result[index].exitProgressOffset = 0 }
         }
         return result
     }
@@ -500,48 +503,32 @@ extension ProjectTimelineEditing {
         deletion: OutputDeletion,
         defaultTransition: TimeInterval
     ) -> [ScreenMotionClip] {
+        let originals = Dictionary(original.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let oldOrdered = original.sorted(by: screenMotionOrder)
         var result = mapped.sorted(by: screenMotionOrder)
         for index in result.indices {
-            guard let old = original.first(where: { $0.id == result[index].id }),
-                  old.timing.returnDuration > epsilon else { continue }
-            let touchesNext = result.indices.contains(index + 1)
-                && abs(result[index + 1].timing.startTime - result[index].timing.endTime)
+            guard let old = originals[result[index].id] else { continue }
+            // Legacy zero-return clips intentionally hold their target. Only
+            // revive one when this edit breaks its former adjacent successor.
+            let oldIndex = oldOrdered.firstIndex { $0.id == old.id }!
+            let touchedOldSuccessor = oldOrdered.indices.contains(oldIndex + 1)
+                && abs(oldOrdered[oldIndex + 1].timing.startTime - old.timing.endTime)
                     <= ZoomInterpolator.adjacencyTolerance
-            let available = result.indices.contains(index + 1)
-                ? max(
-                    result[index + 1].timing.startTime - result[index].timing.endTime,
-                    0
-                )
-                : old.timing.returnDuration
-            let deletionConsumesReturnTail = old.timing.endTime < deletion.start - epsilon
-                && old.timing.effectEndTime > deletion.start + epsilon
-                && old.timing.effectEndTime <= deletion.end + epsilon
-            if deletionConsumesReturnTail,
-               !touchesNext,
-               result[index].timing.returnDuration
-                    < old.timing.returnDuration - epsilon {
-                result[index].timing.returnDuration = min(
-                    old.timing.returnDuration,
-                    available
-                )
-                result[index].timing.returnProgressOffset =
-                    old.timing.returnProgressOffset
+            if old.timing.returnDuration <= epsilon,
+               old.timing.preferredReturnDuration == nil, !touchedOldSuccessor {
+                result[index].timing.preferredReturnDuration = 0
                 continue
             }
-
-            guard result[index].timing.returnDuration <= epsilon,
-                  old.timing.endTime > deletion.start + epsilon,
-                  old.timing.endTime <= deletion.end + epsilon,
-                  old.timing.effectEndTime <= deletion.end + epsilon else { continue }
-            guard !touchesNext else { continue }
-            let restoredAvailable = result.indices.contains(index + 1)
-                ? available
-                : max(defaultTransition, 0)
-            result[index].timing.returnDuration = min(
-                max(defaultTransition, 0),
-                restoredAvailable
-            )
-            result[index].timing.returnProgressOffset = 0
+            let requested = old.timing.requestedReturnDuration(defaultTransition: defaultTransition)
+            result[index].timing.preferredReturnDuration = requested
+            let gap = result.indices.contains(index + 1)
+                ? max(result[index + 1].timing.startTime - result[index].timing.endTime, 0)
+                : requested
+            guard gap > ZoomInterpolator.adjacencyTolerance else { continue }
+            result[index].timing.returnDuration = min(requested, gap)
+            result[index].timing.returnProgressOffset = old.timing.endTime >= deletion.start - epsilon
+                && old.timing.endTime < deletion.end - epsilon ? 0 : old.timing.returnProgressOffset
+            if old.timing.returnDuration <= epsilon { result[index].timing.returnProgressOffset = 0 }
         }
         return result
     }
@@ -552,48 +539,32 @@ extension ProjectTimelineEditing {
         deletion: OutputDeletion,
         defaultTransition: TimeInterval
     ) -> [CameraMotionClip] {
+        let originals = Dictionary(original.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let oldOrdered = original.sorted(by: cameraMotionOrder)
         var result = mapped.sorted(by: cameraMotionOrder)
         for index in result.indices {
-            guard let old = original.first(where: { $0.id == result[index].id }),
-                  old.timing.returnDuration > epsilon else { continue }
-            let touchesNext = result.indices.contains(index + 1)
-                && abs(result[index + 1].timing.startTime - result[index].timing.endTime)
+            guard let old = originals[result[index].id] else { continue }
+            // Legacy zero-return clips intentionally hold their target. Only
+            // revive one when this edit breaks its former adjacent successor.
+            let oldIndex = oldOrdered.firstIndex { $0.id == old.id }!
+            let touchedOldSuccessor = oldOrdered.indices.contains(oldIndex + 1)
+                && abs(oldOrdered[oldIndex + 1].timing.startTime - old.timing.endTime)
                     <= ZoomInterpolator.adjacencyTolerance
-            let available = result.indices.contains(index + 1)
-                ? max(
-                    result[index + 1].timing.startTime - result[index].timing.endTime,
-                    0
-                )
-                : old.timing.returnDuration
-            let deletionConsumesReturnTail = old.timing.endTime < deletion.start - epsilon
-                && old.timing.effectEndTime > deletion.start + epsilon
-                && old.timing.effectEndTime <= deletion.end + epsilon
-            if deletionConsumesReturnTail,
-               !touchesNext,
-               result[index].timing.returnDuration
-                    < old.timing.returnDuration - epsilon {
-                result[index].timing.returnDuration = min(
-                    old.timing.returnDuration,
-                    available
-                )
-                result[index].timing.returnProgressOffset =
-                    old.timing.returnProgressOffset
+            if old.timing.returnDuration <= epsilon,
+               old.timing.preferredReturnDuration == nil, !touchedOldSuccessor {
+                result[index].timing.preferredReturnDuration = 0
                 continue
             }
-
-            guard result[index].timing.returnDuration <= epsilon,
-                  old.timing.endTime > deletion.start + epsilon,
-                  old.timing.endTime <= deletion.end + epsilon,
-                  old.timing.effectEndTime <= deletion.end + epsilon else { continue }
-            guard !touchesNext else { continue }
-            let restoredAvailable = result.indices.contains(index + 1)
-                ? available
-                : max(defaultTransition, 0)
-            result[index].timing.returnDuration = min(
-                max(defaultTransition, 0),
-                restoredAvailable
-            )
-            result[index].timing.returnProgressOffset = 0
+            let requested = old.timing.requestedReturnDuration(defaultTransition: defaultTransition)
+            result[index].timing.preferredReturnDuration = requested
+            let gap = result.indices.contains(index + 1)
+                ? max(result[index + 1].timing.startTime - result[index].timing.endTime, 0)
+                : requested
+            guard gap > ZoomInterpolator.adjacencyTolerance else { continue }
+            result[index].timing.returnDuration = min(requested, gap)
+            result[index].timing.returnProgressOffset = old.timing.endTime >= deletion.start - epsilon
+                && old.timing.endTime < deletion.end - epsilon ? 0 : old.timing.returnProgressOffset
+            if old.timing.returnDuration <= epsilon { result[index].timing.returnProgressOffset = 0 }
         }
         return result
     }
@@ -1227,6 +1198,10 @@ extension ProjectTimelineEditing {
             && timing.returnProgressOffset.isFinite
             && (0...1).contains(timing.leadInProgressOffset)
             && (0...1).contains(timing.returnProgressOffset)
+            && timing.leadInDuration.isFinite && (0...5).contains(timing.leadInDuration)
+            && timing.returnDuration.isFinite && (0...5).contains(timing.returnDuration)
+            && (timing.preferredLeadInDuration.map { $0.isFinite && (0...5).contains($0) } ?? true)
+            && (timing.preferredReturnDuration.map { $0.isFinite && (0...5).contains($0) } ?? true)
             && valid(timing.customCurve)
     }
 

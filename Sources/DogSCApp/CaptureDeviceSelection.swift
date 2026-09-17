@@ -399,6 +399,7 @@ private struct IOSDeviceSelectionOverlay: View {
         }
         .ignoresSafeArea()
         .preferredColorScheme(.light)
+        .appControlFocusAppearance()
     }
 }
 

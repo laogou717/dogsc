@@ -16,7 +16,7 @@ extension EditorInspectorView {
             )
             VStack(alignment: .leading, spacing: 12) {
                 if cursorIsHidden {
-                    Text("当前已隐藏光标。选择一种光标样式后，才需要调整大小、点击动画和移动手感。")
+                    Text("预览和导出均不显示光标及点击反馈。选择“系统”或“触控圆点”可恢复。")
                         .font(.appUI(.caption2))
                         .foregroundStyle(.secondary)
                 } else {
@@ -423,12 +423,19 @@ extension EditorInspectorView {
                 }
             }
             .onAppear { savedLayoutPresets = Self.loadSavedLayoutPresets() }
-            .alert("保存布局预设", isPresented: $isNamingLayoutPreset) {
-                TextField("预设名称", text: $layoutPresetName)
-                Button("保存") { saveCurrentLayoutAsPreset() }
-                Button("取消", role: .cancel) { }
-            } message: {
-                Text("记录当前的摄像头位置/大小/形状与录屏画面构图，之后在播放头一键复用。")
+            .appDialog(isPresented: $isNamingLayoutPreset) {
+                AppDialog(
+                    title: "保存布局预设",
+                    message: "记录摄像头与画面的构图，之后可在播放头位置复用。同名预设会被替换。",
+                    symbol: "rectangle.3.group", input: layoutPresetName,
+                    actions: [
+                        .init(id: "cancel", title: "取消", role: .cancel),
+                        .init(id: "save", title: "保存", role: .primary, requiresInput: true) { name in
+                            layoutPresetName = name
+                            saveCurrentLayoutAsPreset()
+                        }
+                    ]
+                )
             }
         }
     }
@@ -1188,6 +1195,7 @@ struct CursorClickColorPicker: View {
                     EditorTransactionalColorInput(editorStore: editorStore, title: "点击颜色",
                         value: customColorBinding, commandScope: .cursor,
                         actionName: "调整点击动画颜色", onError: onError, presentsPalette: true)
+                        .appControlFocusAppearance()
                 }
             }
         }
@@ -1216,39 +1224,50 @@ private struct EditorCursorStylePreview: View {
     @State private var isReplaying = false
     @Environment(\.editorIsActive) private var isEditorActive
 
+    private var cursorIsHidden: Bool { style.assetID == .hidden }
+
     var body: some View {
         Button { replayID += 1 } label: {
             ZStack {
                 EditorTheme.chrome(0.018)
                 EditorWorkspaceGrid()
-                CursorClickEffectPreviewGlyph(style: style.clickEffectStyle, isActive: isReplaying,
-                    color: Color(hex: style.clickColor ?? CursorAssetLibrary.defaultClickColor))
-                    .scaleEffect(2.4 * style.clickScale).opacity(style.clickOpacity)
-                Group {
-                    if let image = CursorAssetLibrary.resolvedAsset(for: style.assetID)?.image {
-                        Image(nsImage: image).resizable().scaledToFit()
-                    } else {
-                        Image(nsImage: NSCursor.arrow.image).resizable().scaledToFit()
+                if cursorIsHidden {
+                    Label("光标已始终隐藏", systemImage: "eye.slash")
+                        .font(.appUI(.caption))
+                        .foregroundStyle(.secondary)
+                } else {
+                    CursorClickEffectPreviewGlyph(style: style.clickEffectStyle, isActive: isReplaying,
+                        color: Color(hex: style.clickColor ?? CursorAssetLibrary.defaultClickColor))
+                        .scaleEffect(2.4 * style.clickScale).opacity(style.clickOpacity)
+                    Group {
+                        if let image = CursorAssetLibrary.resolvedAsset(for: style.assetID)?.image {
+                            Image(nsImage: image).resizable().scaledToFit()
+                        } else {
+                            Image(nsImage: NSCursor.arrow.image).resizable().scaledToFit()
+                        }
                     }
+                    .frame(width: min(max(28 * style.size, 20), 70), height: min(max(36 * style.size, 24), 80))
+                    .offset(x: 8, y: 12)
                 }
-                .frame(width: min(max(28 * style.size, 20), 70), height: min(max(36 * style.size, 24), 80))
-                .offset(x: 8, y: 12)
-                .opacity(style.assetID == .hidden ? 0 : 1)
             }
             .frame(height: 124)
             .overlay(alignment: .topLeading) {
                 Text("效果预览").font(.appUI(size: 10)).foregroundStyle(.tertiary).padding(10)
             }
             .overlay(alignment: .topTrailing) {
-                Image(systemName: "arrow.clockwise").font(.appUI(size: 11)).foregroundStyle(.secondary).padding(10)
+                if !cursorIsHidden {
+                    Image(systemName: "arrow.clockwise").font(.appUI(size: 11)).foregroundStyle(.secondary).padding(10)
+                }
             }
             .clipShape(RoundedRectangle(cornerRadius: 14))
             .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(EditorTheme.hairline))
         }
-        .buttonStyle(.plain).accessibilityLabel("播放光标效果示意")
-        .task(id: "\(replayID):\(style.clickEffectStyle):\(isEditorActive)") {
-            isReplaying = isEditorActive
-            guard isEditorActive else { return }
+        .buttonStyle(.plain)
+        .disabled(cursorIsHidden)
+        .accessibilityLabel(appLocalized(cursorIsHidden ? "光标已始终隐藏" : "播放光标效果示意"))
+        .task(id: "\(replayID):\(style.clickEffectStyle):\(isEditorActive):\(cursorIsHidden)") {
+            isReplaying = isEditorActive && !cursorIsHidden
+            guard isReplaying else { return }
             try? await Task.sleep(for: .milliseconds(1600))
             guard !Task.isCancelled else { return }
             isReplaying = false

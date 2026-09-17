@@ -559,10 +559,6 @@ final class DirectExportPipeline: @unchecked Sendable {
                     // 几何（extent）与画面同时收缩。
                     return CameraLetterboxAnalysis.cropped(oriented, to: cameraContentCrop)
                 }
-                let primaryRange = MediaTimeRange(
-                    start: slice.outputStart,
-                    duration: slice.duration
-                )
                 let normalizedSource = sourceImage.transformed(
                     by: CGAffineTransform(
                         translationX: -sourceImage.extent.minX,
@@ -589,7 +585,6 @@ final class DirectExportPipeline: @unchecked Sendable {
                     zoomTrack: zoomTrack,
                     screenMotionTrack: screenMotionTrack,
                     cameraMotionTrack: cameraMotionTrack,
-                    activePrimaryRange: primaryRange,
                     cameraTimeline: cameraPlan
                 )
                 let cursorSource = renderPlan.scene.cursor.flatMap {

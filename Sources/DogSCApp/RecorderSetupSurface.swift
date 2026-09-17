@@ -69,6 +69,7 @@ struct RecorderSetupSurface: View {
                 .modifier(RecorderRaisedSurface(radius: 13))
             } panel: { RecorderSavePopover(model: model) }
             .firstUseTourTarget("recorder.save", in: .recorder, highlight: .rounded(13))
+            RecorderMemoButton()
             Button {
                 RecorderPopoverPresenter.shared.dismiss()
                 NSApplication.shared.terminate(nil)

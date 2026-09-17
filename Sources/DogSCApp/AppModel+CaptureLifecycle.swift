@@ -448,6 +448,87 @@ extension AppModel {
         return panel.url
     }
 
+    /// The completion page retains ownership while its final save runs. A
+    /// normal recording is already archived; if automatic archiving failed,
+    /// retry the configured destination without asking for another location.
+    func persistCompletedRecording(resumingLiveInputs: Bool) async -> Bool {
+        guard phase == .recordingComplete,
+              !isResolvingCompletedRecording,
+              !AppDialogPresenter.isPresenting,
+              let session = currentSession else { return false }
+        isResolvingCompletedRecording = true
+        recorderTransitionStage = .savingProject
+        defer {
+            isResolvingCompletedRecording = false
+            if phase == .recordingComplete { recorderTransitionStage = .idle }
+        }
+        let snapshot = project
+        do {
+            let savedURL: URL
+            if isCurrentProjectSaved {
+                guard let saved = try await workspace.flushAndInvalidate(snapshot) else {
+                    throw CocoaError(.fileWriteUnknown)
+                }
+                savedURL = saved.packageURL
+            } else {
+                let destination = try ProjectStore.automaticSaveDestination(for: snapshot, session: session)
+                guard let moved = try await workspace.moveAndInvalidate(snapshot, to: destination) else {
+                    throw CocoaError(.fileWriteUnknown)
+                }
+                savedURL = moved.session.packageURL
+            }
+            ProjectStore.registerRecentProject(savedURL)
+            // Warnings were visible on the completion page. Do not re-present
+            // them as an unrelated setup error after the user keeps the take.
+            errorMessage = nil
+            closeProject(resumingLiveInputs: resumingLiveInputs)
+            return phase == .setup
+        } catch {
+            appendCompletedRecordingError("保存项目失败：\(error.localizedDescription)")
+            return false
+        }
+    }
+
+    /// Reachable only after an explicit destructive action in the completion
+    /// confirmation. Invalidate pending saves before moving the whole package;
+    /// on failure reattach it so Save/Edit remain available for this take.
+    func discardCompletedRecording(resumingLiveInputs: Bool) async -> Bool {
+        guard phase == .recordingComplete,
+              !isResolvingCompletedRecording,
+              !AppDialogPresenter.isPresenting,
+              currentSession != nil else { return false }
+        isResolvingCompletedRecording = true
+        recorderTransitionStage = .discardingRecording
+        defer {
+            isResolvingCompletedRecording = false
+            if phase == .recordingComplete { recorderTransitionStage = .idle }
+        }
+        let wasSaved = isCurrentProjectSaved
+        guard let session = await workspace.invalidateCurrentSession() else {
+            appendCompletedRecordingError(appLocalized("无法删除项目：项目仍在写入，请稍后重试。"))
+            return false
+        }
+        do {
+            try await ProjectPackageDisposal.moveToTrash(session.packageURL)
+            ProjectStore.forgetRecentProject(session.packageURL)
+            errorMessage = nil
+            closeProject(resumingLiveInputs: resumingLiveInputs)
+            return phase == .setup
+        } catch {
+            workspace.activate(session: session, isSaved: wasSaved)
+            appendCompletedRecordingError("无法删除项目：\(error.localizedDescription)")
+            return false
+        }
+    }
+
+    private func appendCompletedRecordingError(_ message: String) {
+        if let previous = errorMessage, !previous.isEmpty, previous != message {
+            errorMessage = previous + "\n\n" + message
+        } else {
+            errorMessage = message
+        }
+    }
+
     func saveCurrentProject(to destination: URL, closeAfterSave: Bool) {
         if closeAfterSave {
             guard phase == .editor else { return }

@@ -3,6 +3,7 @@ import SwiftUI
 private struct TimelineTrackManagerLabel: View {
     @State private var isHovered = false
     let isPresented: Bool
+    var horizontalInset: CGFloat = 16
 
     var body: some View {
         return HStack(spacing: 8) {
@@ -21,7 +22,7 @@ private struct TimelineTrackManagerLabel: View {
                 .accessibilityHidden(true)
         }
         .foregroundStyle(EditorTheme.chrome(isHovered || isPresented ? 0.96 : 0.74))
-        .padding(.horizontal, 16)
+        .padding(.horizontal, horizontalInset)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(
             EditorTheme.chrome(isPresented ? 0.105 : isHovered ? 0.075 : 0),
@@ -142,19 +143,15 @@ extension EditorTimelineView {
         return HStack(spacing: 8) {
             Image(systemName: "plus")
                 .font(.appUI(size: 12, weight: .medium))
-                .foregroundStyle(EditorTheme.onAccent)
+                .foregroundStyle(EditorTheme.chrome(0.38))
                 .frame(width: 20, height: 20)
-                .background(
-                    EditorTheme.platinumMuted.opacity(0.78),
-                    in: Circle()
-                )
 
             Text(title)
                 .font(.appUI(size: 12, weight: .medium))
-                .foregroundStyle(EditorTheme.chrome(0.50))
+                .foregroundStyle(EditorTheme.chrome(0.46))
                 .lineLimit(1)
         }
-        .padding(.leading, 14)
+        .padding(.leading, layout.value(regular: 24, compact: 20))
         .frame(width: visibleWidth, alignment: .leading)
         .offset(x: visibleRange.lowerBound)
         .allowsHitTesting(false)
@@ -169,7 +166,8 @@ extension EditorTimelineView {
             }
         } label: {
             TimelineTrackManagerLabel(
-                isPresented: isTimelineTrackManagerPresented
+                isPresented: isTimelineTrackManagerPresented,
+                horizontalInset: layout.value(regular: 16, compact: 6)
             )
         }
         .buttonStyle(.plain)
@@ -178,7 +176,7 @@ extension EditorTimelineView {
             isPresented: $isTimelineTrackManagerPresented,
             arrowEdge: .top
         ) {
-            timelineTrackVisibilityPanel
+            timelineTrackVisibilityPanel.appControlFocusAppearance()
         }
         .help("管理动画轨道")
         .accessibilityLabel("管理动画轨道")
@@ -399,7 +397,7 @@ extension EditorTimelineView {
         }
         return EditorTimelineLaneLabel(title: title, symbol: symbol, onHide: {
             setTimelineTrack(track, visible: false)
-        })
+        }, horizontalInset: layout.value(regular: 16, compact: 6))
         .frame(height: height)
         .transition(.opacity.combined(with: .offset(y: 8)))
         .accessibilityElement(children: .contain)

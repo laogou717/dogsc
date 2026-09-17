@@ -105,6 +105,7 @@ enum EditorMotionTimelinePresentation {
         let nextStart = min(max(bounds.nextStart, 0), timelineDuration)
         let ownReturn = max(original.returnDuration, 0)
         var timing = original
+        timing.preserveTransitionIntent()
 
         func isValid(start: TimeInterval, end: TimeInterval) -> Bool {
             let touchesPrevious = start <= previousEnd + ZoomInterpolator.adjacencyTolerance
@@ -180,6 +181,13 @@ enum EditorMotionTimelinePresentation {
                 value: { (original.startTime, $0) }
             ) else { return original }
             timing.duration = end - original.startTime
+        }
+        if abs(timing.startTime - original.startTime) > 0.000_001 {
+            timing.leadInDuration = min(timing.requestedLeadInDuration, timing.duration)
+            timing.leadInProgressOffset = 0
+        }
+        if abs(timing.endTime - original.endTime) > 0.000_001 {
+            timing.returnProgressOffset = 0
         }
         return timing
     }
@@ -366,6 +374,7 @@ struct TimelineScrollViewBridge: NSViewRepresentable {
             // Initial attachment and ordinary clock ticks never move the
             // viewport. Only a real play/pause transition may reveal it.
             guard let previous, previous != snapshot.isPlaying,
+                  snapshot.allowsViewportReveal,
                   let playbackController else { return }
             // Pause publishes its state before the final sampled time. Wait
             // until that synchronous operation finishes, then use the actual
@@ -456,6 +465,27 @@ struct TimelineScrollViewBridge: NSViewRepresentable {
 /// complete document and all hit testing continues to use the complete model;
 /// this only limits SwiftUI view creation to a buffered viewport window.
 enum EditorTimelineViewportPresentation {
+    /// Bounds notifications are coalesced for scrolling performance. A
+    /// structural edit can render before that notification is delivered, so
+    /// culling must read the live native viewport whenever it is available.
+    static func visibleDocumentRange(
+        documentWidth: CGFloat,
+        nativeVisibleRect: CGRect?,
+        fallback: ClosedRange<CGFloat>
+    ) -> ClosedRange<CGFloat> {
+        let width = max(documentWidth.isFinite ? documentWidth : 0, 1)
+        let range: ClosedRange<CGFloat>
+        if let rect = nativeVisibleRect,
+           rect.minX.isFinite, rect.maxX.isFinite, rect.width > 1, rect.height > 0 {
+            range = rect.minX...rect.maxX
+        } else {
+            range = fallback
+        }
+        let lower = min(max(range.lowerBound, 0), width)
+        let upper = min(max(range.upperBound, lower), width)
+        return lower...upper
+    }
+
     static func bufferedDocumentRange(
         documentWidth: CGFloat,
         visibleRange: ClosedRange<CGFloat>,
@@ -795,12 +825,14 @@ struct EditorTimelineView: View {
     /// active, for example when a system notification covers the editor.
     let windowDeactivationRevision: UInt64
     let panelHeight: CGFloat
-    let onPreferredHeightChange: (CGFloat) -> Void
+    let layout: EditorWorkspaceLayout
+    let onPreferredHeightChange: (CGFloat, Bool) -> Void
     let isLayoutTransitioning: Bool
     @Binding var visibleTracks: EditorTimelineTrackVisibility
     @Binding var selectedPrimarySegmentIDs: Set<UUID>
     let onError: (String) -> Void
 
+    @State private var lastHeightReportLayout: EditorWorkspaceLayout?
     @State var derivedPresentationCache: EditorTimelineDerivedPresentationCache
     @State var timelineZoom: Double
     @State var timelineZoomPersistenceTask: Task<Void, Never>?
@@ -820,6 +852,8 @@ struct EditorTimelineView: View {
     @State var hoveredPrimarySegmentID: UUID?
     @State var draggedPrimarySegmentID: UUID?
     @State var primarySegmentDragTranslation: CGFloat = 0
+    @State var primaryReorderDraft: PrimarySegmentReorderDraft?
+    @State var primaryReorderPreviewTimeline: ProjectTimeline?
     @State var primarySegmentDragDocumentX: CGFloat?
     @State var primarySegmentDragLocalMonitor: Any?
     @State var primarySegmentDragGlobalMonitor: Any?
@@ -864,11 +898,12 @@ struct EditorTimelineView: View {
         isCameraSyncEditing: Bool,
         windowDeactivationRevision: UInt64 = 0,
         panelHeight: CGFloat = 320,
+        layout: EditorWorkspaceLayout = EditorWorkspaceLayout(size: CGSize(width: 1510, height: 980)),
         visibleTracks: Binding<EditorTimelineTrackVisibility>,
         selectedPrimarySegmentIDs: Binding<Set<UUID>>,
         onError: @escaping (String) -> Void,
         isLayoutTransitioning: Bool = false,
-        onPreferredHeightChange: @escaping (CGFloat) -> Void = { _ in }
+        onPreferredHeightChange: @escaping (CGFloat, Bool) -> Void = { _, _ in }
     ) {
         self.isLayoutTransitioning = isLayoutTransitioning
         _usesWaveformClips = State(initialValue: UserDefaults.standard.bool(forKey: "cn.laogou.dogsc.editor.waveform-clips"))
@@ -878,6 +913,7 @@ struct EditorTimelineView: View {
         self.isCameraSyncEditing = isCameraSyncEditing
         self.windowDeactivationRevision = windowDeactivationRevision
         self.panelHeight = panelHeight
+        self.layout = layout
         self.onPreferredHeightChange = onPreferredHeightChange
         _visibleTracks = visibleTracks
         _selectedPrimarySegmentIDs = selectedPrimarySegmentIDs
@@ -1109,6 +1145,18 @@ struct EditorTimelineView: View {
                 .frame(height: timelineDocumentHeight, alignment: .top)
                 .background { timelineRowGrid }
                 .background { Color.clear.contentShape(Rectangle()).onTapGesture { clearTimelineSelection() } }
+                .overlay(alignment: .topLeading) {
+                    NativeTimelinePlayheadView(
+                        playbackController: playbackController,
+                        duration: duration,
+                        part: .knob,
+                        scrollView: timelineScrollView,
+                        leadingInset: timelineLabelWidth,
+                        documentWidth: contentWidth
+                    )
+                    .frame(height: timelineCanvasHeight)
+                    .allowsHitTesting(false)
+                }
                 }
                 .onAppear { timelineContentWidth = contentWidth }
                 .onChange(of: contentWidth) { _, newValue in
@@ -1130,18 +1178,15 @@ struct EditorTimelineView: View {
                 .help("拖动总览快速定位播放头和当前可视范围")
             }
             .frame(height: timelineOverviewHeight)
-            .overlay(alignment: .top) {
-                Rectangle().fill(EditorTheme.chrome(0.085)).frame(height: 0.5)
-            }
-            .background(Color.clear)
-            Divider()
-                .overlay(dividerColor)
-                .frame(height: timelineDividerHeight)
 
         }
         .frame(height: timelineHeight)
         .onChange(of: preferredPanelHeight, initial: true) { _, height in
-            onPreferredHeightChange(height)
+            // Live window resizing must follow the pointer, without repeatedly
+            // starting the track-expansion animation or disabling gestures.
+            let animate = lastHeightReportLayout == layout
+            lastHeightReportLayout = layout
+            onPreferredHeightChange(height, animate)
         }
         .background(EditorTheme.panelSurface)
         // The parent freezes the preview raster during workspace reflow; the

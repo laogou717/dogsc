@@ -113,19 +113,37 @@ extension NativePlaybackTimeNSView: EditorPlaybackTimelineObserver {
     }
 }
 
-/// The playhead is two CALayers driven by the canvas's transport sample.
+enum NativeTimelinePlayheadPart {
+    case line
+    case knob
+}
+
+/// The line stays inside the scrolling canvas; the knob is drawn above the
+/// viewport so its center can reach the left endpoint without clipping it.
 struct NativeTimelinePlayheadView: NSViewRepresentable {
     let playbackController: EditorPlaybackController
     let duration: TimeInterval
+    let part: NativeTimelinePlayheadPart
+    var scrollView: NSScrollView? = nil
+    var leadingInset: CGFloat = 0
+    var documentWidth: CGFloat? = nil
 
     func makeNSView(context: Context) -> NativeTimelinePlayheadNSView {
         let view = NativeTimelinePlayheadNSView()
-        view.configure(playbackController, duration: duration)
+        configure(view)
         return view
     }
 
     func updateNSView(_ view: NativeTimelinePlayheadNSView, context: Context) {
-        view.configure(playbackController, duration: duration)
+        configure(view)
+    }
+
+    private func configure(_ view: NativeTimelinePlayheadNSView) {
+        view.configure(
+            playbackController, duration: duration, part: part,
+            scrollView: scrollView, leadingInset: leadingInset,
+            documentWidth: documentWidth
+        )
     }
 
     static func dismantleNSView(_ view: NativeTimelinePlayheadNSView, coordinator: Void) {
@@ -139,6 +157,11 @@ final class NativeTimelinePlayheadNSView: NSView {
     private var duration: TimeInterval = 0
     private let lineLayer = CALayer()
     private let knobLayer = CAShapeLayer()
+    private var part: NativeTimelinePlayheadPart = .line
+    private weak var trackedScrollView: NSScrollView?
+    private var scrollObservations: [NSObjectProtocol] = []
+    private var leadingInset: CGFloat = 0
+    private var documentWidth: CGFloat?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -177,7 +200,11 @@ final class NativeTimelinePlayheadNSView: NSView {
 
     func configure(
         _ playbackController: EditorPlaybackController,
-        duration: TimeInterval
+        duration: TimeInterval,
+        part: NativeTimelinePlayheadPart,
+        scrollView: NSScrollView?,
+        leadingInset: CGFloat,
+        documentWidth: CGFloat?
     ) {
         if self.playbackController !== playbackController {
             self.playbackController?.removeNativeTimelineObserver(self)
@@ -185,20 +212,62 @@ final class NativeTimelinePlayheadNSView: NSView {
         }
         self.playbackController = playbackController
         self.duration = max(duration, 0)
+        self.part = part
+        self.leadingInset = leadingInset
+        self.documentWidth = documentWidth
+        if trackedScrollView !== scrollView {
+            scrollObservations.forEach(NotificationCenter.default.removeObserver)
+            scrollObservations.removeAll(keepingCapacity: true)
+            trackedScrollView = scrollView
+            if let clipView = scrollView?.contentView {
+                clipView.postsBoundsChangedNotifications = true
+                scrollObservations.append(NotificationCenter.default.addObserver(
+                    forName: NSView.boundsDidChangeNotification,
+                    object: clipView,
+                    queue: .main
+                ) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.updateLayers() }
+                })
+            }
+            if let documentView = scrollView?.documentView {
+                documentView.postsFrameChangedNotifications = true
+                scrollObservations.append(NotificationCenter.default.addObserver(
+                    forName: NSView.frameDidChangeNotification,
+                    object: documentView,
+                    queue: .main
+                ) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.updateLayers() }
+                })
+            }
+        }
+        updateLayers()
     }
 
     func invalidate() {
         playbackController?.removeNativeTimelineObserver(self)
         playbackController = nil
+        scrollObservations.forEach(NotificationCenter.default.removeObserver)
+        scrollObservations.removeAll(keepingCapacity: false)
+        trackedScrollView = nil
     }
 
     private func updateLayers(time: TimeInterval? = nil) {
         let time = time ?? playbackController?.outputTime ?? 0
-        let rawX = bounds.width * CGFloat(time / max(duration, 0.001))
-        let lineX = min(max(rawX, 0), max(bounds.width, 0))
-        let knobX = min(max(rawX, 5), max(bounds.width - 5, 5))
+        let contentWidth = part == .line ? bounds.width : max(
+            trackedScrollView?.documentView?.bounds.width ?? documentWidth ?? 0,
+            0
+        )
+        let fraction = min(max(time / max(duration, 0.001), 0), 1)
+        let lineX = contentWidth * CGFloat(fraction)
+        let visible = trackedScrollView?.documentVisibleRect
+        let knobX = leadingInset + lineX - (visible?.minX ?? 0)
+        let viewportWidth = visible?.width ?? max(bounds.width - leadingInset, 0)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        lineLayer.isHidden = part != .line
+        // An offscreen playhead must disappear, never stick to a viewport edge.
+        knobLayer.isHidden = part != .knob || knobX < leadingInset
+            || knobX > leadingInset + viewportWidth
         lineLayer.frame = CGRect(x: lineX - 1, y: 0, width: 2, height: bounds.height)
         knobLayer.frame = CGRect(x: knobX - 5, y: bounds.height - 12, width: 10, height: 10)
         CATransaction.commit()
@@ -256,9 +325,9 @@ final class NativeTimelineOverviewNSView: NSView {
         super.init(frame: frameRect)
         wantsLayer = true
         trackLayer.borderWidth = 0
-        trackLayer.cornerRadius = 4
+        trackLayer.cornerRadius = 2.5
         viewportLayer.borderWidth = 0
-        viewportLayer.cornerRadius = 4
+        viewportLayer.cornerRadius = 2.5
         playheadLayer.backgroundColor = NSColor(
             calibratedRed: 0.90,
             green: 0.67,
@@ -351,16 +420,20 @@ final class NativeTimelineOverviewNSView: NSView {
     }
 
     private func updateLayers() {
-        let inset: CGFloat = 0
+        // Share the detailed timeline's horizontal endpoints; a decorative
+        // inset would put the overview's zero marker on a different axis.
         let track = CGRect(
-            x: inset,
-            y: max((bounds.height - 8) / 2, 0),
-            width: max(bounds.width - inset * 2, 1),
-            height: 8
+            x: 0,
+            y: max((bounds.height - 5) / 2, 0),
+            width: max(bounds.width, 1),
+            height: 5
         )
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         trackLayer.frame = track
         guard let scrollView = trackedScrollView else {
             viewportLayer.frame = track
+            CATransaction.commit()
             updatePlayhead()
             return
         }
@@ -370,8 +443,6 @@ final class NativeTimelineOverviewNSView: NSView {
         let widthFraction = min(max(visible.width / documentWidth, 0), 1)
         let viewportWidth = max(track.width * widthFraction, 8)
         let viewportX = min(track.minX + track.width * startFraction, track.maxX - viewportWidth)
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
         viewportLayer.frame = CGRect(
             x: max(viewportX, track.minX), y: track.minY,
             width: min(viewportWidth, track.width), height: track.height
@@ -406,7 +477,7 @@ final class NativeTimelineOverviewNSView: NSView {
         CATransaction.setDisableActions(true)
         playheadLayer.frame = CGRect(
             x: track.minX + track.width * CGFloat(fraction) - 0.75,
-            y: max(track.minY - 3, 0), width: 1.5, height: track.height + 6
+            y: max(track.minY - 2, 0), width: 1.5, height: track.height + 4
         )
         CATransaction.commit()
     }
@@ -437,11 +508,11 @@ final class NativeTimelineOverviewNSView: NSView {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             let chrome = NSColor.labelColor
             trackLayer.backgroundColor = chrome.withAlphaComponent(
-                isPointerInside ? 0.075 : 0.045
+                isPointerInside ? 0.065 : 0.035
             ).cgColor
             trackLayer.borderColor = chrome.withAlphaComponent(0.06).cgColor
             viewportLayer.backgroundColor = chrome.withAlphaComponent(
-                isPointerDown ? 0.22 : isPointerInside ? 0.15 : 0.095
+                isPointerDown ? 0.24 : isPointerInside ? 0.18 : 0.11
             ).cgColor
             viewportLayer.borderColor = chrome.withAlphaComponent(
                 isPointerDown ? 0.82 : isPointerInside ? 0.64 : 0.48

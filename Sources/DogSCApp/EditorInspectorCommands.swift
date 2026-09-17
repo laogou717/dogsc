@@ -13,19 +13,21 @@ extension EditorInspectorView {
             editorStore.selection = .screenMotion(active.id)
             return
         }
+        let style = editorStore.project.motion.defaultScreenMotion
+            ?? AppPreferences.rememberedScreenMotionCreationStyle
         guard let timing = EditorTimelineMath.fitMotionTiming(
             start: playbackTime,
             end: playbackTime,
             among: clips.map(\.timing),
             duration: timelineDuration,
-            easing: editorStore.project.motion.defaultZoomEasing,
-            returnDuration: editorStore.project.motion.defaultZoomTransitionDuration,
-            leadInDuration: editorStore.project.motion.defaultZoomTransitionDuration
+            easing: style?.easing ?? editorStore.project.motion.defaultZoomEasing,
+            returnDuration: style?.returnDuration ?? editorStore.project.motion.defaultZoomTransitionDuration,
+            leadInDuration: style?.leadInDuration ?? editorStore.project.motion.defaultZoomTransitionDuration
         ) else {
             onError("播放头附近没有空间添加屏幕 3D，请先移动播放头。")
             return
         }
-        let clip = ScreenMotionClip(
+        let clip = style?.clip(timing: timing) ?? ScreenMotionClip(
             timing: timing,
             target: MotionInspectorLogic.screenTarget(at: timing.startTime, in: editorStore.project)
         )

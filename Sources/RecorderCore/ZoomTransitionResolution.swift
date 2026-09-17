@@ -42,6 +42,9 @@ public enum ZoomTransitionResolution {
                 // requested transition stored in the project.
                 let exit = min(requestedExit, max(available - min(requestedEnter, available * 0.5), 0))
                 clip.endTime = min(clip.endTime, outputDuration - exit)
+                if clip.endTime < authored.endTime - 0.000_001 {
+                    clip.exitProgressOffset = 0
+                }
                 clip.exitDuration = min(requestedExit, max(outputDuration - clip.endTime, 0))
             }
             clip.enterDuration = min(requestedEnter, clip.duration)

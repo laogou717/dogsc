@@ -280,6 +280,7 @@ private struct DisplaySelectionOverlay: View {
         }
         .ignoresSafeArea()
         .preferredColorScheme(.light)
+        .appControlFocusAppearance()
         .task(id: display.id) { thumbnail = await RecorderSourceThumbnail.image(displayID: display.id) }
     }
 }

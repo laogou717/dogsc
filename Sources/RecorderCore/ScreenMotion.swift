@@ -563,8 +563,11 @@ public struct ScreenMotionTrack: Equatable, Sendable {
                 + focusX * max(viewport.canvasWidth - left - right, 0)
             let boundedY = top
                 + focusY * max(viewport.canvasHeight - top - bottom, 0)
-            let targetX = mix(boundedX, viewport.canvasWidth / 2, recenter)
-            let targetY = mix(boundedY, viewport.canvasHeight / 2, recenter)
+            // Recentring refers to the complete card, just like placement.
+            // Keep the content's inset from that centre at every scale so a
+            // centred 3D target does not drift when it has a top toolbar.
+            let targetX = mix(boundedX, (viewport.canvasWidth + left - right) / 2, recenter)
+            let targetY = mix(boundedY, (viewport.canvasHeight + top - bottom) / 2, recenter)
             contentCenterX = targetX + (0.5 - focusX) * contentWidth
             contentCenterY = targetY + (0.5 - focusY) * contentHeight
         }

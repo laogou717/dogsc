@@ -108,6 +108,14 @@ final class FirstUseTourController {
     // permission-page visit needs a stronger gate, including its opening film
     // and System Settings round trip, even for an already-authorized install.
     private static var permissionPageIsPresented = false
+    private static var appDialogIsPresented = false
+    static func setAppDialogPresented(_ presented: Bool) {
+        appDialogIsPresented = presented
+        for controller in controllers.values {
+            if presented { controller.suspend() }
+            else { controller.resume() }
+        }
+    }
     static func setPermissionPagePresented(_ presented: Bool) {
         guard permissionPageIsPresented != presented else { return }
         permissionPageIsPresented = presented
@@ -150,7 +158,9 @@ final class FirstUseTourController {
     private var lastTarget = CGRect.null
     private var lastCardIndex = -1
     private var preferenceKey: String { "onboarding.tour.\(kind.rawValue).completed" }
-    private var isBlockedByPermissionPage: Bool { kind != .permissions && Self.permissionPageIsPresented }
+    private var isBlockedByModalSurface: Bool {
+        Self.appDialogIsPresented || (kind != .permissions && Self.permissionPageIsPresented)
+    }
 
     private init(kind: FirstUseTourKind) {
         self.kind = kind
@@ -226,7 +236,7 @@ final class FirstUseTourController {
     /// a tutorial panel above an OS permission/password dialog.
     func suspend() { isSuspended = true; dismissPanels() }
     func resume() {
-        guard !isDismissing, !completed, !isBlockedByPermissionPage else { return }
+        guard !isDismissing, !completed, !isBlockedByModalSurface else { return }
         if kind == .permissions, permissionFlow?.settingsStep != nil {
             refreshPermissionsOnReturn()
             return
@@ -295,7 +305,7 @@ final class FirstUseTourController {
     }
 
     private func requestUpdate() {
-        guard !completed, !isSuspended, !isBlockedByPermissionPage, !updatePending else { return }
+        guard !completed, !isSuspended, !isBlockedByModalSurface, !updatePending else { return }
         updatePending = true
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -307,7 +317,7 @@ final class FirstUseTourController {
     private func update() {
         // A layout update queued before opening Settings must not cancel the
         // fresh permission check that is resuming this suspended tour.
-        guard !isSuspended, !isBlockedByPermissionPage else { return }
+        guard !isSuspended, !isBlockedByModalSurface else { return }
         guard !completed, let host, host.enabled, let owner, owner.isVisible,
               !owner.isMiniaturized, NSApp.isActive, !NSApp.isHidden,
               let screen = owner.screen else { dismissPanels(); return }
@@ -331,7 +341,7 @@ final class FirstUseTourController {
                 do { try await Task.sleep(for: .milliseconds(350)) } catch { return }
                 guard let self else { return }
                 self.startTask = nil
-                guard !self.isSuspended, !self.isBlockedByPermissionPage,
+                guard !self.isSuspended, !self.isBlockedByModalSurface,
                       self.host?.enabled == true, self.owner?.isVisible == true, NSApp.isActive,
                       NSApp.keyWindow == nil || NSApp.keyWindow === self.owner else { return }
                 self.makePanels()
@@ -349,7 +359,7 @@ final class FirstUseTourController {
                                           onSkip: { [weak self] in self?.finish() },
                                           primaryTitle: permissionPrimaryTitle,
                                           showsPrevious: permissionFlow?.isReview ?? true)
-            cardPanel.contentView = NSHostingView(rootView: content.frame(width: cardWidth).preferredColorScheme(.light))
+            cardPanel.contentView = NSHostingView(rootView: content.frame(width: cardWidth).preferredColorScheme(.light).appControlFocusAppearance())
             lastCardIndex = index
         }
         let height = max(160, cardPanel.contentView?.fittingSize.height ?? 190)

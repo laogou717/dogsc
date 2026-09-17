@@ -53,7 +53,7 @@ struct EditorCanvasRatioSelector: View {
         .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 9, cornerStyle: .continuous))
         .accessibilityLabel("画布比例")
         .accessibilityValue(valueLabel)
-        .popover(isPresented: $isPresented, arrowEdge: .bottom) { panel }
+        .popover(isPresented: $isPresented, arrowEdge: .bottom) { panel.appControlFocusAppearance() }
     }
 
     private var entryLabel: some View {

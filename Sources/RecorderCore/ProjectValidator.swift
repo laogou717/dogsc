@@ -123,9 +123,10 @@ public enum ProjectValidator {
         if let scale = style.defaultZoomScale, !finite(scale, in: 1...6) {
             throw ProjectValidationError.invalidMotion(reason: "新动画倍率必须在 1 到 6 倍之间。")
         }
-        guard finite(style.motionBlur, in: 0...1),
-              finite(style.frameMotionBlur.strength, in: 0...1),
-              finite(style.screenSpringMass, in: 0.01...20),
+        if let screenMotion = style.defaultScreenMotion, !screenMotion.isValid {
+            throw ProjectValidationError.invalidMotion(reason: "新屏幕 3D 动画的参数无法稳定求值。")
+        }
+        guard finite(style.screenSpringMass, in: 0.01...20),
               finite(style.screenSpringStiffness, in: 1...5_000),
               finite(style.screenSpringDamping, in: 0.1...1_000),
               finite(style.cursorSpringMass, in: 0.01...20),
@@ -134,7 +135,7 @@ public enum ProjectValidator {
               finite(style.defaultZoomTransitionDuration, in: 0...5)
         else {
             throw ProjectValidationError.invalidMotion(
-                reason: "弹簧、运动模糊或默认过渡参数无法稳定求值。"
+                reason: "弹簧或默认过渡参数无法稳定求值。"
             )
         }
     }

@@ -7,7 +7,7 @@ import SwiftUI
 extension EditorTimelineView {
     var timelineCanvasHeight: CGFloat {
         timelineRulerHeight + primaryTimelineHeight
-            + (showsZoomTimeline ? 56 : 0)
+            + (showsZoomTimeline ? zoomTimelineHeight : 0)
             + (showsCameraSyncTimeline ? cameraSyncTimelineHeight : 0)
             + (showsScreenMotionTimeline ? motionTimelineHeight : 0)
             + (showsCameraMotionTimeline ? motionTimelineHeight : 0)
@@ -15,26 +15,28 @@ extension EditorTimelineView {
     }
 
     var cameraSyncTimelineHeight: CGFloat { 62 }
-    var motionTimelineHeight: CGFloat { 56 }
+    var motionTimelineHeight: CGFloat { layout.value(regular: 56, compact: 44) }
+    var zoomTimelineHeight: CGFloat { layout.value(regular: 56, compact: 44) }
+    var zoomBarHeight: CGFloat { layout.value(regular: 42, compact: 32) }
     var overlayTimelineHeight: CGFloat {
-        max(CGFloat(max(overlayTimelineRows.count, 1) * 34 + 16), 56)
+        max(CGFloat(max(overlayTimelineRows.count, 1) * 34 + 16), motionTimelineHeight)
     }
-    var timelineRulerHeight: CGFloat { 44 }
-    var timelineControlsHeight: CGFloat { 68 }
-    var timelineOverviewHeight: CGFloat { 20 }
+    var timelineRulerHeight: CGFloat { layout.value(regular: 44, compact: 32) }
+    var timelineControlsHeight: CGFloat { layout.value(regular: 68, compact: 52) }
+    var timelineOverviewHeight: CGFloat { layout.value(regular: 20, compact: 16) }
     var timelineDividerHeight: CGFloat { 1 }
-    var timelineLabelWidth: CGFloat { 156 }
+    var timelineLabelWidth: CGFloat { layout.value(regular: 156, compact: 124) }
     var preferredPanelHeight: CGFloat {
-        timelineCanvasHeight + timelineControlsHeight + timelineOverviewHeight + timelineDividerHeight * 2
+        timelineCanvasHeight + timelineControlsHeight + timelineOverviewHeight + timelineDividerHeight
     }
-    // Track density stays fixed as visible rows determine the panel height.
+    // Compact windows use one row geometry for drawing, labels and hit testing.
     var primaryTimelineHeight: CGFloat { primaryVideoHeight + 12 }
     var waveformContentHeight: CGFloat { primaryVideoHeight }
     // Display mode changes the contents, never the workspace geometry.
-    var primaryVideoHeight: CGFloat { 96 }
+    var primaryVideoHeight: CGFloat { layout.value(regular: 96, compact: 72) }
     var primaryClipContentHeight: CGFloat { primaryTimelineHeight - 12 }
     var timelineViewportHeight: CGFloat {
-        max(panelHeight - timelineControlsHeight - timelineOverviewHeight - timelineDividerHeight * 2, 80)
+        max(panelHeight - timelineControlsHeight - timelineOverviewHeight - timelineDividerHeight, 80)
     }
     var timelineDocumentHeight: CGFloat { max(timelineCanvasHeight, timelineViewportHeight) }
     var timelineHeight: CGFloat { panelHeight }

@@ -61,7 +61,7 @@ struct EditorActionMenu<Label: View>: View {
                 }
                 .padding(8).frame(width: 270)
                 .background(EditorTheme.panelSurface)
-                .focusEffectDisabled()
+                .appControlFocusAppearance()
             }
     }
     private var menuContentHeight: CGFloat {
@@ -93,6 +93,7 @@ struct EditorActionRowStyle: ButtonStyle {
                 .background(EditorTheme.chrome(isEnabled && configuration.isPressed ? 0.13 : isEnabled && hovered ? 0.085 : selected ? 0.045 : 0),
                             in: RoundedRectangle(cornerRadius: 8))
                 .contentShape(RoundedRectangle(cornerRadius: 8))
+                .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 8))
                 .onHover { hovered = $0 }
                 .animation(SpringMotion.interactive, value: hovered)
                 .animation(SpringMotion.snappy, value: configuration.isPressed)
