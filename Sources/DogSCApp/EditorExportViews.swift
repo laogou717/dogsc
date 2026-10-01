@@ -415,12 +415,11 @@ struct ExportSheet: View {
     private var exportStatusRegion: some View {
         VStack(alignment: .leading, spacing: 8) {
             if exporter.isExporting {
-                let progress = min(max(exporter.exportProgress, 0), 1)
+                let progress = min(max(exporter.exportProgress, 0), 0.99)
                 VStack(alignment: .leading, spacing: 9) {
                     HStack(spacing: 8) {
                         Label(
-                            selectedOutputKind == .video
-                                ? "正在导出视频" : "正在导出音频",
+                            exporter.status.title,
                             systemImage: selectedOutputKind == .video
                                 ? "film.stack" : "waveform"
                         )
@@ -457,11 +456,18 @@ struct ExportSheet: View {
                         }
                     }
                     .frame(height: 8)
+                    HStack(alignment: .top, spacing: 12) {
+                        Text(exporter.status.elapsedLabel).monospacedDigit()
+                        Spacer(minLength: 4)
+                        Text(exporter.status.remainingLabel)
+                            .multilineTextAlignment(.trailing)
+                    }
+                    .font(.appUI(.caption2))
+                    .foregroundStyle(.secondary)
                 }
-                .accessibilityElement(children: .ignore)
+                .accessibilityElement(children: .combine)
                 .accessibilityLabel("导出进度")
                 .accessibilityValue("\(Int((progress * 100).rounded()))%")
-                .animation(.linear(duration: 0.18), value: progress)
             } else if mediaSession.prepared == nil {
                 HStack(alignment: .top, spacing: 8) {
                     if mediaSession.errorMessage == nil {

@@ -1,6 +1,37 @@
 import RecorderCore
 import SwiftUI
 
+/// The outline and handle hit areas use the same canvas-local quad. No handle
+/// view participates in SwiftUI layout, so resizing cannot move its origin.
+private struct MosaicSelectionHitShape: Shape {
+    let quad: ProjectedScreenQuad
+    let showsHandles: Bool
+
+    func path(in rect: CGRect) -> Path {
+        var path = ProjectedScreenShape(quad: quad).path(in: rect)
+        if showsHandles {
+            for corner in OverlayResizeCorner.allCases {
+                let point = mosaicCornerPoint(corner, in: quad)
+                path.addRect(CGRect(x: point.x - 15, y: point.y - 15,
+                                    width: 30, height: 30))
+            }
+        }
+        return path
+    }
+}
+
+private func mosaicCornerPoint(
+    _ corner: OverlayResizeCorner,
+    in quad: ProjectedScreenQuad
+) -> CGPoint {
+    switch corner {
+    case .topLeft: return CGPoint(x: quad.topLeft.x, y: quad.topLeft.y)
+    case .topRight: return CGPoint(x: quad.topRight.x, y: quad.topRight.y)
+    case .bottomRight: return CGPoint(x: quad.bottomRight.x, y: quad.bottomRight.y)
+    case .bottomLeft: return CGPoint(x: quad.bottomLeft.x, y: quad.bottomLeft.y)
+    }
+}
+
 extension CanvasPreview {
     @ViewBuilder
     func mosaicSelectionTargets(
@@ -19,26 +50,44 @@ extension CanvasPreview {
                     let selection = EditorSelection.mosaic(clip.id)
                     let selected = editorStore.selection == selection
                     let chrome = canvasObjectChrome(for: selection)
-                    let selectionShape = ProjectedScreenShape(quad: quad)
-                    selectionShape
-                        .fill(chrome.fillColor)
-                        .contentShape(selectionShape)
-                        .overlay {
-                            if chrome.showsOutline {
-                                selectionShape
-                                    .stroke(chrome.strokeColor, lineWidth: chrome.lineWidth)
+                    Canvas { context, size in
+                        let outline = ProjectedScreenShape(quad: quad).path(
+                            in: CGRect(origin: .zero, size: size)
+                        )
+                        context.fill(outline, with: .color(chrome.fillColor))
+                        if chrome.showsOutline {
+                            context.stroke(outline, with: .color(chrome.strokeColor),
+                                           lineWidth: chrome.lineWidth)
+                        }
+                        if selected {
+                            let isResizing = overlayResizeSelection == selection
+                            for corner in OverlayResizeCorner.allCases {
+                                let point = mosaicCornerPoint(corner, in: quad)
+                                let radius: CGFloat = isResizing ? 6.5 : 6
+                                let dot = Path(ellipseIn: CGRect(
+                                    x: point.x - radius, y: point.y - radius,
+                                    width: radius * 2, height: radius * 2
+                                ))
+                                context.fill(dot, with: .color(Color(white: 0.055)))
+                                context.stroke(dot,
+                                               with: .color(EditorTheme.mediaAccent.opacity(isResizing ? 1 : 0.90)),
+                                               lineWidth: isResizing ? 2.5 : 2)
                             }
                         }
-                        .shadow(color: chrome.glowColor, radius: chrome.glowRadius)
+                    }
                         .frame(width: canvasSize.width, height: canvasSize.height)
+                        .contentShape(MosaicSelectionHitShape(
+                            quad: quad, showsHandles: selected
+                        ))
                         .onTapGesture {
                             onCanvasFocused()
                             editorStore.selection = selection
                         }
-                        .gesture(mosaicMoveGesture(
+                        .gesture(mosaicSelectionGesture(
                             clip: clip,
-                            screen: scene.screen,
-                            canvasSize: canvasSize
+                            quad: quad,
+                            selected: selected,
+                            screen: scene.screen
                         ))
                         .onHover {
                             updateCanvasHover(selection, hovering: $0)
@@ -53,37 +102,8 @@ extension CanvasPreview {
                         .accessibilityAction {
                             editorStore.selection = selection
                         }
-                    if selected {
-                        ForEach(OverlayResizeCorner.allCases) { corner in
-                            let isResizing = overlayResizeSelection == selection
-                            Circle()
-                                .fill(Color(white: 0.055))
-                                .overlay {
-                                    Circle().stroke(
-                                        EditorTheme.mediaAccent.opacity(isResizing ? 1 : 0.90),
-                                        lineWidth: isResizing ? 2.5 : 2
-                                    )
-                                }
-                                .shadow(
-                                    color: isResizing
-                                        ? EditorTheme.mediaAccent.opacity(0.32)
-                                        : .black.opacity(0.7),
-                                    radius: isResizing ? 5 : 2
-                                )
-                                .frame(width: 12, height: 12)
-                                .frame(width: 30, height: 30)
-                                .contentShape(Rectangle())
-                                .position(mosaicHandlePoint(corner, in: quad))
-                                .scaleEffect(isResizing ? 1.08 : 1)
-                                .animation(SpringMotion.interactive, value: isResizing)
-                                .highPriorityGesture(mosaicResizeGesture(
-                                    clip: clip,
-                                    corner: corner,
-                                    screen: scene.screen,
-                                    canvasSize: canvasSize
-                                ))
-                        }
-                    }
+                        .transaction { $0.animation = nil }
+                        .zIndex(selected ? 1 : 0)
                 }
             }
         }
@@ -360,54 +380,94 @@ extension CanvasPreview {
         }
     }
 
-    func mosaicMoveGesture(
+    func mosaicSelectionGesture(
         clip: MosaicClip,
-        screen: FrameScreenScene,
-        canvasSize: CGSize
+        quad: ProjectedScreenQuad,
+        selected: Bool,
+        screen: FrameScreenScene
     ) -> some Gesture {
         let selection = EditorSelection.mosaic(clip.id)
-        return DragGesture(minimumDistance: 1, coordinateSpace: .global)
+        return DragGesture(minimumDistance: 1, coordinateSpace: .local)
             .onChanged { value in
-                if mosaicDragOrigin == nil {
+                if mosaicDragOrigin == nil && mosaicResizeOrigin == nil {
+                    guard let origin = editorStore.project.timeline.mosaicClips
+                        .first(where: { $0.id == clip.id })?.sourceRect else { return }
                     onCanvasFocused()
-                    mosaicDragOrigin = editorStore.project.timeline.mosaicClips
-                        .first(where: { $0.id == clip.id })?.sourceRect
+                    if selected, let corner = mosaicCorner(
+                        at: value.startLocation, in: quad
+                    ) {
+                        mosaicResizeOrigin = origin
+                        mosaicResizeCorner = corner
+                        overlayResizeSelection = selection
+                    } else {
+                        mosaicDragOrigin = origin
+                    }
                     editorStore.beginInteraction(tool: .select, selection: selection)
                 }
-                guard let origin = mosaicDragOrigin else { return }
+
                 let delta = mosaicSourceDelta(
                     translation: value.translation,
                     screen: screen
                 )
-                let proposed = NormalizedOverlayRect(
-                    x: origin.x + delta.x,
-                    y: origin.y + delta.y,
-                    width: origin.width,
-                    height: origin.height
-                ).clamped()
-                let thresholds = mosaicSnapThresholds(screen: screen)
-                let snapped = snappedMosaicRect(
-                    proposed,
-                    thresholdX: thresholds.x,
-                    thresholdY: thresholds.y
-                )
-                canvasSnapGuideX = snapped.guideX
-                canvasSnapGuideY = snapped.guideY
-                editorStore.updateInteraction { project in
-                    guard let index = project.timeline.mosaicClips.firstIndex(
-                        where: { $0.id == clip.id }
-                    ) else { return }
-                    project.timeline.mosaicClips[index].sourceRect = snapped.rect
+                if let corner = mosaicResizeCorner,
+                   let origin = mosaicResizeOrigin {
+                    var left = origin.x
+                    var top = origin.y
+                    var right = origin.x + origin.width
+                    var bottom = origin.y + origin.height
+                    if corner == .topLeft || corner == .bottomLeft {
+                        left = min(max(left + delta.x, 0), right - 0.02)
+                    } else {
+                        right = max(min(right + delta.x, 1), left + 0.02)
+                    }
+                    if corner == .topLeft || corner == .topRight {
+                        top = min(max(top + delta.y, 0), bottom - 0.02)
+                    } else {
+                        bottom = max(min(bottom + delta.y, 1), top + 0.02)
+                    }
+                    let snapped = snappedMosaicResize(
+                        NormalizedOverlayRect(
+                            x: left,
+                            y: top,
+                            width: right - left,
+                            height: bottom - top
+                        ),
+                        corner: corner,
+                        thresholds: mosaicSnapThresholds(screen: screen)
+                    )
+                    updateMosaicDragPreview(clipID: clip.id, snapped: snapped)
+                } else if let origin = mosaicDragOrigin {
+                    let proposed = NormalizedOverlayRect(
+                        x: origin.x + delta.x,
+                        y: origin.y + delta.y,
+                        width: origin.width,
+                        height: origin.height
+                    ).clamped()
+                    let thresholds = mosaicSnapThresholds(screen: screen)
+                    let snapped = snappedMosaicRect(
+                        proposed,
+                        thresholdX: thresholds.x,
+                        thresholdY: thresholds.y
+                    )
+                    updateMosaicDragPreview(clipID: clip.id, snapped: snapped)
                 }
             }
             .onEnded { _ in
+                let didResize = mosaicResizeOrigin != nil
+                let didMove = mosaicDragOrigin != nil
                 defer {
                     mosaicDragOrigin = nil
+                    mosaicResizeOrigin = nil
+                    mosaicResizeCorner = nil
+                    overlayResizeSelection = nil
                     canvasSnapGuideX = nil
                     canvasSnapGuideY = nil
                 }
+                guard didResize || didMove else { return }
                 do {
-                    _ = try editorStore.commitInteraction(actionName: "移动打码区域")
+                    _ = try editorStore.commitInteraction(
+                        actionName: didResize ? "调整打码大小" : "移动打码区域"
+                    )
                 } catch {
                     editorStore.cancelInteraction()
                     onError(error.localizedDescription)
@@ -415,75 +475,36 @@ extension CanvasPreview {
             }
     }
 
-    func mosaicResizeGesture(
-        clip: MosaicClip,
-        corner: OverlayResizeCorner,
-        screen: FrameScreenScene,
-        canvasSize: CGSize
-    ) -> some Gesture {
-        let selection = EditorSelection.mosaic(clip.id)
-        return DragGesture(minimumDistance: 0, coordinateSpace: .global)
-            .onChanged { value in
-                if mosaicResizeOrigin == nil {
-                    onCanvasFocused()
-                    mosaicResizeOrigin = editorStore.project.timeline.mosaicClips
-                        .first(where: { $0.id == clip.id })?.sourceRect
-                    overlayResizeSelection = selection
-                    editorStore.beginInteraction(tool: .select, selection: selection)
-                }
-                guard overlayResizeSelection == selection,
-                      let origin = mosaicResizeOrigin else { return }
-                let delta = mosaicSourceDelta(
-                    translation: value.translation,
-                    screen: screen
-                )
-                var left = origin.x
-                var top = origin.y
-                var right = origin.x + origin.width
-                var bottom = origin.y + origin.height
-                if corner == .topLeft || corner == .bottomLeft {
-                    left = min(max(left + delta.x, 0), right - 0.02)
-                } else {
-                    right = max(min(right + delta.x, 1), left + 0.02)
-                }
-                if corner == .topLeft || corner == .topRight {
-                    top = min(max(top + delta.y, 0), bottom - 0.02)
-                } else {
-                    bottom = max(min(bottom + delta.y, 1), top + 0.02)
-                }
-                let snapped = snappedMosaicResize(
-                    NormalizedOverlayRect(
-                        x: left,
-                        y: top,
-                        width: right - left,
-                        height: bottom - top
-                    ),
-                    corner: corner,
-                    thresholds: mosaicSnapThresholds(screen: screen)
-                )
-                canvasSnapGuideX = snapped.guideX
-                canvasSnapGuideY = snapped.guideY
-                editorStore.updateInteraction { project in
-                    guard let index = project.timeline.mosaicClips.firstIndex(
-                        where: { $0.id == clip.id }
-                    ) else { return }
-                    project.timeline.mosaicClips[index].sourceRect = snapped.rect
-                }
+    func updateMosaicDragPreview(
+        clipID: UUID,
+        snapped: (rect: NormalizedOverlayRect, guideX: Double?, guideY: Double?)
+    ) {
+        if canvasSnapGuideX != snapped.guideX { canvasSnapGuideX = snapped.guideX }
+        if canvasSnapGuideY != snapped.guideY { canvasSnapGuideY = snapped.guideY }
+        guard let currentRect = editorStore.interaction?.previewProject.timeline
+            .mosaicClips.first(where: { $0.id == clipID })?.sourceRect,
+              currentRect != snapped.rect else { return }
+        editorStore.updateInteraction { project in
+            guard let index = project.timeline.mosaicClips.firstIndex(
+                where: { $0.id == clipID }
+            ) else { return }
+            project.timeline.mosaicClips[index].sourceRect = snapped.rect
+        }
+    }
+
+    func mosaicCorner(
+        at location: CGPoint,
+        in quad: ProjectedScreenQuad
+    ) -> OverlayResizeCorner? {
+        OverlayResizeCorner.allCases
+            .compactMap { corner -> (OverlayResizeCorner, CGFloat)? in
+                let point = mosaicCornerPoint(corner, in: quad)
+                let dx = location.x - point.x
+                let dy = location.y - point.y
+                guard abs(dx) <= 15, abs(dy) <= 15 else { return nil }
+                return (corner, dx * dx + dy * dy)
             }
-            .onEnded { _ in
-                defer {
-                    mosaicResizeOrigin = nil
-                    overlayResizeSelection = nil
-                    canvasSnapGuideX = nil
-                    canvasSnapGuideY = nil
-                }
-                do {
-                    _ = try editorStore.commitInteraction(actionName: "调整打码大小")
-                } catch {
-                    editorStore.cancelInteraction()
-                    onError(error.localizedDescription)
-                }
-            }
+            .min(by: { $0.1 < $1.1 })?.0
     }
 
     func stickerResizeGesture(
@@ -783,18 +804,6 @@ extension CanvasPreview {
                 limits: 0.003...0.04
             )
         )
-    }
-
-    func mosaicHandlePoint(
-        _ corner: OverlayResizeCorner,
-        in quad: ProjectedScreenQuad
-    ) -> CGPoint {
-        switch corner {
-        case .topLeft: return CGPoint(x: quad.topLeft.x, y: quad.topLeft.y)
-        case .topRight: return CGPoint(x: quad.topRight.x, y: quad.topRight.y)
-        case .bottomRight: return CGPoint(x: quad.bottomRight.x, y: quad.bottomRight.y)
-        case .bottomLeft: return CGPoint(x: quad.bottomLeft.x, y: quad.bottomLeft.y)
-        }
     }
 
     func stickerHandlePoint(

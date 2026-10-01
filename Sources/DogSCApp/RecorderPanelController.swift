@@ -16,6 +16,7 @@ final class DogSCApplicationDelegate: NSObject,
     private var didFinishLaunching = false
     private let settingsWindowController = AppSettingsWindowController.shared
     private var settingsShortcutMonitor: Any?
+    private var recordingMarkerHotKey: RecordingMarkerHotKey?
     private var keyWindowObservation: NSObjectProtocol?
     private var isWaitingForRecordingCompletionDecision = false
 
@@ -54,6 +55,7 @@ final class DogSCApplicationDelegate: NSObject,
         // 统一使用打包图标，不再在运行时更换。
         let model = AppModel()
         self.model = model
+        recordingMarkerHotKey = RecordingMarkerHotKey(model: model)
         WindowCoordinator.install(model: model)
         ProjectStore.synchronizeSystemRecentProjects()
         didFinishLaunching = true
@@ -94,12 +96,20 @@ final class DogSCApplicationDelegate: NSObject,
         refreshMainMenuBindings()
     }
 
+    func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool {
+        // WindowCoordinator creates the recorder or permission surface. There
+        // is no untitled document; the remaining SwiftUI scene is settings.
+        false
+    }
+
     func applicationShouldHandleReopen(
         _ sender: NSApplication,
         hasVisibleWindows flag: Bool
     ) -> Bool {
         WindowCoordinator.bringCurrentWindowFront()
-        return true
+        // Reopening has already been handled by the current app phase. Do not
+        // let the framework additionally open its default settings scene.
+        return false
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(
@@ -124,6 +134,8 @@ final class DogSCApplicationDelegate: NSObject,
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        recordingMarkerHotKey?.invalidate()
+        recordingMarkerHotKey = nil
         if let settingsShortcutMonitor {
             NSEvent.removeMonitor(settingsShortcutMonitor)
             self.settingsShortcutMonitor = nil
@@ -401,7 +413,7 @@ final class DogSCApplicationDelegate: NSObject,
         NSApplication.shared.activate(ignoringOtherApps: true)
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
-        _ = AppDialogPresenter.run(AppDialog(
+        AppDialogPresenter.present(AppDialog(
             title: AppIdentity.displayName,
             message: "\(appLocalized("录制、剪辑，让画面自然出彩。"))\n\n\(appLocalized("版本")) \(version) (\(build))\n© laogou",
             showsAppIcon: true,

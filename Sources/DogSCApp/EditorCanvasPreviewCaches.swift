@@ -1,7 +1,7 @@
 import Foundation
 import RecorderCore
 
-/// Keeps the three indexed playback tracks coherent with one exact project
+/// Keeps the indexed playback tracks coherent with one exact project
 /// snapshot without publishing another SwiftUI state change. The previous
 /// `onChange` chain rendered once with the new project plus stale tracks, then
 /// rebuilt each changed track and rendered a second time. Timeline gestures
@@ -12,6 +12,7 @@ struct EditorCanvasPlaybackTracks {
     let zoom: ZoomAnimationTrack
     let screenMotion: ScreenMotionTrack
     let cameraMotion: CameraMotionTrack
+    let stickers: StickerTransitionTrack
 }
 
 @MainActor
@@ -19,18 +20,22 @@ final class EditorCanvasPlaybackTrackCache {
     private var zoomClips: [ZoomAnimationClip]
     private var screenClips: [ScreenMotionClip]
     private var cameraClips: [CameraMotionClip]
+    private var stickerClips: [StickerClip]
     private var zoomTrack: ZoomAnimationTrack
     private var outputDuration: TimeInterval?
     private var screenMotionTrack: ScreenMotionTrack
     private var cameraMotionTrack: CameraMotionTrack
+    private var stickerTrack: StickerTransitionTrack
 
     init(project: RecorderProject) {
         zoomClips = project.zoomAnimations
         screenClips = project.timeline.screenMotionClips
         cameraClips = project.timeline.cameraMotionClips
+        stickerClips = project.timeline.stickerClips
         zoomTrack = ZoomAnimationTrack(zoomClips)
         screenMotionTrack = ScreenMotionTrack(screenClips)
         cameraMotionTrack = CameraMotionTrack(cameraClips)
+        stickerTrack = StickerTransitionTrack(stickerClips)
     }
 
     func tracks(for project: RecorderProject, outputDuration: TimeInterval) -> EditorCanvasPlaybackTracks {
@@ -47,10 +52,15 @@ final class EditorCanvasPlaybackTrackCache {
             cameraClips = project.timeline.cameraMotionClips
             cameraMotionTrack = CameraMotionTrack(cameraClips)
         }
+        if stickerClips != project.timeline.stickerClips {
+            stickerClips = project.timeline.stickerClips
+            stickerTrack = StickerTransitionTrack(stickerClips)
+        }
         return EditorCanvasPlaybackTracks(
             zoom: zoomTrack,
             screenMotion: screenMotionTrack,
-            cameraMotion: cameraMotionTrack
+            cameraMotion: cameraMotionTrack,
+            stickers: stickerTrack
         )
     }
 }

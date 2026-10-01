@@ -1300,30 +1300,26 @@ struct EditorInspectorView: View {
         VStack(alignment: .leading, spacing: 14) {
             if let index = selectedZoomAnimationIndex {
                 let animation = editorStore.previewProject.zoomAnimations[index]
-                Group {
-                    if editorStore.previewProject.zoomAnimations[index].origin == .manual {
-                        ZoomFocusMap(
-                            mediaSession: mediaSession,
-                            outputTime: editorStore.project.zoomAnimations[index].startTime,
-                            sourcePixelSize: sourcePixelSize,
-                            focus: zoomAnimationFocusBinding(index),
-                            onEditingChanged: {
-                                updateEditorContinuousInteraction(
-                                    store: editorStore, isEditing: $0,
-                                    commandScope: .selection,
-                                    actionName: "调整缩放焦点",
-                                    onError: onError
-                                )
-                            },
-                            onEditingCancelled: { editorStore.cancelInteraction() }
+                ZoomFocusMap(
+                    mediaSession: mediaSession,
+                    outputTime: animation.startTime,
+                    sourcePixelSize: sourcePixelSize,
+                    focus: displayedZoomFocusBinding(index),
+                    refreshesDuringPlayback: animation.origin == .automatic,
+                    isPlaying: playbackController.isPlaying,
+                    onEditingChanged: {
+                        updateEditorContinuousInteraction(
+                            store: editorStore, isEditing: $0,
+                            commandScope: .selection,
+                            actionName: "调整缩放焦点",
+                            onError: onError
                         )
-                    } else {
-                        ZoomFocusMap(mediaSession: mediaSession,
-                            outputTime: animation.startTime, sourcePixelSize: sourcePixelSize,
-                            focus: .constant(animation.focus), allowsEditing: false)
-                        Label("焦点随鼠标自动移动", systemImage: "cursorarrow.motionlines")
-                            .font(.appUI(size: 11)).foregroundStyle(.secondary)
-                    }
+                    },
+                    onEditingCancelled: { editorStore.cancelInteraction() }
+                )
+                if animation.origin == .automatic {
+                    Label("录制鼠标位置 · 拖动焦点切换为手动定位", systemImage: "cursorarrow.motionlines")
+                        .font(.appUI(size: 11)).foregroundStyle(.secondary)
                 }
 
                 VStack(alignment: .leading, spacing: 12) {

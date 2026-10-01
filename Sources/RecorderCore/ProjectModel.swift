@@ -6,7 +6,8 @@ import Foundation
 public enum ProjectSchema {
     public static let minimumSupportedVersion = 23
     // Version 24 adds authored canvas ratios. Version 23 projects retain their defaults.
-    public static let currentVersion = 26
+    // Version 27 persists recording markers; older apps must not silently discard them.
+    public static let currentVersion = 27
 
     static func validateForDecoding(_ version: Int) throws {
         guard version >= minimumSupportedVersion else {

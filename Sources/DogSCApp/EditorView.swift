@@ -231,16 +231,22 @@ struct EditorView: View {
             )
             .frame(width: 0, height: 0)
         }
-        .overlay(alignment: .top) {
-            if let message = hostActions.errorMessage {
-                editorErrorBanner(message)
-                    .padding(.top, 52)
-                    .transition(
-                        .move(edge: .top)
-                            .combined(with: .opacity)
-                    )
-                    .zIndex(20)
+        .overlay(alignment: .topTrailing) {
+            VStack(spacing: 0) {
+                if let message = hostActions.errorMessage {
+                    let revision = hostActions.errorRevision
+                    EditorTransientNotice(message: message) {
+                        guard hostActions.errorRevision == revision else { return }
+                        hostActions.clearError()
+                    }
+                    .id(revision)
+                    .transition(.opacity)
+                }
             }
+            .padding(.top, 58)
+            .padding(.trailing, 18)
+            .animation(.easeOut(duration: 0.18), value: hostActions.errorRevision)
+            .zIndex(20)
         }
         .sheet(isPresented: $showsExportSheet) {
             ExportSheet(
@@ -318,7 +324,6 @@ struct EditorView: View {
                 NSApplication.shared.terminate(nil)
             }
         }
-        .animation(SpringMotion.fluid, value: hostActions.errorMessage)
         .task(id: editorMediaRequest) {
             await mediaSession.prepare(editorMediaRequest)
         }
@@ -706,60 +711,6 @@ struct EditorView: View {
         }
     }
 
-    private func editorErrorBanner(_ message: String) -> some View {
-        let projectNoticePrefix = "项目已打开，但"
-        let isProjectNotice = message.hasPrefix(projectNoticePrefix)
-        let title = isProjectNotice ? "项目已打开，需要留意" : "操作未完成"
-        let detail = isProjectNotice
-            ? String(message.dropFirst(projectNoticePrefix.count))
-            : message
-
-        return HStack(alignment: .top, spacing: 10) {
-            Image(
-                systemName: isProjectNotice
-                    ? "exclamationmark.circle.fill"
-                    : "exclamationmark.triangle.fill"
-            )
-                .foregroundStyle(.orange)
-                .padding(.top, 1)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.appUI(.caption, weight: .semibold))
-                Text(detail)
-                    .font(.appUI(.caption))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(4)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Button {
-                hostActions.clearError()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.appUI(.caption, weight: .bold))
-            }
-            .buttonStyle(.editorDismissIcon(size: 28))
-            .help("关闭提示")
-            .accessibilityLabel("关闭错误提示")
-        }
-        .padding(.leading, 13)
-        .padding(.trailing, 9)
-        .padding(.vertical, 10)
-        .frame(maxWidth: 480, alignment: .leading)
-        .background(
-            Color(nsColor: .windowBackgroundColor).opacity(0.96),
-            in: RoundedRectangle(cornerRadius: 11, style: .continuous)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .stroke(Color.orange.opacity(0.32), lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(0.30), radius: 14, y: 6)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(title)：\(detail)")
-    }
-
     @ViewBuilder
     private var titleEditor: some View {
         if isEditingTitle {
@@ -1133,6 +1084,7 @@ struct EditorView: View {
 
     private func timeline(panelHeight: CGFloat, layout: EditorWorkspaceLayout) -> some View {
         EditorTimelineView(
+            context: context,
             editorStore: editorStore,
             mediaSession: mediaSession,
             playbackController: playbackController,

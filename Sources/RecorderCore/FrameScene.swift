@@ -365,8 +365,8 @@ public struct FrameStickerScene: Equatable, Sendable {
     public var hidesScreen: Bool
     public var hidesCamera: Bool
     /// Entrance/exit visibility before the user's authored sticker opacity is
-    /// applied. Backdrop suppression follows this value so it never exposes a
-    /// hard first or last frame merely because the sticker is translucent.
+    /// applied. Joined background treatment lives separately in the frame
+    /// backdrop so two partially visible images cannot expose the recording.
     public var transitionProgress: Double
     public var layerIndex: Int
 }
@@ -391,6 +391,7 @@ public struct FrameScene: Equatable, Sendable {
     public var camera: FrameCameraScene?
     public var cursor: FrameCursorScene?
     public var stickers: [FrameStickerScene]
+    public var stickerBackdrop: FrameStickerBackdropScene
     public var layerOrder: [FrameLayerRole]
 
     public init(
@@ -402,6 +403,7 @@ public struct FrameScene: Equatable, Sendable {
         camera: FrameCameraScene?,
         cursor: FrameCursorScene?,
         stickers: [FrameStickerScene] = [],
+        stickerBackdrop: FrameStickerBackdropScene? = nil,
         layerOrder: [FrameLayerRole]
     ) {
         self.time = time
@@ -412,6 +414,7 @@ public struct FrameScene: Equatable, Sendable {
         self.camera = camera
         self.cursor = cursor
         self.stickers = stickers
+        self.stickerBackdrop = stickerBackdrop ?? FrameStickerBackdropScene(stickers: stickers)
         self.layerOrder = layerOrder
     }
 }
@@ -497,6 +500,7 @@ public enum FrameSceneEvaluator {
         zoomTrack: ZoomAnimationTrack? = nil,
         screenMotionTrack: ScreenMotionTrack? = nil,
         cameraMotionTrack: CameraMotionTrack? = nil,
+        stickerTrack: StickerTransitionTrack? = nil,
         cameraTimeline: TimelineMediaPlan? = nil,
         color: FrameColorContract = .sdrDesktop
     ) -> FrameRenderPlan {
@@ -523,6 +527,7 @@ public enum FrameSceneEvaluator {
             zoomTrack: zoomTrack,
             screenMotionTrack: screenMotionTrack,
             cameraMotionTrack: cameraMotionTrack,
+            stickerTrack: stickerTrack,
             color: color
         )
         return FrameRenderPlan(
@@ -547,6 +552,7 @@ public enum FrameSceneEvaluator {
         zoomTrack: ZoomAnimationTrack? = nil,
         screenMotionTrack: ScreenMotionTrack? = nil,
         cameraMotionTrack: CameraMotionTrack? = nil,
+        stickerTrack: StickerTransitionTrack? = nil,
         color: FrameColorContract = .sdrDesktop
     ) -> FrameScene {
         let width = max(canvasSize.width, 2)
@@ -778,12 +784,13 @@ public enum FrameSceneEvaluator {
             screen: screen,
             canvasSize: CompositionSize(width: width, height: height)
         )
-        var stickers = stickerScenes(
-            project.timeline.stickerClips,
+        let stickerSample = stickerScenes(
+            stickerTrack ?? StickerTransitionTrack(project.timeline.stickerClips),
             at: sampleTime,
             suppressesInitialEntry: project.openingSequence.isEnabled
                 && project.openingSequence.includedElements.contains(.stickers)
         )
+        var stickers = stickerSample.stickers
         let stickerOpening = openingSample(
             for: .stickers,
             sequence: project.openingSequence,
@@ -825,61 +832,23 @@ public enum FrameSceneEvaluator {
             camera: camera,
             cursor: cursor,
             stickers: stickers,
+            stickerBackdrop: stickerSample.backdrop,
             layerOrder: order
         )
     }
 
     private static func stickerScenes(
-        _ clips: [StickerClip],
+        _ track: StickerTransitionTrack,
         at time: TimeInterval,
         suppressesInitialEntry: Bool = false
-    ) -> [FrameStickerScene] {
-        clips.compactMap { clip in
-            guard clip.timing.contains(time) else { return nil }
-            let localTime = max(time - clip.timing.startTime, 0)
-            let remaining = max(clip.timing.endTime - time, 0)
-            // A shortened sticker can be briefer than its authored entry and
-            // exit combined. Scale both transitions together instead of
-            // letting them overlap and fight for the active transform.
-            let requestedEnter = max(clip.enterDuration, 0)
-            let requestedExit = max(clip.exitDuration, 0)
-            let requestedTransitionDuration = requestedEnter + requestedExit
-            let transitionScale = requestedTransitionDuration > clip.timing.duration
-                && requestedTransitionDuration > 0
-                ? clip.timing.duration / requestedTransitionDuration
-                : 1
-            let enterDuration = requestedEnter * transitionScale
-            let exitDuration = requestedExit * transitionScale
-            let suppressesClipEntry = suppressesInitialEntry
-                && clip.timing.startTime <= 0.000_1
-            let linearEnter = suppressesClipEntry ? 1 : (enterDuration > 0
-                ? min(max(localTime / enterDuration, 0), 1)
-                : 1)
-            let linearExit = exitDuration > 0
-                ? min(max(remaining / exitDuration, 0), 1)
-                : 1
-            // Entry covers a generous off-canvas distance, so a symmetric
-            // smoother-step spends too much of the trip at near-constant
-            // speed. Ease out decisively into the target; exit uses the
-            // complementary ease-in path and accelerates away from it.
-            let enterProgress = ElementMotionEvaluator.progress(
-                linearEnter,
-                curve: clip.animationCurve
-            )
-            let exitProgress = ElementMotionEvaluator.progress(
-                linearExit,
-                curve: clip.animationCurve
-            )
-            let exitPreset = clip.exitAnimation ?? clip.animation.automaticExit
-            let enterVisibility = clip.animation == .none ? 1 : enterProgress
-            let exitVisibility = exitPreset == .none ? 1 : exitProgress
-            let visibility = min(enterVisibility, exitVisibility)
-            let isExiting = exitDuration > 0 && remaining < exitDuration
-            let activePreset = isExiting ? exitPreset : clip.animation
-            let activeProgress = isExiting ? exitProgress : enterProgress
+    ) -> (stickers: [FrameStickerScene], backdrop: FrameStickerBackdropScene) {
+        let sample = track.sample(at: time, suppressesInitialEntry: suppressesInitialEntry)
+        let stickers = sample.stickers.map { sample in
+            let clip = sample.clip
+            let visibility = sample.visibility
             let transform = stickerAnimationTransform(
-                preset: activePreset,
-                progress: activeProgress,
+                preset: sample.preset,
+                progress: sample.progress,
                 position: clip.position,
                 width: clip.width
             )
@@ -909,11 +878,7 @@ public enum FrameSceneEvaluator {
                 layerIndex: clip.layerIndex
             )
         }
-        .sorted { lhs, rhs in
-            lhs.layerIndex == rhs.layerIndex
-                ? lhs.id.uuidString < rhs.id.uuidString
-                : lhs.layerIndex < rhs.layerIndex
-        }
+        return (stickers, sample.backdrop)
     }
 
     /// Sticker motion deliberately travels from outside the canvas instead of

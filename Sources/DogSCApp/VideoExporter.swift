@@ -95,6 +95,11 @@ final class VideoExporter: ObservableObject {
     @Published private(set) var exportProgress: Double = 0
     @Published private(set) var lastExportURL: URL?
     @Published private(set) var errorMessage: String?
+    @Published private(set) var status = ExportStatus()
+    private var statusTask: Task<Void, Never>?
+    private var jobID: UUID?
+    private var startedUptime: TimeInterval = 0
+    private var estimator = ExportTimeEstimator()
     private var exportTask: Task<Void, Never>?
 
     func export(request: EditorExportRequest) {
@@ -103,6 +108,18 @@ final class VideoExporter: ObservableObject {
         exportProgress = 0
         lastExportURL = nil
         errorMessage = nil
+        let currentJobID = UUID()
+        jobID = currentJobID
+        startedUptime = ProcessInfo.processInfo.systemUptime
+        estimator = ExportTimeEstimator()
+        status = ExportStatus(audioOnly: request.outputKind == .audio)
+        statusTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                guard let self, self.jobID == currentJobID, self.isExporting else { return }
+                self.refreshStatus()
+            }
+        }
         let cursorSources: [CursorAssetID: CursorRenderSource] = Dictionary(
             uniqueKeysWithValues: CursorAssetLibrary.renderAssets.compactMap { asset in
                 guard asset.id != .automatic,
@@ -111,7 +128,8 @@ final class VideoExporter: ObservableObject {
             }
         )
         let progressRelay = ExportProgressRelay { [weak self] progress in
-            self?.exportProgress = progress
+            guard let self, self.jobID == currentJobID, self.isExporting else { return }
+            self.exportProgress = max(self.exportProgress, progress)
         }
 
         exportTask = Task { [self] in
@@ -132,6 +150,12 @@ final class VideoExporter: ObservableObject {
                     cursorSources: cursorSources,
                     progressHandler: { progress in
                         progressRelay.submit(progress)
+                    },
+                    stageHandler: { [weak self] stage in
+                        Task { @MainActor [weak self] in
+                            guard let self, self.jobID == currentJobID, self.isExporting else { return }
+                            self.setStage(stage)
+                        }
                     }
                 )
                 progressRelay.invalidate()
@@ -141,13 +165,35 @@ final class VideoExporter: ObservableObject {
             } catch {
                 errorMessage = Task.isCancelled ? nil : error.localizedDescription
             }
+            progressRelay.invalidate()
+            refreshStatus()
+            statusTask?.cancel()
+            statusTask = nil
+            jobID = nil
             isExporting = false
             exportTask = nil
         }
     }
 
     func cancelExport() {
+        guard isExporting else { return }
+        setStage(.cancelling)
         exportTask?.cancel()
+    }
+
+    private func setStage(_ stage: ExportStage) {
+        guard stage.rawValue > status.stage.rawValue else { return }
+        status.stage = stage
+        estimator.restart(at: ProcessInfo.processInfo.systemUptime - startedUptime, progress: exportProgress)
+        refreshStatus()
+    }
+
+    private func refreshStatus() {
+        let elapsed = max(ProcessInfo.processInfo.systemUptime - startedUptime, 0)
+        let estimate = estimator.sample(elapsed: elapsed, progress: exportProgress)
+        status.elapsed = elapsed
+        status.secondsWithoutProgress = estimate.idle
+        status.remaining = status.stage == .processing ? estimate.remaining : nil
     }
 
     /// An export result belongs to the editor generation that produced it.
@@ -158,6 +204,7 @@ final class VideoExporter: ObservableObject {
         exportProgress = 0
         lastExportURL = nil
         errorMessage = nil
+        status = ExportStatus()
     }
 
     func resetResultForNewExportSelection() {
@@ -167,7 +214,8 @@ final class VideoExporter: ObservableObject {
     nonisolated private static func performExport(
         request: EditorExportRequest,
         cursorSources: [CursorAssetID: CursorRenderSource],
-        progressHandler: (@Sendable (Double) -> Void)?
+        progressHandler: (@Sendable (Double) -> Void)?,
+        stageHandler: @escaping @Sendable (ExportStage) -> Void
     ) async throws {
         // The request builder checked these versions on the main thread. Check
         // again here before opening worker-owned AVAssets so a replacement in
@@ -352,8 +400,10 @@ final class VideoExporter: ObservableObject {
                     frameRate: project.exportSettings.frameRate,
                     outputRange: request.outputRange,
                     cameraContentCrop: cameraContentCrop,
+                    stageHandler: stageHandler,
                     progressHandler: progressHandler
                 )
+                stageHandler(.processing)
                 try await pipeline.run()
             case .audio:
                 let pipeline = try AudioOnlyExportPipeline(
@@ -363,13 +413,16 @@ final class VideoExporter: ObservableObject {
                     outputRange: request.outputRange,
                     progressHandler: progressHandler
                 )
+                stageHandler(.processing)
                 try await pipeline.run()
             }
         } catch {
             try? FileManager.default.removeItem(at: temporaryOutputURL)
             throw error
         }
+        stageHandler(.finishing)
         do {
+            try Task.checkCancellation()
             try ExportFileTransaction.promote(
                 temporaryURL: temporaryOutputURL,
                 to: finalOutputURL

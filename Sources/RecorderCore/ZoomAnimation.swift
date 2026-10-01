@@ -382,17 +382,30 @@ public struct ZoomKeyframe: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+/// A manual hand-off travels between two fully framed viewports. Interpolating
+/// source focus first would cross the framing clamps midway and change the
+/// apparent camera speed/direction even though the authored easing is smooth.
+public struct ManualZoomViewportTransition: Equatable, Sendable {
+    public var fromScale: Double
+    public var fromFocus: NormalizedPoint
+    public var toScale: Double
+    public var toFocus: NormalizedPoint
+    public var progress: Double
+}
+
 public struct ZoomSample: Equatable, Sendable {
     public var scale: Double
     public var focus: NormalizedPoint
     public var framingProgress: Double
     public var targetScale: Double
+    public var manualViewportTransition: ManualZoomViewportTransition?
 
     public init(
         scale: Double,
         focus: NormalizedPoint,
         framingProgress: Double? = nil,
-        targetScale: Double? = nil
+        targetScale: Double? = nil,
+        manualViewportTransition: ManualZoomViewportTransition? = nil
     ) {
         self.scale = scale
         self.focus = focus
@@ -401,6 +414,7 @@ public struct ZoomSample: Equatable, Sendable {
             1
         )
         self.targetScale = max(targetScale ?? scale, 1)
+        self.manualViewportTransition = manualViewportTransition
     }
 }
 
@@ -441,6 +455,20 @@ public struct ZoomViewportTransform: Equatable, Sendable {
         from sample: ZoomSample,
         crop: NormalizedCrop = .full
     ) -> ZoomViewportTransform {
+        if let transition = sample.manualViewportTransition {
+            let from = make(from: ZoomSample(scale: transition.fromScale,
+                focus: transition.fromFocus, framingProgress: 1), crop: crop)
+            let to = make(from: ZoomSample(scale: transition.toScale,
+                focus: transition.toFocus, framingProgress: 1), crop: crop)
+            let progress = min(max(transition.progress, 0), 1)
+            return ZoomViewportTransform(
+                scale: from.scale + (to.scale - from.scale) * progress,
+                translation: NormalizedPoint(
+                    x: from.translation.x + (to.translation.x - from.translation.x) * progress,
+                    y: from.translation.y + (to.translation.y - from.translation.y) * progress
+                )
+            )
+        }
         let scale = min(max(sample.scale, 1), 6)
         let safeCrop = crop.clamped()
         // focus 是源图归一化坐标，crop 编辑（正式功能）可能把裁切区移到焦点之外：
@@ -645,12 +673,13 @@ public enum ZoomInterpolator {
                 : nil
         }
         let inheritedStart = adjacentPrevious.map { previousClip in
-            // Re-evaluate the previous automatic clip with the same camera
-            // signal. This keeps the shared boundary continuous even when its
-            // safe-zone follower had moved away from the original click area.
+            // A cut can replace the next clip's target and restart its entrance
+            // clock, but the hand-off must still begin at the preceding camera
+            // position. Using targetFocus here makes equal-scale clips jump
+            // instantly: their entrance then interpolates a point to itself.
             ZoomSample(
                 scale: previousClip.scale,
-                focus: reanchorAutomaticEntry ? targetFocus : automaticTargetFocus(
+                focus: automaticTargetFocus(
                     for: previousClip,
                     automaticFocus: inheritedAutomaticFocus
                 ),
@@ -698,6 +727,12 @@ public enum ZoomInterpolator {
             zoomProgress = 0
         }
         if let inheritedStart, time <= clip.endTime {
+            let manualTransition: ManualZoomViewportTransition? =
+                clip.origin == .manual && adjacentPrevious?.origin == .manual
+                ? ManualZoomViewportTransition(
+                    fromScale: inheritedStart.scale, fromFocus: inheritedStart.focus,
+                    toScale: clip.scale, toFocus: clip.focus, progress: zoomProgress
+                ) : nil
             return ZoomSample(
                 scale: interpolate(inheritedStart.scale, clip.scale, zoomProgress),
                 focus: NormalizedPoint(
@@ -705,7 +740,8 @@ public enum ZoomInterpolator {
                     y: interpolate(inheritedStart.focus.y, targetFocus.y, zoomProgress)
                 ),
                 framingProgress: 1,
-                targetScale: interpolate(inheritedStart.scale, clip.scale, zoomProgress)
+                targetScale: interpolate(inheritedStart.scale, clip.scale, zoomProgress),
+                manualViewportTransition: manualTransition
             )
         }
         return ZoomSample(

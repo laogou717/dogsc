@@ -31,6 +31,7 @@ struct CanvasPlaybackEvaluationContext: Equatable, Sendable {
     let zoomTrack: ZoomAnimationTrack
     let screenMotionTrack: ScreenMotionTrack
     let cameraMotionTrack: CameraMotionTrack
+    let stickerTrack: StickerTransitionTrack
 
     func refreshingCursor(
         in cached: SharedPreviewPlaybackFrame,
@@ -73,6 +74,7 @@ struct CanvasPlaybackEvaluationContext: Equatable, Sendable {
             zoomTrack: zoomTrack,
             screenMotionTrack: screenMotionTrack,
             cameraMotionTrack: cameraMotionTrack,
+            stickerTrack: stickerTrack,
             cameraTimeline: cameraPlan
         )
         // Reuse the already-evaluated presentation scene instead of running

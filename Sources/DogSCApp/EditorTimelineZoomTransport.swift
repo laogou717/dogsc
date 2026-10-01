@@ -95,6 +95,8 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                 .zIndex(emphasis == .editing ? 4 : isSelected ? 3 : isHovered ? 1 : 0)
                 .contentShape(Rectangle())
                 .contextMenu {
+                    clipClipboardMenu(for: .zoom(segment.id))
+                    Divider()
                     Button(role: .destructive) {
                         removeZoomAnimation(id: segment.id)
                     } label: {
@@ -477,9 +479,15 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
 
     func installDeleteKeyMonitor() {
         guard deleteKeyMonitor == nil else { return }
-        deleteKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+        deleteKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .rightMouseDown]) { event in
             guard event.window?.identifier?.rawValue
                     == "cn.laogou.dogsc.editor-window" else { return event }
+
+            if event.type == .rightMouseDown {
+                clipboardContextTime = clipboardTime(at: event.locationInWindow, in: event.window)
+                    ?? playbackController.outputTime
+                return event
+            }
 
             if let textView = event.window?.firstResponder as? NSTextView,
                textView.isEditable {
@@ -492,6 +500,23 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
             if event.window?.firstResponder is EditorSliderKeyboardView,
                (123...126).contains(event.keyCode) {
                 return event
+            }
+            let clipboardModifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
+            if !event.isARepeat {
+                if event.keyCode == 8, clipboardModifiers == [.command],
+                   EditorClipClipboard.isClip(editorStore.selection) {
+                    copyTimelineClip(editorStore.selection)
+                    return nil
+                }
+                if event.keyCode == 9, clipboardModifiers == [.command], EditorClipClipboard.shared.hasClip {
+                    pasteTimelineClip(at: clipboardInsertionTime)
+                    return nil
+                }
+                if event.keyCode == 9, clipboardModifiers == [.command, .shift],
+                   EditorClipClipboard.shared.supportsAttributes(editorStore.selection) {
+                    pasteTimelineAttributes(editorStore.selection)
+                    return nil
+                }
             }
             let hasEditingModifier = !editingModifiers.isEmpty
             let stepCount = event.modifierFlags.contains(.shift) ? 5 : 1
@@ -820,7 +845,7 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                   point.y >= bounds.minY, point.y <= bounds.maxY else { return event }
 
             let viewportX = point.x - bounds.origin.x
-            hoveredTimelineViewportX = viewportX
+            setTimelineHoverLocation(CGPoint(x: viewportX, y: hoveredTimelineViewportY ?? 0))
 
             switch event.type {
             case .scrollWheel:
@@ -904,8 +929,7 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
         let viewportY = scrollView.isFlipped
             ? point.y - bounds.origin.y
             : bounds.maxY - point.y
-        hoveredTimelineViewportX = viewportX
-        hoveredTimelineViewportY = viewportY
+        setTimelineHoverLocation(CGPoint(x: viewportX, y: viewportY))
         // 播放中画布由播放时钟独占，悬浮只移动参考线；暂停且开启预览时才让画布
         // 实时预览所指帧（EDT-030）。
         guard isPreviewEnabled else {
@@ -923,17 +947,21 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
     }
 
     func clearTimelineHoverLocation() {
-        if hoveredTimelineViewportX != nil || hoveredTimelineViewportY != nil {
-            hoveredTimelineViewportX = nil
-            hoveredTimelineViewportY = nil
-        }
+        setTimelineHoverLocation(nil)
         playbackController.endHoverPreview()
+    }
+
+    func setTimelineHoverLocation(_ point: CGPoint?) {
+        timelineHoverLocation.update(to: point)
+        let cutPoint = isOptionHeld ? point : nil
+        if hoveredTimelineCutPoint != cutPoint { hoveredTimelineCutPoint = cutPoint }
     }
 
     func installModifierFlagsMonitor() {
         guard modifierFlagsMonitor == nil else { return }
         modifierFlagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
             isOptionHeld = event.modifierFlags.contains(.option)
+            hoveredTimelineCutPoint = isOptionHeld ? timelineHoverLocation.viewportPoint : nil
             return event
         }
     }

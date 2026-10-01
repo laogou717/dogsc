@@ -694,3 +694,44 @@
 
 "吸附已关" = "Snap off";
 "吸附已关闭，点击开启片段边界吸附" = "Snapping is off. Click to align clips to timeline boundaries.";
+
+/* Recording markers, effect transfer and export status. */
+"正在准备素材" = "Preparing media";
+"正在处理音频" = "Processing audio";
+"正在合成与编码" = "Compositing and encoding";
+"正在完成文件" = "Finishing file";
+"正在取消导出" = "Cancelling export";
+"已用时 %@" = "Elapsed %@";
+"正在释放导出资源…" = "Releasing export resources…";
+"暂未收到新进度，可继续等待或取消后重试" = "No new progress yet. Keep waiting, or cancel and retry.";
+"正在写入最终文件…" = "Writing the final file…";
+"正在估算剩余时间…" = "Estimating time remaining…";
+"预计剩余约 %@" = "About %@ remaining";
+"添加录制标记" = "Add Recording Marker";
+"添加录制标记（⌃⌥M）；保存到项目，不会录入画面" = "Add Recording Marker (⌃⌥M). Saved with the project, never included in the video.";
+"添加录制标记；全局快捷键不可用，请使用此按钮" = "Add Recording Marker. The global shortcut is unavailable; use this button.";
+"标记 %d" = "Marker %d";
+"标记所在素材已被剪掉，恢复剪辑后可重新定位" = "The marked footage was removed. Restore the edit to locate these markers again.";
+"录制标记：点击跳转；标尺上右键可删除" = "Recording markers: click to jump; right-click a ruler bookmark to delete.";
+"录制标记" = "Recording Markers";
+"跳转到标记" = "Jump to Marker";
+"删除录制标记" = "Delete Recording Marker";
+"复制片段" = "Copy Clip";
+"粘贴片段" = "Paste Clip";
+"粘贴属性" = "Paste Attributes";
+"复制效果片段 / 在鼠标所指位置粘贴副本" = "Copy an effect clip / paste a duplicate at the pointer";
+"向选中的同类组件粘贴属性，保留位置与时长" = "Paste attributes into a matching selection, keeping its timing";
+"此位置到片尾的时长不足，无法粘贴完整片段。请选择更靠前的位置。" = "There is not enough time remaining to paste the entire clip. Choose an earlier position.";
+"此处已有同轨道动画，无法粘贴完整片段。请在足够长的空白处粘贴。" = "An animation already occupies this part of the track. Paste into a gap large enough for the entire clip.";
+"复制的贴图源文件已不可用，请重新复制该贴图。" = "The copied image is no longer available. Copy the sticker again.";
+"当前项目没有摄像头素材，无法粘贴摄像运动片段。" = "This project has no camera footage. A camera motion clip cannot be pasted here.";
+"导入贴图期间时间线已改变，请重新粘贴。" = "The timeline changed while importing the sticker. Paste it again.";
+"标记" = "Markers";
+"这里已有片段" = "This space is occupied";
+"移到空白处，或贴近边缘再粘贴" = "Move to an empty space, or paste near a clip edge.";
+"剩余空间不够" = "Not enough space remaining";
+"移到更靠前的位置，保留完整片段" = "Choose an earlier position to keep the entire clip.";
+"关闭标记列表" = "Close Markers";
+"快速找回重点与重录位置" = "Jump back to key moments and retakes";
+"项目已打开，需要留意" = "Project opened with a note";
+"点击定位 · 点删除图标移除" = "Click to jump · Use the trash icon to remove";

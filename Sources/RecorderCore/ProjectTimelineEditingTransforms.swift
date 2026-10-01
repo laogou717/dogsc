@@ -37,20 +37,17 @@ extension ProjectTimelineEditing {
             result.zoomClips = restoredZoomLeadInsAtRippleJunction(
                 original: timeline.zoomClips,
                 mapped: result.zoomClips,
-                deletion: deletion,
-                defaultTransition: defaultTransitionDuration
+                deletion: deletion
             )
             result.screenMotionClips = restoredScreenLeadInsAtRippleJunction(
                 original: timeline.screenMotionClips,
                 mapped: result.screenMotionClips,
-                deletion: deletion,
-                defaultTransition: defaultTransitionDuration
+                deletion: deletion
             )
             result.cameraMotionClips = restoredCameraLeadInsAtRippleJunction(
                 original: timeline.cameraMotionClips,
                 mapped: result.cameraMotionClips,
-                deletion: deletion,
-                defaultTransition: defaultTransitionDuration
+                deletion: deletion
             )
             result.zoomClips = restoredZoomReturnsAtRippleJunction(
                 original: timeline.zoomClips,
@@ -70,21 +67,9 @@ extension ProjectTimelineEditing {
                 deletion: deletion,
                 defaultTransition: defaultTransitionDuration
             )
-            result.zoomClips = normalizedZoomReturnsAfterRipple(
-                original: timeline.zoomClips,
-                mapped: result.zoomClips,
-                defaultReturn: defaultTransitionDuration
-            )
-            result.screenMotionClips = normalizedScreenReturnsAfterRipple(
-                original: timeline.screenMotionClips,
-                mapped: result.screenMotionClips,
-                defaultReturn: defaultTransitionDuration
-            )
-            result.cameraMotionClips = normalizedCameraReturnsAfterRipple(
-                original: timeline.cameraMotionClips,
-                mapped: result.cameraMotionClips,
-                defaultReturn: defaultTransitionDuration
-            )
+            // Return restoration already resolves adjacency and available
+            // space. Do not run a second default-duration pass: it would
+            // overwrite explicitly authored zero returns after a successor cut.
         }
         try validate(result, fullSourceDuration: fullSourceDuration)
         return result
@@ -239,8 +224,8 @@ extension ProjectTimelineEditing {
         ) else { return nil }
         var edited = clip
         edited.timing = timing
-        edited.enterDuration = min(edited.enterDuration, timing.duration)
-        edited.exitDuration = min(edited.exitDuration, timing.duration)
+        // Keep the authored entry/exit ratio. FrameScene fits both windows to
+        // a short clip together; editing media must not overwrite that intent.
         return edited
     }
 
@@ -381,9 +366,8 @@ extension ProjectTimelineEditing {
         return edited
     }
 
-    /// If a phase begins in deleted material but continues after it, the first
-    /// retained frame must resume at the progress already reached at the far
-    /// side of the cut. Replaying from zero is the visible wait-then-move bug.
+    /// Preserve the near-side phase at the edit junction. A phase whose start
+    /// was deleted is restored as a new entrance/return by the helpers below.
     static func continuedPhaseOffset(
         originalOffset: Double,
         phaseStart: TimeInterval,
@@ -407,20 +391,21 @@ extension ProjectTimelineEditing {
     static func restoredZoomLeadInsAtRippleJunction(
         original: [ZoomAnimationClip],
         mapped: [ZoomAnimationClip],
-        deletion: OutputDeletion,
-        defaultTransition: TimeInterval
+        deletion: OutputDeletion
     ) -> [ZoomAnimationClip] {
         var result = mapped
         for index in result.indices {
             guard let old = original.first(where: { $0.id == result[index].id }),
-                  old.startTime < deletion.end - epsilon,
-                  old.startTime + old.enterDuration > deletion.start + epsilon
-            else { continue }
-            result[index].enterDuration = min(old.requestedEnterDuration, result[index].duration)
-            // The old animation start was deleted: this is a new entrance in
-            // retained content, not permission to replay an old camera focus.
-            result[index].enterProgressOffset = old.startTime >= deletion.start - epsilon
-                ? 0 : old.enterProgressOffset
+                  let entry = restoredEntryAfterRipple(
+                    startTime: old.startTime,
+                    entryDuration: min(old.enterDuration, old.duration),
+                    requestedDuration: old.requestedEnterDuration,
+                    progressOffset: old.enterProgressOffset,
+                    retainedDuration: result[index].duration,
+                    deletion: deletion
+                  ) else { continue }
+            result[index].enterDuration = entry.duration
+            result[index].enterProgressOffset = entry.progressOffset
         }
         return result
     }
@@ -428,22 +413,14 @@ extension ProjectTimelineEditing {
     static func restoredScreenLeadInsAtRippleJunction(
         original: [ScreenMotionClip],
         mapped: [ScreenMotionClip],
-        deletion: OutputDeletion,
-        defaultTransition: TimeInterval
+        deletion: OutputDeletion
     ) -> [ScreenMotionClip] {
         var result = mapped
         for index in result.indices {
-            guard result[index].timing.leadInDuration <= epsilon,
-                  let old = original.first(where: { $0.id == result[index].id }),
-                  old.timing.startTime >= deletion.start - epsilon,
-                  old.timing.startTime < deletion.end - epsilon,
-                  old.timing.leadInEndTime <= deletion.end + epsilon,
-                  old.timing.endTime > deletion.end + epsilon else { continue }
-            result[index].timing.leadInDuration = min(
-                max(defaultTransition, 0),
-                result[index].timing.duration
+            guard let old = original.first(where: { $0.id == result[index].id }) else { continue }
+            result[index].timing = restoringEntryAfterRipple(
+                original: old.timing, mapped: result[index].timing, deletion: deletion
             )
-            result[index].timing.leadInProgressOffset = 0
         }
         return result
     }
@@ -451,24 +428,56 @@ extension ProjectTimelineEditing {
     static func restoredCameraLeadInsAtRippleJunction(
         original: [CameraMotionClip],
         mapped: [CameraMotionClip],
-        deletion: OutputDeletion,
-        defaultTransition: TimeInterval
+        deletion: OutputDeletion
     ) -> [CameraMotionClip] {
         var result = mapped
         for index in result.indices {
-            guard result[index].timing.leadInDuration <= epsilon,
-                  let old = original.first(where: { $0.id == result[index].id }),
-                  old.timing.startTime >= deletion.start - epsilon,
-                  old.timing.startTime < deletion.end - epsilon,
-                  old.timing.leadInEndTime <= deletion.end + epsilon,
-                  old.timing.endTime > deletion.end + epsilon else { continue }
-            result[index].timing.leadInDuration = min(
-                max(defaultTransition, 0),
-                result[index].timing.duration
+            guard let old = original.first(where: { $0.id == result[index].id }) else { continue }
+            result[index].timing = restoringEntryAfterRipple(
+                original: old.timing, mapped: result[index].timing, deletion: deletion
             )
-            result[index].timing.leadInProgressOffset = 0
         }
         return result
+    }
+
+    static func restoringEntryAfterRipple(
+        original: TransitionTiming,
+        mapped: TransitionTiming,
+        deletion: OutputDeletion
+    ) -> TransitionTiming {
+        guard let entry = restoredEntryAfterRipple(
+            startTime: original.startTime,
+            entryDuration: min(original.leadInDuration, original.duration),
+            requestedDuration: original.requestedLeadInDuration,
+            progressOffset: original.leadInProgressOffset,
+            retainedDuration: mapped.duration,
+            deletion: deletion
+        ) else { return mapped }
+        var result = mapped
+        result.leadInDuration = entry.duration
+        result.leadInProgressOffset = entry.progressOffset
+        return result
+    }
+
+    /// Zoom, screen 3D and camera motion use the same edit rule: restore an
+    /// intersected entrance even if a few frames survived the cut. Preserve
+    /// the authored speed and a retained start's phase; a deleted start makes
+    /// a fresh entrance from the preceding target. Explicit zero stays zero.
+    static func restoredEntryAfterRipple(
+        startTime: TimeInterval,
+        entryDuration: TimeInterval,
+        requestedDuration: TimeInterval,
+        progressOffset: Double,
+        retainedDuration: TimeInterval,
+        deletion: OutputDeletion
+    ) -> (duration: TimeInterval, progressOffset: Double)? {
+        guard entryDuration > epsilon,
+              startTime < deletion.end - epsilon,
+              startTime + entryDuration > deletion.start + epsilon else { return nil }
+        return (
+            min(requestedDuration, retainedDuration),
+            startTime >= deletion.start - epsilon ? 0 : progressOffset
+        )
     }
 
     static func restoredZoomReturnsAtRippleJunction(
@@ -521,11 +530,11 @@ extension ProjectTimelineEditing {
             }
             let requested = old.timing.requestedReturnDuration(defaultTransition: defaultTransition)
             result[index].timing.preferredReturnDuration = requested
-            let gap = result.indices.contains(index + 1)
+            let gap: TimeInterval? = result.indices.contains(index + 1)
                 ? max(result[index + 1].timing.startTime - result[index].timing.endTime, 0)
-                : requested
-            guard gap > ZoomInterpolator.adjacencyTolerance else { continue }
-            result[index].timing.returnDuration = min(requested, gap)
+                : nil
+            if let gap, gap <= ZoomInterpolator.adjacencyTolerance { continue }
+            result[index].timing.returnDuration = min(requested, gap ?? requested)
             result[index].timing.returnProgressOffset = old.timing.endTime >= deletion.start - epsilon
                 && old.timing.endTime < deletion.end - epsilon ? 0 : old.timing.returnProgressOffset
             if old.timing.returnDuration <= epsilon { result[index].timing.returnProgressOffset = 0 }
@@ -557,133 +566,16 @@ extension ProjectTimelineEditing {
             }
             let requested = old.timing.requestedReturnDuration(defaultTransition: defaultTransition)
             result[index].timing.preferredReturnDuration = requested
-            let gap = result.indices.contains(index + 1)
+            let gap: TimeInterval? = result.indices.contains(index + 1)
                 ? max(result[index + 1].timing.startTime - result[index].timing.endTime, 0)
-                : requested
-            guard gap > ZoomInterpolator.adjacencyTolerance else { continue }
-            result[index].timing.returnDuration = min(requested, gap)
+                : nil
+            if let gap, gap <= ZoomInterpolator.adjacencyTolerance { continue }
+            result[index].timing.returnDuration = min(requested, gap ?? requested)
             result[index].timing.returnProgressOffset = old.timing.endTime >= deletion.start - epsilon
                 && old.timing.endTime < deletion.end - epsilon ? 0 : old.timing.returnProgressOffset
             if old.timing.returnDuration <= epsilon { result[index].timing.returnProgressOffset = 0 }
         }
         return result
-    }
-
-    /// EDT-001/EDT-002: deleting content can remove the successor that previously kept a zero-
-    /// return clip alive. Once that clip becomes a true endpoint, restore the
-    /// project default return. Existing intentional persistent endpoints stay
-    /// unchanged; only a relationship broken by this ripple is repaired.
-    static func normalizedZoomReturnsAfterRipple(
-        original: [ZoomAnimationClip],
-        mapped: [ZoomAnimationClip],
-        defaultReturn: TimeInterval
-    ) -> [ZoomAnimationClip] {
-        let old = original.sorted(by: zoomOrder)
-        var result = mapped.sorted(by: zoomOrder)
-        for index in result.indices {
-            guard let oldIndex = old.firstIndex(where: { $0.id == result[index].id }) else {
-                continue
-            }
-            let touchedOldSuccessor = old.indices.contains(oldIndex + 1)
-                && abs(old[oldIndex + 1].startTime - old[oldIndex].endTime)
-                    <= ZoomInterpolator.adjacencyTolerance
-            let touchesNewSuccessor = result.indices.contains(index + 1)
-                && abs(result[index + 1].startTime - result[index].endTime)
-                    <= ZoomInterpolator.adjacencyTolerance
-            let available = result.indices.contains(index + 1)
-                ? max(result[index + 1].startTime - result[index].endTime, 0)
-                : max(defaultReturn, 0)
-            if result[index].exitDuration <= epsilon,
-               touchedOldSuccessor,
-               !touchesNewSuccessor {
-                result[index].exitDuration = min(max(defaultReturn, 0), available)
-                result[index].exitProgressOffset = 0
-            } else if !touchesNewSuccessor, result.indices.contains(index + 1) {
-                result[index].exitDuration = min(result[index].exitDuration, available)
-            }
-        }
-        return result
-    }
-
-    static func normalizedScreenReturnsAfterRipple(
-        original: [ScreenMotionClip],
-        mapped: [ScreenMotionClip],
-        defaultReturn: TimeInterval
-    ) -> [ScreenMotionClip] {
-        let old = original.sorted(by: screenMotionOrder)
-        var result = mapped.sorted(by: screenMotionOrder)
-        normalizeTransitionReturns(
-            oldIDs: old.map(\.id),
-            oldStarts: old.map { $0.timing.startTime },
-            oldEnds: old.map { $0.timing.endTime },
-            mappedIDs: result.map(\.id),
-            starts: result.map { $0.timing.startTime },
-            ends: result.map { $0.timing.endTime },
-            returns: &result,
-            defaultReturn: defaultReturn,
-            getReturn: { $0.timing.returnDuration },
-            setReturn: { $0.timing.returnDuration = $1 },
-            resetReturnProgress: { $0.timing.returnProgressOffset = 0 }
-        )
-        return result
-    }
-
-    static func normalizedCameraReturnsAfterRipple(
-        original: [CameraMotionClip],
-        mapped: [CameraMotionClip],
-        defaultReturn: TimeInterval
-    ) -> [CameraMotionClip] {
-        let old = original.sorted(by: cameraMotionOrder)
-        var result = mapped.sorted(by: cameraMotionOrder)
-        normalizeTransitionReturns(
-            oldIDs: old.map(\.id),
-            oldStarts: old.map { $0.timing.startTime },
-            oldEnds: old.map { $0.timing.endTime },
-            mappedIDs: result.map(\.id),
-            starts: result.map { $0.timing.startTime },
-            ends: result.map { $0.timing.endTime },
-            returns: &result,
-            defaultReturn: defaultReturn,
-            getReturn: { $0.timing.returnDuration },
-            setReturn: { $0.timing.returnDuration = $1 },
-            resetReturnProgress: { $0.timing.returnProgressOffset = 0 }
-        )
-        return result
-    }
-
-    static func normalizeTransitionReturns<Clip>(
-        oldIDs: [UUID],
-        oldStarts: [TimeInterval],
-        oldEnds: [TimeInterval],
-        mappedIDs: [UUID],
-        starts: [TimeInterval],
-        ends: [TimeInterval],
-        returns: inout [Clip],
-        defaultReturn: TimeInterval,
-        getReturn: (Clip) -> TimeInterval,
-        setReturn: (inout Clip, TimeInterval) -> Void,
-        resetReturnProgress: (inout Clip) -> Void
-    ) {
-        for index in returns.indices {
-            guard let oldIndex = oldIDs.firstIndex(of: mappedIDs[index]) else { continue }
-            let touchedOldSuccessor = oldIDs.indices.contains(oldIndex + 1)
-                && abs(oldStarts[oldIndex + 1] - oldEnds[oldIndex])
-                    <= ZoomInterpolator.adjacencyTolerance
-            let touchesNewSuccessor = returns.indices.contains(index + 1)
-                && abs(starts[index + 1] - ends[index])
-                    <= ZoomInterpolator.adjacencyTolerance
-            let available = returns.indices.contains(index + 1)
-                ? max(starts[index + 1] - ends[index], 0)
-                : max(defaultReturn, 0)
-            if getReturn(returns[index]) <= epsilon,
-               touchedOldSuccessor,
-               !touchesNewSuccessor {
-                setReturn(&returns[index], min(max(defaultReturn, 0), available))
-                resetReturnProgress(&returns[index])
-            } else if !touchesNewSuccessor, returns.indices.contains(index + 1) {
-                setReturn(&returns[index], min(getReturn(returns[index]), available))
-            }
-        }
     }
 
     static func reorderedOutputOffset(
@@ -865,8 +757,7 @@ extension ProjectTimelineEditing {
                 clip.timing.duration,
                 max(outputDuration - moved.timing.startTime, 0)
             )
-            moved.enterDuration = min(moved.enterDuration, moved.timing.duration)
-            moved.exitDuration = min(moved.exitDuration, moved.timing.duration)
+            // As with ripple cuts, only fit the playback windows in FrameScene.
             return moved.timing.duration > epsilon ? moved : nil
         }.sorted {
             if $0.layerIndex != $1.layerIndex { return $0.layerIndex < $1.layerIndex }

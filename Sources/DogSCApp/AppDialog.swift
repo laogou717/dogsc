@@ -214,10 +214,43 @@ enum AppDialogPresenter {
         if activeID == id { dismissActive?() }
     }
 
-    static func run(_ dialog: AppDialog, relativeTo suppliedOwner: NSWindow? = nil,
-                    id: UUID = UUID()) -> AppDialog.Response {
-        guard activeID == nil else { return .init(actionID: nil) }
+    /// Leave both the triggering SwiftUI action and the Dispatch main queue
+    /// before entering AppKit's modal loop. A main-queue work item cannot be
+    /// reentered, so runModal inside one starves SwiftUI's button work until
+    /// an AppKit-only action (such as Escape) unwinds it.
+    static func present(_ dialog: AppDialog, relativeTo suppliedOwner: NSWindow? = nil,
+                        id: UUID = UUID(),
+                        completion: @escaping @MainActor (AppDialog.Response) -> Void = { _ in }) {
+        guard activeID == nil, NSApp.modalWindow == nil else {
+            completion(.init(actionID: nil))
+            return
+        }
         let owner = suppliedOwner ?? NSApp.keyWindow ?? NSApp.mainWindow
+        let hadOwner = owner != nil
+        activeID = id
+        dismissActive = {
+            activeID = nil
+            dismissActive = nil
+            completion(.init(actionID: nil))
+        }
+        RunLoop.main.perform(inModes: [.default]) { [weak owner] in
+            MainActor.assumeIsolated {
+                guard activeID == id else { return }
+                guard !hadOwner || owner?.isVisible == true else { cancel(id: id); return }
+                let response = runModal(dialog, relativeTo: owner, id: id)
+                completion(response)
+            }
+        }
+    }
+
+    static func response(to dialog: AppDialog, relativeTo owner: NSWindow? = nil) async -> AppDialog.Response {
+        await withCheckedContinuation { continuation in
+            present(dialog, relativeTo: owner) { continuation.resume(returning: $0) }
+        }
+    }
+
+    private static func runModal(_ dialog: AppDialog, relativeTo owner: NSWindow?,
+                                 id: UUID) -> AppDialog.Response {
         let screen = owner?.screen ?? NSScreen.main
         let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1024, height: 768)
         let width = min(440, visible.width - 32)
@@ -257,7 +290,6 @@ enum AppDialogPresenter {
         panel.setFrame(NSRect(x: min(max(anchor.midX - size.width / 2, visible.minX + 16), visible.maxX - size.width - 16),
                               y: min(max(anchor.midY - size.height / 2, visible.minY + 16), visible.maxY - size.height - 16),
                               width: size.width, height: size.height), display: false)
-        activeID = id
         dismissActive = { finish(.init(actionID: nil)) }
         FirstUseTourController.setAppDialogPresented(true)
         let closeObserver = owner.map { window in
@@ -341,11 +373,12 @@ private struct AppDialogAnchor: NSViewRepresentable {
             }
             guard let owner = view.window else { return }
             let dialog = makeDialog()
-            let response = AppDialogPresenter.run(dialog, relativeTo: owner, id: id)
-            guard requestID == id else { return }
-            requestID = nil
-            binding.wrappedValue = false
-            dialog.actions.first(where: { $0.id == response.actionID })?.handler(response.input)
+            AppDialogPresenter.present(dialog, relativeTo: owner, id: id) { [weak self] response in
+                guard let self, self.requestID == id else { return }
+                self.requestID = nil
+                binding.wrappedValue = false
+                dialog.actions.first(where: { $0.id == response.actionID })?.handler(response.input)
+            }
         }
     }
 }

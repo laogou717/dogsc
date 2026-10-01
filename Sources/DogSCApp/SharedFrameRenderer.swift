@@ -123,14 +123,8 @@ enum SharedFrameRenderer {
             && scene.cursor?.attachment == .screen
             && resources.cursor != nil
         let projectsScreen = !isIdentityProjection(scene.screen)
-        let screenSuppression = scene.stickers
-            .filter(\.hidesScreen)
-            .map(\.transitionProgress)
-            .max() ?? 0
-        let cameraSuppression = scene.stickers
-            .filter(\.hidesCamera)
-            .map(\.transitionProgress)
-            .max() ?? 0
+        let screenSuppression = scene.stickerBackdrop.screenSuppression
+        let cameraSuppression = scene.stickerBackdrop.cameraSuppression
         let screenVisibility = (1 - min(max(screenSuppression, 0), 1))
             * scene.screen.opacity
         let cameraVisibility = 1 - min(max(cameraSuppression, 0), 1)
@@ -223,16 +217,10 @@ enum SharedFrameRenderer {
                 // sticker's screen-blur control. If another sticker requests
                 // blur at the same time, ease that blur away with the same
                 // suppression phase instead of switching it abruptly.
-                let requestedScreenBlur = scene.stickers
-                    .filter { !$0.hidesScreen }
-                    .map(\.backdropBlur)
-                    .max() ?? 0
+                let requestedScreenBlur = scene.stickerBackdrop.screenBlur
                 let baseBlur = requestedScreenBlur
                     * (1 - min(max(screenSuppression, 0), 1))
-                let cameraBlur = scene.stickers
-                    .filter(\.backdropBlurIncludesCamera)
-                    .map(\.backdropBlur)
-                    .max() ?? 0
+                let cameraBlur = scene.stickerBackdrop.cameraBlur
                 var stickerBackdrop = compositeBeforeCamera ?? result
                 if baseBlur > 0.01 {
                     stickerBackdrop = stickerBackdrop.clampedToExtent()

@@ -48,6 +48,21 @@ for resource in en.lproj zh-Hans.lproj Fonts Onboarding; do
   ditto "Resources/$resource" "$app/Contents/Resources/$resource"
   diff -qr "Resources/$resource" "$app/Contents/Resources/$resource"
 done
+# InfoPlist.strings takes precedence over Info.plist, including in permission
+# prompts. Check every locale so a release-name override cannot hide "Dev".
+for localized_info in "$app/Contents/Resources/"*.lproj/InfoPlist.strings; do
+  [[ -f "$localized_info" ]] || continue
+  plutil -lint "$localized_info" >/dev/null
+  for identity_key in CFBundleName CFBundleDisplayName CFBundleIdentifier; do
+    expected_identity="$(/usr/libexec/PlistBuddy -c "Print :$identity_key" "$app/Contents/Info.plist")"
+    if localized_identity="$(plutil -extract "$identity_key" raw -o - "$localized_info" 2>/dev/null)"; then
+      if [[ "$localized_identity" != "$expected_identity" ]]; then
+        echo "Localized $identity_key overrides the development identity in $localized_info." >&2
+        exit 1
+      fi
+    fi
+  done
+done
 (cd "$app/Contents/Resources/Fonts" && shasum -a 256 -c SHA256SUMS)
 ditto "$sparkle_source" "$app/Contents/Frameworks/Sparkle.framework"
 

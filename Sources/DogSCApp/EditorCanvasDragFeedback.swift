@@ -68,34 +68,33 @@ extension CanvasPreview {
             if let readout = canvasManipulationReadout() {
                 HStack(spacing: 7) {
                     Label(readout.title, systemImage: readout.systemImage)
-                        .foregroundStyle(Color.white.opacity(0.68))
+                        .foregroundStyle(Color.white.opacity(0.82))
                     Rectangle()
-                        .fill(Color.white.opacity(0.14))
+                        .fill(Color.white.opacity(0.25))
                         .frame(width: 1, height: 13)
                     Text(readout.value)
-                        .fontDesign(.monospaced)
-                        .foregroundStyle(Color.white.opacity(0.94))
-                        .contentTransition(.numericText())
+                        .monospacedDigit()
+                        .foregroundStyle(Color.white)
                 }
-                .font(.appUI(size: 10.5, weight: .semibold))
-                .padding(.horizontal, 10)
-                .frame(height: 30)
+                .font(.appUI(size: 11.5, weight: .semibold))
+                .padding(.horizontal, 12)
+                .frame(height: 32)
                 .background(
-                    EditorTheme.cardElevated.opacity(0.94),
+                    Color(red: 0.11, green: 0.12, blue: 0.13).opacity(0.96),
                     in: RoundedRectangle(cornerRadius: 9, style: .continuous)
                 )
                 .overlay {
                     RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .stroke(Color.white.opacity(0.16), lineWidth: 0.75)
+                        .stroke(Color.white.opacity(0.2), lineWidth: 0.75)
                 }
-                .shadow(color: Color.black.opacity(0.38), radius: 8, y: 3)
+                .shadow(color: Color.black.opacity(0.25), radius: 6, y: 2)
                 .position(
                     x: canvasSize.width / 2,
                     y: readout.objectY > 0.65
                         ? 22
                         : max(canvasSize.height - 22, 22)
                 )
-                .transition(.opacity.combined(with: .scale(scale: 0.94)))
+                .transaction { $0.animation = nil }
             }
         }
         .frame(width: canvasSize.width, height: canvasSize.height)
@@ -222,23 +221,14 @@ extension CanvasPreview {
         to end: CGPoint,
         canvasSize: CGSize
     ) -> some View {
-        ZStack {
-            Path { path in
-                path.move(to: start)
-                path.addLine(to: end)
-            }
-            .stroke(EditorTheme.mediaAccent.opacity(0.20), lineWidth: 5)
-            .blur(radius: 2)
-
-            Path { path in
-                path.move(to: start)
-                path.addLine(to: end)
-            }
-            .stroke(
-                EditorTheme.mediaAccent.opacity(0.88),
-                style: StrokeStyle(lineWidth: 1, dash: [3, 3])
-            )
+        Path { path in
+            path.move(to: start)
+            path.addLine(to: end)
         }
+        .stroke(
+            EditorTheme.mediaAccent.opacity(0.88),
+            style: StrokeStyle(lineWidth: 1, dash: [3, 3])
+        )
         .frame(width: canvasSize.width, height: canvasSize.height)
     }
 
@@ -255,6 +245,7 @@ extension CanvasPreview {
         overlayDragSelection = nil
         mosaicDragOrigin = nil
         mosaicResizeOrigin = nil
+        mosaicResizeCorner = nil
         stickerResizeOrigin = nil
         stickerRotationOrigin = nil
         overlayResizeSelection = nil

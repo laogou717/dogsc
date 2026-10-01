@@ -301,6 +301,23 @@ struct RecordingBar: View {
     private var recordingActions: some View {
         HStack(spacing: 8) {
             RecorderMemoButton(size: 34)
+            recordingActionButton(icon: "bookmark.fill", accessibilityLabel: appLocalized("添加录制标记"),
+                accessibilityIdentifier: "recorder.recording.marker",
+                isEnabled: model.canAddRecordingMarker, action: model.addRecordingMarker)
+                .overlay(alignment: .topTrailing) {
+                    if !model.project.recordingMarkers.isEmpty {
+                        Text(model.project.recordingMarkers.count, format: .number)
+                            .font(.appUI(size: 8, weight: .semibold)).monospacedDigit()
+                            .foregroundStyle(RecorderStyle.ink)
+                            .padding(.horizontal, 3).padding(.vertical, 1)
+                            .background(RecorderStyle.mintWash, in: Capsule())
+                            .offset(x: 4, y: -3)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .help(appLocalized(model.recordingMarkerShortcutAvailable
+                    ? "添加录制标记（⌃⌥M）；保存到项目，不会录入画面"
+                    : "添加录制标记；全局快捷键不可用，请使用此按钮"))
             recordingActionButton(icon: model.isRecordingPaused ? "play.fill" : "pause.fill",
                 accessibilityLabel: model.isRecordingPaused ? "继续录制" : "暂停录制",
                 accessibilityIdentifier: RecorderAccessibilityID.recordingPauseResume,

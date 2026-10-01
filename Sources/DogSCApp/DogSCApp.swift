@@ -19,19 +19,55 @@ private final class EditorFirstMouseHostingView<Content: View>: NSHostingView<Co
 }
 
 @main
-struct DogSCApp: App {
+enum DogSCApplication {
+    @MainActor
+    static func main() {
+        // SceneBuilder cannot conditionally apply newer scene modifiers.
+        // Choose the host before creating the one application delegate.
+        if #available(macOS 15.0, *) {
+            DogSCModernApp.main()
+        } else {
+            DogSCApp.main()
+        }
+    }
+}
+
+private struct DogSCApp: App {
     @NSApplicationDelegateAdaptor(DogSCApplicationDelegate.self)
     private var applicationDelegate
+
+    var body: some Scene { DogSCSettingsScene() }
+}
+
+@available(macOS 15.0, *)
+private struct DogSCModernApp: App {
+    @NSApplicationDelegateAdaptor(DogSCApplicationDelegate.self)
+    private var applicationDelegate
+
+    var body: some Scene {
+        DogSCSettingsScene()
+            // AppKit owns launch and Dock reopening. Settings is never a
+            // default or restored main window, even with old saved state.
+            .defaultLaunchBehavior(.suppressed)
+            .restorationBehavior(.disabled)
+    }
+}
+
+private struct DogSCSettingsScene: Scene {
     @ObservedObject private var guideAccess = FirstLaunchGuideAccess.shared
 
     var body: some Scene {
         // The normal app owns no SwiftUI-created main window. A dedicated
         // RecorderPanelController presents the compact recorder surface, while
         // EditorWindowController continues to own the full editor window.
-        Settings {
-            AppSettingsView()
-        }
+        Settings { AppSettingsView() }
         .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button("设置…") {
+                    AppSettingsWindowController.shared.show()
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
             // Declare this with the scene so SwiftUI retains it when rebuilding
             // the application menu for a different AppKit key window.
             CommandGroup(after: .appSettings) {
@@ -47,6 +83,7 @@ struct DogSCApp: App {
             }
         }
     }
+
 }
 
 /// The menu and settings entry share the same recording-phase gate.

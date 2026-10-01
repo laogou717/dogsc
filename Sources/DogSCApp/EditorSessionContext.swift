@@ -99,6 +99,7 @@ struct EditorWallpaperResolver: Sendable {
 final class EditorHostActions: ObservableObject {
     @Published private(set) var persistenceStatus: ProjectPersistenceStatus
     @Published private(set) var errorMessage: String?
+    @Published private(set) var errorRevision: UInt64 = 0
 
     private let openProjectAction: () -> Void
     private let deleteProjectAction: () -> Void
@@ -158,10 +159,12 @@ final class EditorHostActions: ObservableObject {
             }
             .store(in: &subscriptions)
         errorMessageUpdates
-            .removeDuplicates()
             .sink { [weak self] message in
-                guard self?.errorMessage != message else { return }
-                self?.errorMessage = message
+                guard let self else { return }
+                // A repeated failure is a new notice and gets its full reading
+                // time; an older card's timer must not clear the new one.
+                if self.errorMessage != message { self.errorMessage = message }
+                self.errorRevision &+= 1
             }
             .store(in: &subscriptions)
     }

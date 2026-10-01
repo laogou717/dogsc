@@ -557,10 +557,10 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
     /// 片段端点/播放头。
     func snappedCutX(width: CGFloat, duration: TimeInterval) -> CGFloat? {
         guard isOptionHeld,
-              let x = hoveredTimelineContentX,
-              let y = hoveredTimelineContentY,
-              y >= timelineRulerHeight,
-              y <= timelineRulerHeight + primaryTimelineHeight else { return nil }
+              let point = hoveredTimelineCutPoint,
+              point.y >= timelineRulerHeight,
+              point.y <= timelineRulerHeight + primaryTimelineHeight else { return nil }
+        let x = point.x + (timelineScrollView?.documentVisibleRect.origin.x ?? 0)
         return EditorPrimaryTimelinePresentation.snappedCutX(
             pointerX: x,
             width: width,

@@ -236,7 +236,8 @@ enum TimelineCompositionBuilder {
         primarySegmentRanges: [TimelineSegmentAudioMixRange] = [],
         microphoneTrack: AVCompositionTrack?,
         microphoneVolume: Float,
-        requiresTimePitchProcessing: Bool = false
+        requiresTimePitchProcessing: Bool = false,
+        timePitchAlgorithm: AVAudioTimePitchAlgorithm = .timeDomain
     ) -> AVAudioMix? {
         var parameters: [AVAudioMixInputParameters] = []
         if let systemTrack {
@@ -254,7 +255,7 @@ enum TimelineCompositionBuilder {
                 }
             }
             if requiresTimePitchProcessing {
-                input.audioTimePitchAlgorithm = .timeDomain
+                input.audioTimePitchAlgorithm = timePitchAlgorithm
             }
             parameters.append(input)
         }
@@ -271,7 +272,7 @@ enum TimelineCompositionBuilder {
                 )
             }
             if requiresTimePitchProcessing {
-                input.audioTimePitchAlgorithm = .timeDomain
+                input.audioTimePitchAlgorithm = timePitchAlgorithm
             }
             parameters.append(input)
         }

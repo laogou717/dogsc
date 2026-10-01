@@ -187,6 +187,7 @@ extension EditorTimelineView {
 
                     Rectangle().fill(EditorTheme.hairline).frame(width: 1, height: 18).padding(.horizontal, 3)
                     timelineDisplayModePicker
+                    recordingMarkerMenu
                 }
 
 
@@ -252,8 +253,7 @@ extension EditorTimelineView {
                         isHoverPreviewEnabled.toggle()
                         hoverPreviewGate.isEnabled = isHoverPreviewEnabled
                         if !isHoverPreviewEnabled {
-                            hoveredTimelineViewportX = nil
-                            hoveredTimelineViewportY = nil
+                            setTimelineHoverLocation(nil)
                             playbackController.endHoverPreview()
                         }
                     } label: {
@@ -513,24 +513,19 @@ extension EditorTimelineView {
                     .zIndex(30)
             }
 
-            // 悬停轴与真实播放头必须一眼可分：播放头保持实线，悬停定位使用
-            // 虚线和独立时间胶囊。这里只改变呈现，不改变播放头或剪辑时间。
-            if gestureOwnership.activeIntent == nil,
-               draggedPrimarySegmentID == nil,
-               isHoverPreviewEnabled,
-               let previewX = hoveredTimelineContentX {
-                let previewTime = EditorTimelineMath.clampedTime(
-                    atX: Double(previewX),
-                    width: Double(width),
-                    duration: duration
-                )
-                timelineHoverGuide(
-                    previewX: previewX,
-                    previewTime: previewTime,
-                    width: width
-                )
-                .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
-            }
+            NativeTimelineHoverGuideView(
+                location: timelineHoverLocation,
+                scrollView: timelineScrollView,
+                duration: duration,
+                canvasHeight: timelineCanvasHeight,
+                badgeY: isRestoreCutMode ? 2 : timelineRulerHeight - 22,
+                isEnabled: gestureOwnership.activeIntent == nil
+                    && draggedPrimarySegmentID == nil && isHoverPreviewEnabled
+            )
+            .frame(width: width, height: timelineDocumentHeight)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+            .zIndex(10)
 
             magneticGuide(width: width, duration: duration)
 
@@ -538,6 +533,12 @@ extension EditorTimelineView {
         .frame(width: width, height: timelineDocumentHeight, alignment: .topLeading)
         .coordinateSpace(name: editorTimelineDocumentCoordinateSpace)
         .contentShape(Rectangle())
+        .contextMenu {
+            Button("粘贴片段") {
+                pasteTimelineClip(at: clipboardContextTime ?? clipboardInsertionTime)
+            }
+            .disabled(!EditorClipClipboard.shared.hasClip)
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("时间线")
         .accessibilityValue("播放头位于 \(timelineTimestamp(playbackTime))")
@@ -545,59 +546,6 @@ extension EditorTimelineView {
         // in one display update. Do not inherit a button/delete/layout spring.
         // Explicit local ink and display-mode fades remain scoped below this.
         .transaction { $0.animation = nil }
-    }
-
-    func timelineHoverGuide(
-        previewX: CGFloat,
-        previewTime: TimeInterval,
-        width: CGFloat
-    ) -> some View {
-        let badgeWidth: CGFloat = 62
-        let badgeX = min(
-            max(previewX - badgeWidth / 2, 3),
-            max(width - badgeWidth - 3, 3)
-        )
-        return ZStack(alignment: .topLeading) {
-            Path { path in
-                path.move(to: CGPoint(x: 0.5, y: 0))
-                path.addLine(to: CGPoint(x: 0.5, y: timelineCanvasHeight))
-            }
-            .stroke(
-                EditorTheme.chrome(0.34),
-                style: StrokeStyle(lineWidth: 1, dash: [3, 4])
-            )
-            .frame(width: 1, height: timelineCanvasHeight)
-            .offset(x: previewX - 0.5)
-
-            Text(timelineTimestamp(previewTime))
-                .font(.appUI(size: 9, weight: .medium, design: .monospaced))
-                .foregroundStyle(EditorTheme.chrome(0.92))
-                .frame(width: badgeWidth, height: 18)
-                .background(
-                    LinearGradient(
-                        colors: [EditorTheme.cardElevated, EditorTheme.panelRaised],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    ),
-                    in: Capsule(style: .continuous)
-                )
-                .overlay {
-                    Capsule(style: .continuous)
-                        .stroke(EditorTheme.chrome(0.18), lineWidth: 0.75)
-                }
-                .shadow(color: Color.black.opacity(0.34), radius: 4, y: 2)
-                .offset(
-                    x: badgeX,
-                    y: isRestoreCutMode ? 2 : timelineRulerHeight - 22
-                )
-        }
-        .frame(width: width, height: timelineDocumentHeight, alignment: .topLeading)
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
-        // Hover is a preview-only guide. It stays above clip content but
-        // yields whenever it coincides with the playhead or a cut target.
-        .zIndex(10)
-        .animation(SpringMotion.interactive, value: hoveredTimelineContentX != nil)
     }
 
     func timelineRuler(
@@ -721,6 +669,12 @@ extension EditorTimelineView {
         .frame(width: width, height: timelineRulerHeight)
         .contentShape(Rectangle())
         .gesture(timelineScrubGesture(width: width, duration: duration))
+        .overlay(alignment: .topLeading) {
+            ZStack(alignment: .topLeading) {
+                recordingMarkerRuler(width: width, duration: duration, visibleRange: visibleTimeRange)
+            }
+            .frame(width: width, height: timelineRulerHeight, alignment: .topLeading)
+        }
         .help("拖动播放头靠近边界时吸附；继续拖动或按住 Shift 可脱开")
     }
 
@@ -890,80 +844,111 @@ extension EditorTimelineView {
         let filmstripVisibleRange = (filmstripDocumentRange.lowerBound - filmstripOrigin)...(filmstripDocumentRange.upperBound - filmstripOrigin)
         let viewport = clampedTimelineVisibleDocumentRange(width: laneWidth)
         let filmstripPriorityRange = (viewport.lowerBound - filmstripOrigin)...(viewport.upperBound - filmstripOrigin)
-        return ZStack {
+        let floatingOffset = draggedPrimarySegmentID == segment.id
+            ? primaryFloatingTranslation(width: laneWidth, duration: duration) : 0
+        let hitRange = EditorTimelineClipGeometry.interactionRange(
+            segmentOriginX: startX + floatingOffset,
+            segmentWidth: segmentWidth,
+            documentRange: filmstripDocumentRange
+        )
+        let hitWidth = hitRange.upperBound - hitRange.lowerBound
+        return ZStack(alignment: .topLeading) {
             primarySegmentLabel(
                 segment: segment,
                 emphasis: emphasis,
                 filmstripVisibleRange: filmstripVisibleRange,
                 filmstripPriorityRange: filmstripPriorityRange
             )
-            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-            .simultaneousGesture(
-                DragGesture(
-                    minimumDistance: 4,
-                    coordinateSpace: .named(editorTimelineDocumentCoordinateSpace)
-                )
-                .onChanged { value in
-                    updatePrimarySegmentDrag(
-                        segmentID: segment.id,
-                        translation: value.translation.width,
-                        documentX: value.location.x, laneWidth: laneWidth, duration: duration
-                    )
-                }
-                .onEnded { value in
-                    finishPrimarySegmentDrag(
-                        segmentID: segment.id,
-                        translation: value.translation.width,
-                        documentX: value.location.x,
-                        laneWidth: laneWidth,
-                        duration: duration
-                    )
-                }
-            )
-            .simultaneousGesture(
-                SpatialTapGesture(coordinateSpace: .local)
-                    .onEnded { event in
-                        if NSEvent.modifierFlags.contains(.option) {
-                            splitPrimarySegmentAtClick(
-                                segment: segment,
-                                location: event.location,
-                                segmentWidth: segmentWidth
-                            )
-                        } else {
-                            selectPrimarySegment(
-                                segment.id,
-                                extendingWith: NSEvent.modifierFlags
+            .frame(width: segmentWidth, height: primaryVideoHeight)
+            .allowsHitTesting(false)
+
+            ZStack(alignment: .topLeading) {
+                Color.clear
+                    .frame(width: hitWidth, height: primaryVideoHeight)
+                    .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .simultaneousGesture(
+                        DragGesture(
+                            minimumDistance: 4,
+                            coordinateSpace: .named(editorTimelineDocumentCoordinateSpace)
+                        )
+                        .onChanged { value in
+                            updatePrimarySegmentDrag(
+                                segmentID: segment.id,
+                                translation: value.translation.width,
+                                documentX: value.location.x, laneWidth: laneWidth, duration: duration
                             )
                         }
+                        .onEnded { value in
+                            finishPrimarySegmentDrag(
+                                segmentID: segment.id,
+                                translation: value.translation.width,
+                                documentX: value.location.x,
+                                laneWidth: laneWidth,
+                                duration: duration
+                            )
+                        }
+                    )
+                    .simultaneousGesture(
+                        SpatialTapGesture(coordinateSpace: .local)
+                            .onEnded { event in
+                                if NSEvent.modifierFlags.contains(.option) {
+                                    splitPrimarySegmentAtClick(
+                                        segment: segment,
+                                        location: CGPoint(
+                                            x: event.location.x + hitRange.lowerBound,
+                                            y: event.location.y
+                                        ),
+                                        segmentWidth: segmentWidth
+                                    )
+                                } else {
+                                    selectPrimarySegment(
+                                        segment.id,
+                                        extendingWith: NSEvent.modifierFlags
+                                    )
+                                }
+                            }
+                    )
+                    .contextMenu {
+                        primarySegmentContextMenu(segment: segment)
                     }
-            )
-            .contextMenu {
-                primarySegmentContextMenu(segment: segment)
-            }
 
-            if emphasis.showsHandles,
-               !isSelected || selectedPrimarySegmentID == segment.id {
-                HStack(spacing: 0) {
-                    primaryTrimHandle(
-                        edge: .left,
-                        segment: segment,
-                        laneWidth: laneWidth,
-                        duration: duration
-                    )
-                    Spacer(minLength: 0)
-                    primaryTrimHandle(
-                        edge: .right,
-                        segment: segment,
-                        laneWidth: laneWidth,
-                        duration: duration
-                    )
+                if emphasis.showsHandles,
+                   !isSelected || selectedPrimarySegmentID == segment.id {
+                    // Only the real clip endpoints are trim handles. A viewport
+                    // edge in the middle of a long clip must never act as one.
+                    if hitWidth > 0, hitRange.lowerBound == 0 {
+                        primaryTrimHandle(edge: .left, segment: segment,
+                            laneWidth: laneWidth, duration: duration)
+                            .offset(x: 1)
+                            .opacity(emphasis.handleOpacity)
+                            .zIndex(20)
+                    }
+                    if hitWidth > 0, hitRange.upperBound == segmentWidth {
+                        primaryTrimHandle(edge: .right, segment: segment,
+                            laneWidth: laneWidth, duration: duration)
+                            .offset(x: max(hitWidth - 13, 0))
+                            .opacity(emphasis.handleOpacity)
+                            .zIndex(20)
+                    }
                 }
-                .padding(.horizontal, 1)
-                .opacity(emphasis.handleOpacity)
-                .zIndex(20)
             }
+            .frame(width: hitWidth, height: primaryVideoHeight)
+            .contentShape(Rectangle())
+            .allowsHitTesting(hitWidth > 0)
+            .onHover { hovering in
+                if hovering {
+                    hoveredPrimarySegmentID = segment.id
+                } else if hoveredPrimarySegmentID == segment.id {
+                    hoveredPrimarySegmentID = nil
+                }
+            }
+            .offset(x: hitRange.lowerBound)
         }
         .frame(width: segmentWidth, height: primaryVideoHeight)
+        .contentShape(.interaction, Path(CGRect(
+            x: hitRange.lowerBound, y: 0,
+            width: hitWidth, height: primaryVideoHeight
+        )))
         .offset(
             x: startX + (draggedPrimarySegmentID == segment.id
                 ? primaryFloatingTranslation(width: laneWidth, duration: duration)
@@ -982,13 +967,6 @@ extension EditorTimelineView {
             radius: 8,
             y: 2
         )
-        .onHover { hovering in
-            if hovering {
-                hoveredPrimarySegmentID = segment.id
-            } else if hoveredPrimarySegmentID == segment.id {
-                hoveredPrimarySegmentID = nil
-            }
-        }
         .help("主片段 \(index + 1) · \(timelineTimestamp(segment.outputDuration)) · ⇧ 连选 · ⌘ 增减选择 · ⌥ 单击切分")
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(

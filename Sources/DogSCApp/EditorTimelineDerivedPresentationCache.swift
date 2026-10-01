@@ -13,6 +13,24 @@ struct EditorCameraSyncCurveSample: Equatable {
 /// change from inside that body evaluation.
 @MainActor
 final class EditorTimelineDerivedPresentationCache {
+    private struct RecordingMarkerInput: Equatable {
+        let markers: [RecordingMarker]
+        let map: TimelineMap
+    }
+    private var markerInput: RecordingMarkerInput?
+    private var mappedMarkers: [EditorRecordingMarker] = []
+
+    func recordingMarkers(_ markers: [RecordingMarker], map: TimelineMap) -> [EditorRecordingMarker] {
+        let input = RecordingMarkerInput(markers: markers, map: map)
+        guard markerInput != input else { return mappedMarkers }
+        markerInput = input
+        mappedMarkers = markers.compactMap { marker in
+            guard let time = map.outputTime(forSourceTime: marker.sourceTime) else { return nil }
+            return EditorRecordingMarker(marker: marker, outputTime: time)
+        }.sorted { $0.outputTime == $1.outputTime ? $0.marker.number < $1.marker.number : $0.outputTime < $1.outputTime }
+        return mappedMarkers
+    }
+
     private struct WaveformPlanInput: Equatable {
         let sequence: SourceSequence
         let manifest: ProjectMediaManifest?

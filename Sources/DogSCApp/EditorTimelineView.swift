@@ -817,6 +817,7 @@ enum EditorTimelineWaveformLoader {
 /// EditorMediaSession; transport and the output clock come from the sole
 /// EditorPlaybackController.
 struct EditorTimelineView: View {
+    let context: EditorSessionContext
     @ObservedObject var editorStore: EditorStore
     @ObservedObject var mediaSession: EditorMediaSession
     @ObservedObject var playbackController: EditorPlaybackController
@@ -841,8 +842,9 @@ struct EditorTimelineView: View {
     @State var timelineVisibleDocumentRange: ClosedRange<CGFloat> = 0...1
     @State var timelineBoundsObservation: NSObjectProtocol?
     @State var isTimelineTrackManagerPresented = false
-    @State var hoveredTimelineViewportX: CGFloat?
-    @State var hoveredTimelineViewportY: CGFloat?
+    @State var timelineHoverLocation = EditorTimelineHoverLocation()
+    // Only an explicit Option-cut target needs to update the ruler's controls.
+    @State var hoveredTimelineCutPoint: CGPoint?
     @State var timelineZoomInputCoalescer = EditorTimelineZoomInputCoalescer()
     @State var isOptionHeld = false
     @State var modifierFlagsMonitor: Any?
@@ -886,12 +888,15 @@ struct EditorTimelineView: View {
     @StateObject var timelineSnap = EditorTimelineMagneticSnap()
     @State var gestureOwnership = EditorTimelineGestureOwnership()
     @State var deleteKeyMonitor: Any?
+    @State var clipboardContextTime: TimeInterval?
+    @State var clipPasteTask: Task<Void, Never>?
     @State var systemWaveform: EditorTimelineWaveformData?
     @State var microphoneWaveform: EditorTimelineWaveformData?
     @State var selectedCameraSyncAnchorID: UUID?
     @State var cameraSyncAnchorDrag: CameraSyncAnchorDrag?
 
     init(
+        context: EditorSessionContext,
         editorStore: EditorStore,
         mediaSession: EditorMediaSession,
         playbackController: EditorPlaybackController,
@@ -905,6 +910,7 @@ struct EditorTimelineView: View {
         isLayoutTransitioning: Bool = false,
         onPreferredHeightChange: @escaping (CGFloat, Bool) -> Void = { _, _ in }
     ) {
+        self.context = context
         self.isLayoutTransitioning = isLayoutTransitioning
         _usesWaveformClips = State(initialValue: UserDefaults.standard.bool(forKey: "cn.laogou.dogsc.editor.waveform-clips"))
         _editorStore = ObservedObject(wrappedValue: editorStore)
@@ -994,6 +1000,9 @@ struct EditorTimelineView: View {
     /// Convert the stable viewport hover to document coordinates only when a
     /// timeline operation actually needs it. NSScrollView moves its cached
     /// document layers without publishing a SwiftUI state change per pixel.
+    var hoveredTimelineViewportX: CGFloat? { timelineHoverLocation.viewportPoint?.x }
+    var hoveredTimelineViewportY: CGFloat? { timelineHoverLocation.viewportPoint?.y }
+
     var hoveredTimelineContentX: CGFloat? {
         hoveredTimelineViewportX.map {
             $0 + (timelineScrollView?.documentVisibleRect.origin.x ?? 0)
@@ -1317,6 +1326,7 @@ struct EditorTimelineView: View {
             UserDefaults.standard.set(usesWaveformClips, forKey: "cn.laogou.dogsc.editor.waveform-clips")
         }
         .onDisappear {
+            clipPasteTask?.cancel()
             UserDefaults.standard.set(usesWaveformClips, forKey: "cn.laogou.dogsc.editor.waveform-clips")
             persistTimelineZoomImmediately()
             cancelActiveTimelineGesture()

@@ -76,6 +76,8 @@ final class AppSettingsWindowController {
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
         window.isReleasedWhenClosed = false
+        // Settings is an explicit user action, not a launch-restorable surface.
+        window.isRestorable = false
         window.tabbingMode = .disallowed
         window.animationBehavior = .documentWindow
         // The setup recorder is intentionally a floating HUD. A normal-level

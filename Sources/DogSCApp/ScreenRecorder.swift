@@ -40,6 +40,7 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
     /// target while conditionally owning the macOS 15 frame monitor.
     private var nativeFrameMonitor: AnyObject?
     private var nativeCompletedSegmentURLs: [URL] = []
+    private var nativeCompletedRecordingDuration: TimeInterval = 0
     private var nativeFinalOutputURL: URL?
     private var nativeRunToken: ScreenRecorderRunToken?
     private var nativeCaptureCodec: CaptureCodec?
@@ -292,6 +293,7 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
                 nativeFrameMonitor = monitor
                 nativeRecordingSegment = segment
                 nativeCompletedSegmentURLs = []
+                nativeCompletedRecordingDuration = 0
                 nativeFinalOutputURL = outputURL
                 nativeRunToken = run
                 nativeCaptureCodec = configuration.captureCodec
@@ -495,6 +497,7 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
         coreAudioSystemAudioTap = nil
         nativeFirstFrameHostTime = nil
         nativeCompletedSegmentURLs = []
+        nativeCompletedRecordingDuration = 0
         nativeFinalOutputURL = nil
         nativeRunToken = nil
         nativeCaptureCodec = nil
@@ -620,6 +623,20 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
         }
     }
 
+    /// Native pause/resume concatenates files, so use their media durations;
+    /// the custom writer instead publishes its exact host-to-source offset.
+    func recordedSourceTime(atHostTime hostTime: TimeInterval) -> TimeInterval? {
+        guard isCapturing, !isPaused else { return nil }
+        if usesNativeRecordingOutput {
+            guard #available(macOS 15.0, *),
+                  let segment = nativeRecordingSegment as? NativeScreenRecordingSegment else { return nil }
+            let duration = segment.recordingOutput.recordedDuration.seconds
+            guard duration.isFinite, duration > 0 else { return nil }
+            return nativeCompletedRecordingDuration + duration
+        }
+        return captureOutput?.recordedSourceTime(atHostTime: hostTime)
+    }
+
     func pause(runID: RecordingRunID) async {
         guard runSafety.activeRunID == runID, isCapturing, !isPaused else { return }
         if usesNativeRecordingOutput {
@@ -633,6 +650,8 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
                 try stream.removeRecordingOutput(segment.recordingOutput)
                 try await segment.waitForFinish(timeout: 15)
                 nativeCompletedSegmentURLs.append(segment.outputURL)
+                let duration = segment.recordingOutput.recordedDuration.seconds
+                if duration.isFinite { nativeCompletedRecordingDuration += max(duration, 0) }
                 nativeRecordingSegment = nil
                 guard runSafety.activeRunID == runID else { return }
                 isPaused = true
@@ -816,6 +835,7 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
                 self.nativeRecordingSegment = nil
             }
             self.nativeCompletedSegmentURLs = []
+            self.nativeCompletedRecordingDuration = 0
             self.nativeFinalOutputURL = nil
             self.nativeRunToken = nil
             self.nativeCaptureCodec = nil

@@ -111,7 +111,7 @@ public struct TransitionTiming: Codable, Equatable, Sendable {
     /// 进入过渡时长（速度：慢/标准/快调整的就是它）；0 = 直接跳变。
     /// 超过 duration 时按 duration 截断（整段都是过渡，无保持）。
     public var leadInDuration: TimeInterval
-    /// 剪切跨过进入过渡起点时，保留删除区间末端已经走完的相位。
+    /// 保留素材在剪切接点前的进入相位；起点被删除时从新接点重新进入。
     /// 0 = 从头开始，1 = 进入过渡已经完成。
     public var leadInProgressOffset: Double
     public var easing: ZoomEasingPreset

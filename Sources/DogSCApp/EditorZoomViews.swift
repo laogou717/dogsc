@@ -8,6 +8,8 @@ struct ZoomFocusMap: View {
     let sourcePixelSize: CGSize
     @Binding var focus: NormalizedPoint
     var allowsEditing = true
+    var refreshesDuringPlayback = false
+    var isPlaying = false
     var onEditingChanged: (Bool) -> Void = { _ in }
     var onEditingCancelled: () -> Void = { }
 
@@ -17,44 +19,55 @@ struct ZoomFocusMap: View {
     @State private var isMapHovered = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            focusSurface
+        TimelineView(.animation(
+            minimumInterval: 1.0 / 30.0,
+            paused: !refreshesDuringPlayback || !isPlaying
+                || isCoordinateEditing || isEditingFocus
+        )) { _ in
+            let displayedFocus = focus
+            VStack(alignment: .leading, spacing: 9) {
+                focusSurface(displayedFocus)
 
-            HStack(spacing: 8) {
-            if allowsEditing {
-            EditorPairedParameterReadouts(
-                first: EditorPairedParameterValue(
-                    title: "X",
-                    value: clamp01(focus.x),
-                    range: 0...1,
-                    displayText: EditorSliderValueFormat.percent.text(for: clamp01(focus.x)),
-                    inputFormat: .percent
-                ),
-                second: EditorPairedParameterValue(
-                    title: "Y",
-                    value: clamp01(focus.y),
-                    range: 0...1,
-                    displayText: EditorSliderValueFormat.percent.text(for: clamp01(focus.y)),
-                    inputFormat: .percent
-                ),
-                onChanged: { x, y in
-                    beginFocusEditingIfNeeded()
-                    focus = NormalizedPoint(x: x, y: y)
-                },
-                onEnded: endFocusEditing,
-                onCancelled: cancelFocusEditing,
-                onEditingChanged: { isCoordinateEditing = $0 }
-            )
-            Button {
-                beginFocusEditingIfNeeded()
-                focus = NormalizedPoint(x: 0.5, y: 0.5)
-                endFocusEditing()
-            } label: {
-                Image(systemName: "scope").font(.appUI(size: 14)).frame(width: 32, height: 30)
-            }
-            .buttonStyle(EditorSoftRaisedButtonStyle()).disabled(isCentered)
-            .help("焦点居中").accessibilityLabel("居中缩放焦点")
-            }
+                HStack(spacing: 8) {
+                    if allowsEditing {
+                        EditorPairedParameterReadouts(
+                            first: EditorPairedParameterValue(
+                                title: "X",
+                                value: clamp01(displayedFocus.x),
+                                range: 0...1,
+                                displayText: EditorSliderValueFormat.percent.text(for: clamp01(displayedFocus.x)),
+                                inputFormat: .percent
+                            ),
+                            second: EditorPairedParameterValue(
+                                title: "Y",
+                                value: clamp01(displayedFocus.y),
+                                range: 0...1,
+                                displayText: EditorSliderValueFormat.percent.text(for: clamp01(displayedFocus.y)),
+                                inputFormat: .percent
+                            ),
+                            onChanged: { x, y in
+                                beginFocusEditingIfNeeded()
+                                focus = NormalizedPoint(x: x, y: y)
+                            },
+                            onEnded: endFocusEditing,
+                            onCancelled: cancelFocusEditing,
+                            onEditingChanged: { isCoordinateEditing = $0 }
+                        )
+                        Button {
+                            beginFocusEditingIfNeeded()
+                            focus = NormalizedPoint(x: 0.5, y: 0.5)
+                            endFocusEditing()
+                        } label: {
+                            Image(systemName: "scope")
+                                .font(.appUI(size: 14))
+                                .frame(width: 32, height: 30)
+                        }
+                        .buttonStyle(EditorSoftRaisedButtonStyle())
+                        .disabled(isCentered(displayedFocus))
+                        .help("焦点居中")
+                        .accessibilityLabel("居中缩放焦点")
+                    }
+                }
             }
         }
         .task(id: thumbnailRequestID) {
@@ -67,13 +80,13 @@ struct ZoomFocusMap: View {
         }
     }
 
-    private var focusSurface: some View {
+    private func focusSurface(_ displayedFocus: NormalizedPoint) -> some View {
         GeometryReader { geometry in
             let mapRect = focusMapRect(in: geometry.size)
             let guideInset = ZoomViewportTransform.compositionGuideInset
             let point = CGPoint(
-                x: mapRect.minX + CGFloat(clamp01(focus.x)) * mapRect.width,
-                y: mapRect.minY + CGFloat(clamp01(focus.y)) * mapRect.height
+                x: mapRect.minX + CGFloat(clamp01(displayedFocus.x)) * mapRect.width,
+                y: mapRect.minY + CGFloat(clamp01(displayedFocus.y)) * mapRect.height
             )
             let isActive = isEditingFocus || isCoordinateEditing
 
@@ -214,8 +227,9 @@ struct ZoomFocusMap: View {
         onEditingCancelled()
     }
 
-    private var isCentered: Bool {
-        abs(focus.x - 0.5) < 0.000_5 && abs(focus.y - 0.5) < 0.000_5
+    private func isCentered(_ displayedFocus: NormalizedPoint) -> Bool {
+        abs(displayedFocus.x - 0.5) < 0.000_5
+            && abs(displayedFocus.y - 0.5) < 0.000_5
     }
 
     private func clamp01(_ value: Double) -> Double {

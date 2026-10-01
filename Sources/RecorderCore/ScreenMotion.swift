@@ -247,7 +247,18 @@ public struct ScreenMotionTrack: Equatable, Sendable {
                 anchorViewport: anchorViewport,
                 fromFraming: inheritedFraming,
                 toFraming: .focus,
+                inheritedProjectionAnchor: inheritedFraming == .focus ? inherited.position : nil,
                 projectionAnchor: clip.target.position
+            )
+        }
+        // A subframe gap still counts as a joined keyframe. Hold the outgoing
+        // plane until the next clip starts; a dormant return must not insert
+        // one frame of the untransformed base between the two targets.
+        if touchesNextClip(after: index) {
+            return Self.layoutSample(
+                for: clip.target,
+                viewport: anchorViewport,
+                framing: .focus
             )
         }
         if let falling = returnFalloff(
@@ -330,12 +341,11 @@ public struct ScreenMotionTrack: Equatable, Sendable {
                     anchorViewport: anchorViewport,
                     fromFraming: inheritedFraming,
                     toFraming: .focus,
+                    inheritedProjectionAnchor: inheritedFraming == .focus ? inherited.position : nil,
                     projectionAnchor: clip.target.position
                 )
             }
-            let touchesNext = clips.indices.contains(index + 1)
-                && abs(clips[index + 1].timing.startTime - clip.timing.endTime)
-                    <= ZoomInterpolator.adjacencyTolerance
+            let touchesNext = touchesNextClip(after: index)
             if !touchesNext && clip.timing.returnDuration > 0.000_1 {
                 inherited = base
                 inheritedFraming = .placement
@@ -389,6 +399,12 @@ public struct ScreenMotionTrack: Equatable, Sendable {
         return lower > clips.startIndex ? lower - 1 : nil
     }
 
+    private func touchesNextClip(after index: Int) -> Bool {
+        clips.indices.contains(index + 1)
+            && abs(clips[index + 1].timing.startTime - clips[index].timing.endTime)
+                <= ZoomInterpolator.adjacencyTolerance
+    }
+
     /// 结尾回落窗口：从片段自身目标平滑回到基础状态，仅在片段没有相接的
     /// 后继时生效；窗口结束后保持基础状态。
     private func returnFalloff(
@@ -400,9 +416,7 @@ public struct ScreenMotionTrack: Equatable, Sendable {
     ) -> ScreenMotionSample? {
         let clip = clips[index]
         guard clip.timing.returnDuration > 0.000_1 else { return nil }
-        if clips.indices.contains(index + 1),
-           abs(clips[index + 1].timing.startTime - clip.timing.endTime)
-               <= ZoomInterpolator.adjacencyTolerance {
+        if touchesNextClip(after: index) {
             return nil
         }
         guard time <= clip.timing.endTime + clip.timing.returnDuration else { return nil }
@@ -433,6 +447,7 @@ public struct ScreenMotionTrack: Equatable, Sendable {
         anchorViewport: ScreenAnchorViewport? = nil,
         fromFraming: ScreenMotionFraming,
         toFraming: ScreenMotionFraming,
+        inheritedProjectionAnchor: NormalizedPoint? = nil,
         projectionAnchor: NormalizedPoint
     ) -> ScreenMotionSample {
         let t = min(max(progress, 0), 1)
@@ -501,11 +516,17 @@ public struct ScreenMotionTrack: Equatable, Sendable {
         return ScreenMotionSample(
             state: state,
             manualOffset: manualOffset,
-            // `position` describes where the authored target card settles;
-            // it is also the user's chosen transform origin. Interpolating
-            // this pivot from the inherited centre made a corner target still
-            // zoom and tilt around the centre for most of the transition.
-            projectionAnchor: projectionAnchor
+            // A first entry from the flat base keeps the authored pivot from
+            // its first frame. A previously tilted target already has a pivot:
+            // carry it into the next transition and move it with the same
+            // eased progress as the plane, rather than jumping to a new pivot
+            // while the old rotation is still fully applied.
+            projectionAnchor: inheritedProjectionAnchor.map { inherited in
+                NormalizedPoint(
+                    x: mix(inherited.x, projectionAnchor.x, t),
+                    y: mix(inherited.y, projectionAnchor.y, t)
+                )
+            } ?? projectionAnchor
         )
     }
 

@@ -97,6 +97,7 @@ struct CanvasPreview: View {
     @State var overlayDragSelection: EditorSelection?
     @State var mosaicDragOrigin: NormalizedOverlayRect?
     @State var mosaicResizeOrigin: NormalizedOverlayRect?
+    @State var mosaicResizeCorner: OverlayResizeCorner?
     @State var stickerResizeOrigin: StickerResizeGestureOrigin?
     @State var stickerRotationOrigin: StickerRotationGestureOrigin?
     @State var overlayResizeSelection: EditorSelection?
@@ -452,6 +453,12 @@ struct CanvasPreview: View {
                 canvasSize: canvasSize,
                 time: renderedFrame.playbackTime
             )
+            // Selection chrome stays above the camera's hit surface when the
+            // two overlap; this does not change their rendered pixel order.
+            .zIndex({
+                if case .mosaic = editorStore.selection { return 150.0 }
+                return 0.0
+            }())
         }
 
         if showsEditingOverlays,

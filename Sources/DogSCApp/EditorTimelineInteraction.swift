@@ -10,6 +10,25 @@ final class EditorTimelineHoverPreviewGate {
     var isEnabled = true
 }
 
+@MainActor
+protocol EditorTimelineHoverLocationObserver: AnyObject {
+    func timelineHoverLocationDidChange()
+}
+
+/// Pointer motion is transient presentation data, not a timeline edit. Keep
+/// it outside SwiftUI observation so each mouse event only moves the guide.
+@MainActor
+final class EditorTimelineHoverLocation {
+    private(set) var viewportPoint: CGPoint?
+    weak var observer: (any EditorTimelineHoverLocationObserver)?
+
+    func update(to point: CGPoint?) {
+        guard viewportPoint != point else { return }
+        viewportPoint = point
+        observer?.timelineHoverLocationDidChange()
+    }
+}
+
 /// Reorder geometry is a gesture-local preview; the project changes once on
 /// drop. Thresholds use the original lane, so moving neighbours cannot move
 /// their own hit targets back under the pointer and oscillate the order.

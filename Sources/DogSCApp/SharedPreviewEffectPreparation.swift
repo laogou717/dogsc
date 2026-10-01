@@ -30,6 +30,10 @@ struct PreviewEffectPrewarmSignature: Hashable {
             (scene.camera?.shadow?.opacity ?? 0) > 0,
             (scene.camera?.opacity ?? 1) < 1,
             scene.background.blurRadius > 0,
+            scene.stickerBackdrop.screenBlur > 0,
+            scene.stickerBackdrop.cameraBlur > 0,
+            scene.stickerBackdrop.screenSuppression > 0,
+            scene.stickerBackdrop.cameraSuppression > 0,
         ]
         mosaicStyles = scene.screen.mosaics.map { $0.style.rawValue }
         stickerBranches = scene.stickers.map {

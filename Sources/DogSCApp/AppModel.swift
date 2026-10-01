@@ -222,6 +222,7 @@ final class AppModel: ObservableObject {
     @Published var startedAt: Date?
     @Published var isRecordingPaused = false
     @Published var isPauseTransitioning = false
+    @Published var recordingMarkerShortcutAvailable = false
     let microphoneInputLevel = LiveMicrophoneLevelState()
     let configurationCameraFrameSink = ImmediateCameraPreviewFrameSink()
     @Published var recordingDestinationName = ProjectStore.savedProjectsFolder.lastPathComponent
@@ -539,6 +540,7 @@ final class AppModel: ObservableObject {
                 recorderTransitionStage = .creatingProject
                 let recordingCreatedAt = Date()
                 project.createdAt = recordingCreatedAt
+                project.recordingMarkers = []
                 project.capture = plan.configuration
                 project.title = RecordingProjectNaming.title(
                     for: plan.configuration,

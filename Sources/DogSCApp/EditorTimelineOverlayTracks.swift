@@ -337,6 +337,7 @@ extension EditorTimelineView {
                         hoveredOverlaySelection = nil
                     }
                 }
+                .contextMenu { clipClipboardMenu(for: selection) }
                 .help("拖动中部移动；拖动两端调整时长")
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("\(clip.title)片段")

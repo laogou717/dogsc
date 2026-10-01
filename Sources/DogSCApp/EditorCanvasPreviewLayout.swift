@@ -34,7 +34,9 @@ extension CanvasPreview {
                 height: sourceCanvasDimensions.height
             )
         )
-        let evaluatedProject = overlayAuthoringProject(at: playbackTime)
+        let evaluatedProject = overlayAuthoringProject(at: playbackTime, stickerTrack: tracks.stickers)
+        let stickerTrack = evaluatedProject.timeline.stickerClips == project.timeline.stickerClips
+            ? tracks.stickers : StickerTransitionTrack(evaluatedProject.timeline.stickerClips)
         let mediaPlan = mediaSession.mediaPlan
         let pointerEvaluation = mediaPlan?.pointer.evaluation(
             at: playbackTime,
@@ -108,7 +110,8 @@ extension CanvasPreview {
             cursorMetricsByAssetID: CursorAssetLibrary.metricsByAssetID,
             zoomTrack: tracks.zoom,
             screenMotionTrack: tracks.screenMotion,
-            cameraMotionTrack: tracks.cameraMotion
+            cameraMotionTrack: tracks.cameraMotion,
+            stickerTrack: stickerTrack
         )
         let makeEvaluation: (CGSize) -> CanvasPlaybackEvaluationContext = { rasterSize in
             CanvasPlaybackEvaluationContext(
@@ -131,7 +134,8 @@ extension CanvasPreview {
                 cursorMetricsByAssetID: CursorAssetLibrary.metricsByAssetID,
                 zoomTrack: tracks.zoom,
                 screenMotionTrack: tracks.screenMotion,
-                cameraMotionTrack: tracks.cameraMotion
+                cameraMotionTrack: tracks.cameraMotion,
+                stickerTrack: stickerTrack
             )
         }
         let previewEvaluation = makeEvaluation(previewRasterCanvasSize)
@@ -151,7 +155,10 @@ extension CanvasPreview {
     /// and authoring that selected sticker, expose its final appearance so the
     /// user can immediately position and style it. Playback and export still
     /// evaluate the original 0.7-second animation from the persisted project.
-    func overlayAuthoringProject(at playbackTime: TimeInterval) -> RecorderProject {
+    func overlayAuthoringProject(
+        at playbackTime: TimeInterval,
+        stickerTrack: StickerTransitionTrack
+    ) -> RecorderProject {
         guard !playbackController.isPlaying else { return project }
         let frameDuration = 1 / Double(max(project.exportSettings.frameRate.rawValue, 1))
         switch editorStore.selection {
@@ -169,7 +176,11 @@ extension CanvasPreview {
             // opacity zero until playback starts.
             for index in authored.timeline.stickerClips.indices {
                 let candidate = authored.timeline.stickerClips[index]
-                guard candidate.timing.contains(playbackTime),
+                // Joined entries already expose both participating images;
+                // suppressing one entrance would replace the shared handoff
+                // with a hard cut in paused preview only.
+                guard !stickerTrack.hasJoinedEntry(candidate.id),
+                      candidate.timing.contains(playbackTime),
                       playbackTime - candidate.timing.startTime
                         <= frameDuration + 0.000_1 else { continue }
                 authored.timeline.stickerClips[index].enterDuration = 0

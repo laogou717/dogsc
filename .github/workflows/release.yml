@@ -178,6 +178,18 @@ jobs:
           disk_image="$RUNNER_TEMP/DogSC-${GITHUB_REF_NAME}-macOS.dmg"
           settings="$RUNNER_TEMP/dmg-settings.py"
           dmgbuild_env="$RUNNER_TEMP/dmgbuild"
+          dmg_background="$RUNNER_TEMP/DMGBackground.png"
+
+          # Finder requires a 640 × 420 point representation. dmgbuild joins
+          # the matching 1x/2x files into a native HiDPI TIFF; the original AI
+          # background remains unchanged and supplies the full Retina pixels.
+          sips --resampleHeightWidth 420 640 \
+            --setProperty dpiWidth 72 --setProperty dpiHeight 72 \
+            "$GITHUB_WORKSPACE/Resources/DMGBackground.png" \
+            --out "$dmg_background" >/dev/null
+          sips --setProperty dpiWidth 144 --setProperty dpiHeight 144 \
+            "$GITHUB_WORKSPACE/Resources/DMGBackground.png" \
+            --out "$RUNNER_TEMP/DMGBackground@2x.png" >/dev/null
 
           cat > "$settings" <<'PY'
           application = defines["app"]
@@ -188,10 +200,16 @@ jobs:
           icon_locations = {
               "DogSC.app": (188, 176),
               "Applications": (452, 176),
+              ".background.png": (900, 176),
+              ".background.tiff": (1100, 176),
+              ".VolumeIcon.icns": (1300, 176),
+              ".DS_Store": (1500, 176),
           }
-          hide_extension = ["DogSC.app"]
-          # DMGBackground.png is 1280 × 880 at 144 DPI (640 × 440 points).
-          window_rect = ((200, 120), (640, 440))
+          # Finder handles the .app label; additional FinderInfo edits after
+          # signing would invalidate strict signature verification.
+          hide_extensions = []
+          # 640 × 420 points plus title/status-bar space.
+          window_rect = ((200, 120), (640, 480))
           default_view = "icon-view"
           show_status_bar = False
           show_tab_view = False
@@ -199,6 +217,7 @@ jobs:
           show_pathbar = False
           show_sidebar = False
           show_icon_preview = False
+          scroll_position = (0, 0)
           arrange_by = None
           label_pos = "bottom"
           text_size = 13
@@ -215,7 +234,7 @@ jobs:
           "$dmgbuild_env/bin/dmgbuild" \
             -s "$settings" \
             -D app="$app" \
-            -D background="$GITHUB_WORKSPACE/Resources/DMGBackground.png" \
+            -D background="$dmg_background" \
             -D icon="$GITHUB_WORKSPACE/Resources/AppIcon.icns" \
             "DogSC Installer" \
             "$disk_image"

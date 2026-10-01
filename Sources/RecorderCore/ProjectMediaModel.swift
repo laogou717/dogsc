@@ -163,6 +163,7 @@ public struct RecorderProject: Codable, Equatable, Sendable {
     public var exportSettings: ExportSettings
     public var timeline: ProjectTimeline
     public var media: ProjectMediaManifest?
+    public var recordingMarkers: [RecordingMarker]
 
     /// Source-compatibility bridge while app call sites migrate to
     /// `timeline.zoomClips`. This is not a second persisted field.
@@ -185,7 +186,8 @@ public struct RecorderProject: Codable, Equatable, Sendable {
         exportSettings: ExportSettings = ExportSettings(),
         zoomAnimations: [ZoomAnimationClip] = [],
         timeline: ProjectTimeline? = nil,
-        media: ProjectMediaManifest? = nil
+        media: ProjectMediaManifest? = nil,
+        recordingMarkers: [RecordingMarker] = []
     ) {
         self.version = version
         self.title = title
@@ -200,6 +202,7 @@ public struct RecorderProject: Codable, Equatable, Sendable {
         self.exportSettings = exportSettings
         self.timeline = timeline ?? ProjectTimeline(zoomClips: zoomAnimations)
         self.media = media
+        self.recordingMarkers = recordingMarkers
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -218,6 +221,7 @@ public struct RecorderProject: Codable, Equatable, Sendable {
         case zoomKeyframes
         case zoomAnimations
         case media
+        case recordingMarkers
         // v1/v2 decode-only fields.
         case screenRecordingRelativePath
         case cameraRecordingRelativePath
@@ -241,6 +245,9 @@ public struct RecorderProject: Codable, Equatable, Sendable {
             forKey: .canvas
         )
         version = ProjectSchema.currentVersion
+        var markerIDs = Set<UUID>()
+        recordingMarkers = try container.decodeIfPresent([RecordingMarker].self, forKey: .recordingMarkers)?
+            .filter { $0.sourceTime.isFinite && $0.sourceTime >= 0 && $0.number > 0 && markerIDs.insert($0.id).inserted } ?? []
         title = try container.decodeIfPresent(String.self, forKey: .title) ?? "未命名录制"
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         capture = try container.decodeIfPresent(CaptureConfiguration.self, forKey: .capture)
@@ -386,6 +393,7 @@ public struct RecorderProject: Codable, Equatable, Sendable {
         try container.encode(exportSettings, forKey: .exportSettings)
         try container.encode(timeline, forKey: .timeline)
         try container.encodeIfPresent(media, forKey: .media)
+        try container.encode(recordingMarkers, forKey: .recordingMarkers)
     }
 
 }

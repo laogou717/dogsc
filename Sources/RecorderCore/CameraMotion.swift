@@ -195,6 +195,10 @@ public struct CameraMotionTrack: Equatable, Sendable {
             )
             return Self.transitionSample(from: inherited, to: target, progress: progress)
         }
+        // A sub-frame gap still belongs to the adjacent handoff. Keep the
+        // outgoing target until the next clip starts, just as the screen 3D
+        // track and the scanning path do; returning to base here flashes.
+        if touchesNextClip(after: index) { return target }
         if let falling = returnFalloff(
             index: index,
             base: resolvedBase,
@@ -257,10 +261,7 @@ public struct CameraMotionTrack: Equatable, Sendable {
                 )
                 return Self.transitionSample(from: inherited, to: target, progress: progress)
             }
-            let touchesNext = clips.indices.contains(index + 1)
-                && abs(clips[index + 1].timing.startTime - clip.timing.endTime)
-                    <= ZoomInterpolator.adjacencyTolerance
-            inherited = !touchesNext && clip.timing.returnDuration > 0.000_1
+            inherited = !touchesNextClip(after: index) && clip.timing.returnDuration > 0.000_1
                 ? resolvedBase
                 : target
             previousIndex = index
@@ -294,6 +295,12 @@ public struct CameraMotionTrack: Equatable, Sendable {
         return lower > clips.startIndex ? lower - 1 : nil
     }
 
+    private func touchesNextClip(after index: Int) -> Bool {
+        clips.indices.contains(index + 1)
+            && abs(clips[index + 1].timing.startTime - clips[index].timing.endTime)
+                <= ZoomInterpolator.adjacencyTolerance
+    }
+
     /// 结尾回落窗口：从片段自身目标平滑回到基础状态，仅在片段没有相接的
     /// 后继时生效；窗口结束后保持基础状态。
     private func returnFalloff(
@@ -306,11 +313,7 @@ public struct CameraMotionTrack: Equatable, Sendable {
     ) -> CameraMotionSample? {
         let clip = clips[index]
         guard clip.timing.returnDuration > 0.000_1 else { return nil }
-        if clips.indices.contains(index + 1),
-           abs(clips[index + 1].timing.startTime - clip.timing.endTime)
-               <= ZoomInterpolator.adjacencyTolerance {
-            return nil
-        }
+        if touchesNextClip(after: index) { return nil }
         guard time <= clip.timing.endTime + clip.timing.returnDuration else { return nil }
         let local = min(max((time - clip.timing.endTime) / clip.timing.returnDuration, 0), 1)
         let linear = clip.timing.returnProgressOffset

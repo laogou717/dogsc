@@ -286,6 +286,35 @@ extension EditorInspectorView {
         )
     }
 
+    /// The automatic map previews the recorded pointer at the playhead. Its
+    /// first edit goes through the same binding as manual focus and changes
+    /// the clip's origin within that single continuous undo transaction.
+    func displayedZoomFocusBinding(_ index: Int) -> Binding<NormalizedPoint> {
+        let authoredFocus = zoomAnimationFocusBinding(index)
+        let id = editorStore.previewProject.zoomAnimations.indices.contains(index)
+            ? editorStore.previewProject.zoomAnimations[index].id
+            : selectedZoomID
+        return Binding(
+            get: {
+                guard let id,
+                      let clip = editorStore.previewProject.zoomAnimations.first(where: { $0.id == id }),
+                      clip.origin == .automatic,
+                      let pointer = mediaSession.mediaPlan?.pointer
+                else { return authoredFocus.wrappedValue }
+                let time = playbackController.outputTime
+                let sampleTime = time >= clip.startTime && time < clip.endTime
+                    ? time : clip.startTime
+                return pointer.evaluation(
+                    at: sampleTime,
+                    motion: editorStore.previewProject.motion,
+                    style: editorStore.previewProject.cursorStyle,
+                    automaticEntry: clip
+                ).position ?? authoredFocus.wrappedValue
+            },
+            set: { authoredFocus.wrappedValue = $0 }
+        )
+    }
+
     func zoomAnimationOriginBinding(_ index: Int) -> Binding<ZoomKeyframeOrigin> {
         let id = editorStore.previewProject.zoomAnimations.indices.contains(index)
             ? editorStore.previewProject.zoomAnimations[index].id

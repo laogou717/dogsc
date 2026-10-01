@@ -87,21 +87,23 @@ final class NativePlaybackTimeNSView: NSView {
             duration: snapshot.duration
         )
         let centiseconds = max(Int((total * 100).rounded(.down)), 0)
-        if snapshot.isPlaying,
-           let lastDisplayedCentiseconds,
-           abs(centiseconds - lastDisplayedCentiseconds) < 5 {
-            return
-        }
+        // Consume every distinct time from the existing display-link sample.
+        // A five-centisecond gate made the label step at an uneven ~20 Hz even
+        // while the playhead was moving at the display cadence.
+        guard centiseconds != lastDisplayedCentiseconds else { return }
         lastDisplayedCentiseconds = centiseconds
         let minutes = centiseconds / 6_000
         let seconds = (centiseconds / 100) % 60
         let fraction = centiseconds % 100
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         textField.stringValue = String(
             format: "%02d:%02d.%02d",
             minutes,
             seconds,
             fraction
         )
+        CATransaction.commit()
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }

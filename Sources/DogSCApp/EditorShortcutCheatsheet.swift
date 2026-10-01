@@ -37,6 +37,8 @@ struct EditorShortcutCheatsheet: View {
             Entry(keys: "悬停剪切缝", action: "合并或还原该处剪切"),
         ]),
         Group(title: "运镜与轨道", entries: [
+            Entry(keys: "⌘C / ⌘V", action: "复制效果片段 / 在鼠标所指位置粘贴副本"),
+            Entry(keys: "⌘⇧V", action: "向选中的同类组件粘贴属性，保留位置与时长"),
             Entry(keys: "拖动缩放轨空白", action: "创建缩放片段"),
             Entry(keys: "拖动运动轨空白", action: "创建屏幕 3D / 摄像运动"),
             Entry(keys: "双击同步轨空白", action: "添加摄像头同步点"),

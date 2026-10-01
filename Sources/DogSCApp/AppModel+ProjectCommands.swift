@@ -102,7 +102,7 @@ extension AppModel {
               !isResolvingCompletedRecording,
               !AppDialogPresenter.isPresenting,
               let sessionURL = currentSession?.packageURL else { return false }
-        let response = AppDialogPresenter.run(AppDialog(
+        let response = await AppDialogPresenter.response(to: AppDialog(
             title: "保留这次录制吗？",
             message: "保存项目以便稍后编辑，或将这次录制移到废纸篓。",
             symbol: "record.circle", itemTitle: project.title,
@@ -140,7 +140,7 @@ extension AppModel {
         if offersDiscardForUntouchedRecording,
            !currentRecordingHasEditorChanges {
             let sessionURL = currentSession?.packageURL
-            let response = AppDialogPresenter.run(AppDialog(
+            AppDialogPresenter.present(AppDialog(
                 title: "保留这次录制吗？",
                 message: "录制已安全保存，还没有进行编辑。保留项目，或将这次录制移到废纸篓。",
                 symbol: "record.circle", itemTitle: project.title,
@@ -149,12 +149,14 @@ extension AppModel {
                     .init(id: "delete", title: "移到废纸篓", role: .destructive),
                     .init(id: "keep", title: "保留项目", role: .primary)
                 ]
-            ))
-            guard phase == .editor, currentSession?.packageURL == sessionURL else { return }
-            switch response.actionID {
-            case "keep": closePersistedProjectWithoutLocationPrompt()
-            case "delete": deleteCurrentProjectAndClose()
-            default: break
+            )) { [weak self] response in
+                guard let self, self.phase == .editor,
+                      self.currentSession?.packageURL == sessionURL else { return }
+                switch response.actionID {
+                case "keep": self.closePersistedProjectWithoutLocationPrompt()
+                case "delete": self.deleteCurrentProjectAndClose()
+                default: break
+                }
             }
             return
         }
@@ -179,7 +181,7 @@ extension AppModel {
         }
 
         let sessionURL = currentSession?.packageURL
-        let response = AppDialogPresenter.run(AppDialog(
+        AppDialogPresenter.present(AppDialog(
             title: "关闭项目前要保存吗？",
             message: "保存为项目，方便继续编辑；也可以将这次录制移到废纸篓。",
             symbol: "folder", itemTitle: project.title,
@@ -188,20 +190,22 @@ extension AppModel {
                 .init(id: "delete", title: "移到废纸篓", role: .destructive),
                 .init(id: "save", title: "保存项目…", role: .primary)
             ]
-        ))
-        guard phase == .editor, currentSession?.packageURL == sessionURL else { return }
-        switch response.actionID {
-        case "save":
-            guard let destination = chooseProjectSaveDestination() else { return }
-            saveCurrentProject(to: destination, closeAfterSave: true)
-        case "delete": deleteCurrentProjectAndClose()
-        default: break
+        )) { [weak self] response in
+            guard let self, self.phase == .editor,
+                  self.currentSession?.packageURL == sessionURL else { return }
+            switch response.actionID {
+            case "save":
+                guard let destination = self.chooseProjectSaveDestination() else { return }
+                self.saveCurrentProject(to: destination, closeAfterSave: true)
+            case "delete": self.deleteCurrentProjectAndClose()
+            default: break
+            }
         }
     }
 
     func requestDeleteCurrentProject() {
         guard phase == .editor, let sessionURL = currentSession?.packageURL else { return }
-        let response = AppDialogPresenter.run(AppDialog(
+        AppDialogPresenter.present(AppDialog(
             title: "删除这个项目？",
             message: "项目和其中的录制素材将移到废纸篓，需要时可从废纸篓恢复。",
             symbol: "trash", itemTitle: project.title,
@@ -209,10 +213,11 @@ extension AppModel {
                 .init(id: "cancel", title: "取消", role: .cancel),
                 .init(id: "delete", title: "移到废纸篓", role: .destructive)
             ]
-        ))
-        guard response.actionID == "delete", phase == .editor,
-              currentSession?.packageURL == sessionURL else { return }
-        deleteCurrentProjectAndClose()
+        )) { [weak self] response in
+            guard let self, response.actionID == "delete", self.phase == .editor,
+                  self.currentSession?.packageURL == sessionURL else { return }
+            self.deleteCurrentProjectAndClose()
+        }
     }
 
     private func closePersistedProjectWithoutLocationPrompt() {

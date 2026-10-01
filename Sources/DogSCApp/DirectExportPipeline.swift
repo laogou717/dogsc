@@ -75,7 +75,9 @@ final class DirectExportPipeline: @unchecked Sendable {
     private let zoomTrack: ZoomAnimationTrack
     private let screenMotionTrack: ScreenMotionTrack
     private let cameraMotionTrack: CameraMotionTrack
+    private let stickerTrack: StickerTransitionTrack
     private let cameraContentCrop: NormalizedCrop?
+    private let stageHandler: @Sendable (ExportStage) -> Void
     private let progressHandler: (@Sendable (Double) -> Void)?
     private let colorProfile: CoreImageFrameColorProfile
     private let context: CIContext
@@ -96,6 +98,7 @@ final class DirectExportPipeline: @unchecked Sendable {
     private var videoGroupEntered = false
     private var audioGroupEntered = false
     private let cancellation = ExportCancellationLatch()
+    private var watchdog: ExportActivityWatchdog?
     private var frameIndex = 0
     private var currentPixelBuffer: CVPixelBuffer?
     private var nextVideoSample: CMSampleBuffer?
@@ -122,6 +125,7 @@ final class DirectExportPipeline: @unchecked Sendable {
         frameRate: OutputFrameRate,
         outputRange: MediaTimeRange? = nil,
         cameraContentCrop: NormalizedCrop? = nil,
+        stageHandler: @escaping @Sendable (ExportStage) -> Void = { _ in },
         progressHandler: (@Sendable (Double) -> Void)?
     ) throws {
         let colorProfile: CoreImageFrameColorProfile
@@ -172,7 +176,9 @@ final class DirectExportPipeline: @unchecked Sendable {
         self.zoomTrack = ZoomAnimationTrack(project.zoomAnimations, outputDuration: media.plan.outputDuration)
         self.screenMotionTrack = ScreenMotionTrack(project.timeline.screenMotionClips)
         self.cameraMotionTrack = CameraMotionTrack(project.timeline.cameraMotionClips)
+        self.stickerTrack = StickerTransitionTrack(project.timeline.stickerClips)
         self.cameraContentCrop = cameraContentCrop
+        self.stageHandler = stageHandler
         self.progressHandler = progressHandler
         reader = try AVAssetReader(asset: media.primaryComposition)
         let readerTimeRange = CMTimeRange(
@@ -315,10 +321,14 @@ final class DirectExportPipeline: @unchecked Sendable {
                 microphoneVolume: project.audio.isMicrophoneMuted
                     ? 0
                     : Float(min(max(project.audio.microphoneVolume, 0), 1)),
-                requiresTimePitchProcessing: media.requiresAudioTimePitchProcessing
+                requiresTimePitchProcessing: media.requiresAudioTimePitchProcessing,
+                timePitchAlgorithm: .spectral
             )
             if media.requiresAudioTimePitchProcessing {
-                output.audioTimePitchAlgorithm = .timeDomain
+                // Offline reads are paced by the video writer. timeDomain can
+                // stall after retimed edits when these reads are intermittent;
+                // use the offline algorithm on both the mixer and its inputs.
+                output.audioTimePitchAlgorithm = .spectral
             }
             guard reader.canAdd(output) else {
                 throw VideoExporterError.exportFailed("无法创建麦克风混音读取器")
@@ -372,13 +382,22 @@ final class DirectExportPipeline: @unchecked Sendable {
             throw audioReader.error ?? VideoExporterError.exportFailed("混音素材无法读取")
         }
 
+        watchdog = ExportActivityWatchdog { [weak self] in
+            self?.requestStop(error: VideoExporterError.exportFailed(
+                "媒体处理已超过 120 秒没有进展，导出已停止。请重试导出。"
+            ))
+        }
+        defer {
+            watchdog?.cancel()
+        }
+
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation {
                 (continuation: CheckedContinuation<Void, any Error>) in
                 completionLock.lock()
                 if cancellation.isRequested {
                     completionLock.unlock()
-                    continuation.resume(throwing: VideoExporterError.cancelled)
+                    continuation.resume(throwing: currentError() ?? VideoExporterError.cancelled)
                     return
                 }
                 group.enter()
@@ -408,6 +427,8 @@ final class DirectExportPipeline: @unchecked Sendable {
                 ) { [self] in
                     if let pipelineError = currentError() {
                         reader.cancelReading()
+                        cameraReader?.cancelReading()
+                        audioReader?.cancelReading()
                         writer.cancelWriting()
                         continuation.resume(throwing: pipelineError)
                         return
@@ -435,12 +456,14 @@ final class DirectExportPipeline: @unchecked Sendable {
                         )
                         return
                     }
+                    watchdog?.recordProgress()
+                    stageHandler(.finishing)
                     writer.finishWriting { [self] in
                         if writer.status == .completed {
                             continuation.resume()
                         } else {
                             continuation.resume(
-                                throwing: writer.error
+                                throwing: currentError() ?? writer.error
                                     ?? VideoExporterError.exportFailed("编码器结束异常")
                             )
                         }
@@ -461,7 +484,7 @@ final class DirectExportPipeline: @unchecked Sendable {
             return
         }
         if !didReadFirstVideoSample {
-            nextVideoSample = videoOutput.copyNextSampleBuffer()
+            nextVideoSample = readVideoSample()
             didReadFirstVideoSample = true
         }
 
@@ -510,7 +533,7 @@ final class DirectExportPipeline: @unchecked Sendable {
                       sample.presentationTimeStamp <= targetTime,
                       sample.presentationTimeStamp < sliceEndTime {
                     currentPixelBuffer = sample.imageBuffer
-                    nextVideoSample = videoOutput.copyNextSampleBuffer()
+                    nextVideoSample = readVideoSample()
                 }
 
                 if currentPixelBuffer == nil,
@@ -524,7 +547,7 @@ final class DirectExportPipeline: @unchecked Sendable {
                     // sample made the following output frame read it again,
                     // creating a deterministic one-frame freeze after a cut.
                     currentPixelBuffer = sample.imageBuffer
-                    nextVideoSample = videoOutput.copyNextSampleBuffer()
+                    nextVideoSample = readVideoSample()
                 }
 
                 guard let sourcePixelBuffer = currentPixelBuffer else {
@@ -585,6 +608,7 @@ final class DirectExportPipeline: @unchecked Sendable {
                     zoomTrack: zoomTrack,
                     screenMotionTrack: screenMotionTrack,
                     cameraMotionTrack: cameraMotionTrack,
+                    stickerTrack: stickerTrack,
                     cameraTimeline: cameraPlan
                 )
                 let cursorSource = renderPlan.scene.cursor.flatMap {
@@ -634,6 +658,7 @@ final class DirectExportPipeline: @unchecked Sendable {
                     return
                 }
                 frameIndex += 1
+                watchdog?.recordProgress()
                 transientBackpressureCount = 0
                 if frameIndex == totalFrames
                     || frameIndex.isMultiple(of: max(frameRate.rawValue / 10, 1)) {
@@ -660,7 +685,7 @@ final class DirectExportPipeline: @unchecked Sendable {
     }
 
     private func cameraPixelBuffer(at time: CMTime) -> CVPixelBuffer? {
-        guard let cameraOutput else { return nil }
+        guard cameraOutput != nil else { return nil }
         guard let slice = cameraPlan?.slice(atOutputTime: time.seconds) else {
             currentCameraPixelBuffer = nil
             currentCameraSegmentID = nil
@@ -668,7 +693,7 @@ final class DirectExportPipeline: @unchecked Sendable {
         }
 
         if !didReadFirstCameraSample {
-            nextCameraSample = cameraOutput.copyNextSampleBuffer()
+            nextCameraSample = readCameraSample()
             didReadFirstCameraSample = true
         }
         if currentCameraSegmentID != slice.segmentID {
@@ -692,7 +717,7 @@ final class DirectExportPipeline: @unchecked Sendable {
               sample.presentationTimeStamp <= time,
               sample.presentationTimeStamp < sliceEndTime {
             currentCameraPixelBuffer = sample.imageBuffer
-            nextCameraSample = cameraOutput.copyNextSampleBuffer()
+            nextCameraSample = readCameraSample()
         }
         if currentCameraPixelBuffer == nil,
            let sample = nextCameraSample,
@@ -713,15 +738,27 @@ final class DirectExportPipeline: @unchecked Sendable {
     private func discardVideoSamples(before outputTime: CMTime) {
         while let sample = nextVideoSample,
               sample.presentationTimeStamp < outputTime {
-            nextVideoSample = videoOutput.copyNextSampleBuffer()
+            nextVideoSample = readVideoSample()
         }
     }
 
     private func discardCameraSamples(before outputTime: CMTime) {
         while let sample = nextCameraSample,
               sample.presentationTimeStamp < outputTime {
-            nextCameraSample = cameraOutput?.copyNextSampleBuffer()
+            nextCameraSample = readCameraSample()
         }
+    }
+
+    private func readVideoSample() -> CMSampleBuffer? {
+        let sample = videoOutput.copyNextSampleBuffer()
+        if sample != nil { watchdog?.recordProgress() }
+        return sample
+    }
+
+    private func readCameraSample() -> CMSampleBuffer? {
+        let sample = cameraOutput?.copyNextSampleBuffer()
+        if sample != nil { watchdog?.recordProgress() }
+        return sample
     }
 
     private func processAudio() {
@@ -730,9 +767,10 @@ final class DirectExportPipeline: @unchecked Sendable {
               !isCancellationRequested,
               audioInput.isReadyForMoreMediaData {
             guard let sample = audioOutput.copyNextSampleBuffer() else {
-                finishAudio(error: nil)
+                finishAudio(error: audioReader?.error)
                 return
             }
+            watchdog?.recordProgress()
             guard let rebasedSample = SampleBufferTimeRetimer.retimed(
                 sample,
                 subtracting: sourceTimelineOffset
@@ -759,7 +797,7 @@ final class DirectExportPipeline: @unchecked Sendable {
         videoFinished = true
         let shouldLeave = videoGroupEntered
         completionLock.unlock()
-        if let error { setError(error) }
+        if let error { requestStop(error: error) }
         videoInput.markAsFinished()
         if shouldLeave { group.leave() }
     }
@@ -773,7 +811,7 @@ final class DirectExportPipeline: @unchecked Sendable {
         audioFinished = true
         let shouldLeave = audioGroupEntered
         completionLock.unlock()
-        if let error { setError(error) }
+        if let error { requestStop(error: error) }
         audioInput?.markAsFinished()
         if shouldLeave { group.leave() }
     }
@@ -791,10 +829,21 @@ final class DirectExportPipeline: @unchecked Sendable {
     }
 
     private func requestCancellation() {
+        requestStop(error: VideoExporterError.cancelled)
+    }
+
+    /// Publish the cause before waking either worker. A failure on one input
+    /// must also release the other input; otherwise the completion group can
+    /// wait forever for a writer that will never become ready again.
+    private func requestStop(error: any Error) {
         completionLock.lock()
+        guard !cancellation.isRequested else {
+            completionLock.unlock()
+            return
+        }
+        setError(error)
         cancellation.request()
         completionLock.unlock()
-        setError(VideoExporterError.cancelled)
         reader.cancelReading()
         cameraReader?.cancelReading()
         audioReader?.cancelReading()

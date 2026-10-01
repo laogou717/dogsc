@@ -210,6 +210,20 @@ final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
     /// launch / clicks). All frames are normalized to relative time from the
     /// first frame (0-based), matching the convention of standard media files.
     private var sessionStartRawTime: CMTime?
+    private let markerTimeOffset = OSAllocatedUnfairLock<TimeInterval?>(initialState: nil)
+
+    func recordedSourceTime(atHostTime hostTime: TimeInterval) -> TimeInterval? {
+        markerTimeOffset.withLock { offset in
+            guard let offset, hostTime.isFinite else { return nil }
+            return max(hostTime - offset, 0)
+        }
+    }
+
+    // Called only when the recording epoch changes, not on every video frame.
+    private func publishMarkerTimeOffset() {
+        let offset = sessionStartRawTime.map { ($0 + accumulatedPauseDuration).seconds }
+        markerTimeOffset.withLock { $0 = offset?.isFinite == true ? offset : nil }
+    }
     private var terminalError: (any Error)?
     private var terminalState = CaptureOutputTerminalState()
     private var firstFrameWallTime: Date?
@@ -449,13 +463,17 @@ final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
             }
             self.pauseStartRawVideoTime = nil
             isAwaitingResumeVideo = false
+            publishMarkerTimeOffset()
         }
 
         guard !isAwaitingResumeVideo else { return }
         // 首帧归一化 + 暂停补偿合并为单一偏移：所有帧 PTS 从 0 开始，
         // 避免巨大 host-time PTS 触发 AVAssetWriter fragment 写入 bug。
         let sessionStart = sessionStartRawTime ?? sampleBuffer.presentationTimeStamp
-        sessionStartRawTime = sessionStart
+        if sessionStartRawTime == nil {
+            sessionStartRawTime = sessionStart
+            publishMarkerTimeOffset()
+        }
         let totalOffset = accumulatedPauseDuration + sessionStart
         guard let adjustedBuffer = SampleBufferTimeRetimer.retimed(
             sampleBuffer,
@@ -632,6 +650,7 @@ final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
             }
             self.pauseStartRawVideoTime = nil
             isAwaitingResumeVideo = false
+            publishMarkerTimeOffset()
         }
         // 与视频共享同一归一化基准（首帧相对时间，避免巨大 host-time PTS）。
         let rawAudioTime = sampleBuffer.presentationTimeStamp.seconds
@@ -761,6 +780,7 @@ final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
                 }
                 if paused {
                     isPaused = true
+                    markerTimeOffset.withLock { $0 = nil }
                     // A deliberate pause is not a system-audio delivery stall.
                     skipsNextAudioDiagnosticInterval = true
                     pauseStartRawVideoTime = lastRawVideoTime
@@ -768,6 +788,7 @@ final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
                 } else {
                     isPaused = false
                     isAwaitingResumeVideo = pauseStartRawVideoTime != nil
+                    if !isAwaitingResumeVideo { publishMarkerTimeOffset() }
                     if let pauseStartWallTime {
                         accumulatedPausedWallDuration += max(
                             requestedAt.timeIntervalSince(pauseStartWallTime),

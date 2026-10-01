@@ -38,7 +38,8 @@ final class AudioOnlyExportPipeline: @unchecked Sendable {
             microphoneTrack: media.microphoneAudioTrack,
             microphoneVolume: project.audio.isMicrophoneMuted
                 ? 0 : Float(min(max(project.audio.microphoneVolume, 0), 1)),
-            requiresTimePitchProcessing: media.requiresAudioTimePitchProcessing
+            requiresTimePitchProcessing: media.requiresAudioTimePitchProcessing,
+            timePitchAlgorithm: .spectral
         )
         let range = outputRange ?? MediaTimeRange(
             start: 0,

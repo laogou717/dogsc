@@ -126,6 +126,8 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
                 .zIndex(emphasis == .editing ? 4 : selected ? 3 : hovered ? 1 : 0)
                 .contentShape(Rectangle())
                 .contextMenu {
+                    clipClipboardMenu(for: track == .screen ? .screenMotion(clip.id) : .cameraMotion(clip.id))
+                    Divider()
                     Button(role: .destructive) {
                         removeMotionClip(clip)
                     } label: {
