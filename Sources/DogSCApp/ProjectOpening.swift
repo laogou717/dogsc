@@ -120,21 +120,21 @@ struct ProjectOpenSnapshot: Sendable {
 
         var warnings: [String] = []
         if loaded.recoveredFromPreviousRevision {
-            warnings.append("项目主文件损坏，已恢复到上一个完整保存版本。")
+            warnings.append(appLocalized("项目主文件损坏，已恢复到上一个完整保存版本。"))
         }
         if !relocatedDeclarations.isEmpty {
-            warnings.append("已在项目包内安全重新定位 \(relocatedDeclarations.count) 项素材。")
+            warnings.append(String(format: appLocalized("已在项目包内安全重新定位 %ld 项素材。"), relocatedDeclarations.count))
         }
         if project.media == nil {
-            warnings.append("项目没有主录屏素材引用。")
+            warnings.append(appLocalized("项目没有主录屏素材引用。"))
         } else if recordingURL == nil {
-            warnings.append("项目引用的主录屏素材不存在或路径无效。")
+            warnings.append(appLocalized("项目引用的主录屏素材不存在或路径无效。"))
         }
         if project.media?.camera != nil, cameraRecordingURL == nil {
-            warnings.append("项目引用的摄像头素材不存在或路径无效。")
+            warnings.append(appLocalized("项目引用的摄像头素材不存在或路径无效。"))
         }
         if project.media?.microphone != nil, microphoneRecordingURL == nil {
-            warnings.append("项目引用的麦克风素材不存在或路径无效。")
+            warnings.append(appLocalized("项目引用的麦克风素材不存在或路径无效。"))
         }
         switch project.canvas.backgroundSource {
         case let .projectImage(relativePath), let .projectVideo(relativePath):
@@ -142,11 +142,11 @@ struct ProjectOpenSnapshot: Sendable {
                 relativePath: relativePath,
                 session: loaded.session
             ) == nil {
-                warnings.append("项目引用的背景素材不存在或路径无效。")
+                warnings.append(appLocalized("项目引用的背景素材不存在或路径无效。"))
             }
         case let .systemImage(absolutePath), let .systemVideo(absolutePath):
             if !FileManager.default.fileExists(atPath: absolutePath) {
-                warnings.append("该系统背景在当前设备上不存在。")
+                warnings.append(appLocalized("该系统背景在当前设备上不存在。"))
             }
         default:
             break
@@ -158,7 +158,7 @@ struct ProjectOpenSnapshot: Sendable {
             ) == nil ? clip.relativePath : nil
         }).count
         if missingStickerCount > 0 {
-            warnings.append("有 \(missingStickerCount) 项贴图素材不存在或路径无效。")
+            warnings.append(String(format: appLocalized("有 %ld 项贴图素材不存在或路径无效。"), missingStickerCount))
         }
         let pointerEvents: [PointerEventRecord]
         do {
@@ -168,7 +168,7 @@ struct ProjectOpenSnapshot: Sendable {
             )
         } catch {
             pointerEvents = []
-            warnings.append("鼠标事件轨损坏：\(error.localizedDescription)")
+            warnings.append(String(format: appLocalized("鼠标事件轨损坏：%@"), appErrorDescription(error)))
         }
 
         try Task.checkCancellation()

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Compact reference for every editor keyboard/gesture shortcut. The entries
@@ -55,6 +56,14 @@ struct EditorShortcutCheatsheet: View {
         ]),
     ]
 
+    private var keyColumnWidth: CGFloat {
+        let font = NSFont.monospacedSystemFont(ofSize: 11, weight: .medium)
+        let widestKey = groups.flatMap(\.entries).map {
+            (appLocalized($0.keys) as NSString).size(withAttributes: [.font: font]).width
+        }.max() ?? 0
+        return ceil(max(96, widestKey + 16))
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -68,6 +77,7 @@ struct EditorShortcutCheatsheet: View {
                         .font(.appUI(size: 11, weight: .bold))
                 }
                 .buttonStyle(.editorDismissIcon)
+                .keyboardShortcut(.cancelAction)
                 .help("关闭")
                 .accessibilityLabel("关闭快捷键速查")
             }
@@ -82,8 +92,9 @@ struct EditorShortcutCheatsheet: View {
                         EditorInspectorSection(group.title) {
                             ForEach(group.entries) { entry in
                                 HStack(spacing: 10) {
-                                    Text(entry.keys)
-                                        .font(.system(.caption, design: .monospaced).weight(.medium))
+                                    Text(appLocalized(entry.keys))
+                                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                        .fixedSize(horizontal: true, vertical: false)
                                         .padding(.horizontal, 8)
                                         .padding(.vertical, 4)
                                         .background(
@@ -106,8 +117,8 @@ struct EditorShortcutCheatsheet: View {
                                                 )
                                         }
                                         .shadow(color: Color.black.opacity(0.3), radius: 2, y: 1)
-                                        .frame(minWidth: 96, alignment: .leading)
-                                    Text(entry.action)
+                                        .frame(width: keyColumnWidth, alignment: .leading)
+                                    Text(appLocalized(entry.action))
                                         .font(.appUI(.caption))
                                         .foregroundStyle(Color.primary.opacity(0.85))
                                     Spacer(minLength: 0)
@@ -119,8 +130,11 @@ struct EditorShortcutCheatsheet: View {
                 .padding(18)
             }
         }
-        .frame(width: 440, height: 480)
+        // Longer translated gestures share one aligned column while the
+        // explanation column retains the original reading width.
+        .frame(width: 344 + keyColumnWidth, height: 480)
         .background(EditorTheme.panelSurface)
         .appControlFocusAppearance()
+        .onExitCommand { dismiss() }
     }
 }

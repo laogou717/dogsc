@@ -39,19 +39,6 @@ struct EditorMediaInput: Equatable, Sendable {
     }
 }
 
-enum EditorMediaThumbnailClock {
-    static func assetTime(
-        atOutputTime outputTime: TimeInterval,
-        timelineMap: TimelineMap,
-        sourceTimeRange: MediaTimeRange?
-    ) -> TimeInterval? {
-        guard let sourceTimeRange,
-              let sourceTime = timelineMap.sourceTime(atOutputTime: outputTime)
-        else { return nil }
-        return sourceTimeRange.start + sourceTime
-    }
-}
-
 /// An exclusively leased generator. The actor reuses idle decoders so a filmstrip
 /// does not reopen a hardware decode session for every picture. A cancelled
 /// lease is discarded; its generator is never shared with another request.
@@ -67,8 +54,21 @@ private final class EditorMediaThumbnailRequest: @unchecked Sendable {
         generator.maximumSize = maximumSize
     }
 
-    func image(at time: CMTime) async throws -> CGImage {
-        try await withTaskCancellationHandler {
+    func image(at time: CMTime, timeout: Duration?) async throws -> CGImage {
+        let deadline = EditorMediaThumbnailDeadline(generator: generator)
+        let watchdog = timeout.map { duration in
+            Task {
+                do { try await Task.sleep(for: duration) } catch { return }
+                deadline.expire()
+            }
+        }
+        defer {
+            watchdog?.cancel()
+            // Synchronize with a firing deadline before this generator can
+            // return to the idle pool and be leased by another request.
+            deadline.finish()
+        }
+        return try await withTaskCancellationHandler {
             try Task.checkCancellation()
             let (image, _) = try await generator.image(at: time)
             return image
@@ -80,6 +80,26 @@ private final class EditorMediaThumbnailRequest: @unchecked Sendable {
     func cancel() {
         generator.cancelAllCGImageGeneration()
     }
+}
+
+/// The deadline belongs to one lease, not the reusable generator. A timer
+/// that fires after a successful return must never cancel the next lease.
+private final class EditorMediaThumbnailDeadline: @unchecked Sendable {
+    private let lock = NSLock()
+    private let generator: AVAssetImageGenerator
+    private var isPending = true
+
+    init(generator: AVAssetImageGenerator) { self.generator = generator }
+
+    func expire() {
+        lock.withLock {
+            guard isPending else { return }
+            isPending = false
+            generator.cancelAllCGImageGeneration()
+        }
+    }
+
+    func finish() { lock.withLock { isPending = false } }
 }
 
 private actor EditorMediaThumbnailDecoder {
@@ -100,12 +120,16 @@ private actor EditorMediaThumbnailDecoder {
 
     private let permits = EditorThumbnailPermits(limit: 2)
     private let cacheLimit: Int
+    private let requestTimeout: Duration?
     private var sourceGeneration: UInt64?
     private var inFlightRequests: [UUID: EditorMediaThumbnailRequest] = [:]
     private var cache: [CacheKey: CGImage] = [:]
     private var cacheOrder: [CacheKey] = []
 
-    init(cacheLimit: Int = 12) { self.cacheLimit = cacheLimit }
+    init(cacheLimit: Int = 12, requestTimeout: Duration? = nil) {
+        self.cacheLimit = cacheLimit
+        self.requestTimeout = requestTimeout
+    }
 
     func image(
         source: ImmutablePreviewAsset,
@@ -131,6 +155,9 @@ private actor EditorMediaThumbnailDecoder {
             toleranceValue: Int64(floor(max(tolerance, 0) * 600))
         )
 
+        // Actor reentrancy can deliver an old source request after a newer
+        // one. It must not cancel the new source or reset its cache backwards.
+        if let sourceGeneration, generation < sourceGeneration { throw CancellationError() }
         if sourceGeneration != generation {
             cancelInFlightRequests()
             sourceGeneration = generation
@@ -160,7 +187,7 @@ private actor EditorMediaThumbnailDecoder {
         }
         inFlightRequests[requestID] = request
         defer { inFlightRequests.removeValue(forKey: requestID) }
-        let image = try await request.image(at: requestedTime)
+        let image = try await request.image(at: requestedTime, timeout: requestTimeout)
         try Task.checkCancellation()
         guard sourceGeneration == generation else { throw CancellationError() }
 
@@ -394,9 +421,13 @@ final class EditorMediaSession: ObservableObject {
 
     private let preparation: Preparation
     private let thumbnailDecoder = EditorMediaThumbnailDecoder()
-    private let filmstripDecoder = EditorMediaThumbnailDecoder(cacheLimit: 160)
+    private let filmstripDecoder = EditorMediaThumbnailDecoder(cacheLimit: 160, requestTimeout: .seconds(4))
     private var filmstripAsset: ImmutablePreviewAsset?
     private var filmstripInput: EditorMediaInput?
+    // Source-time-indexed references also survive virtualization. A single
+    // last-decoded poster would put an unrelated moment into every new clip.
+    private var filmstripFrames: [Int64: CGImage] = [:]
+    private var filmstripFrameOrder: [Int64] = []
     private var filmstripSourceGeneration: UInt64 = 0
     private var currentRequest: EditorMediaRequest?
     private var generation: UInt64 = 0
@@ -496,19 +527,48 @@ final class EditorMediaSession: ObservableObject {
         if filmstripInput != input {
             filmstripAsset = ImmutablePreviewAsset(AVURLAsset(url: input.url))
             filmstripInput = input
+            filmstripFrames.removeAll(keepingCapacity: true)
+            filmstripFrameOrder.removeAll(keepingCapacity: true)
             filmstripSourceGeneration &+= 1
         }
         let sourceGeneration = filmstripSourceGeneration
+        let assetTime = sourceTime + prepared.plan.primarySourceTimeOffset
         guard let source = filmstripAsset else { return nil }
         do {
             let image = try await filmstripDecoder.image(
                 source: source, generation: sourceGeneration,
-                at: sourceTime + prepared.plan.primarySourceTimeOffset,
+                at: assetTime,
                 maximumSize: CGSize(width: 220, height: 140), tolerance: tolerance)
             try Task.checkCancellation()
+            guard filmstripInput == input, filmstripSourceGeneration == sourceGeneration,
+                  self.prepared?.request.source == input else { return nil }
+            let timeValue = CMTime(seconds: assetTime, preferredTimescale: 600).value
+            filmstripFrames[timeValue] = image
+            filmstripFrameOrder.removeAll { $0 == timeValue }
+            filmstripFrameOrder.append(timeValue)
+            if filmstripFrameOrder.count > 160 {
+                filmstripFrames.removeValue(forKey: filmstripFrameOrder.removeFirst())
+            }
             guard self.prepared?.generation == expectedGeneration else { return nil }
             return image
         } catch { return nil }
+    }
+
+    /// Synchronous reuse restricted to the clip's retained source interval.
+    /// Cache keys are original asset times, so a new trim/offset maps correctly.
+    func filmstripCachedFrames(sourceStart: TimeInterval, sourceDuration: TimeInterval) -> [Int64: CGImage] {
+        guard sourceStart.isFinite, sourceDuration.isFinite, sourceDuration > 0,
+              let prepared, let input = prepared.request.source,
+              filmstripInput == input else { return [:] }
+        let offset = prepared.plan.primarySourceTimeOffset
+        guard offset.isFinite else { return [:] }
+        let offsetValue = CMTime(seconds: offset, preferredTimescale: 600).value
+        return Dictionary(uniqueKeysWithValues: filmstripFrames.compactMap { assetTime, image in
+            let sourceTime = assetTime - offsetValue
+            let time = Double(sourceTime) / 600
+            guard time >= sourceStart, time < sourceStart + sourceDuration else { return nil }
+            return (sourceTime, image)
+        })
     }
 
     func prepare(_ request: EditorMediaRequest) async {
@@ -639,6 +699,8 @@ final class EditorMediaSession: ObservableObject {
         lastReadyMedia = nil
         filmstripAsset = nil
         filmstripInput = nil
+        filmstripFrames.removeAll(keepingCapacity: false)
+        filmstripFrameOrder.removeAll(keepingCapacity: false)
         filmstripSourceGeneration &+= 1
         latestCameraTimingRequest = nil
         cameraTimingErrorMessage = nil

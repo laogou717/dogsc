@@ -13,11 +13,11 @@ enum CameraRecorderError: LocalizedError, Sendable {
     var errorDescription: String? {
         switch self {
         case let .permissionDenied(name):
-            return "没有\(name)采集权限。"
+            return String(format: appLocalized("没有%@采集权限。"), appLocalized(name))
         case let .cannotConfigure(name):
-            return "无法配置\(name)录制。"
+            return String(format: appLocalized("无法配置%@录制。"), appLocalized(name))
         case let .recordingFailed(name, reason):
-            return "\(name)录制失败：\(reason)"
+            return String(format: appLocalized("%@录制失败：%@"), appLocalized(name), appLocalized(reason))
         }
     }
 }
@@ -48,10 +48,49 @@ enum MicrophoneRecorderError: LocalizedError, Sendable {
     var errorDescription: String? {
         switch self {
         case .permissionDenied:
-            return "没有麦克风权限。"
+            return appLocalized("没有麦克风权限。")
         case let .recordingFailed(reason):
-            return "麦克风录制失败：\(reason)"
+            return String(format: appLocalized("麦克风录制失败：%@"), appLocalized(reason))
         }
+    }
+}
+
+/// Recovery follows the canonical error presentation in the current language.
+/// Legacy Chinese prefixes remain compatible with earlier message producers.
+enum RecorderSetupErrorRecovery: Equatable, Sendable {
+    case projectFolder
+    case camera
+    case microphone
+    case none
+
+    static func forMessage(_ message: String) -> Self {
+        if message.hasPrefix("保存目录不可用")
+            || message.hasPrefix(appLocalized("保存目录不可用")) {
+            return .projectFolder
+        }
+        if message.hasPrefix("没有摄像头采集权限")
+            || message == CameraRecorderError.permissionDenied("摄像头").localizedDescription {
+            return .camera
+        }
+        if message.hasPrefix("没有麦克风权限")
+            || message == MicrophoneRecorderError.permissionDenied.localizedDescription {
+            return .microphone
+        }
+        return .none
+    }
+
+    static func isPermissionMessage(_ message: String) -> Bool {
+        message.contains("权限")
+            || forMessage(message) == .camera
+            || forMessage(message) == .microphone
+            || message == appLocalized("没有屏幕录制权限。请在系统设置中允许后重新启动。")
+            || message == CameraRecorderError.permissionDenied("iPhone/iPad 屏幕").localizedDescription
+    }
+
+    static func isSurfaceUpdateErrorMessage(_ message: String) -> Bool {
+        message.hasPrefix("无法更新录制画面")
+            || message.hasPrefix(appLocalized("无法更新录制画面"))
+            || message.hasPrefix(String(format: appLocalized("无法更新录制画面：%@"), ""))
     }
 }
 
@@ -95,7 +134,7 @@ struct CaptureFinishOutcome: Sendable {
         let nsError = error as NSError?
         succeeded = error == nil
             || (nsError?.userInfo[AVErrorRecordingSuccessfullyFinishedKey] as? Bool == true)
-        failureReason = error?.localizedDescription ?? "未知错误"
+        failureReason = error.map(appErrorDescription) ?? appLocalized("未知错误")
     }
 }
 

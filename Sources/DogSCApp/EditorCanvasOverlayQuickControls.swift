@@ -1,3 +1,4 @@
+import AppKit
 import RecorderCore
 import SwiftUI
 
@@ -6,33 +7,30 @@ private struct CanvasQuickEditorPlacement {
     let transitionAnchor: UnitPoint
 }
 
-private struct CanvasQuickMenuLabel: View {
-    let title: String
-    let systemImage: String
+private struct CanvasQuickControlSurface: ViewModifier {
+    var isSelected = false
     @State private var isHovered = false
 
-    var body: some View {
-        HStack(spacing: 5) {
-            Label(title, systemImage: systemImage)
-            Image(systemName: "chevron.down")
-                .font(.appUI(size: 8, weight: .bold))
-                .foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 7)
+    func body(content: Content) -> some View {
+        content
+        .font(.appUI(size: 11, weight: .medium))
+        .foregroundStyle(EditorTheme.primaryText)
+        .lineLimit(1)
+        .fixedSize(horizontal: true, vertical: false)
+        .padding(.horizontal, 8)
         .frame(height: 30)
         .background(
-            EditorTheme.chrome(isHovered ? 0.10 : 0.055),
-            in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+            EditorTheme.chrome(isSelected ? 0.08 : (isHovered ? 0.045 : 0.015)),
+            in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous)
         )
         .overlay {
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .stroke(
-                    EditorTheme.chrome(isHovered ? 0.18 : 0.09),
+            RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous)
+                .strokeBorder(
+                    EditorTheme.chrome(isSelected ? 0.16 : (isHovered ? 0.12 : 0.055)),
                     lineWidth: 0.75
                 )
         }
-        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-        .scaleEffect(isHovered ? 1.018 : 1)
+        .contentShape(RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous))
         .onHover { hovering in
             withAnimation(SpringMotion.interactive) {
                 isHovered = hovering
@@ -41,11 +39,27 @@ private struct CanvasQuickMenuLabel: View {
     }
 }
 
+private struct CanvasQuickMenuLabel: View {
+    let title: String
+    let systemImage: String
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Label(appLocalized(title), systemImage: systemImage)
+            Image(systemName: "chevron.down")
+                .font(.appUI(size: 8, weight: .bold))
+                .foregroundStyle(EditorTheme.secondaryText)
+        }
+        .modifier(CanvasQuickControlSurface())
+    }
+}
+
 extension CanvasPreview {
     @ViewBuilder
     func overlayQuickEditor(
         scene: FrameScene,
         canvasSize: CGSize,
+        availableSize: CGSize,
         time: TimeInterval
     ) -> some View {
         Group {
@@ -54,6 +68,7 @@ extension CanvasPreview {
                 if let clip = editorStore.previewProject.timeline.mosaicClips.first(
                     where: { $0.id == id && $0.timing.contains(time) }
                 ), let quad = mosaicSelectionQuad(clip: clip, screen: scene.screen) {
+                    let editorWidth = min(mosaicQuickEditorPreferredWidth(clip), max(availableSize.width - 16, 1))
                     let placement = quickEditorPlacement(
                         bounds: CGRect(
                             x: quad.bounds.x,
@@ -62,9 +77,10 @@ extension CanvasPreview {
                             height: quad.bounds.height
                         ),
                         canvasSize: canvasSize,
-                        width: 420
+                        availableSize: availableSize,
+                        width: editorWidth
                     )
-                    mosaicQuickEditor(clip)
+                    mosaicQuickEditor(clip, width: editorWidth)
                         .position(placement.point)
                         .transition(
                             quickEditorTransition(anchor: placement.transitionAnchor)
@@ -99,12 +115,14 @@ extension CanvasPreview {
                         width: 18,
                         height: 18
                     ))
+                    let editorWidth = min(stickerQuickEditorPreferredWidth(clip), max(availableSize.width - 16, 1))
                     let placement = quickEditorPlacement(
                         bounds: interactionBounds,
                         canvasSize: canvasSize,
-                        width: 324
+                        availableSize: availableSize,
+                        width: editorWidth
                     )
-                    stickerQuickEditor(clip)
+                    stickerQuickEditor(clip, width: editorWidth)
                         .position(placement.point)
                         .transition(
                             quickEditorTransition(anchor: placement.transitionAnchor)
@@ -121,8 +139,40 @@ extension CanvasPreview {
         .scale(scale: 0.94, anchor: anchor).combined(with: .opacity)
     }
 
-    func mosaicQuickEditor(_ clip: MosaicClip) -> some View {
-        quickEditorCard {
+    private func mosaicQuickEditorPreferredWidth(_ clip: MosaicClip) -> CGFloat {
+        // Preserve the original Chinese strip and slider space. Longer
+        // translations add only their measured width; placement still uses
+        // the same visible-canvas clamp and selected-object anchor.
+        let labels: [(key: String, size: CGFloat)] = [
+            ("柔化", 11), ("突出", 11),
+            (clip.style == .spotlight ? "暗度" : "强度", 10), ("圆角", 10),
+        ]
+        return localizedQuickEditorPreferredWidth(baseWidth: 420, labels: labels)
+    }
+
+    private func stickerQuickEditorPreferredWidth(_ clip: StickerClip) -> CGFloat {
+        localizedQuickEditorPreferredWidth(baseWidth: 324, labels: [
+            (stickerAnimationTitle(clip.animation), 11), ("虚化", 10), ("仅背景", 11),
+        ])
+    }
+
+    private func localizedQuickEditorPreferredWidth(
+        baseWidth: CGFloat,
+        labels: [(key: String, size: CGFloat)]
+    ) -> CGFloat {
+        let additionalWidth = labels.reduce(CGFloat.zero) { width, label in
+            let font = NSFont(name: "AlibabaPuHuiTi_3_65_Medium", size: label.size)
+                ?? NSFont.systemFont(ofSize: label.size, weight: .medium)
+            let attributes: [NSAttributedString.Key: Any] = [.font: font]
+            let original = (label.key as NSString).size(withAttributes: attributes).width
+            let localized = (appLocalized(label.key) as NSString).size(withAttributes: attributes).width
+            return width + max(localized - original, 0)
+        }
+        return baseWidth + ceil(additionalWidth)
+    }
+
+    func mosaicQuickEditor(_ clip: MosaicClip, width: CGFloat) -> some View {
+        quickEditorCard(width: width) {
             HStack(spacing: 8) {
                 quickToggle(
                     title: "柔化",
@@ -145,11 +195,12 @@ extension CanvasPreview {
                 Divider().frame(height: 22)
                 let editsSpotlight = clip.style == .spotlight
                 Label(
-                    editsSpotlight ? "暗度" : "强度",
+                    appLocalized(editsSpotlight ? "暗度" : "强度"),
                     systemImage: "circle.lefthalf.filled"
                 )
                     .font(.appUI(size: 10, weight: .medium))
-                    .foregroundStyle(EditorTheme.chrome(0.68))
+                    .foregroundStyle(EditorTheme.secondaryText)
+                    .fixedSize(horizontal: true, vertical: false)
                 EditorSlider(
                     value: quickMosaicBinding(
                         id: clip.id,
@@ -171,15 +222,16 @@ extension CanvasPreview {
                         )
                     }
                 )
-                .frame(width: 70)
-                .accessibilityLabel(editsSpotlight ? "突出暗度" : "柔化强度")
+                .frame(minWidth: 36, maxWidth: 70)
+                .accessibilityLabel(appLocalized(editsSpotlight ? "突出暗度" : "柔化强度"))
                 .accessibilityValue(
                     "\(Int(((editsSpotlight ? clip.spotlightDimming : clip.intensity) * 100).rounded()))%"
                 )
                 Divider().frame(height: 22)
                 Label("圆角", systemImage: "square")
                     .font(.appUI(size: 10, weight: .medium))
-                    .foregroundStyle(EditorTheme.chrome(0.68))
+                    .foregroundStyle(EditorTheme.secondaryText)
+                    .fixedSize(horizontal: true, vertical: false)
                 EditorSlider(
                     value: quickMosaicBinding(
                         id: clip.id,
@@ -195,15 +247,15 @@ extension CanvasPreview {
                         )
                     }
                 )
-                .frame(width: 70)
+                .frame(minWidth: 36, maxWidth: 70)
                 .accessibilityLabel("柔化区域圆角")
                 .accessibilityValue("\(Int((clip.cornerRadius * 100).rounded()))%")
             }
         }
     }
 
-    func stickerQuickEditor(_ clip: StickerClip) -> some View {
-        quickEditorCard {
+    func stickerQuickEditor(_ clip: StickerClip, width: CGFloat) -> some View {
+        quickEditorCard(width: width) {
             HStack(spacing: 9) {
                 EditorActionMenu(title: "贴图动画", items: StickerAnimationPreset.allCases.map { preset in
                     .action(stickerAnimationTitle(preset), isOn: clip.animation == preset) {
@@ -217,11 +269,13 @@ extension CanvasPreview {
                 }
                 .help("选择贴图动画")
                 .accessibilityLabel("贴图动画")
-                .accessibilityValue(stickerAnimationTitle(clip.animation))
+                .accessibilityValue(appLocalized(stickerAnimationTitle(clip.animation)))
                 Divider().frame(height: 22)
                 Label("虚化", systemImage: "drop.halffull")
                     .font(.appUI(size: 10, weight: .medium))
-                    .foregroundStyle(EditorTheme.chrome(clip.hidesScreen ? 0.30 : 0.68))
+                    .foregroundStyle(EditorTheme.secondaryText)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .opacity(clip.hidesScreen ? 0.45 : 1)
                 EditorSlider(
                     value: quickStickerBinding(
                         id: clip.id,
@@ -243,7 +297,7 @@ extension CanvasPreview {
                 .accessibilityLabel("贴图录屏虚化")
                 .accessibilityValue(
                     clip.hidesScreen
-                        ? "仅背景模式下不可用"
+                        ? appLocalized("仅背景模式下不可用")
                         : String(format: "%.0f", clip.backdropBlur)
                 )
                 Divider().frame(height: 22)
@@ -262,41 +316,35 @@ extension CanvasPreview {
                     }
                 }
                 .help(
-                    clip.hidesScreen
+                    appLocalized(clip.hidesScreen
                         ? "恢复录屏画面"
-                        : "隐藏录屏画面，仅保留画布背景与贴图"
+                        : "隐藏录屏画面，仅保留画布背景与贴图")
                 )
             }
         }
     }
 
     func quickEditorCard<Content: View>(
+        width: CGFloat? = nil,
         @ViewBuilder content: () -> Content
     ) -> some View {
         content()
             .font(.appUI(size: 11, weight: .medium))
             .padding(.horizontal, 11)
-            .frame(height: 48)
-            .foregroundStyle(EditorTheme.chrome(0.94))
+            .frame(width: width, height: 48)
+            .foregroundStyle(EditorTheme.primaryText)
             .background(
-                EditorTheme.cardElevated.opacity(0.94),
-                in: RoundedRectangle(cornerRadius: 11, style: .continuous)
+                EditorTheme.cardElevated,
+                in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous)
             )
             .overlay {
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .stroke(
-                        LinearGradient(
-                            colors: [
-                                Color.white.opacity(0.24),
-                                Color.white.opacity(0.08)
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ),
+                RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous)
+                    .strokeBorder(
+                        EditorTheme.controlBorder,
                         lineWidth: 0.75
                     )
             }
-            .shadow(color: Color.black.opacity(0.45), radius: 10, y: 4)
+            .shadow(color: EditorTheme.softShadow, radius: 8, y: 3)
     }
 
     func quickToggle(
@@ -310,55 +358,43 @@ extension CanvasPreview {
                 action()
             }
         } label: {
-            Label(title, systemImage: symbol)
-                .foregroundStyle(isSelected ? Color.black.opacity(0.9) : Color.primary.opacity(0.85))
-                .padding(.horizontal, 8)
-                .frame(height: 28)
-                .background(
-                    isSelected
-                        ? LinearGradient(
-                            colors: [Color.white, Color(white: 0.88)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                        : LinearGradient(
-                            colors: [Color.white.opacity(0.08), Color.white.opacity(0.04)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ),
-                    in: RoundedRectangle(cornerRadius: 7, style: .continuous)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .stroke(Color.white.opacity(isSelected ? 0.35 : 0.08), lineWidth: 0.5)
-                )
-                .scaleEffect(isSelected ? 1.02 : 1.0)
+            Label(appLocalized(title), systemImage: symbol)
+                .modifier(CanvasQuickControlSurface(isSelected: isSelected))
         }
-        .buttonStyle(.editorThumbnail)
+        .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: EditorInterfaceRadius.compact, showsHover: false))
         .animation(SpringMotion.interactive, value: isSelected)
-        .accessibilityLabel(title)
-        .accessibilityValue(isSelected ? "已选择" : "未选择")
+        .accessibilityLabel(appLocalized(title))
+        .accessibilityValue(appLocalized(isSelected ? "已选择" : "未选择"))
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     private func quickEditorPlacement(
         bounds: CGRect,
         canvasSize: CGSize,
+        availableSize: CGSize,
         width: CGFloat
     ) -> CanvasQuickEditorPlacement {
         let editorHeight: CGFloat = 48
         let edgeMargin: CGFloat = 8
         let objectGap: CGFloat = 8
+        let visibleBounds = bounds.intersection(CGRect(origin: .zero, size: canvasSize))
+        let targetBounds = visibleBounds.isNull ? bounds : visibleBounds
+        let availableBounds = CGRect(
+            x: (canvasSize.width - availableSize.width) / 2,
+            y: (canvasSize.height - availableSize.height) / 2,
+            width: availableSize.width,
+            height: availableSize.height
+        ).insetBy(dx: edgeMargin, dy: edgeMargin)
         let half = width / 2
         let halfHeight = editorHeight / 2
         let x = min(
-            max(bounds.midX, half + edgeMargin),
-            canvasSize.width - half - edgeMargin
+            max(targetBounds.midX, availableBounds.minX + half),
+            availableBounds.maxX - half
         )
-        let aboveY = bounds.minY - objectGap - halfHeight
-        let belowY = bounds.maxY + objectGap + halfHeight
-        let fitsAbove = aboveY - halfHeight >= edgeMargin
-        let fitsBelow = belowY + halfHeight <= canvasSize.height - edgeMargin
+        let aboveY = targetBounds.minY - objectGap - halfHeight
+        let belowY = targetBounds.maxY + objectGap + halfHeight
+        let fitsAbove = aboveY - halfHeight >= availableBounds.minY
+        let fitsBelow = belowY + halfHeight <= availableBounds.maxY
 
         if fitsAbove {
             return CanvasQuickEditorPlacement(
@@ -373,11 +409,11 @@ extension CanvasPreview {
             )
         }
 
-        let prefersAbove = bounds.midY >= canvasSize.height / 2
+        let prefersAbove = targetBounds.midY >= canvasSize.height / 2
         let proposedY = prefersAbove ? aboveY : belowY
         let clampedY = min(
-            max(proposedY, halfHeight + edgeMargin),
-            canvasSize.height - halfHeight - edgeMargin
+            max(proposedY, availableBounds.minY + halfHeight),
+            availableBounds.maxY - halfHeight
         )
         return CanvasQuickEditorPlacement(
             point: CGPoint(x: x, y: clampedY),

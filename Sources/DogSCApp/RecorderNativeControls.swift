@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import QuartzCore
 import SwiftUI
 
@@ -10,6 +11,7 @@ struct RecorderMenuItem {
     }
 
     var systemImage: String? = nil
+    var detail: String? = nil
     let kind: Kind
     let title: String
     let isOn: Bool
@@ -19,12 +21,14 @@ struct RecorderMenuItem {
     static func action(
         _ title: String,
         systemImage: String? = nil,
+        detail: String? = nil,
         isOn: Bool = false,
         isEnabled: Bool = true,
         handler: @escaping () -> Void
     ) -> Self {
         Self(
             systemImage: systemImage,
+            detail: detail.map { appLocalized($0) },
             kind: .action,
             title: appLocalized(title),
             isOn: isOn,
@@ -44,6 +48,10 @@ struct RecorderMenuItem {
 
 final class RecorderMenuButtonNSView: NSButton {
     var onPressChange: ((Bool) -> Void)?
+    private let keyboardFocusLayer = CAShapeLayer()
+    private var keyboardFocusObservation: AnyCancellable?
+    private var tracksKeyboardFocus = false
+    private var hasNativeFocus = false
     // Artwork belongs to SwiftUI; AppKit owns first-click and mouse tracking only.
     override func draw(_ dirtyRect: NSRect) {}
     override func mouseDown(with event: NSEvent) {
@@ -65,6 +73,7 @@ final class RecorderMenuButtonNSView: NSButton {
         layer?.masksToBounds = true
         layer?.cornerRadius = hoverCornerRadius
         layer?.cornerCurve = .continuous
+        configureKeyboardFocusCue()
     }
 
     required init?(coder: NSCoder) {
@@ -73,6 +82,62 @@ final class RecorderMenuButtonNSView: NSButton {
         layer?.masksToBounds = true
         layer?.cornerRadius = hoverCornerRadius
         layer?.cornerCurve = .continuous
+        configureKeyboardFocusCue()
+    }
+
+    private func configureKeyboardFocusCue() {
+        keyboardFocusLayer.fillColor = NSColor.clear.cgColor
+        keyboardFocusLayer.strokeColor = NSColor.black.withAlphaComponent(0.40).cgColor
+        keyboardFocusLayer.lineWidth = 1.5
+        keyboardFocusLayer.opacity = 0
+        layer?.addSublayer(keyboardFocusLayer)
+        keyboardFocusObservation = AppKeyboardFocusVisibility.shared.$isVisible.sink { [weak self] visible in
+            self?.updateKeyboardFocusCue(navigationIsVisible: visible)
+        }
+        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
+            NotificationCenter.default.addObserver(self,
+                selector: #selector(keyboardFocusWindowDidChange(_:)), name: name, object: nil)
+        }
+    }
+
+    override var isEnabled: Bool {
+        didSet { updateKeyboardFocusTracking() }
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        if accepted { hasNativeFocus = true; updateKeyboardFocusCue() }
+        return accepted
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let accepted = super.resignFirstResponder()
+        if accepted { hasNativeFocus = false; updateKeyboardFocusCue() }
+        return accepted
+    }
+
+    private func updateKeyboardFocusTracking() {
+        let shouldTrack = window != nil && isEnabled
+        if tracksKeyboardFocus != shouldTrack {
+            tracksKeyboardFocus = shouldTrack
+            if shouldTrack { AppKeyboardFocusVisibility.shared.acquire() }
+            else { AppKeyboardFocusVisibility.shared.release() }
+        }
+        updateKeyboardFocusCue()
+    }
+
+    @objc private func keyboardFocusWindowDidChange(_ notification: Notification) {
+        guard let changedWindow = notification.object as? NSWindow, changedWindow === window else { return }
+        updateKeyboardFocusCue()
+    }
+
+    private func updateKeyboardFocusCue(navigationIsVisible: Bool? = nil) {
+        let visible = isEnabled && hasNativeFocus && window?.isKeyWindow == true
+            && (navigationIsVisible ?? AppKeyboardFocusVisibility.shared.isVisible)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        keyboardFocusLayer.opacity = visible ? 1 : 0
+        CATransaction.commit()
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -87,6 +152,16 @@ final class RecorderMenuButtonNSView: NSButton {
         let isCircle = bounds.width > 0 && abs(bounds.width - bounds.height) < 0.5
             && hoverCornerRadius >= bounds.height / 2
         layer?.cornerCurve = isCircle ? .circular : .continuous
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        keyboardFocusLayer.frame = bounds
+        let inset: CGFloat = 0.75
+        let radius = max(0, hoverCornerRadius - inset)
+        keyboardFocusLayer.path = bounds.width > inset * 2 && bounds.height > inset * 2
+            ? CGPath(roundedRect: bounds.insetBy(dx: inset, dy: inset),
+                     cornerWidth: radius, cornerHeight: radius, transform: nil)
+            : nil
+        CATransaction.commit()
     }
 
     override func updateTrackingAreas() {
@@ -111,6 +186,7 @@ final class RecorderMenuButtonNSView: NSButton {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        updateKeyboardFocusTracking()
         window?.acceptsMouseMovedEvents = true
         DispatchQueue.main.async { [weak self] in
             self?.refreshHoverState()

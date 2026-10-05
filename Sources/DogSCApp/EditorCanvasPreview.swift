@@ -45,6 +45,8 @@ private struct CanvasRenderedFrame {
 struct CanvasPreview: View {
     @Environment(\.displayScale) var displayScale
     @Environment(\.editorIsActive) var isEditorActive
+    @Environment(\.accessibilityReduceMotion) private var reducesMotion
+    @StateObject private var sleepPresentation = EditorCanvasSleepPresentation()
     @State private var loadedWallpaperSource: BackgroundSource?
     @ObservedObject var editorStore: EditorStore
     @ObservedObject var mediaSession: EditorMediaSession
@@ -52,6 +54,8 @@ struct CanvasPreview: View {
     let renderProject: RecorderProject
     @Binding var previewResolutionMode: EditorPreviewResolutionMode
     let isCropping: Bool
+    /// Export thumbnails contain project pixels, never editor selection chrome.
+    let showsEditingControls: Bool
     /// PRE-033: 时间线分栏拖动进行中。拖动期间预览栅格保持拖动起始尺寸
     /// 冻结，视图本身实时跟随新区域拉伸既有 drawable，松手后一次性按最终
     /// 尺寸重评估——避免每个拖动 tick 都全尺寸重渲染并抖动 drawable 池。
@@ -118,6 +122,7 @@ struct CanvasPreview: View {
         previewResolutionMode: Binding<EditorPreviewResolutionMode>,
         isCropping: Bool,
         isSplitterResizing: Bool = false,
+        showsEditingControls: Bool = true,
         cropDraft: Binding<NormalizedCrop>,
         wallpaperURLResolver: @escaping EditorSessionContext.WallpaperURLResolver,
         projectAssetURLResolver: @escaping EditorSessionContext.ProjectAssetURLResolver,
@@ -131,6 +136,7 @@ struct CanvasPreview: View {
         _previewResolutionMode = previewResolutionMode
         self.isCropping = isCropping
         self.isSplitterResizing = isSplitterResizing
+        self.showsEditingControls = showsEditingControls
         _cropDraft = cropDraft
         self.wallpaperURLResolver = wallpaperURLResolver
         self.projectAssetURLResolver = projectAssetURLResolver
@@ -226,12 +232,30 @@ struct CanvasPreview: View {
                 // beyond the monitor even when its pixels are clipped below.
                 .contentShape(Rectangle())
                 .overlay {
-                    if !isEditorActive {
-                        EditorTheme.sleepingMonitor.allowsHitTesting(false).accessibilityHidden(true)
-                    }
+                    EditorTheme.sleepingMonitor
+                        .opacity(sleepPresentation.opacity)
+                        .allowsHitTesting(false).accessibilityHidden(true)
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(.white.opacity(0.12), lineWidth: 1))
+                .overlay {
+                    // Editing chrome belongs to the workspace, not the
+                    // rendered monitor's pixel crop (especially in portrait).
+                    if showsEditingControls && !isCropping && !isSplitterResizing
+                        && isEditorActive && !isDirectCanvasManipulation,
+                       let renderedFrame,
+                       CanvasPreviewInteractionPolicy.showsEditingOverlays(
+                        isPlaying: playbackController.isPlaying
+                       ) {
+                        overlayQuickEditor(
+                            scene: renderedFrame.layout.frameScene,
+                            canvasSize: rasterCanvasSize,
+                            availableSize: geometry.size,
+                            time: renderedFrame.playbackTime
+                        )
+                        .frame(width: liveCanvasSize.width, height: liveCanvasSize.height)
+                    }
+                }
                 .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
                 .onChange(of: liveCanvasSize, initial: true) { _, newSize in
                     // 持续跟踪最新实际尺寸（含拖动期间的逐 tick 值）；拖动
@@ -326,6 +350,7 @@ struct CanvasPreview: View {
         }
         .onDisappear {
             playbackPlanCache.invalidate()
+            sleepPresentation.invalidate()
         }
     }
 
@@ -350,10 +375,10 @@ struct CanvasPreview: View {
                 playbackPlanCacheHandle: playbackPlanCacheHandle)
                 .allowsHitTesting(false)
 
-            if isCropping {
+            if showsEditingControls && isCropping {
                 cropEditor(canvasSize: liveCanvasSize, sourceAspect: sourceAspectRatio)
                     .transition(.identity)
-            } else if let renderedFrame {
+            } else if showsEditingControls, let renderedFrame {
                 if !isSplitterResizing && isEditorActive {
                     canvasEditingOverlays(renderedFrame: renderedFrame,
                         canvasSize: rasterCanvasSize, activeTick: activeTick)
@@ -402,7 +427,11 @@ struct CanvasPreview: View {
                 suppressScreenContent: !isCropping && screenCompositorSuppressed,
                 playbackController: playbackController, playbackFrameProvider: provider,
                 onCameraContentApplied: clearCameraDragPreviewIfIdle,
-                onScreenContentApplied: clearScreenDragPreviewIfIdle
+                onScreenContentApplied: clearScreenDragPreviewIfIdle,
+                onSleepCoverChanged: { covered, completion in
+                    sleepPresentation.setCovered(covered, reducesMotion: reducesMotion,
+                        completion: completion)
+                }
             )
             .frame(width: isCropping ? sourceSize.width : canvasSize.width,
                    height: isCropping ? sourceSize.height : canvasSize.height)
@@ -411,7 +440,7 @@ struct CanvasPreview: View {
     }
 
     private func focusCanvas() {
-        guard !isCropping else { return }
+        guard showsEditingControls, !isCropping else { return }
         onCanvasFocused()
         editorStore.selection = .canvas
     }
@@ -491,15 +520,6 @@ struct CanvasPreview: View {
                 canvasSize: canvasSize,
                 time: renderedFrame.playbackTime
             )
-            if !isDirectCanvasManipulation {
-                overlayQuickEditor(
-                    scene: layout.frameScene,
-                    canvasSize: canvasSize,
-                    time: renderedFrame.playbackTime
-                )
-                .frame(width: canvasSize.width, height: canvasSize.height)
-                .zIndex(200)
-            }
         }
     }
 
@@ -924,7 +944,11 @@ struct CanvasPreview: View {
                 .accessibilityLabel("屏幕素材")
                 .accessibilityHint("拖动以移动素材")
                 .accessibilityValue(
-                    "水平 \(Int(contentPosition.x * 100))%，垂直 \(Int(contentPosition.y * 100))%"
+                    String(
+                        format: appLocalized("水平 %ld%%，垂直 %ld%%"),
+                        Int(contentPosition.x * 100),
+                        Int(contentPosition.y * 100)
+                    )
                 )
                 .accessibilityAddTraits([.isButton, .isSelected])
                 .accessibilityAction {
@@ -1162,9 +1186,12 @@ struct CanvasPreview: View {
             .accessibilityLabel("摄像头画面")
             .accessibilityHint("拖动以移动，拖右下角圆点调整大小")
             .accessibilityValue(
-                "水平 \(Int(effectivePosition.x * 100))%，"
-                    + "垂直 \(Int(effectivePosition.y * 100))%，"
-                    + "大小 \(Int(effectiveSize * 100))%"
+                String(
+                    format: appLocalized("水平 %ld%%，垂直 %ld%%，大小 %ld%%"),
+                    Int(effectivePosition.x * 100),
+                    Int(effectivePosition.y * 100),
+                    Int(effectiveSize * 100)
+                )
             )
             .accessibilityAddTraits(
                 isSelected ? [.isButton, .isSelected] : .isButton

@@ -21,9 +21,9 @@ enum ProjectMediaExchangeError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case let .missingProjectMedia(name):
-            return "项目没有可导出的\(name)源文件。"
+            return String(format: appLocalized("项目没有可导出的%@源文件。"), appLocalized(name))
         case let .invalidMedia(reason):
-            return reason
+            return appLocalized(reason)
         }
     }
 }
@@ -104,7 +104,7 @@ enum ProjectMediaExchange {
         guard url.isFileURL,
               FileManager.default.fileExists(atPath: url.path) else {
             throw ProjectMediaExchangeError.invalidMedia(
-                "选择的文件不存在：\(url.path)"
+                String(format: appLocalized("选择的文件不存在：%@"), url.path)
             )
         }
         let asset = AVURLAsset(url: url)
@@ -115,7 +115,7 @@ enum ProjectMediaExchange {
               duration > 0.01 else {
             let kind = requiredMediaType == .audio ? "音频" : "视频"
             throw ProjectMediaExchangeError.invalidMedia(
-                "\(url.lastPathComponent) 没有可用的\(kind)轨。"
+                String(format: appLocalized("%@ 没有可用的%@轨。"), url.lastPathComponent, appLocalized(kind))
             )
         }
         return duration

@@ -17,9 +17,9 @@ struct EditorTransientNotice: View {
         }
         let prefix = "项目已打开，但"
         if message.hasPrefix(prefix) {
-            return (appLocalized("项目已打开，需要留意"), String(message.dropFirst(prefix.count)))
+            return (appLocalized("项目已打开，需要留意"), appLocalized(String(message.dropFirst(prefix.count))))
         }
-        return (appLocalized("操作未完成"), message)
+        return (appLocalized("操作未完成"), appLocalized(message))
     }
 
     var body: some View {

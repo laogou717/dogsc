@@ -95,7 +95,7 @@ struct EditorToolbarControlSurface<Content: View>: View {
                         in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel(accessibilityTitle)
+            .accessibilityLabel(appLocalized(accessibilityTitle))
     }
 }
 
@@ -116,6 +116,7 @@ struct EditorView: View {
     @State var stylePresetName = ""
     @State var activeStylePresetID: UUID?
     @State var activeStyleSnapshot: EditorStylePreset?
+    @State var activeStylePresetBackgroundSources: [BackgroundSource] = []
     @State var updatingStylePresetID: UUID?
     @State var defaultStylePresetID: UUID?
     @State var stylePresetTask: Task<Void, Never>?
@@ -384,6 +385,7 @@ struct EditorView: View {
             if let matching = savedStylePresets.first(where: { $0.matchesConfiguration(of: editorStore.project, zoomCreationScale: AppPreferences.rememberedZoomCreationScale) }) {
                 activeStylePresetID = matching.id
                 activeStyleSnapshot = matching
+                activeStylePresetBackgroundSources = matching.backgroundAsset == nil ? [] : [editorStore.project.canvas.backgroundSource]
             }
             editorStore.attachUndoManager(undoManager)
             if editorStore.selection == nil {
@@ -534,8 +536,9 @@ struct EditorView: View {
         let canvasWidth = min(availableWidth, availableHeight * ratio)
         let canvasHeight = canvasWidth / ratio
         // The user prefers the two floating tool surfaces anchored to the workspace edges.
-        let columnWidth = layout.isCompact ? availableWidth : canvasWidth
-        let panelHeight = layout.value(regular: canvasHeight, compact: availableHeight)
+        let columnWidth = availableWidth
+        let previewHeight = max(canvasHeight, min(availableHeight, 192))
+        let panelHeight = layout.value(regular: previewHeight, compact: availableHeight)
         let gap = max((innerWidth - layout.railWidth - layout.inspectorWidth - columnWidth) / 2, minimumGap)
         return HStack(alignment: .top, spacing: gap) {
             EditorWorkspaceToolRail(
@@ -552,14 +555,17 @@ struct EditorView: View {
             VStack(spacing: 8 * layout.chromeScale) {
                 canvasToolbar.editorChromeScale(layout.chromeScale)
                     .zIndex(1)
-                previewArea.frame(width: canvasWidth, height: canvasHeight).clipped()
+                previewArea.frame(width: columnWidth, height: previewHeight).clipped()
                     // Clipping trims pixels, not the hit regions of enlarged
                     // screen/camera overlays. Fence them inside the monitor.
                     .contentShape(Rectangle())
                     .frame(maxHeight: .infinity)
             }
             .frame(width: columnWidth, height: panelHeight + 48 * layout.chromeScale)
-            editorInspector(contentWidth: layout.inspectorLogicalWidth)
+            editorInspector(
+                contentWidth: layout.inspectorLogicalWidth,
+                contentHeight: panelHeight / layout.chromeScale
+            )
                 .editorChromeScale(layout.chromeScale)
                 .frame(width: layout.inspectorWidth, height: panelHeight)
                 .modifier(EditorFloatingSurface(cornerRadius: layout.surfaceRadius))
@@ -650,7 +656,7 @@ struct EditorView: View {
                 }
                 .buttonStyle(EditorSoftRaisedButtonStyle())
                 .disabled(isCropping)
-                .help(isCropping ? "请先完成或取消裁切" : "导出成片（⌘E）")
+                .help(appLocalized(isCropping ? "请先完成或取消裁切" : "导出成片（⌘E）"))
                 .firstUseTourTarget("editor.export", in: .editor, highlight: .rounded(12))
                 Button { AppSettingsWindowController.shared.show() } label: {
                     EditorToolbarIconSurface(systemName: "gearshape")
@@ -677,8 +683,10 @@ struct EditorView: View {
                 ]) { EditorToolbarIconSurface(systemName: "plus") }
                 .disabled(mediaSession.outputDuration <= 0)
                 EditorActionMenu(title: "预览选项", items: [
-                    .action("完整分辨率", isOn: previewResolutionMode == .full) { previewResolutionMode = .full },
-                    .action("清晰预览", isOn: previewResolutionMode == .low) { previewResolutionMode = .low }
+                    .action(EditorPreviewResolutionMode.full.label, detail: EditorPreviewResolutionMode.full.detail,
+                            isOn: previewResolutionMode == .full) { previewResolutionMode = .full },
+                    .action(EditorPreviewResolutionMode.low.label, detail: EditorPreviewResolutionMode.low.detail,
+                            isOn: previewResolutionMode == .low) { previewResolutionMode = .low }
                 ]) { EditorToolbarIconSurface(systemName: "slider.horizontal.3") }
             }
         }
@@ -701,7 +709,7 @@ struct EditorView: View {
                 .help("正在保存项目")
         case let .failed(message):
             Button {
-                hostActions.reportError("自动保存失败：\(message)")
+                hostActions.reportError(String(format: appLocalized("自动保存失败：%@"), message))
             } label: {
                 Label("保存失败", systemImage: "exclamationmark.triangle.fill")
             }
@@ -714,8 +722,9 @@ struct EditorView: View {
     @ViewBuilder
     private var titleEditor: some View {
         if isEditingTitle {
-            TextField("项目名称", text: $titleDraft)
+            TextField(appLocalized("项目名称"), text: $titleDraft)
                 .textFieldStyle(.plain).font(.appUI(size: 15, weight: .medium))
+                .tint(nil)
                 .padding(.horizontal, 10).frame(height: 36)
                 .background(EditorTheme.cardElevated, in: RoundedRectangle(cornerRadius: 9))
                 .background(EditorTextInputRegionAnchor(region: titleInputRegion))
@@ -725,8 +734,10 @@ struct EditorView: View {
                         .allowsHitTesting(false)
                 }
                 .focused($titleFieldFocused)
+                .accessibilityLabel(appLocalized("项目名称"))
                 .accessibilityIdentifier("editor.project.title-input")
                 .onSubmit(commitTitleEdit)
+                .onExitCommand(perform: cancelTitleEdit)
                 .onChange(of: titleFieldFocused) { _, focused in
                     if !focused { commitTitleEdit() }
                 }
@@ -755,6 +766,15 @@ struct EditorView: View {
 
     private var projectDisplayTitle: String {
         context.projectIdentity.displayTitle(for: editorStore.project.title)
+    }
+
+    private func cancelTitleEdit() {
+        guard isEditingTitle else { return }
+        // End editing before releasing focus so the blur callback cannot save
+        // the discarded draft or create a rename transaction.
+        isEditingTitle = false
+        titleDraft = context.projectIdentity.titleDraft(for: editorStore.project.title)
+        titleFieldFocused = false
     }
 
     private func commitTitleEdit() {
@@ -1023,10 +1043,10 @@ struct EditorView: View {
             .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(title)
+                Text(appLocalized(title))
                     .font(.appUI(size: 14, weight: .medium))
                     .foregroundStyle(Color.primary.opacity(0.94))
-                Text(detail)
+                Text(appLocalized(detail))
                     .font(.appUI(.caption2))
                     .foregroundStyle(Color.secondary.opacity(0.92))
                     .lineLimit(isBlocking ? 3 : 2)
@@ -1078,8 +1098,8 @@ struct EditorView: View {
         )
         .allowsHitTesting(false)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(title)，\(detail)")
-        .accessibilityValue(showsProgress ? "处理中" : "需要注意")
+        .accessibilityLabel(String(format: appLocalized("预览状态 · %@，%@"), appLocalized(title), appLocalized(detail)))
+        .accessibilityValue(appLocalized(showsProgress ? "处理中" : "需要注意"))
     }
 
     private func timeline(panelHeight: CGFloat, layout: EditorWorkspaceLayout) -> some View {
@@ -1134,7 +1154,8 @@ struct EditorView: View {
         guard spaceKeyMonitor == nil else { return }
         spaceKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             guard event.window?.identifier?.rawValue
-                    == "cn.laogou.dogsc.editor-window", NSApp.modalWindow == nil else { return event }
+                    == "cn.laogou.dogsc.editor-window", NSApp.modalWindow == nil,
+                  !event.targetsPresentedContent else { return event }
             if event.keyCode == 53, isCropping {
                 discardCrop()
                 return nil
@@ -1241,7 +1262,8 @@ struct EditorView: View {
             matching: [.leftMouseDown, .rightMouseDown]
         ) { event in
             guard event.window?.identifier?.rawValue
-                    == "cn.laogou.dogsc.editor-window" else { return event }
+                    == "cn.laogou.dogsc.editor-window",
+                  !event.targetsPresentedContent else { return event }
             let targetsTextInput = (isEditingTitle && titleInputRegion.contains(event))
                 || mouseEventTargetsTextInput(event)
 
@@ -1275,7 +1297,7 @@ struct EditorView: View {
         return EditorTextInputHitTesting.targetsTextInput(at: event.locationInWindow, in: window)
     }
 
-    private func editorInspector(contentWidth: CGFloat) -> some View {
+    private func editorInspector(contentWidth: CGFloat, contentHeight: CGFloat) -> some View {
         EditorInspectorView(
             editorStore: editorStore,
             mediaSession: mediaSession,
@@ -1287,8 +1309,8 @@ struct EditorView: View {
             isCropping: cropPresentation.inspectorMode == .cropInspector,
             cropDraft: cropDraftBinding,
             contentWidth: contentWidth,
+            contentHeight: contentHeight,
             onChooseWallpaper: hostActions.chooseWallpaper,
-            onChooseDesktopWallpaper: hostActions.importDesktopWallpaper,
             onError: hostActions.reportError
         )
     }

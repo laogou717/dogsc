@@ -478,24 +478,6 @@ struct EditorTimelineZoomAnchor: Equatable {
         self.targetContentWidth = max(targetContentWidth, 1)
     }
 
-    private init(
-        contentFraction: CGFloat,
-        viewportX: CGFloat,
-        targetContentWidth: CGFloat
-    ) {
-        self.contentFraction = contentFraction
-        self.viewportX = viewportX
-        self.targetContentWidth = max(targetContentWidth, 1)
-    }
-
-    func retargeting(contentWidth: CGFloat) -> EditorTimelineZoomAnchor {
-        EditorTimelineZoomAnchor(
-            contentFraction: contentFraction,
-            viewportX: viewportX,
-            targetContentWidth: contentWidth
-        )
-    }
-
     func scrollOffset(viewportWidth: CGFloat) -> CGFloat {
         let maximumOffset = max(targetContentWidth - max(viewportWidth, 0), 0)
         return min(

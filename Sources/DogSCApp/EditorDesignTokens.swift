@@ -73,10 +73,30 @@ public enum EditorTheme {
         dark: NSColor(calibratedWhite: 0.20, alpha: 1)
     )
     public static let hairline = chrome(0.055)
+    static let controlBorder = chrome(0.085)
+    static let groupSurface = chrome(0.028)
+    // Native popovers own their brighter backdrop, including the arrow. Keep
+    // selection relative to that surface and small helper copy fully legible.
+    static let popoverSelectionSurface = selectionWash.opacity(0.32)
+    static let popoverSecondaryText = adaptive(
+        light: NSColor(calibratedWhite: 0.32, alpha: 1),
+        dark: NSColor(calibratedWhite: 0.86, alpha: 1)
+    )
     public static let topHighlight = chrome(0.16)
     public static let softShadow = adaptive(
         light: NSColor.black.withAlphaComponent(0.07),
         dark: NSColor.black.withAlphaComponent(0.22)
+    )
+
+    /// Text roles stay readable on the neutral control and panel surfaces.
+    /// Opacity remains useful for decoration, but not for small helper copy.
+    static let primaryText = adaptive(
+        light: NSColor(calibratedWhite: 0.16, alpha: 1),
+        dark: NSColor(calibratedWhite: 0.91, alpha: 1)
+    )
+    static let secondaryText = adaptive(
+        light: NSColor(calibratedWhite: 0.38, alpha: 1),
+        dark: NSColor(calibratedWhite: 0.69, alpha: 1)
     )
 
     /// Foreground/border ink for chrome. Media-overlay controls intentionally
@@ -94,6 +114,40 @@ public enum EditorTheme {
     }
 }
 
+/// A close type scale keeps a tool dense without giving every label the
+/// weight of a heading. PuHui remains the single interface font family.
+enum EditorTypography {
+    static var panelTitle: Font { .appUI(size: 16, weight: .semibold) }
+    static var sectionTitle: Font { .appUI(size: 14, weight: .semibold) }
+    static var controlLabel: Font { .appUI(size: 13, weight: .medium) }
+    static var controlValue: Font { .appUI(size: 13, weight: .medium) }
+    static var helper: Font { .appUI(size: 12) }
+    static var caption: Font { .appUI(size: 11, weight: .medium) }
+}
+
+enum EditorInterfaceSpacing {
+    static let inspectorInset: CGFloat = 20
+    static let sectionGap: CGFloat = 20
+    static let controlGap: CGFloat = 12
+    static let headingGap: CGFloat = 8
+}
+
+/// Radii describe nesting roles rather than individual screens. Small controls
+/// sit inside groups; only detached workspace surfaces carry the largest curve.
+enum EditorInterfaceRadius {
+    static let compact: CGFloat = 8
+    static let control: CGFloat = 10
+    static let group: CGFloat = 12
+    static let card: CGFloat = 16
+    static let floating: CGFloat = 20
+}
+
+enum EditorInterfaceHeight {
+    static let compact: CGFloat = 32
+    static let selection: CGFloat = 34
+    static let action: CGFloat = 42
+}
+
 // MARK: - Product Motion
 
 public enum SpringMotion {
@@ -109,6 +163,11 @@ public enum SpringMotion {
 
     public static var fluid: Animation? {
         reducesMotion ? nil : .spring(response: 0.38, dampingFraction: 0.82)
+    }
+
+    /// Text changes fade briefly without scaling glyphs or moving their baseline.
+    public static var crossfade: Animation? {
+        reducesMotion ? nil : .easeOut(duration: 0.16)
     }
 
     public static var snappy: Animation? {

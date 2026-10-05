@@ -1,6 +1,8 @@
 import AppKit
 import QuartzCore
 
+typealias PreviewSleepCoverHandler = (Bool, @escaping () -> Void) -> Void
+
 /// Owns the display link, notification registration, and suspension state for
 /// one preview surface. The surface renders pixels; this object decides when
 /// that surface is allowed to present them.
@@ -9,12 +11,16 @@ final class SharedPreviewWindowVisibilityController: NSObject {
     private weak var view: SharedRenderedPreviewNSView?
     private var displayLink: CADisplayLink?
     private(set) var isSuspended = true
+    private var isAwaitingResumedFrame = false
+    private var transitionRevision: UInt64 = 0
+    private var retirementWatchdog: Task<Void, Never>?
+    private var hasRetiredForSuspension = false
 
     func attach(to view: SharedRenderedPreviewNSView) {
         stopObserving()
         self.view = view
         guard let window = view.window else {
-            updatePresentationVisibility()
+            updatePresentationVisibility(force: true)
             return
         }
 
@@ -51,7 +57,7 @@ final class SharedPreviewWindowVisibilityController: NSObject {
         }
 
         isSuspended = true
-        updatePresentationVisibility()
+        updatePresentationVisibility(force: true)
 
     }
 
@@ -67,6 +73,10 @@ final class SharedPreviewWindowVisibilityController: NSObject {
     }
 
     private func stopObserving() {
+        transitionRevision &+= 1
+        retirementWatchdog?.cancel()
+        retirementWatchdog = nil
+        isAwaitingResumedFrame = false
         displayLink?.invalidate()
         displayLink = nil
         NotificationCenter.default.removeObserver(self)
@@ -134,14 +144,10 @@ final class SharedPreviewWindowVisibilityController: NSObject {
                 || window.isMainWindow
         else { return }
 
-        isSuspended = false
-        view.installPreviewBackingLayerIfNeeded()
-        updatePlaybackState()
-        view.lastSubmittedSignature = nil
-        view.renderCurrentFrame()
+        resumePresentation(in: view)
     }
 
-    private func updatePresentationVisibility() {
+    private func updatePresentationVisibility(force: Bool = false) {
         guard let view else { return }
         let window = view.window
         let shouldSuspend = PreviewPresentationVisibilityPolicy.shouldSuspend(
@@ -150,30 +156,89 @@ final class SharedPreviewWindowVisibilityController: NSObject {
             isVisible: window?.occlusionState.contains(.visible) ?? false,
             isApplicationActive: NSApp.isActive && !NSApp.isHidden
         )
-        guard shouldSuspend != isSuspended else {
+        guard force || shouldSuspend != isSuspended else {
             updatePlaybackState()
             return
         }
 
         isSuspended = shouldSuspend
         if shouldSuspend {
+            transitionRevision &+= 1
+            retirementWatchdog?.cancel()
+            retirementWatchdog = nil
+            isAwaitingResumedFrame = false
+            hasRetiredForSuspension = false
             displayLink?.isPaused = true
             view.renderGeneration &+= 1
             view.presentationEpochID &+= 1
             view.renderDirty = false
             view.lastSubmittedSignature = nil
-            view.cursorImageLayer.isHidden = true
-            view.cursorClickGradientLayer.isHidden = true
-            view.cursorClickLayer.isHidden = true
-            view.cursorClickSecondaryLayer.isHidden = true
-            view.cursorClickAccentLayer.isHidden = true
-            view.suspendPreviewBackingLayer()
+            // Freeze the last valid pixels and cursor while the cover fades.
+            // Rendering is already suspended; this is not continued playback.
+            requestSleepCover(true)
+            let revision = transitionRevision
+            let canShowTransition = window?.isVisible == true
+                && window?.isMiniaturized == false && !NSApp.isHidden
+                && window?.occlusionState.contains(.visible) == true
+            if !canShowTransition || view.onSleepCoverChanged == nil {
+                finishSuspension(revision: revision)
+            } else {
+                // Hidden/dismantled SwiftUI animations may never report their
+                // completion. Bound resource retention without a polling loop.
+                retirementWatchdog = Task { @MainActor [weak self] in
+                    do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                    self?.finishSuspension(revision: revision)
+                }
+            }
             return
         }
 
+        resumePresentation(in: view)
+    }
+
+    private func resumePresentation(in view: SharedRenderedPreviewNSView) {
+        transitionRevision &+= 1
+        retirementWatchdog?.cancel()
+        retirementWatchdog = nil
+        isSuspended = false
+        isAwaitingResumedFrame = true
         view.installPreviewBackingLayerIfNeeded()
         updatePlaybackState()
         view.lastSubmittedSignature = nil
         view.renderCurrentFrame()
+    }
+
+    /// The current drawable is rendered and its presentation command finished.
+    /// A fully opaque cover may occlude it, so do not wait for an onscreen
+    /// presentedTime event before allowing that cover to start fading away.
+    func previewFrameBecameReady(epochID: UInt64) {
+        guard !isSuspended, isAwaitingResumedFrame,
+              let view, view.presentationEpochID == epochID else { return }
+        isAwaitingResumedFrame = false
+        requestSleepCover(false)
+    }
+
+    private func requestSleepCover(_ covered: Bool) {
+        let revision = transitionRevision
+        // Attaching a native view can occur during SwiftUI's update. Keep all
+        // cover state changes out of that pass and reject stale notifications.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.transitionRevision == revision else { return }
+            if let handler = self.view?.onSleepCoverChanged {
+                handler(covered) { [weak self] in
+                    if covered { self?.finishSuspension(revision: revision) }
+                }
+            } else if covered {
+                self.finishSuspension(revision: revision)
+            }
+        }
+    }
+
+    private func finishSuspension(revision: UInt64) {
+        guard isSuspended, transitionRevision == revision, !hasRetiredForSuspension else { return }
+        hasRetiredForSuspension = true
+        retirementWatchdog?.cancel()
+        retirementWatchdog = nil
+        view?.suspendPreviewBackingLayer()
     }
 }

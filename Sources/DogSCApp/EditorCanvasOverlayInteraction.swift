@@ -93,7 +93,7 @@ extension CanvasPreview {
                             updateCanvasHover(selection, hovering: $0)
                         }
                         .accessibilityLabel(
-                            clip.style == .spotlight ? "突出区域" : "柔化区域"
+                            appLocalized(clip.style == .spotlight ? "突出区域" : "柔化区域")
                         )
                         .accessibilityHint("点击以选中，拖动以调整位置")
                         .accessibilityAddTraits(
@@ -828,11 +828,14 @@ extension CanvasPreview {
         rotation: Double,
         canvasSize: CGSize
     ) -> StickerRotationHandleGeometry {
-        func geometry(direction: CGFloat) -> StickerRotationHandleGeometry {
-            let cosine = CGFloat(cos(rotation))
-            let sine = CGFloat(sin(rotation))
+        let cosine = CGFloat(cos(rotation))
+        let sine = CGFloat(sin(rotation))
+        func geometry(
+            direction: CGFloat,
+            stemLength: CGFloat = 34
+        ) -> StickerRotationHandleGeometry {
             let anchorDistance = direction * size.height / 2
-            let handleDistance = anchorDistance + direction * 34
+            let handleDistance = anchorDistance + direction * stemLength
             func point(distance: CGFloat) -> CGPoint {
                 CGPoint(
                     x: center.x - distance * sine,
@@ -849,7 +852,31 @@ extension CanvasPreview {
         let bottom = geometry(direction: 1)
         let safeCanvas = CGRect(origin: .zero, size: canvasSize)
             .insetBy(dx: 18, dy: 18)
-        if safeCanvas.contains(top.handle) || !safeCanvas.contains(bottom.handle) {
+        if safeCanvas.contains(top.handle) {
+            return top
+        }
+
+        // Keep the handle above the sticker when a shorter stem fits. Moving it
+        // below in a compact canvas can put it underneath the quick editor.
+        if safeCanvas.contains(top.anchor) {
+            let direction = CGPoint(x: sine, y: -cosine)
+            var availableLength = CGFloat.infinity
+            if direction.x > 0 {
+                availableLength = min(availableLength, (safeCanvas.maxX - top.anchor.x) / direction.x)
+            } else if direction.x < 0 {
+                availableLength = min(availableLength, (safeCanvas.minX - top.anchor.x) / direction.x)
+            }
+            if direction.y > 0 {
+                availableLength = min(availableLength, (safeCanvas.maxY - top.anchor.y) / direction.y)
+            } else if direction.y < 0 {
+                availableLength = min(availableLength, (safeCanvas.minY - top.anchor.y) / direction.y)
+            }
+            let stemLength = min(34, availableLength)
+            if stemLength >= 18 {
+                return geometry(direction: -1, stemLength: stemLength)
+            }
+        }
+        if !safeCanvas.contains(bottom.handle) {
             return top
         }
         return bottom

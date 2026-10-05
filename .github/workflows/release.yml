@@ -24,7 +24,7 @@ jobs:
           [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)" = "$short_version" ]]
           build_number="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' Resources/Info.plist)"
           [[ "$build_number" =~ ^[1-9][0-9]*$ ]]
-          for resource in en.lproj zh-Hans.lproj Fonts Onboarding; do
+          for resource in en.lproj zh-Hans.lproj Fonts Onboarding Support; do
             [[ -d "Resources/$resource" ]]
           done
 
@@ -91,7 +91,7 @@ jobs:
           cp "$binary_dir/DogSC" "$app/Contents/MacOS/DogSC"
           cp "Resources/Info.plist" "$app/Contents/Info.plist"
           cp "Resources/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
-          for resource in en.lproj zh-Hans.lproj Fonts Onboarding; do
+          for resource in en.lproj zh-Hans.lproj Fonts Onboarding Support; do
             ditto "Resources/$resource" "$app/Contents/Resources/$resource"
             diff -qr "Resources/$resource" "$app/Contents/Resources/$resource"
           done

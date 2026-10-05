@@ -101,7 +101,7 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
                 Button {
                     restorePrimaryLeadingGap(gap)
                 } label: {
-                    Label("还原开头剪辑（已剪 \(timelineTimestamp(gap.removedDuration))）", systemImage: "arrow.uturn.backward")
+                    Label(String(format: appLocalized("还原开头剪辑（已剪 %@）"), timelineTimestamp(gap.removedDuration)), systemImage: "arrow.uturn.backward")
                 }
             }
 
@@ -110,7 +110,7 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
                     Button {
                         restorePrimaryGap(junction)
                     } label: {
-                        Label("还原前侧剪切缺口（已剪 \(timelineTimestamp(junction.removedDuration))）", systemImage: "arrow.uturn.backward")
+                        Label(String(format: appLocalized("还原前侧剪切缺口（已剪 %@）"), timelineTimestamp(junction.removedDuration)), systemImage: "arrow.uturn.backward")
                     }
                 } else {
                     Button {
@@ -126,7 +126,7 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
                     Button {
                         restorePrimaryGap(junction)
                     } label: {
-                        Label("还原后侧剪切缺口（已剪 \(timelineTimestamp(junction.removedDuration))）", systemImage: "arrow.uturn.backward")
+                        Label(String(format: appLocalized("还原后侧剪切缺口（已剪 %@）"), timelineTimestamp(junction.removedDuration)), systemImage: "arrow.uturn.backward")
                     }
                 } else {
                     Button {
@@ -141,7 +141,7 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
                 Button {
                     restorePrimaryTrailingGap(gap)
                 } label: {
-                    Label("还原结尾剪辑（已剪 \(timelineTimestamp(gap.removedDuration))）", systemImage: "arrow.uturn.backward")
+                    Label(String(format: appLocalized("还原结尾剪辑（已剪 %@）"), timelineTimestamp(gap.removedDuration)), systemImage: "arrow.uturn.backward")
                 }
             }
         }
@@ -206,16 +206,16 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
         .contentShape(Rectangle())
         .help(
             junction.hasRemovedSourceGap
-                ? "撤销这一处剪辑（已剪 \(timelineTimestamp(junction.removedDuration))）"
-                : "合并这两个已剪开的片段"
+                ? String(format: appLocalized("撤销这一处剪辑（已剪 %@）"), timelineTimestamp(junction.removedDuration))
+                : appLocalized("合并这两个已剪开的片段")
         )
         .accessibilityLabel(
-            junction.hasRemovedSourceGap ? "还原剪切缺口" : "合并相邻主片段"
+            appLocalized(junction.hasRemovedSourceGap ? "还原剪切缺口" : "合并相邻主片段")
         )
         .accessibilityValue(
             junction.hasRemovedSourceGap
                 ? timelineTimestamp(junction.removedDuration)
-                : "未删除素材"
+                : appLocalized("未删除素材")
         )
         .accessibilityIdentifier(
             "editor.timeline.cut-junction.\(junction.nextSegmentID.uuidString)"
@@ -238,7 +238,7 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
             .contentShape(Rectangle())
         }
         .buttonStyle(.editorInlineAction)
-        .help("还原开头剪辑（已剪 \(timelineTimestamp(gap.removedDuration))）")
+        .help(String(format: appLocalized("还原开头剪辑（已剪 %@）"), timelineTimestamp(gap.removedDuration)))
         .accessibilityLabel("还原开头剪辑")
         .accessibilityValue(timelineTimestamp(gap.removedDuration))
         .accessibilityIdentifier("editor.timeline.leading-gap")
@@ -260,7 +260,7 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
             .contentShape(Rectangle())
         }
         .buttonStyle(.editorInlineAction)
-        .help("还原结尾剪辑（已剪 \(timelineTimestamp(gap.removedDuration))）")
+        .help(String(format: appLocalized("还原结尾剪辑（已剪 %@）"), timelineTimestamp(gap.removedDuration)))
         .accessibilityLabel("还原结尾剪辑")
         .accessibilityValue(timelineTimestamp(gap.removedDuration))
         .accessibilityIdentifier("editor.timeline.trailing-gap")
@@ -712,10 +712,10 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
                         }
                     }
             )
-            .help(edge == .left
+            .help(appLocalized(edge == .left
                 ? "拖动裁切或恢复左端"
-                : "拖动裁切或恢复右端；按住 Control 拖动可自由变速")
-            .accessibilityLabel(edge == .left ? "裁切主片段左端" : "裁切主片段右端")
+                : "拖动裁切或恢复右端；按住 Control 拖动可自由变速"))
+            .accessibilityLabel(appLocalized(edge == .left ? "裁切主片段左端" : "裁切主片段右端"))
             .accessibilityIdentifier(
                 "editor.timeline.primary.trim.\(segment.id.uuidString).\(edge.rawValue)"
             )
@@ -899,11 +899,6 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
         hoveredPrimarySegmentID = nil
         selectPrimarySegment(rightID)
         seekTimeline(to: outputTime)
-    }
-
-    func removeSelectedPrimarySegment() {
-        guard let selectedPrimarySegmentID else { return }
-        removePrimarySegment(id: selectedPrimarySegmentID)
     }
 
     func movePrimarySegment(_ draggedID: UUID, toIndex destination: Int) {

@@ -321,6 +321,7 @@ private struct IOSDeviceSelectionOverlay: View {
                             .foregroundStyle(Color.black.opacity(0.48))
                             .frame(width: 46, height: 46)
                             .background(Color.black.opacity(0.055), in: RoundedRectangle(cornerRadius: 13))
+                            .accessibilityHidden(true)
                         VStack(alignment: .leading, spacing: 4) {
                             Text("未发现可录制设备")
                                 .font(.appUI(.body, weight: .semibold))
@@ -368,6 +369,7 @@ private struct IOSDeviceSelectionOverlay: View {
                             .frame(width: 100, height: 44)
                     }
                     .buttonStyle(CaptureSelectionSecondaryButtonStyle())
+                    .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 12))
                     .focusEffectDisabled()
                     .help("按 Esc 取消")
 
@@ -377,6 +379,7 @@ private struct IOSDeviceSelectionOverlay: View {
                             .frame(width: 124, height: 44)
                     }
                     .buttonStyle(CaptureSelectionSecondaryButtonStyle())
+                    .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 12))
                     .focusEffectDisabled()
 
                     Spacer()
@@ -387,6 +390,7 @@ private struct IOSDeviceSelectionOverlay: View {
                             .frame(width: 156, height: 44)
                     }
                     .buttonStyle(CaptureSelectionPrimaryButtonStyle())
+                    .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 12), color: .white.opacity(0.65))
                     .focusEffectDisabled()
                     .disabled(selectedDeviceID == nil)
                 }
@@ -423,7 +427,7 @@ private struct DeviceSelectionRow: View {
                         .font(.appUI(.body, weight: .semibold))
                         .foregroundStyle(Color(white: 0.18))
                         .lineLimit(1)
-                    Text(selected ? "已选为录制来源" : "已连接")
+                    Text(appLocalized(selected ? "已选为录制来源" : "已连接"))
                         .font(.appUI(.caption))
                         .foregroundStyle(selected ? captureSelectionAccent : Color.black.opacity(0.42))
                 }
@@ -451,6 +455,7 @@ private struct DeviceSelectionRow: View {
             }
         }
         .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 15, cornerStyle: .circular, showsHover: false))
+        .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 15))
         .focusEffectDisabled()
         .onHover { hovering = $0 }
         .scaleEffect(hovering && !selected ? 1.006 : 1)

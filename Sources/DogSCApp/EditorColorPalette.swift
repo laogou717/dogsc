@@ -30,13 +30,14 @@ struct EditorColorPalette: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text(title).font(.appUI(size: 13, weight: .semibold))
+                Text(appLocalized(title)).font(.appUI(size: 13, weight: .semibold))
                 Spacer()
                 Button { dismiss() } label: {
                     Image(systemName: "xmark").font(.appUI(size: 10, weight: .medium))
                         .frame(width: 24, height: 24)
                 }
                 .buttonStyle(.editorToolbarPress)
+                .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                 .accessibilityLabel("关闭调色面板")
             }
 
@@ -50,13 +51,16 @@ struct EditorColorPalette: View {
                     .frame(width: 32, height: 32)
                     .accessibilityHidden(true)
                 Text("HEX").font(.appUI(size: 10, weight: .medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(EditorTheme.popoverSecondaryText)
                 TextField("#RRGGBB", text: $hexText)
                     .textFieldStyle(.plain)
+                    // Use the system text selection so selected hex values
+                    // remain readable in both appearances.
+                    .tint(nil)
                     .font(.appUI(size: 12, weight: .medium, design: .monospaced))
                     .padding(.horizontal, 10).frame(height: 32)
                     .background(EditorTheme.chrome(0.045), in: RoundedRectangle(cornerRadius: 8))
-                    .accessibilityLabel("\(title)十六进制值")
+                    .accessibilityLabel(String(format: appLocalized("%@十六进制值"), appLocalized(title)))
                     .onChange(of: hexText) { _, text in
                         guard let color = HexColor(text), color != lastPreview else { return }
                         rebase(color)
@@ -66,11 +70,10 @@ struct EditorColorPalette: View {
             }
             if HexColor(hexText) == nil {
                 Text("请输入六位色值，例如 #EDA647")
-                    .font(.appUI(size: 10)).foregroundStyle(.secondary)
+                    .font(.appUI(size: 10)).foregroundStyle(EditorTheme.popoverSecondaryText)
             }
         }
         .padding(16).frame(width: 272)
-        .background(EditorTheme.panelSurface)
         .focusEffectDisabled()
         .onChange(of: value) { _, color in
             guard color != lastPreview else { return }
@@ -105,7 +108,7 @@ struct EditorColorPalette: View {
         .frame(height: 164)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("饱和度与亮度")
-        .accessibilityValue("饱和度 \(Int(saturation * 100))%，亮度 \(Int(brightness * 100))%")
+        .accessibilityValue(String(format: appLocalized("饱和度 %d%%，亮度 %d%%"), Int(saturation * 100), Int(brightness * 100)))
         .accessibilityAdjustableAction { direction in
             brightness = clamp(brightness + (direction == .increment ? 0.05 : -0.05))
             publishColor()
@@ -139,7 +142,7 @@ struct EditorColorPalette: View {
         .frame(height: 20)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("色相")
-        .accessibilityValue("\(Int(hue * 360)) 度")
+        .accessibilityValue(String(format: appLocalized("%d 度"), Int(hue * 360)))
         .accessibilityAdjustableAction { direction in
             hue = clamp(hue + (direction == .increment ? 0.025 : -0.025))
             publishColor()

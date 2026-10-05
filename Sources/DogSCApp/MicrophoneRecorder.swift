@@ -161,10 +161,6 @@ final class MicrophoneRecorder: NSObject,
         }
     }
 
-    func requestMonitoringStop() {
-        sessionQueue.async { [self] in stopLiveMonitoringLocked() }
-    }
-
     func requestIdleResourceRelease() {
         sessionQueue.async { [self] in releaseIdleResourcesLocked() }
     }

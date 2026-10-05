@@ -48,27 +48,27 @@ enum ScreenRecorderError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .alreadyActive:
-            return "录制器已经绑定到另一次录制，不能重复启动。"
+            return appLocalized("录制器已经绑定到另一次录制，不能重复启动。")
         case .runNotActive:
-            return "这次录制已结束或已被替换。"
+            return appLocalized("这次录制已结束或已被替换。")
         case .permissionDenied:
-            return "没有屏幕录制权限。请在系统设置中允许后重新启动。"
+            return appLocalized("没有屏幕录制权限。请在系统设置中允许后重新启动。")
         case .noDisplay:
-            return "没有找到可录制的显示器。"
+            return appLocalized("没有找到可录制的显示器。")
         case .displayUnavailable:
-            return "已选择的显示器已断开，请重新选择。"
+            return appLocalized("已选择的显示器已断开，请重新选择。")
         case .noWindow:
-            return "没有找到所选窗口，请重新选择。"
+            return appLocalized("没有找到所选窗口，请重新选择。")
         case .unsupportedSource:
-            return "此录制源不能由屏幕录制器处理。"
+            return appLocalized("此录制源不能由屏幕录制器处理。")
         case .invalidArea:
-            return "录制区域无效，请重新选择。"
+            return appLocalized("录制区域无效，请重新选择。")
         case .cannotCreateWriter:
-            return "无法创建视频写入器。"
+            return appLocalized("无法创建视频写入器。")
         case .noFrames:
-            return "没有收到可写入的视频帧。"
+            return appLocalized("没有收到可写入的视频帧。")
         case let .recordingFailed(reason):
-            return "屏幕录制写入失败：\(reason)"
+            return String(format: appLocalized("屏幕录制写入失败：%@"), appLocalized(reason))
         }
     }
 }

@@ -22,6 +22,7 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
     var firstFrameStartedAtHostTime: TimeInterval? { nativeFirstFrameHostTime }
     var onUnexpectedStop: (@MainActor (RecordingRunID, any Error) -> Void)?
     private let surfaceVisibilityGate = AsyncOperationGate()
+    private let editorWindowRefresh = CaptureEditorWindowRefresh()
     private let maximumH264CaptureDimensions: CaptureDimensions
 
     private let sampleQueue = DispatchQueue(
@@ -99,12 +100,16 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
         // permission; it must never raise a second system prompt mid-flow.
         let content = try await SCShareableContent.excludingDesktopWindows(
             false,
-            onScreenWindowsOnly: true
+            // A confirmed window remains the same recording target when it
+            // moves behind another app or to another Space. Resolve its exact
+            // identity from the full catalog rather than the visible subset.
+            onScreenWindowsOnly: configuration.source != .window
         )
 
         let filter: SCContentFilter
         let sourceWidth: Int
         let sourceHeight: Int
+        var includedEditorWindowIDs: Set<UInt32> = []
         var sourceRect: CGRect?
 
         switch configuration.source {
@@ -113,11 +118,13 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
                 from: content.displays,
                 requestedDisplayID: configuration.displayID
             )
-            filter = displayContentFilter(
+            let surfaceFilter = CaptureSurfaceFilter(
                 content: content,
                 display: display,
                 configuration: configuration
             )
+            filter = surfaceFilter.filter
+            includedEditorWindowIDs = surfaceFilter.editorWindowIDs
             let pixelScale = max(CGFloat(filter.pointPixelScale), 1)
 
             if configuration.source == .area {
@@ -143,7 +150,8 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
         case .window:
             guard let windowID = configuration.windowID,
                   let window = content.windows.first(where: { $0.windowID == windowID }),
-                  window.owningApplication?.processID != getpid() else {
+                  window.owningApplication?.processID != getpid()
+                    || CaptureEditorWindows.shared.includes(windowID) else {
                 throw ScreenRecorderError.noWindow
             }
             filter = SCContentFilter(desktopIndependentWindow: window)
@@ -443,6 +451,14 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
         liveMeasurement = nil
         lastStopWarning = nil
         secondaryStreamTerminalError = nil
+        editorWindowRefresh.start(
+            runID: run.runID,
+            configuration: configuration,
+            appliedWindowIDs: includedEditorWindowIDs
+        ) { [weak self] runID in
+            guard let self else { throw CancellationError() }
+            try await self.applySurfaceVisibilityUpdate(runID: runID)
+        }
         measurementTask?.cancel()
         if let captureOutput {
             measurementTask = Task { [weak self] in
@@ -470,6 +486,7 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
     }
 
     private func rollbackFailedStart(run: ScreenRecorderRunToken) async {
+        editorWindowRefresh.stop(for: run.runID)
         endPerformanceActivity()
         if #available(macOS 14.2, *),
            let tap = coreAudioSystemAudioTap as? CoreAudioSystemAudioTap {
@@ -512,18 +529,47 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
         runID: RecordingRunID,
         configuration: CaptureConfiguration
     ) async throws {
+        let previous = editorWindowRefresh.configuration(for: runID)
+        editorWindowRefresh.updateConfiguration(configuration, for: runID)
         guard let update = runSafety.makeSurfaceUpdate(for: runID) else {
             throw ScreenRecorderError.runNotActive(runID)
         }
-        try Task.checkCancellation()
-        await surfaceVisibilityGate.acquire()
         do {
+            try await applySurfaceVisibilityUpdate(runID: runID, requestedUpdate: update)
+        } catch {
+            if runSafety.surfaceUpdateDecision(for: update, isCancelled: false) == .apply,
+               let previous {
+                editorWindowRefresh.updateConfiguration(previous, for: runID)
+            }
+            throw error
+        }
+    }
+
+    private func applySurfaceVisibilityUpdate(
+        runID: RecordingRunID,
+        requestedUpdate: ScreenRecorderSurfaceUpdateToken? = nil
+    ) async throws {
+        try Task.checkCancellation()
+        try await withSurfaceVisibilityGate {
+            guard let configuration = editorWindowRefresh.configuration(for: runID),
+                  let update = requestedUpdate ?? runSafety.makeSurfaceUpdate(for: runID)
+            else { throw ScreenRecorderError.runNotActive(runID) }
             try ensureSurfaceUpdateMayApply(update)
             try await performSurfaceVisibilityUpdate(
                 update: update,
                 configuration: configuration
             )
+        }
+    }
+
+    private func withSurfaceVisibilityGate<T>(
+        _ operation: () async throws -> T
+    ) async rethrows -> T {
+        await surfaceVisibilityGate.acquire()
+        do {
+            let result = try await operation()
             await surfaceVisibilityGate.release()
+            return result
         } catch {
             await surfaceVisibilityGate.release()
             throw error
@@ -543,19 +589,24 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
         }
         let content = try await SCShareableContent.excludingDesktopWindows(
             false,
-            onScreenWindowsOnly: true
+            onScreenWindowsOnly: false
         )
         try ensureSurfaceUpdateMayApply(update)
         let display = try preferredDisplay(
             from: content.displays,
             requestedDisplayID: configuration.displayID
         )
-        let filter = displayContentFilter(
+        let surfaceFilter = CaptureSurfaceFilter(
             content: content,
             display: display,
             configuration: configuration
         )
         try ensureSurfaceUpdateMayApply(update)
+        guard editorWindowRefresh.needsUpdate(
+            configuration: configuration,
+            windowIDs: surfaceFilter.editorWindowIDs
+        ) else { return }
+        let filter = surfaceFilter.filter
         if usesNativeRecordingOutput {
             guard #available(macOS 15.0, *),
                   let token = nativeRunToken,
@@ -572,10 +623,13 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
                 await nativeSystemAudioOutput?.setPaused(true)
             }
             do {
+                try ensureSurfaceUpdateMayApply(update)
                 if let activeSegment {
                     try stream.removeRecordingOutput(activeSegment.recordingOutput)
                     try await activeSegment.waitForFinish(timeout: 15)
                     nativeCompletedSegmentURLs.append(activeSegment.outputURL)
+                    let duration = activeSegment.recordingOutput.recordedDuration.seconds
+                    if duration.isFinite { nativeCompletedRecordingDuration += max(duration, 0) }
                     nativeRecordingSegment = nil
                 }
                 try await stream.updateContentFilter(filter)
@@ -592,11 +646,13 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
                 }
             } catch {
                 if activeSegment != nil, nativeRecordingSegment == nil {
-                    try? await startNativeContinuationSegment(
-                        on: stream,
-                        token: token,
-                        finalURL: finalURL
-                    )
+                    do {
+                        try await startNativeContinuationSegment(
+                            on: stream, token: token, finalURL: finalURL
+                        )
+                    } catch {
+                        failNativeRecording(error)
+                    }
                 }
                 if activeSegment != nil {
                     await nativeSystemAudioOutput?.setPaused(false)
@@ -604,9 +660,14 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
                 }
                 throw error
             }
-            return
+        } else {
+            try await stream.updateContentFilter(filter)
         }
-        try await stream.updateContentFilter(filter)
+        editorWindowRefresh.didApply(
+            surfaceFilter.editorWindowIDs,
+            configuration: configuration,
+            for: update.run.runID
+        )
     }
 
     private func ensureSurfaceUpdateMayApply(
@@ -638,6 +699,10 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
     }
 
     func pause(runID: RecordingRunID) async {
+        await withSurfaceVisibilityGate { await performPause(runID: runID) }
+    }
+
+    private func performPause(runID: RecordingRunID) async {
         guard runSafety.activeRunID == runID, isCapturing, !isPaused else { return }
         if usesNativeRecordingOutput {
             guard #available(macOS 15.0, *),
@@ -658,7 +723,7 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
             } catch {
                 (nativeFrameMonitor as? NativeScreenFrameMonitor)?.setPaused(false)
                 await nativeSystemAudioOutput?.setPaused(false)
-                lastStopWarning = "暂停原生录制失败：\(error.localizedDescription)"
+                lastStopWarning = String(format: appLocalized("暂停原生录制失败：%@"), appErrorDescription(error))
                 failNativeRecording(error)
             }
             return
@@ -671,6 +736,10 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
     }
 
     func resume(runID: RecordingRunID) async {
+        await withSurfaceVisibilityGate { await performResume(runID: runID) }
+    }
+
+    private func performResume(runID: RecordingRunID) async {
         guard runSafety.activeRunID == runID, isCapturing, isPaused else { return }
         if usesNativeRecordingOutput {
             guard #available(macOS 15.0, *),
@@ -688,7 +757,7 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
                 guard runSafety.activeRunID == runID else { return }
                 isPaused = false
             } catch {
-                lastStopWarning = "继续原生录制失败：\(error.localizedDescription)"
+                lastStopWarning = String(format: appLocalized("继续原生录制失败：%@"), appErrorDescription(error))
                 failNativeRecording(error)
             }
             return
@@ -748,6 +817,13 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
         }
         isCapturing = false
         isPaused = false
+        editorWindowRefresh.stop(for: runID)
+        return try await withSurfaceVisibilityGate {
+            try await performStop(stream: stream, run: run)
+        }
+    }
+
+    private func performStop(stream: SCStream, run: ScreenRecorderRunToken) async throws -> URL? {
         let nativeAudioTemporaryURL = nativeSystemAudioOutput?.outputURL
         let expectedNativeSystemAudio = nativeSystemAudioOutput != nil
         let nativeAudioDiagnosticsBeforeStop = await nativeSystemAudioOutput?
@@ -849,14 +925,14 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
             _ = runSafety.end(run)
         }
         var warnings: [String] = []
+        if let failure = editorWindowRefresh.failureMessage { warnings.append(failure) }
         if let streamStopError {
-            warnings.append(streamStopError.localizedDescription)
+            warnings.append(appErrorDescription(streamStopError))
         }
         if let nativeAudioFinishError {
-            warnings.append("系统声音文件写入失败，视频已保留："
-                + nativeAudioFinishError.localizedDescription)
+            warnings.append(String(format: appLocalized("系统声音文件写入失败，视频已保留：%@"), appErrorDescription(nativeAudioFinishError)))
         } else if expectedNativeSystemAudio, nativeAudioResult == nil {
-            warnings.append("未收到可写入的系统声音样本，视频已保留")
+            warnings.append(appLocalized("未收到可写入的系统声音样本，视频已保留"))
         }
 
         if usesNativeRecordingOutput {
@@ -884,15 +960,13 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
                             into: finalURL
                         )
                     } catch {
-                        warnings.append("系统声音无损封装失败，视频已保留："
-                            + error.localizedDescription)
+                        warnings.append(String(format: appLocalized("系统声音无损封装失败，视频已保留：%@"), appErrorDescription(error)))
                     }
                 } else {
-                    warnings.append("系统声音缺少原生视频主时钟，视频已保留")
+                    warnings.append(appLocalized("系统声音缺少原生视频主时钟，视频已保留"))
                 }
                 if nativeAudioResult.droppedSampleCount > 0 {
-                    warnings.append("系统声音写入拥塞，丢弃了 "
-                        + "\(nativeAudioResult.droppedSampleCount) 个音频样本块")
+                    warnings.append(String(format: appLocalized("系统声音写入拥塞，丢弃了 %ld 个音频样本块"), nativeAudioResult.droppedSampleCount))
                 }
             }
             lastMeasurement = try await NativeScreenRecordingFinalizer.measurement(
@@ -900,7 +974,7 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
                 target: requestedFrameRate
             )
             liveMeasurement = lastMeasurement
-            lastStopWarning = warnings.isEmpty ? nil : warnings.joined(separator: "；")
+            lastStopWarning = warnings.isEmpty ? nil : warnings.joined(separator: appLocalized("；"))
             return finalURL
         }
 
@@ -917,26 +991,23 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
                         into: captureOutput.outputURL
                     )
                 } catch {
-                    warnings.append("系统声音无损封装失败，视频已保留："
-                        + error.localizedDescription)
+                    warnings.append(String(format: appLocalized("系统声音无损封装失败，视频已保留：%@"), appErrorDescription(error)))
                 }
             } else {
-                warnings.append("系统声音缺少视频主时钟，视频已保留")
+                warnings.append(appLocalized("系统声音缺少视频主时钟，视频已保留"))
             }
             if nativeAudioResult.droppedSampleCount > 0 {
-                warnings.append("系统声音写入拥塞，丢弃了 "
-                    + "\(nativeAudioResult.droppedSampleCount) 个音频样本块")
+                warnings.append(String(format: appLocalized("系统声音写入拥塞，丢弃了 %ld 个音频样本块"), nativeAudioResult.droppedSampleCount))
             }
         }
         let droppedAudioSamples = await captureOutput.droppedAudioSamples()
         if let secondaryStreamTerminalError {
-            warnings.append("所选 App 音频流意外停止，该音轨可能不完整："
-                + secondaryStreamTerminalError.localizedDescription)
+            warnings.append(String(format: appLocalized("所选 App 音频流意外停止，该音轨可能不完整：%@"), appErrorDescription(secondaryStreamTerminalError)))
         }
         if droppedAudioSamples > 0 {
-            warnings.append("系统声音写入拥塞，丢弃了 \(droppedAudioSamples) 个音频样本块")
+            warnings.append(String(format: appLocalized("系统声音写入拥塞，丢弃了 %ld 个音频样本块"), droppedAudioSamples))
         }
-        lastStopWarning = warnings.isEmpty ? nil : warnings.joined(separator: "；")
+        lastStopWarning = warnings.isEmpty ? nil : warnings.joined(separator: appLocalized("；"))
         return captureOutput.outputURL
     }
 
@@ -992,6 +1063,7 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
     }
 
     private func enterTerminalState(runID: RecordingRunID, error: any Error) {
+        editorWindowRefresh.stop(for: runID)
         isCapturing = false
         isPaused = false
         measurementTask?.cancel()
@@ -1032,57 +1104,6 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
             throw ScreenRecorderError.noDisplay
         }
         return resolved
-    }
-
-    private func displayContentFilter(
-        content: SCShareableContent,
-        display: SCDisplay,
-        configuration: CaptureConfiguration
-    ) -> SCContentFilter {
-        var excludedApplications = content.applications.filter { $0.processID == getpid() }
-        if configuration.hidesDock {
-            excludedApplications.append(contentsOf: content.applications.filter {
-                $0.bundleIdentifier == "com.apple.dock"
-            })
-        }
-
-        var exceptingWindows: [SCWindow] = []
-        if configuration.hidesDesktopFiles {
-            let desktopIDs = finderDesktopWindowIDs()
-            exceptingWindows = content.windows.filter {
-                desktopIDs.contains(CGWindowID($0.windowID))
-            }
-        }
-
-        return SCContentFilter(
-            display: display,
-            excludingApplications: excludedApplications,
-            exceptingWindows: exceptingWindows
-        )
-    }
-
-    private func finderDesktopWindowIDs() -> Set<CGWindowID> {
-        guard let descriptions = CGWindowListCopyWindowInfo(
-            [.optionOnScreenOnly],
-            kCGNullWindowID
-        ) as? [[String: Any]] else {
-            return []
-        }
-
-        return Set(descriptions.compactMap { description in
-            let ownerPID = (description[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value ?? 0
-            let bundleIdentifier = NSRunningApplication(
-                processIdentifier: ownerPID
-            )?.bundleIdentifier
-            let layer = (description[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0
-            guard bundleIdentifier == "com.apple.finder",
-                  layer < 0,
-                  let number = description[kCGWindowNumber as String] as? NSNumber
-            else {
-                return nil
-            }
-            return CGWindowID(number.uint32Value)
-        })
     }
 
 }

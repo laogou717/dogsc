@@ -343,14 +343,10 @@ enum EditorExportRequestBuilder {
     static func makeDefaultOutputURL(
         for project: RecorderProject,
         preferredProjectName: String? = nil,
-        outputKind: ExportOutputKind = .video
+        outputKind: ExportOutputKind = .video,
+        directoryURL: URL? = nil
     ) throws -> URL {
-        let folder = AppPreferences.exportDirectoryURL
-        try FileManager.default.createDirectory(
-            at: folder,
-            withIntermediateDirectories: true
-        )
-
+        let folder = directoryURL ?? AppPreferences.exportDirectoryURL
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd-HH-mm-ss"
         let projectName = preferredProjectName.flatMap(exportFileNameComponent)
@@ -365,6 +361,27 @@ enum EditorExportRequestBuilder {
             baseName = projectName.map { "\($0)-音频" }
                 ?? "音频-\(formatter.string(from: Date()))"
         }
+        return try makeOutputURL(
+            in: folder,
+            baseName: baseName,
+            outputKind: outputKind
+        )
+    }
+
+    /// Filename and folder are independent UI choices, sharing the existing
+    /// non-overwriting suffix policy.
+    static func makeOutputURL(
+        in folder: URL,
+        baseName: String,
+        outputKind: ExportOutputKind
+    ) throws -> URL {
+        guard let baseName = exportFileNameComponent(baseName) else {
+            throw EditorExportRequestError.invalidOutputURL(baseName)
+        }
+        try FileManager.default.createDirectory(
+            at: folder,
+            withIntermediateDirectories: true
+        )
         var candidate = folder.appendingPathComponent(
             "\(baseName).\(outputKind.fileExtension)"
         )

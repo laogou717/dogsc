@@ -122,6 +122,13 @@ extension EditorInspectorView {
                             commitOverlayDraft(actionName: "移动打码区域")
                         },
                         onCancelled: { editorStore.cancelInteraction() },
+                        onTextPreviewValidityChanged: {
+                            updateEditorTextPreviewValidity(
+                                store: editorStore, isValid: $0,
+                                commandScope: .selection, selection: .mosaic(id),
+                                actionName: "移动打码区域"
+                            )
+                        },
                         snapsToGrid: false
                     )
                     overlaySlider("宽度", value: mosaicRectBinding(id: id, keyPath: \.width, fallback: clip.sourceRect.width), range: 0.01...1, format: .percent)
@@ -152,6 +159,13 @@ extension EditorInspectorView {
                             commitOverlayDraft(actionName: "移动贴图")
                         },
                         onCancelled: { editorStore.cancelInteraction() },
+                        onTextPreviewValidityChanged: {
+                            updateEditorTextPreviewValidity(
+                                store: editorStore, isValid: $0,
+                                commandScope: .selection, selection: .sticker(id),
+                                actionName: "移动贴图"
+                            )
+                        },
                         snapsToGrid: false
                     )
                     overlaySlider("宽度", value: stickerBinding(id: id, keyPath: \.width, fallback: clip.width), range: 0.02...1.5, format: .percent)
@@ -192,7 +206,10 @@ extension EditorInspectorView {
                                 moveStickerLayer(id: id, move: .top)
                             }
                         }
-                        Text("当前第 \(state.rank + 1) 层，共 \(state.count) 层")
+                        Text(String(
+                            format: appLocalized("当前第 %lld 层，共 %lld 层"),
+                            Int64(state.rank + 1), Int64(state.count)
+                        ))
                             .font(.appUI(.caption2))
                             .foregroundStyle(.secondary)
                     }
@@ -280,8 +297,8 @@ extension EditorInspectorView {
                             columnCount: 3
                         )
                         Text(
-                            "\(clip.animationCurve.editorDetail) "
-                                + "同时影响入场与退场，方向和时长仍可分别调整。"
+                            appLocalized(clip.animationCurve.editorDetail) + " "
+                                + appLocalized("同时影响入场与退场，方向和时长仍可分别调整。")
                         )
                             .font(.appUI(.caption2))
                             .foregroundStyle(EditorTheme.chrome(0.48))
@@ -328,8 +345,8 @@ extension EditorInspectorView {
                             .foregroundStyle(EditorTheme.chrome(0.62))
                         EditorTileSelector(
                             options: stickerExitAnimationOptions,
-                            title: stickerAnimationShortLabel,
-                            icon: stickerAnimationSymbol,
+                            title: stickerExitAnimationShortLabel,
+                            icon: stickerExitAnimationSymbol,
                             selection: stickerBinding(
                                 id: id,
                                 keyPath: \.exitAnimation,
@@ -382,7 +399,7 @@ extension EditorInspectorView {
     }
 
     func removeOverlayButton(title: String) -> some View {
-        Button(title, role: .destructive) {
+        Button(appLocalized(title), role: .destructive) {
             do {
                 try editorStore.removeSelectedOverlay()
             } catch {
@@ -390,6 +407,7 @@ extension EditorInspectorView {
             }
         }
         .buttonStyle(.editorDestructive)
+        .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 
     var missingOverlayView: some View {
@@ -493,8 +511,21 @@ extension EditorInspectorView {
         }
     }
 
-    func stickerAnimationShortLabel(_ preset: StickerAnimationPreset?) -> String {
-        preset.map(stickerAnimationShortLabel) ?? "反向"
+    func stickerExitAnimationShortLabel(_ preset: StickerAnimationPreset?) -> String {
+        guard let preset else { return "反向" }
+        switch preset {
+        case .none: return "无"
+        case .fade: return "淡出"
+        case .pop: return "收缩"
+        case .slideLeft: return "向左"
+        case .slideRight: return "向右"
+        case .slideUp: return "向上"
+        case .slideDown: return "向下"
+        case .slideTopLeft: return "向左上"
+        case .slideTopRight: return "向右上"
+        case .slideBottomLeft: return "向左下"
+        case .slideBottomRight: return "向右下"
+        }
     }
 
     func stickerAnimationSymbol(_ preset: StickerAnimationPreset) -> String {
@@ -513,8 +544,21 @@ extension EditorInspectorView {
         }
     }
 
-    func stickerAnimationSymbol(_ preset: StickerAnimationPreset?) -> String {
-        preset.map(stickerAnimationSymbol) ?? "arrow.triangle.2.circlepath"
+    func stickerExitAnimationSymbol(_ preset: StickerAnimationPreset?) -> String {
+        guard let preset else { return "arrow.triangle.2.circlepath" }
+        switch preset {
+        case .none: return "minus"
+        case .fade: return "circle.dotted"
+        case .pop: return "sparkles"
+        case .slideLeft: return "arrow.left"
+        case .slideRight: return "arrow.right"
+        case .slideUp: return "arrow.up"
+        case .slideDown: return "arrow.down"
+        case .slideTopLeft: return "arrow.up.left"
+        case .slideTopRight: return "arrow.up.right"
+        case .slideBottomLeft: return "arrow.down.left"
+        case .slideBottomRight: return "arrow.down.right"
+        }
     }
 
     func replaceSticker(
@@ -556,8 +600,10 @@ extension EditorInspectorView {
             VStack(spacing: 4) {
                 Image(systemName: symbol)
                     .font(.appUI(size: 12, weight: .semibold))
-                Text(title)
+                Text(appLocalized(title))
                     .font(.appUI(size: 9.5, weight: .medium))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
             }
             .foregroundStyle(
                 disabled
@@ -580,9 +626,10 @@ extension EditorInspectorView {
             .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.editorThumbnail)
+        .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .disabled(disabled)
-        .help(title + "贴图")
-        .accessibilityLabel(title + "贴图")
+        .help(appLocalized(title + "贴图"))
+        .accessibilityLabel(appLocalized(title + "贴图"))
     }
 
     fileprivate func moveStickerLayer(id: UUID, move: StickerLayerMove) {

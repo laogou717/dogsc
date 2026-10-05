@@ -209,7 +209,7 @@ struct CaptureOutputTerminalFailure: LocalizedError, CustomNSError, @unchecked S
     }
 
     var errorDescription: String? {
-        "\(stage.description)失败：\(underlyingError.localizedDescription)"
+        String(format: appLocalized("%@失败：%@"), appLocalized(stage.description), appErrorDescription(underlyingError))
     }
 
     var errorUserInfo: [String: Any] {

@@ -15,7 +15,7 @@ final class AreaPresetButton: CaptureSelectionNativeButton {
         isBordered = false
         focusRingType = .none
         wantsLayer = true
-        layer?.cornerRadius = 10
+        layer?.cornerRadius = 14
         setAccessibilityLabel(title)
 
         symbolView.imageAlignment = .alignCenter
@@ -36,6 +36,7 @@ final class AreaPresetButton: CaptureSelectionNativeButton {
 
     func setSelected(_ selected: Bool) {
         selectedState = selected
+        setAccessibilityValue(selected ? "已选择" : "未选择")
         updateAppearance()
     }
 
@@ -43,13 +44,13 @@ final class AreaPresetButton: CaptureSelectionNativeButton {
         let tint = captureSelectionInkNSColor.withAlphaComponent(selectedState ? 1 : 0.65)
         symbolView.contentTintColor = tint
         captionLabel.textColor = tint
-        layer?.backgroundColor = selectedState ? NSColor(calibratedRed: 0.86, green: 0.96, blue: 0.91, alpha: 1).cgColor : NSColor.clear.cgColor
-        layer?.borderWidth = selectedState ? 0.75 : 0
+        layer?.backgroundColor = selectedState
+            ? NSColor(calibratedRed: 0.86, green: 0.96, blue: 0.91, alpha: 1).cgColor
+            : NSColor.clear.cgColor
+        layer?.borderWidth = selectedState ? 0.75 * layoutScale : 0
         layer?.borderColor = NSColor.black.withAlphaComponent(0.06).cgColor
         layer?.shadowColor = NSColor.black.cgColor
-        layer?.shadowOpacity = selectedState ? 0.12 : 0
-        layer?.shadowRadius = 4
-        layer?.shadowOffset = CGSize(width: 0, height: -2)
+        layer?.shadowOpacity = 0
     }
 
     override func captureInteractionDidChange(hovering: Bool, pressed: Bool) {
@@ -58,6 +59,7 @@ final class AreaPresetButton: CaptureSelectionNativeButton {
 
     func updateScale(_ scale: CGFloat) {
         layoutScale = scale
+        captureKeyboardFocusLineWidth = 1.5 * scale
         captionLabel.font = .systemFont(ofSize: 11.5 * scale, weight: .medium)
         symbolView.image = NSImage(
             systemSymbolName: areaSymbolName,
@@ -66,17 +68,23 @@ final class AreaPresetButton: CaptureSelectionNativeButton {
             pointSize: 21 * scale,
             weight: .regular
         ))
-        layer?.cornerRadius = 10 * scale
+        layer?.cornerRadius = 14 * scale
+        updateAppearance()
         needsLayout = true
     }
 
     override func layout() {
         super.layout()
+        guard bounds.width > 0, bounds.height > 0 else {
+            symbolView.frame = .zero
+            captionLabel.frame = .zero
+            return
+        }
         let scale = layoutScale
         let iconSize = 22 * scale
         symbolView.frame = CGRect(
             x: bounds.midX - iconSize / 2,
-            y: bounds.height - 30 * scale,
+            y: bounds.height - 33 * scale,
             width: iconSize,
             height: iconSize
         )
@@ -92,20 +100,19 @@ final class AreaPresetButton: CaptureSelectionNativeButton {
 
 final class AreaActionButton: CaptureSelectionNativeButton {
     private let buttonTitleLabel = MousePassthroughLabel("")
-    private let shortcutLabel = MousePassthroughLabel("")
-    private let buttonShortcut: String?
     private let primary: Bool
+    private let plain: Bool
     private var layoutScale: CGFloat = 1
 
     init(
         title: String,
-        shortcut: String?,
         primary: Bool,
+        plain: Bool = false,
         target: AnyObject?,
         action: Selector?
     ) {
-        buttonShortcut = shortcut
         self.primary = primary
+        self.plain = plain
         super.init(frame: .zero)
         super.title = ""
         self.target = target
@@ -114,11 +121,15 @@ final class AreaActionButton: CaptureSelectionNativeButton {
         focusRingType = .none
         wantsLayer = true
         layer?.cornerRadius = 10
-        layer?.backgroundColor = primary
-            ? captureSelectionPlatinumNSColor.cgColor
-            : captureSelectionRaisedNSColor.cgColor
-        layer?.borderWidth = primary ? 0 : 1
-        layer?.borderColor = NSColor.white.withAlphaComponent(0.08).cgColor
+        layer?.borderWidth = plain ? 0 : 0.75
+        layer?.borderColor = primary
+            ? NSColor.white.withAlphaComponent(0.18).cgColor
+            : captureSelectionInkNSColor.withAlphaComponent(0.18).cgColor
+        captureKeyboardFocusColor = primary ? NSColor.white.withAlphaComponent(0.65) : NSColor.black.withAlphaComponent(0.40)
+        layer?.shadowColor = NSColor.black.cgColor
+        layer?.shadowOpacity = plain ? 0 : 0.06
+        layer?.shadowRadius = 2
+        layer?.shadowOffset = CGSize(width: 0, height: -1)
         setAccessibilityLabel(title)
 
         buttonTitleLabel.stringValue = title
@@ -127,14 +138,7 @@ final class AreaActionButton: CaptureSelectionNativeButton {
             ? NSColor.white
             : captureSelectionInkNSColor
         addSubview(buttonTitleLabel)
-
-        shortcutLabel.stringValue = shortcut ?? ""
-        shortcutLabel.alignment = .center
-        shortcutLabel.textColor = primary
-            ? NSColor.white.withAlphaComponent(0.65)
-            : captureSelectionInkNSColor.withAlphaComponent(0.6)
-        shortcutLabel.isHidden = shortcut == nil
-        addSubview(shortcutLabel)
+        updateAppearance(hovering: false, pressed: false)
     }
 
     required init?(coder: NSCoder) {
@@ -143,47 +147,98 @@ final class AreaActionButton: CaptureSelectionNativeButton {
 
     func updateScale(_ scale: CGFloat) {
         layoutScale = scale
-        buttonTitleLabel.font = .systemFont(ofSize: 12 * scale, weight: .medium)
-        shortcutLabel.font = .systemFont(ofSize: 10.5 * scale, weight: .medium)
+        captureKeyboardFocusLineWidth = 1.5 * scale
+        buttonTitleLabel.font = .systemFont(ofSize: (plain ? 12.5 : 14) * scale, weight: .semibold)
         layer?.cornerRadius = 10 * scale
+        layer?.borderWidth = plain ? 0 : 0.75 * scale
+        layer?.shadowRadius = 2 * scale
+        layer?.shadowOffset = CGSize(width: 0, height: -scale)
         needsLayout = true
     }
 
     override func captureInteractionDidChange(hovering: Bool, pressed: Bool) {
-        layer?.backgroundColor = primary
-            ? captureSelectionPlatinumNSColor.withAlphaComponent(
-                pressed ? 0.84 : hovering ? 0.92 : 1
-            ).cgColor
-            : NSColor(calibratedWhite: pressed ? 0.92 : hovering ? 0.97 : 0.995, alpha: 1).cgColor
+        updateAppearance(hovering: hovering, pressed: pressed)
+    }
+
+    private func updateAppearance(hovering: Bool, pressed: Bool) {
+        if plain {
+            layer?.backgroundColor = NSColor.clear.cgColor
+        } else {
+            layer?.backgroundColor = primary
+                ? NSColor(calibratedWhite: pressed ? 0.20 : hovering ? 0.22 : 0.24, alpha: 1).cgColor
+                : NSColor(calibratedWhite: pressed ? 0.92 : hovering ? 0.97 : 0.995, alpha: 1).cgColor
+        }
     }
 
     override func layout() {
         super.layout()
-        let scale = layoutScale
-        if buttonShortcut == nil {
-            buttonTitleLabel.frame = CGRect(
-                x: 4 * scale,
-                y: bounds.midY - 10 * scale,
-                width: bounds.width - 8 * scale,
-                height: 20 * scale
-            )
-            shortcutLabel.frame = .zero
-        } else {
-            buttonTitleLabel.frame = CGRect(
-                x: 4 * scale,
-                y: bounds.midY - 1 * scale,
-                width: bounds.width - 8 * scale,
-                height: 20 * scale
-            )
-            shortcutLabel.frame = CGRect(
-                x: 4 * scale,
-                y: bounds.midY - 18 * scale,
-                width: bounds.width - 8 * scale,
-                height: 16 * scale
-            )
+        guard bounds.width > 0, bounds.height > 0 else {
+            buttonTitleLabel.frame = .zero
+            return
         }
+        let scale = layoutScale
+        // Allocate the full safe label width, and use the native cell's
+        // height. Glyph measurements do not include NSTextField padding.
+        let cellSize = buttonTitleLabel.cell?.cellSize ?? buttonTitleLabel.intrinsicContentSize
+        let labelHeight = min(max(0, bounds.height - 8 * scale), ceil(cellSize.height))
+        let preferredInset: CGFloat = (plain ? 4 : 8) * scale
+        let fittingInset = max(0, (bounds.width - ceil(cellSize.width)) / 2)
+        let horizontalInset = min(preferredInset, fittingInset)
+        buttonTitleLabel.frame = CGRect(
+            x: horizontalInset,
+            y: floor(bounds.midY - labelHeight / 2),
+            width: max(0, bounds.width - horizontalInset * 2),
+            height: labelHeight
+        )
     }
 
+}
+
+/// The dimension lock remains an unobtrusive link icon while retaining the
+/// same native press feedback as the toolbar's other buttons.
+final class AreaDimensionLinkButton: CaptureSelectionNativeButton {
+    private var linked = false
+
+    init(target: AnyObject?, action: Selector?) {
+        super.init(frame: .zero)
+        self.target = target
+        self.action = action
+        title = ""
+        isBordered = false
+        focusRingType = .none
+        imagePosition = .imageOnly
+        imageScaling = .scaleProportionallyDown
+        setAccessibilityLabel("锁定宽高比例")
+        layer?.borderWidth = 0
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func setLinked(_ linked: Bool) {
+        self.linked = linked
+        setAccessibilityValue(linked ? "已锁定" : "未锁定")
+        updateAppearance()
+    }
+
+    func updateScale(_ scale: CGFloat) {
+        captureKeyboardFocusLineWidth = 1.5 * scale
+        image = NSImage(systemSymbolName: "link", accessibilityDescription: "锁定宽高比例")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 16 * scale, weight: .medium))
+        layer?.cornerRadius = 8 * scale
+    }
+
+    override func captureInteractionDidChange(hovering: Bool, pressed: Bool) {
+        updateAppearance()
+    }
+
+    private func updateAppearance() {
+        contentTintColor = linked
+            ? captureSelectionAccentNSColor
+            : captureSelectionInkNSColor.withAlphaComponent(0.55)
+        layer?.backgroundColor = NSColor.clear.cgColor
+    }
 }
 
 final class MousePassthroughImageView: NSImageView {
@@ -194,14 +249,25 @@ final class MousePassthroughLabel: NSTextField {
     init(_ text: String) {
         super.init(frame: .zero)
         stringValue = text
-        isEditable = false
-        isSelectable = false
-        isBordered = false
-        drawsBackground = false
+        configureLabel()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
+        configureLabel()
+    }
+
+    private func configureLabel() {
+        isEditable = false
+        isSelectable = false
+        isBordered = false
+        isBezeled = false
+        drawsBackground = false
+        maximumNumberOfLines = 1
+        lineBreakMode = .byClipping
+        cell?.wraps = false
+        cell?.isScrollable = false
+        cell?.usesSingleLineMode = true
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
@@ -216,77 +282,71 @@ final class EscapeHintContentView: NSView {
         super.init(frame: frameRect)
         setAccessibilityElement(true)
         setAccessibilityRole(.staticText)
-        setAccessibilityLabel("拖拽绘制录制区域，按 Esc 取消选择")
+        setAccessibilityLabel("拖动选择录制区域，按 Esc 取消")
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         setAccessibilityElement(true)
         setAccessibilityRole(.staticText)
-        setAccessibilityLabel("拖拽绘制录制区域，按 Esc 取消选择")
+        setAccessibilityLabel("拖动选择录制区域，按 Esc 取消")
     }
 
     func preferredWidth(for scale: CGFloat) -> CGFloat {
-        let bodyFont = NSFont.systemFont(ofSize: 12.5 * scale, weight: .medium)
-        let keyFont = NSFont.monospacedSystemFont(ofSize: 11.5 * scale, weight: .semibold)
-        let prefix = makeLine("拖拽绘制录制区域 · 按", font: bodyFont, color: .white)
-        let suffix = makeLine("取消选择", font: bodyFont, color: .white)
-        let key = makeLine("Esc", font: keyFont, color: .white)
-        let contentWidth = lineMetrics(prefix).width
-            + 8 * scale
-            + max(46 * scale, lineMetrics(key).width + 18 * scale)
-            + 8 * scale
-            + lineMetrics(suffix).width
-        return ceil(contentWidth + 28 * scale)
+        let title = makeLine(
+            "拖动选择录制区域",
+            font: .systemFont(ofSize: 16 * scale, weight: .medium),
+            color: .white
+        )
+        return ceil(max(280 * scale, lineMetrics(title).width + 48 * scale))
     }
 
     override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
         let scale = interfaceScale
-        let bodyFont = NSFont.systemFont(ofSize: 12.5 * scale, weight: .medium)
+        let titleFont = NSFont.systemFont(ofSize: 16 * scale, weight: .medium)
+        let bodyFont = NSFont.systemFont(ofSize: 11.5 * scale, weight: .medium)
         let keyFont = NSFont.monospacedSystemFont(ofSize: 11.5 * scale, weight: .semibold)
-        let bodyColor = captureSelectionInkNSColor.withAlphaComponent(0.78)
-        let keyColor = captureSelectionInkNSColor.withAlphaComponent(0.86)
+        let bodyColor = NSColor.white.withAlphaComponent(0.72)
+        let keyColor = NSColor.white.withAlphaComponent(0.86)
 
-        let prefix = makeLine("拖拽绘制录制区域 · 按", font: bodyFont, color: bodyColor)
+        let title = makeLine("拖动选择录制区域", font: titleFont, color: .white)
         let key = makeLine("Esc", font: keyFont, color: keyColor)
-        let suffix = makeLine("取消选择", font: bodyFont, color: bodyColor)
-        let prefixWidth = lineMetrics(prefix).width
+        let suffix = makeLine("取消", font: bodyFont, color: bodyColor)
         let suffixWidth = lineMetrics(suffix).width
-        let keyWidth = 46 * scale
-        let keyHeight = 28 * scale
+        let keyWidth = 34 * scale
+        let keyHeight = 22 * scale
         let spacing = 8 * scale
-        let totalWidth = prefixWidth + spacing + keyWidth + spacing + suffixWidth
+        let totalWidth = keyWidth + spacing + suffixWidth
         var x = floor((bounds.width - totalWidth) / 2)
 
-        drawLine(prefix, centeredIn: CGRect(
-            x: x,
-            y: 0,
-            width: prefixWidth,
-            height: bounds.height
+        drawLine(title, centeredIn: CGRect(
+            x: 12 * scale,
+            y: 46 * scale,
+            width: bounds.width - 24 * scale,
+            height: 24 * scale
         ), context: context)
-        x += prefixWidth + spacing
 
         let keyRect = CGRect(
             x: x,
-            y: floor((bounds.height - keyHeight) / 2),
+            y: 18 * scale,
             width: keyWidth,
             height: keyHeight
         )
-        NSColor.black.withAlphaComponent(0.055).setFill()
+        NSColor.white.withAlphaComponent(0.10).setFill()
         NSBezierPath(
             roundedRect: keyRect,
-            xRadius: 6 * scale,
-            yRadius: 6 * scale
+            xRadius: 5 * scale,
+            yRadius: 5 * scale
         ).fill()
         drawLine(key, centeredIn: keyRect, context: context)
         x += keyWidth + spacing
 
         drawLine(suffix, centeredIn: CGRect(
             x: x,
-            y: 0,
+            y: keyRect.minY,
             width: suffixWidth,
-            height: bounds.height
+            height: keyHeight
         ), context: context)
     }
 

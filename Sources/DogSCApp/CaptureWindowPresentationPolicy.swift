@@ -9,8 +9,8 @@ enum CaptureWindowPresentationRole: Equatable {
 }
 
 /// The only owner of capture-window level arithmetic. Selection and recording
-/// guides share one overlay band; the interactive recorder bar stays above it
-/// for selection, preparation and recording.
+/// guides share one overlay band. Display/window/area selection hides the
+/// setup bar; preparation, recording and device setup keep controls above it.
 enum CaptureWindowLevelPolicy {
     private static let overlayLevel = NSWindow.Level(
         rawValue: NSWindow.Level.floating.rawValue + 1
@@ -66,8 +66,7 @@ enum CaptureOverlayScreenPolicy {
     }
 }
 
-/// Geometry for selection cards that belong to the recorder bar. The full-screen
-/// selector remains one level below the recorder controls, while the card is
+/// Geometry for the device card that belongs to the recorder bar. The card is
 /// centred on the complete recorder bar and attached above/below it. Anchoring
 /// to the individual source button made Display and Device cards visibly drift
 /// left because those buttons live at the bar's leading edge.
@@ -171,32 +170,6 @@ enum RecorderCaptureSourceAnchorResolver {
               !frame.isNull,
               !frame.isEmpty else { return nil }
         return frame
-    }
-
-    static func screenFrame(for source: CaptureSource) -> CGRect? {
-        guard let window = recorderWindow,
-              let contentView = window.contentView,
-              let sourceView = descendant(
-                  in: contentView,
-                  identifier: NSUserInterfaceItemIdentifier(
-                      RecorderCaptureSourceAccessibilityID.value(for: source)
-                  )
-              ) else { return nil }
-        let windowRect = sourceView.convert(sourceView.bounds, to: nil as NSView?)
-        return window.convertToScreen(windowRect)
-    }
-
-    private static func descendant(
-        in view: NSView,
-        identifier: NSUserInterfaceItemIdentifier
-    ) -> NSView? {
-        if view.identifier == identifier { return view }
-        for subview in view.subviews {
-            if let match = descendant(in: subview, identifier: identifier) {
-                return match
-            }
-        }
-        return nil
     }
 }
 

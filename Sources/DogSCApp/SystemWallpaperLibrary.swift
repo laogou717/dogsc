@@ -684,13 +684,11 @@ final class SystemWallpaperCatalog: ObservableObject {
 
     func loadIfNeeded() async {
         guard !didLoad else { return }
-        didLoad = true
         await refresh()
     }
 
     func refresh() async {
         guard !isLoading else { return }
-        didLoad = true
         isLoading = true
         let result = await SystemWallpaperLibrary.scan()
         guard !Task.isCancelled else {
@@ -698,6 +696,7 @@ final class SystemWallpaperCatalog: ObservableObject {
             return
         }
         assets = result.assets
+        didLoad = true
         currentDesktopIssue = result.currentDesktopIssue
         lastChangeToken = result.changeToken
         isLoading = false

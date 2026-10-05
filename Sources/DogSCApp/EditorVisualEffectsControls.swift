@@ -46,8 +46,10 @@ struct EditorScreenFramePicker: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.editorThumbnail)
+                    .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                     .accessibilityLabel(appLocalized(style.editorDisplayName))
                     .accessibilityAddTraits(isSelected ? .isSelected : [])
+                    .help("边框会和屏幕、光标一起缩放并进行 3D 变形")
                 }
             }
 
@@ -63,6 +65,7 @@ struct EditorScreenFramePicker: View {
                         .font(.appUI(size: 11)).foregroundStyle(.secondary)
                 }
                 .buttonStyle(.editorQuiet)
+                .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
                 .help("恢复当前样机的默认外观，保留标题和网址")
             }
 
@@ -80,7 +83,6 @@ struct EditorScreenFramePicker: View {
                 )
             }
         }
-        .help("边框会和屏幕、光标一起缩放并进行 3D 变形")
     }
 
 }
@@ -215,13 +217,17 @@ private struct ScreenFrameMetadataField: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Text(kind.title)
+            Text(appLocalized(kind.title))
                 .font(.appUI(size: 10.5, weight: .medium))
                 .foregroundStyle(.secondary)
                 .frame(width: 62, alignment: .leading)
+                .accessibilityHidden(true)
 
-            TextField(kind.placeholder, text: $draft)
+            TextField(appLocalized(kind.placeholder), text: $draft)
                 .textFieldStyle(.plain)
+                .tint(nil)
+                .accessibilityLabel(appLocalized(kind.title))
+                .help(appLocalized(kind.actionName))
                 .font(.appUI(size: 11))
                 .lineLimit(1)
                 .focused($isFocused)
@@ -249,6 +255,7 @@ private struct ScreenFrameMetadataField: View {
                         )
                 }
                 .focusEffectDisabled()
+                .appKeyboardFocusScrollTarget(isFocused: isFocused)
         }
         .onAppear { draft = currentValue }
         .onChange(of: isFocused) { _, focused in

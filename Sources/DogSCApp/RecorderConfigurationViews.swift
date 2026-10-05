@@ -65,10 +65,16 @@ struct RecorderInputPopover: View {
                     }
                 }.font(.appUI(size: 12))
             }
-            Button("系统视频效果…") {
+            Button {
                 RecorderPopoverPresenter.shared.dismiss()
                 CaptureDeviceCatalog.showSystemVideoEffects()
-            }.buttonStyle(.plain).font(.appUI(size: 11)).foregroundStyle(RecorderStyle.muted)
+            } label: {
+                Text("系统视频效果…").font(.appUI(size: 11)).foregroundStyle(RecorderStyle.muted)
+                    .padding(.horizontal, 8).frame(minHeight: 28)
+                    .contentShape(RoundedRectangle(cornerRadius: 8))
+            }
+            .buttonStyle(RecorderPlainPressButtonStyle(cornerRadius: 8))
+            .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 8))
             refresh
         }
     }
@@ -101,7 +107,12 @@ struct RecorderInputPopover: View {
     private var refresh: some View {
         Button { model.refreshCaptureDevicesInBackground() } label: {
             Label("刷新设备", systemImage: "arrow.clockwise").font(.appUI(size: 11)).foregroundStyle(RecorderStyle.muted)
-        }.buttonStyle(.plain).padding(.top, 3)
+                .padding(.horizontal, 8).frame(minHeight: 28)
+                .contentShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(RecorderPlainPressButtonStyle(cornerRadius: 8))
+        .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 8))
+        .padding(.top, 3)
     }
 }
 
@@ -130,10 +141,16 @@ struct RecorderSavePopover: View {
                         Text("格式").frame(width: 52, alignment: .leading)
                         HStack(spacing: 2) {
                             ForEach(CaptureCodec.allCases) { codec in
-                                Button(codec == .proRes422 ? "ProRes" : codec.rawValue) { model.captureSetup.setCaptureCodec(codec) }
-                                    .buttonStyle(.plain).font(.appUI(size: 11, weight: .medium))
-                                    .frame(maxWidth: .infinity).padding(.vertical, 8)
-                                    .background(model.configuration.captureCodec == codec ? RecorderStyle.mintWash : .clear, in: RoundedRectangle(cornerRadius: 8))
+                                Button { model.captureSetup.setCaptureCodec(codec) } label: {
+                                    Text(codec == .proRes422 ? "ProRes" : codec.rawValue)
+                                        .font(.appUI(size: 11, weight: .medium))
+                                        .frame(maxWidth: .infinity).padding(.vertical, 8)
+                                        .background(model.configuration.captureCodec == codec ? RecorderStyle.mintWash : .clear, in: RoundedRectangle(cornerRadius: 8))
+                                        .contentShape(RoundedRectangle(cornerRadius: 8))
+                                }
+                                .buttonStyle(RecorderPlainPressButtonStyle(cornerRadius: 8))
+                                .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 8))
+                                .accessibilityValue(model.configuration.captureCodec == codec ? appLocalized("已选择") : "")
                             }
                         }.padding(3).background(.white.opacity(0.6), in: RoundedRectangle(cornerRadius: 11))
                     }
@@ -147,7 +164,10 @@ struct RecorderSavePopover: View {
                         } label: {
                             HStack { Text(appLocalized(model.configuration.captureResolutionLimit.rawValue)); Spacer(); Image(systemName: "chevron.down").rotationEffect(.degrees(expandedQuality ? 180 : 0)) }
                                 .font(.appUI(size: 12)).padding(10).background(.white, in: RoundedRectangle(cornerRadius: 9))
-                        }.buttonStyle(.plain)
+                                .contentShape(RoundedRectangle(cornerRadius: 9))
+                        }
+                        .buttonStyle(RecorderPlainPressButtonStyle(cornerRadius: 9))
+                        .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 9))
                     }
                     if expandedQuality {
                         VStack(spacing: 2) {

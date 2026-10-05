@@ -144,6 +144,32 @@ struct EditorTransactionalSlider: View {
     }
 }
 
+/// Exact-entry fields keep valid previews on window deactivation. An invalid
+/// draft only downgrades its own interaction; it never starts a new one.
+/// Reacquiring before the value callback also keeps resumed typing continuous.
+@MainActor
+func updateEditorTextPreviewValidity(
+    store: EditorStore,
+    isValid: Bool,
+    commandScope: EditorInteractionCommandScope,
+    selection: EditorSelection? = nil,
+    actionName: String
+) {
+    if isValid {
+        _ = store.beginContinuousInteraction(
+            commandScope: commandScope,
+            selection: selection,
+            commitsWhenReplacedAs: actionName
+        )
+    } else {
+        store.setContinuousInteractionReplacementPolicy(
+            commandScope: commandScope,
+            selection: selection,
+            commitsWhenReplacedAs: nil
+        )
+    }
+}
+
 /// Gives custom drag controls the same one-gesture/one-command lifecycle as
 /// `EditorTransactionalSlider`. Beginning is deliberately idempotent because
 /// SwiftUI controls do not promise whether their first value callback or their
@@ -169,6 +195,40 @@ func updateEditorContinuousInteraction(
     }
 }
 
+/// Repositions the same controls so resizing does not replace an active
+/// readout or cancel its text draft.
+private struct EditorSliderRowLayout: Layout {
+    var compact: Bool
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        CGSize(width: proposal.width ?? 320, height: compact ? 32 : 66)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard subviews.count == 3 else { return }
+        let readoutWidth: CGFloat = 66
+        let gap: CGFloat = 12
+        let titleWidth = compact
+            ? min(subviews[0].sizeThatFits(.unspecified).width, max((bounds.width - readoutWidth - gap * 2) / 2, 0))
+            : max(bounds.width - readoutWidth - gap, 0)
+        subviews[0].place(
+            at: CGPoint(x: bounds.minX, y: bounds.minY + 16), anchor: .leading,
+            proposal: ProposedViewSize(width: titleWidth, height: 32)
+        )
+        subviews[1].place(
+            at: CGPoint(x: bounds.maxX - readoutWidth, y: bounds.minY), anchor: .topLeading,
+            proposal: ProposedViewSize(width: readoutWidth, height: 32)
+        )
+        let sliderX = compact ? titleWidth + gap : 0
+        subviews[2].place(
+            at: CGPoint(x: bounds.minX + sliderX, y: bounds.minY + (compact ? 0 : 34)), anchor: .topLeading,
+            proposal: ProposedViewSize(
+                width: max(bounds.width - sliderX - (compact ? readoutWidth + gap : 0), 0), height: 32
+            )
+        )
+    }
+}
+
 struct EditorTransactionalSliderRow: View {
     @ObservedObject var editorStore: EditorStore
     let title: String
@@ -176,21 +236,24 @@ struct EditorTransactionalSliderRow: View {
     let range: ClosedRange<Double>
     let commandScope: EditorInteractionCommandScope
     var format: EditorSliderValueFormat = .decimal2
+    var accessibilityTitle: String? = nil
+    var compact: Bool = false
     let onError: (String) -> Void
     @State private var isSliderEditing = false
     @State private var isTextEditing = false
     @State private var hasTextPreview = false
 
+    private var parameterTitle: String { accessibilityTitle ?? title }
+
     var body: some View {
-        VStack(spacing: 2) {
-            HStack(spacing: 12) {
-                Text(appLocalized(title))
-                    .font(.appUI(size: 13, weight: .regular))
-                    .foregroundStyle(EditorTheme.chrome(0.76))
-                    .lineLimit(1)
-                Spacer(minLength: 8)
+        EditorSliderRowLayout(compact: compact) {
+            Text(appLocalized(title))
+                .font(.appUI(size: 13, weight: .regular))
+                .foregroundStyle(EditorTheme.chrome(0.76))
+                .lineLimit(1)
+                .accessibilityHidden(true)
             EditorInspectorParameterReadout(
-                title: title,
+                title: parameterTitle,
                 valueText: format.text(for: value.wrappedValue),
                 isEditing: isSliderEditing || isTextEditing,
                 editConfiguration: EditorInspectorParameterEditConfiguration(
@@ -204,7 +267,6 @@ struct EditorTransactionalSliderRow: View {
                 isEmbedded: false
             )
             .frame(width: 66, height: 32)
-            }
             EditorTransactionalSlider(
                 editorStore: editorStore,
                 value: value,
@@ -221,7 +283,7 @@ struct EditorTransactionalSliderRow: View {
                 onError: onError
             )
             .disabled(isTextEditing)
-            .accessibilityLabel(title)
+            .accessibilityLabel(appLocalized(parameterTitle))
             .accessibilityValue(format.text(for: value.wrappedValue))
         }
     }
@@ -229,11 +291,27 @@ struct EditorTransactionalSliderRow: View {
     private func beginTextEditing() {
         isTextEditing = true
         hasTextPreview = false
-        _ = editorStore.beginContinuousInteraction(commandScope: commandScope)
+        _ = editorStore.beginContinuousInteraction(
+            commandScope: commandScope,
+            commitsWhenReplacedAs: title
+        )
     }
 
     private func previewTextValue(_ text: String) -> Bool {
-        guard let parsed = format.value(from: text) else { return false }
+        guard let parsed = format.value(from: text) else {
+            editorStore.setContinuousInteractionReplacementPolicy(
+                commandScope: commandScope,
+                commitsWhenReplacedAs: nil
+            )
+            return false
+        }
+        // An external focus change may already have committed the previous
+        // valid draft. Start from that saved value when typing resumes, and
+        // restore autosave after a formerly invalid draft becomes valid.
+        _ = editorStore.beginContinuousInteraction(
+            commandScope: commandScope,
+            commitsWhenReplacedAs: title
+        )
         hasTextPreview = true
         let clamped = min(max(parsed, range.lowerBound), range.upperBound)
         value.wrappedValue = clamped

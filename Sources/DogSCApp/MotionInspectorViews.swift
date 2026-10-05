@@ -5,6 +5,7 @@ import SwiftUI
 // MARK: - Inspector scope
 
 struct MotionInspectorScopeHeader: View {
+    @Environment(\.isEnabled) private var isEnabled
     let title: String
     let detail: String
     var statusTitle: String? = nil
@@ -16,11 +17,11 @@ struct MotionInspectorScopeHeader: View {
         VStack(alignment: .leading, spacing: 9) {
             if showsContextHeader {
                 HStack(spacing: 8) {
-                    Label(title, systemImage: "rectangle.stack")
+                    Label(appLocalized(title), systemImage: "rectangle.stack")
                         .font(.appUI(.caption, weight: .semibold))
                         .foregroundStyle(Color.secondary)
                     Spacer(minLength: 4)
-                    Text(statusTitle ?? "初始状态")
+                    Text(appLocalized(statusTitle ?? "初始状态"))
                         .font(.appUI(size: 10, weight: .semibold))
                         .foregroundStyle(Color.secondary)
                         .padding(.horizontal, 7)
@@ -32,18 +33,30 @@ struct MotionInspectorScopeHeader: View {
                 }
             }
 
-            Text(detail)
+            Text(appLocalized(detail))
                 .font(.appUI(.caption2))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             Button(action: onAdd) {
-                Label(addTitle, systemImage: "plus.circle.fill")
+                Label(appLocalized(addTitle), systemImage: "plus.circle.fill")
                     .font(.appUI(.caption, weight: .semibold))
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.editorPrimary(minHeight: 32))
+            .appButtonKeyboardFocus(
+                in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous),
+                color: EditorTheme.onAccent.opacity(0.65)
+            )
             .accessibilityIdentifier("motion.add-at-playhead")
+            .onKeyPress(keys: [.return], phases: .down) { press in
+                guard isEnabled,
+                      press.modifiers.intersection([.command, .control, .option, .shift]).isEmpty else {
+                    return .ignored
+                }
+                onAdd()
+                return .handled
+            }
         }
         .padding(11)
         .background(EditorTheme.chrome(0.03), in: RoundedRectangle(cornerRadius: 11))
@@ -78,7 +91,8 @@ struct ScreenMotionTargetInspector: View {
                             updateDraft { $0.target.position = point }
                         },
                         onEnded: { commitDraft(actionName: "调整屏幕 3D 位置") },
-                        onCancelled: { editorStore.cancelInteraction() }
+                        onCancelled: { editorStore.cancelInteraction() },
+                        onTextPreviewValidityChanged: { updateTextDraftValidity($0, actionName: "调整屏幕 3D 位置") }
                     )
 
                     MotionValueSlider(
@@ -90,7 +104,8 @@ struct ScreenMotionTargetInspector: View {
                         inputFormat: .multiplier,
                         onChanged: { value in updateDraft { $0.target.scale = value } },
                         onEditingEnded: { commitDraft(actionName: "调整屏幕 3D 大小") },
-                        onEditingCancelled: { editorStore.cancelInteraction() }
+                        onEditingCancelled: { editorStore.cancelInteraction() },
+                        onTextPreviewValidityChanged: { updateTextDraftValidity($0, actionName: "调整屏幕 3D 大小") }
                     )
                 }
 
@@ -105,12 +120,17 @@ struct ScreenMotionTargetInspector: View {
                             }
                         },
                         onEnded: { commitDraft(actionName: "调整屏幕 3D 倾斜") },
-                        onCancelled: { editorStore.cancelInteraction() }
+                        onCancelled: { editorStore.cancelInteraction() },
+                        onTextPreviewValidityChanged: { updateTextDraftValidity($0, actionName: "调整屏幕 3D 倾斜") }
                     )
 
                     EditorDisclosure(
                         "平面旋转与透视",
-                        detail: "Z \(String(format: "%.1f°", clip.target.rotationZ)) · 透视 \(String(format: "%.2f", clip.target.perspective))"
+                        detail: String(
+                            format: appLocalized("Z %@ · 透视 %@"),
+                            String(format: "%.1f°", clip.target.rotationZ),
+                            String(format: "%.2f", clip.target.perspective)
+                        )
                     ) {
                         VStack(alignment: .leading, spacing: 11) {
                             MotionValueSlider(
@@ -122,7 +142,8 @@ struct ScreenMotionTargetInspector: View {
                                 inputFormat: .decimal1,
                                 onChanged: { value in updateDraft { $0.target.rotationZ = value } },
                                 onEditingEnded: { commitDraft(actionName: "调整屏幕平面旋转") },
-                                onEditingCancelled: { editorStore.cancelInteraction() }
+                                onEditingCancelled: { editorStore.cancelInteraction() },
+                                onTextPreviewValidityChanged: { updateTextDraftValidity($0, actionName: "调整屏幕平面旋转") }
                             )
                             MotionValueSlider(
                                 title: "透视强度",
@@ -133,7 +154,8 @@ struct ScreenMotionTargetInspector: View {
                                 inputFormat: .decimal2,
                                 onChanged: { value in updateDraft { $0.target.perspective = value } },
                                 onEditingEnded: { commitDraft(actionName: "调整屏幕透视") },
-                                onEditingCancelled: { editorStore.cancelInteraction() }
+                                onEditingCancelled: { editorStore.cancelInteraction() },
+                                onTextPreviewValidityChanged: { updateTextDraftValidity($0, actionName: "调整屏幕透视") }
                             )
                         }
                     }
@@ -156,7 +178,9 @@ struct ScreenMotionTargetInspector: View {
                         $0.timing.leadInProgressOffset = 0
                     } },
                         onLeadInEnded: { commitDraft(actionName: "调整屏幕 3D 过渡") },
-                        onLeadInCancelled: { editorStore.cancelInteraction() }
+                        onLeadInCancelled: { editorStore.cancelInteraction() },
+                        onDurationTextPreviewValidityChanged: { updateTextDraftValidity($0, actionName: "调整屏幕 3D 时长") },
+                        onLeadInTextPreviewValidityChanged: { updateTextDraftValidity($0, actionName: "调整屏幕 3D 过渡") }
                     )
                 }
 
@@ -190,6 +214,15 @@ struct ScreenMotionTargetInspector: View {
         guard editorStore.interaction?.selection != selection else { return }
         editorStore.cancelInteraction()
         editorStore.beginInteraction(tool: .editScreenMotion, selection: selection)
+    }
+
+    private func updateTextDraftValidity(_ isValid: Bool, actionName: String) {
+        if isValid { beginDraftIfNeeded() }
+        updateEditorTextPreviewValidity(
+            store: editorStore, isValid: isValid,
+            commandScope: .selection, selection: .screenMotion(clipID),
+            actionName: actionName
+        )
     }
 
     private func updateDraft(_ update: @escaping (inout ScreenMotionClip) -> Void) {
@@ -258,7 +291,8 @@ struct CameraMotionTargetInspector: View {
                         inputFormat: .percent,
                         onChanged: { value in updateDraft { $0.target.opacity = value } },
                         onEditingEnded: { commitDraft(actionName: "调整摄像运动透明度") },
-                        onEditingCancelled: { editorStore.cancelInteraction() }
+                        onEditingCancelled: { editorStore.cancelInteraction() },
+                        onTextPreviewValidityChanged: { updateTextDraftValidity($0, actionName: "调整摄像运动透明度") }
                     )
 
                     if targetIsVisible {
@@ -290,7 +324,8 @@ struct CameraMotionTargetInspector: View {
                             point: clip.target.position,
                             onChanged: { point in updateDraft { $0.target.position = point } },
                             onEnded: { commitDraft(actionName: "调整摄像运动位置") },
-                            onCancelled: { editorStore.cancelInteraction() }
+                            onCancelled: { editorStore.cancelInteraction() },
+                            onTextPreviewValidityChanged: { updateTextDraftValidity($0, actionName: "调整摄像运动位置") }
                         )
 
                         MotionValueSlider(
@@ -302,7 +337,8 @@ struct CameraMotionTargetInspector: View {
                             inputFormat: .percent,
                             onChanged: { value in updateDraft { $0.target.size = value } },
                             onEditingEnded: { commitDraft(actionName: "调整摄像运动大小") },
-                            onEditingCancelled: { editorStore.cancelInteraction() }
+                            onEditingCancelled: { editorStore.cancelInteraction() },
+                            onTextPreviewValidityChanged: { updateTextDraftValidity($0, actionName: "调整摄像运动大小") }
                         )
 
                         if case let .shape(shape) = clip.target.layout, shape != .circle {
@@ -315,7 +351,8 @@ struct CameraMotionTargetInspector: View {
                                 inputFormat: .percent,
                                 onChanged: { value in updateDraft { $0.target.roundness = value } },
                                 onEditingEnded: { commitDraft(actionName: "调整摄像运动圆角") },
-                                onEditingCancelled: { editorStore.cancelInteraction() }
+                                onEditingCancelled: { editorStore.cancelInteraction() },
+                                onTextPreviewValidityChanged: { updateTextDraftValidity($0, actionName: "调整摄像运动圆角") }
                             )
                         }
                     }
@@ -335,7 +372,9 @@ struct CameraMotionTargetInspector: View {
                         $0.timing.leadInProgressOffset = 0
                     } },
                         onLeadInEnded: { commitDraft(actionName: "调整摄像运动过渡") },
-                        onLeadInCancelled: { editorStore.cancelInteraction() }
+                        onLeadInCancelled: { editorStore.cancelInteraction() },
+                        onDurationTextPreviewValidityChanged: { updateTextDraftValidity($0, actionName: "调整摄像运动时长") },
+                        onLeadInTextPreviewValidityChanged: { updateTextDraftValidity($0, actionName: "调整摄像运动过渡") }
                     )
                 }
 
@@ -403,6 +442,15 @@ struct CameraMotionTargetInspector: View {
         editorStore.beginInteraction(tool: .editCameraMotion, selection: selection)
     }
 
+    private func updateTextDraftValidity(_ isValid: Bool, actionName: String) {
+        if isValid { beginDraftIfNeeded() }
+        updateEditorTextPreviewValidity(
+            store: editorStore, isValid: isValid,
+            commandScope: .selection, selection: .cameraMotion(clipID),
+            actionName: actionName
+        )
+    }
+
     private func updateDraft(_ update: @escaping (inout CameraMotionClip) -> Void) {
         beginDraftIfNeeded()
         editorStore.updateInteraction { project in
@@ -461,6 +509,8 @@ struct MotionValueSlider: View {
     let onChanged: @MainActor @Sendable (Double) -> Void
     let onEditingEnded: @MainActor @Sendable () -> Void
     let onEditingCancelled: @MainActor @Sendable () -> Void
+    var onTextPreviewValidityChanged: @MainActor @Sendable (Bool) -> Void = { _ in }
+
     @State private var isSliderEditing = false
     @State private var isTextEditing = false
     @State private var hasTextPreview = false
@@ -469,6 +519,7 @@ struct MotionValueSlider: View {
         HStack(spacing: 10) {
             Text(appLocalized(title)).font(.appUI(size: 13)).foregroundStyle(EditorTheme.chrome(0.82))
                 .frame(width: 88, alignment: .leading).lineLimit(2)
+                .accessibilityHidden(true)
             EditorSlider(
                 value: Binding(
                     get: { value },
@@ -487,7 +538,7 @@ struct MotionValueSlider: View {
                 }
             )
             .disabled(isTextEditing)
-            .accessibilityLabel(title)
+            .accessibilityLabel(appLocalized(title))
             .accessibilityValue(valueText)
             EditorInspectorParameterReadout(
                 title: title,
@@ -513,7 +564,11 @@ struct MotionValueSlider: View {
     }
 
     private func previewTextValue(_ text: String) -> Bool {
-        guard let parsed = inputFormat.value(from: text) else { return false }
+        guard let parsed = inputFormat.value(from: text) else {
+            onTextPreviewValidityChanged(false)
+            return false
+        }
+        onTextPreviewValidityChanged(true)
         hasTextPreview = true
         onChanged(min(max(parsed, range.lowerBound), range.upperBound))
         return true
@@ -546,6 +601,8 @@ struct MotionTimingControls: View {
     let onLeadInChanged: @MainActor @Sendable (Double) -> Void
     let onLeadInEnded: @MainActor @Sendable () -> Void
     let onLeadInCancelled: @MainActor @Sendable () -> Void
+    var onDurationTextPreviewValidityChanged: @MainActor @Sendable (Bool) -> Void = { _ in }
+    var onLeadInTextPreviewValidityChanged: @MainActor @Sendable (Bool) -> Void = { _ in }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -575,7 +632,8 @@ struct MotionTimingControls: View {
                 inputFormat: .seconds,
                 onChanged: { value in onLeadInChanged(value) },
                 onEditingEnded: { onLeadInEnded() },
-                onEditingCancelled: { onLeadInCancelled() }
+                onEditingCancelled: { onLeadInCancelled() },
+                onTextPreviewValidityChanged: onLeadInTextPreviewValidityChanged
             )
             MotionValueSlider(
                 title: "时长",
@@ -586,7 +644,8 @@ struct MotionTimingControls: View {
                 inputFormat: .seconds,
                 onChanged: { value in onDurationChanged(value) },
                 onEditingEnded: { onDurationEnded() },
-                onEditingCancelled: { onDurationCancelled() }
+                onEditingCancelled: { onDurationCancelled() },
+                onTextPreviewValidityChanged: onDurationTextPreviewValidityChanged
             )
             if timing.duration - timing.leadInDuration > 0.01 {
                 Text("过渡完成后保持 \(String(format: "%.2f", timing.duration - min(timing.leadInDuration, timing.duration)))s")
@@ -606,16 +665,18 @@ private func motionFooter(
 ) -> some View {
     HStack(spacing: 8) {
         Button(action: onBase) {
-            Label(baseTitle, systemImage: "chevron.left")
+            Label(appLocalized(baseTitle), systemImage: "chevron.left")
         }
             .buttonStyle(.editorGhost)
             .foregroundStyle(.secondary)
             .controlSize(.small)
+            .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous))
         Spacer(minLength: 4)
         Button(role: .destructive, action: onDelete) {
             Image(systemName: "trash")
         }
         .buttonStyle(.editorDestructiveIcon)
+        .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 7))
         .help("删除该动画")
     }
 }
@@ -741,7 +802,7 @@ struct CameraShapeIconPicker: View {
     }
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 4) {
             ForEach(CameraShape.allCases) { shape in
                 let isSelected = selection == shape
                 Button {
@@ -755,19 +816,29 @@ struct CameraShapeIconPicker: View {
                         .frame(maxWidth: .infinity)
                         .frame(height: 30)
                         .background(
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .fill(EditorTheme.chrome(isSelected ? 0.14 : 0.07))
+                            RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous)
+                                .fill(isSelected ? EditorTheme.cardElevated : .clear)
                         )
                         .overlay(
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .stroke(isSelected ? EditorTheme.chrome(0.75) : .clear, lineWidth: 1)
+                            RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous)
+                                .strokeBorder(isSelected ? EditorTheme.chrome(0.12) : .clear, lineWidth: 0.75)
                         )
                 }
                 .buttonStyle(.editorThumbnail)
+                .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous))
                 .help(appLocalized(shape.rawValue))
                 .accessibilityLabel("\(appLocalized("形状"))：\(appLocalized(shape.rawValue))")
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
             }
+        }
+        .padding(4)
+        .background(
+            EditorTheme.groupSurface,
+            in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous)
+                .strokeBorder(EditorTheme.hairline, lineWidth: 0.75)
         }
         .accessibilityElement(children: .contain)
     }

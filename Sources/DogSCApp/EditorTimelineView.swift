@@ -15,14 +15,6 @@ enum EditorTimelineSizing {
             maximumPrimaryLaneHeight)
     }
 
-    /// Dragging the divider upward has a negative screen-space translation and
-    /// should therefore enlarge the timeline lane.
-    static func resizedPrimaryLaneHeight(
-        start: CGFloat,
-        verticalTranslation: CGFloat
-    ) -> CGFloat {
-        clampedPrimaryLaneHeight(start - verticalTranslation)
-    }
 }
 
 /// Pure timing constraints for motion bars. A gesture can change only its own
@@ -1002,26 +994,6 @@ struct EditorTimelineView: View {
     /// document layers without publishing a SwiftUI state change per pixel.
     var hoveredTimelineViewportX: CGFloat? { timelineHoverLocation.viewportPoint?.x }
     var hoveredTimelineViewportY: CGFloat? { timelineHoverLocation.viewportPoint?.y }
-
-    var hoveredTimelineContentX: CGFloat? {
-        hoveredTimelineViewportX.map {
-            $0 + (timelineScrollView?.documentVisibleRect.origin.x ?? 0)
-        }
-    }
-
-    var hoveredTimelineTime: TimeInterval? {
-        hoveredTimelineContentX.map { contentX in
-            EditorTimelineMath.clampedTime(
-                atX: Double(contentX),
-                width: Double(max(timelineContentWidth, 1)),
-                duration: timelineDuration
-            )
-        }
-    }
-
-    var hoveredTimelineContentY: CGFloat? {
-        hoveredTimelineViewportY
-    }
 
     var selectedZoomID: UUID? {
         get {

@@ -10,12 +10,6 @@ enum EditorMotionInspectorMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-private enum EditorInspectorPresentationIdentity: Hashable {
-    case crop
-    case selection(EditorSelection)
-    case tab(InspectorTab)
-}
-
 private enum EditorInspectorSelectionKind: Hashable {
     case canvas
     case screen
@@ -40,10 +34,6 @@ private enum EditorInspectorScrollContext: Hashable {
     case frameTab(FrameInspectorTab)
 }
 
-enum EditorInspectorScrollAnchor: Hashable {
-    case top
-}
-
 /// Owns inspector navigation, controls, and interactive undo grouping. The
 /// parent editor coordinates crop completion and provides system-facing work.
 struct EditorInspectorView: View {
@@ -60,8 +50,8 @@ struct EditorInspectorView: View {
     @Binding var cropDraft: NormalizedCrop
     /// Parameter panel width. Tool navigation is owned by the workspace.
     let contentWidth: CGFloat
+    let contentHeight: CGFloat
     let onChooseWallpaper: () -> BackgroundSource?
-    let onChooseDesktopWallpaper: () -> BackgroundSource?
     let onError: (String) -> Void
 
     @State var savedLayoutPresets: [SavedLayoutPreset] = []
@@ -70,6 +60,8 @@ struct EditorInspectorView: View {
     @State var motionInspectorMode = EditorMotionInspectorMode.zoom
     @State var selectedFrameInspectorTab = FrameInspectorTab.background
     @State var savedLayoutPresetMenuHovered = false
+    @State private var scrollPositions = AppScrollPositionMemory<EditorInspectorScrollContext>()
+    @StateObject private var systemWallpaperCatalog = SystemWallpaperCatalog()
 
 
     init(
@@ -83,8 +75,8 @@ struct EditorInspectorView: View {
         isCropping: Bool,
         cropDraft: Binding<NormalizedCrop>,
         contentWidth: CGFloat = EditorInspectorSizing.defaultContentWidth,
+        contentHeight: CGFloat = .infinity,
         onChooseWallpaper: @escaping () -> BackgroundSource?,
-        onChooseDesktopWallpaper: @escaping () -> BackgroundSource?,
         onError: @escaping (String) -> Void
     ) {
         _editorStore = ObservedObject(wrappedValue: editorStore)
@@ -98,8 +90,8 @@ struct EditorInspectorView: View {
         self.isCropping = isCropping
         _cropDraft = cropDraft
         self.contentWidth = EditorInspectorSizing.clampedContentWidth(contentWidth)
+        self.contentHeight = contentHeight
         self.onChooseWallpaper = onChooseWallpaper
-        self.onChooseDesktopWallpaper = onChooseDesktopWallpaper
         self.onError = onError
     }
 
@@ -114,9 +106,8 @@ struct EditorInspectorView: View {
     var cameraHasVideo: Bool { cameraInventory.hasVideo }
     var microphoneHasAudio: Bool { microphoneInventory.hasAudio }
 
-    /// Selecting another primary clip must not replace a global inspector task
-    /// the user deliberately kept open. The frame tab remains the one place
-    /// where primary selection opens the clip-specific panel.
+    /// Primary-clip selection normally routes to audio. The selected task owns
+    /// its panel content; audio uses the selected clip as its editing scope.
     private var primarySelectionKeepsInspectorTask: Bool {
         guard case .primarySegment = editorStore.selection else { return false }
         return selectedInspector != .frame
@@ -181,13 +172,32 @@ struct EditorInspectorView: View {
             icon: { $0.icon },
             selection: $selectedFrameInspectorTab
         )
-        .padding(.horizontal, 14)
-        .padding(.vertical, 9)
+        .padding(.horizontal, EditorInterfaceSpacing.inspectorInset)
+        .padding(.vertical, usesCompactBackgroundLayout ? 4 : 8)
         .background(panelBackground)
         .overlay(alignment: .bottom) {
-            Divider().overlay(dividerColor)
+            Rectangle().fill(dividerColor).frame(height: 1)
         }
         .accessibilityIdentifier("editor.inspector.frame-subnavigation")
+    }
+
+    /// A short material browser keeps its fixed blur control while making
+    /// room for the thumbnails. Other inspector tasks keep their spacing.
+    var usesCompactBackgroundLayout: Bool {
+        showsFrameInspectorNavigation && selectedFrameInspectorTab == .background
+            && contentHeight < 340
+    }
+
+    /// Keep the selected clip's context visible without pushing its audio
+    /// controls out of a short inspector. Other audio scopes keep their layout.
+    var usesCompactSelectedAudioLayout: Bool {
+        guard selectedInspector == .audio, !isCropping, contentHeight < 340,
+              case .primarySegment = editorStore.selection else { return false }
+        return true
+    }
+
+    private var usesCompactInspectorChrome: Bool {
+        usesCompactBackgroundLayout || usesCompactSelectedAudioLayout
     }
 
     var inspector: some View {
@@ -195,48 +205,53 @@ struct EditorInspectorView: View {
             ZStack(alignment: .leading) {
                 HStack(spacing: 8) {
                     Text(appLocalized(inspectorHeader.title))
-                        .font(.appUI(size: 17, weight: .semibold))
-                        .foregroundStyle(EditorTheme.chrome(0.94))
+                        .font(EditorTypography.panelTitle)
+                        .foregroundStyle(EditorTheme.primaryText)
+                        .lineLimit(1)
+                        .layoutPriority(1)
                     if let scope = inspectorHeader.scope {
                         Text(appLocalized(scope))
-                            .font(.appUI(size: 10.5, weight: .semibold))
-                            .foregroundStyle(EditorTheme.platinumMuted)
-                            .lineLimit(1)
+                            .font(EditorTypography.caption)
+                            .foregroundStyle(EditorTheme.secondaryText)
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
                             .padding(.horizontal, 7)
-                            .frame(height: 23)
+                            .padding(.vertical, 4)
+                            .frame(minHeight: 23)
                             .background(
-                                EditorTheme.chrome(0.065),
+                                EditorTheme.chrome(0.045),
                                 in: Capsule(style: .continuous)
                             )
 
                         }
                     Spacer()
                 }
-                .id(inspectorPresentationIdentity)
-                .transition(
-                    .opacity.combined(
-                        with: .scale(scale: 0.97, anchor: .leading)
-                    )
-                )
+                // Changing objects with the same task and scope keeps the
+                // heading in place. Only a different visible heading fades.
+                .id(inspectorTitle)
+                .transition(.opacity)
             }
-            .padding(.horizontal, 18)
-            .frame(height: 54)
+            .padding(.horizontal, EditorInterfaceSpacing.inspectorInset)
+            .frame(height: usesCompactInspectorChrome ? 40 : 54)
             .background(panelBackground)
             .overlay(alignment: .bottom) {
-                Divider().overlay(dividerColor)
+                Rectangle().fill(dividerColor).frame(height: 1)
             }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(inspectorTitle)
-            .animation(SpringMotion.fluid, value: inspectorPresentationIdentity)
+            .animation(SpringMotion.crossfade, value: inspectorTitle)
 
             if showsFrameInspectorNavigation {
                 frameInspectorNavigation
             }
 
             ZStack(alignment: .top) {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 12) { inspectorContent }
-                        .padding(.horizontal, 22).padding(.vertical, 18)
+                AppKeyboardFocusScrollView(
+                    savedPosition: scrollPositions.position(for: inspectorScrollContext)
+                ) {
+                    VStack(alignment: .leading, spacing: EditorInterfaceSpacing.sectionGap) { inspectorContent }
+                        .padding(.horizontal, EditorInterfaceSpacing.inspectorInset)
+                        .padding(.vertical, usesCompactInspectorChrome ? 8 : 16)
                 }
                 .scrollIndicators(.hidden)
                 .id(inspectorScrollContext)
@@ -249,7 +264,8 @@ struct EditorInspectorView: View {
             if showsFrameInspectorNavigation, selectedFrameInspectorTab == .background,
                editorStore.previewProject.canvas.backgroundSource.usesWallpaperMedia {
                 backgroundBlurSection
-                    .padding(.horizontal, 22).padding(.bottom, 14)
+                    .padding(.horizontal, EditorInterfaceSpacing.inspectorInset)
+                    .padding(.bottom, usesCompactBackgroundLayout ? 10 : 14)
                     .background(panelBackground)
             }
         }
@@ -305,19 +321,6 @@ struct EditorInspectorView: View {
             return appLocalized(inspectorHeader.title)
         }
         return "\(appLocalized(inspectorHeader.title)) · \(appLocalized(scope))"
-    }
-
-    private var inspectorPresentationIdentity: EditorInspectorPresentationIdentity {
-        if isCropping { return .crop }
-        if primarySelectionKeepsInspectorTask {
-            return .tab(selectedInspector)
-        }
-        if selectedInspector == .opening,
-           editorStore.selection == .canvas || editorStore.selection == nil {
-            return .tab(selectedInspector)
-        }
-        if let selection = editorStore.selection { return .selection(selection) }
-        return .tab(selectedInspector)
     }
 
     private var inspectorScrollContext: EditorInspectorScrollContext {
@@ -397,14 +400,15 @@ struct EditorInspectorView: View {
             VStack(alignment: .leading, spacing: 14) {
             EditorBackgroundInspector(
                 editorStore: editorStore,
+                systemWallpaperCatalog: systemWallpaperCatalog,
                 onChooseWallpaper: onChooseWallpaper,
-                onChooseDesktopWallpaper: onChooseDesktopWallpaper,
-                onError: onError
+                onError: onError,
+                usesCompactLayout: usesCompactBackgroundLayout
             )
                 if !showsFrameInspectorNavigation { backgroundBlurSection }
             }
         case .layout:
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: EditorInterfaceSpacing.sectionGap) {
                 canvasLayoutSection
                 screenMaterialLayoutSection
                 screenSurfaceAppearanceSection
@@ -437,8 +441,8 @@ struct EditorInspectorView: View {
             if sequence.isEnabled {
                 VStack(alignment: .leading, spacing: 7) {
                     Text("开场方式")
-                        .font(.appUI(.caption2, weight: .semibold))
-                        .foregroundStyle(EditorTheme.chrome(0.62))
+                        .font(EditorTypography.controlLabel)
+                        .foregroundStyle(EditorTheme.primaryText)
                     EditorTileSelector(
                         options: OpeningSequencePreset.allCases,
                         title: { appLocalized($0.rawValue) },
@@ -446,16 +450,12 @@ struct EditorInspectorView: View {
                         selection: openingBinding(\.preset, actionName: "更换开场方式"),
                         columnCount: 3
                     )
-                    Text(sequence.motionCurve.editorDetail)
-                        .font(.appUI(.caption2))
-                        .foregroundStyle(EditorTheme.chrome(0.48))
-                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 VStack(alignment: .leading, spacing: 7) {
                     Text("动效节奏")
-                        .font(.appUI(.caption2, weight: .semibold))
-                        .foregroundStyle(EditorTheme.chrome(0.62))
+                        .font(EditorTypography.controlLabel)
+                        .foregroundStyle(EditorTheme.primaryText)
                     EditorTileSelector(
                         options: ElementMotionCurve.allCases,
                         title: { $0.editorTitle },
@@ -466,6 +466,10 @@ struct EditorInspectorView: View {
                         ),
                         columnCount: 3
                     )
+                    Text(appLocalized(sequence.motionCurve.editorDetail))
+                        .font(EditorTypography.helper)
+                        .foregroundStyle(EditorTheme.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 sliderRow(
@@ -487,13 +491,14 @@ struct EditorInspectorView: View {
                     )
                 } else {
                     Text("只有一个元素参与时无需设置间隔。")
-                        .font(.appUI(.caption2))
-                        .foregroundStyle(EditorTheme.chrome(0.48))
+                        .font(EditorTypography.helper)
+                        .foregroundStyle(EditorTheme.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 EditorDisclosure(
                     "参与元素与顺序",
-                    detail: "\(sequence.includedElements.count) 项参与",
+                    detail: String(format: appLocalized("%lld 项参与"), Int64(sequence.includedElements.count)),
                     icon: "list.number"
                 ) {
                     VStack(spacing: 7) {
@@ -518,10 +523,11 @@ struct EditorInspectorView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.editorQuiet)
+                .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
 
                 Text("柔化和突出从首帧保持生效；从 0 秒开始的贴图自身入场由全局开场接管，避免两套动画叠加。")
-                    .font(.appUI(.caption2))
-                    .foregroundStyle(EditorTheme.chrome(0.50))
+                    .font(EditorTypography.helper)
+                    .foregroundStyle(EditorTheme.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -1315,10 +1321,17 @@ struct EditorInspectorView: View {
                             onError: onError
                         )
                     },
-                    onEditingCancelled: { editorStore.cancelInteraction() }
+                    onEditingCancelled: { editorStore.cancelInteraction() },
+                    onTextPreviewValidityChanged: {
+                        updateEditorTextPreviewValidity(
+                            store: editorStore, isValid: $0,
+                            commandScope: .selection, selection: .zoom(animation.id),
+                            actionName: "调整缩放焦点"
+                        )
+                    }
                 )
                 if animation.origin == .automatic {
-                    Label("录制鼠标位置 · 拖动焦点切换为手动定位", systemImage: "cursorarrow.motionlines")
+                    Label("录制鼠标位置 · 调整焦点切换为手动定位", systemImage: "cursorarrow.motionlines")
                         .font(.appUI(size: 11)).foregroundStyle(.secondary)
                 }
 
@@ -1338,6 +1351,7 @@ struct EditorInspectorView: View {
                         Label("将倍率应用到全部缩放", systemImage: "square.stack.3d.up")
                     }
                     .buttonStyle(.editorQuiet)
+                    .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
                     .disabled(editorStore.previewProject.zoomAnimations.count < 2)
                     .help("将当前缩放级别应用到全部缩放动画，保留每段的时间和焦点")
                 }
@@ -1360,7 +1374,11 @@ struct EditorInspectorView: View {
 
                     EditorDisclosure(
                         "片段时间",
-                        detail: "开始 \(EditorSliderValueFormat.seconds.text(for: animation.startTime)) · 范围 \(EditorSliderValueFormat.seconds.text(for: animation.duration))"
+                        detail: String(
+                            format: appLocalized("开始 %@ · 范围 %@"),
+                            EditorSliderValueFormat.seconds.text(for: animation.startTime),
+                            EditorSliderValueFormat.seconds.text(for: animation.duration)
+                        )
                     ) {
                         VStack(spacing: 9) {
                             zoomTimeStepper(
@@ -1393,6 +1411,7 @@ struct EditorInspectorView: View {
                     selectedZoomID = nil
                 }
                 .buttonStyle(.editorDestructive)
+                .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 7, style: .continuous))
             } else if case .zoom = editorStore.selection {
                 EditorInspectorEmptyState(
                     title: "缩放片段已不存在",
@@ -1402,17 +1421,45 @@ struct EditorInspectorView: View {
                     action: { editorStore.selection = .zoomTrack }
                 )
             } else {
-                // 片段选择交还时间线：这里只保留创建与选中的引导，
-                // 不再用间接的文字下拉列表代替时间线。
-                Label(
-                    "在“缩放”轨道拖动创建；选中片段后在这里调整",
-                    systemImage: "timeline.selection"
-                )
-                .font(.appUI(.caption))
-                .foregroundStyle(.secondary)
-                .padding(10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(EditorTheme.chrome(0.035), in: RoundedRectangle(cornerRadius: 10))
+                // Selection stays on the timeline. When its track is hidden,
+                // reveal that workspace before offering the creation gesture.
+                if visibleTimelineTracks.contains(.zoom) {
+                    Label(
+                        "在“缩放”轨道拖动创建；选中片段后在这里调整",
+                        systemImage: "timeline.selection"
+                    )
+                    .font(.appUI(.caption))
+                    .foregroundStyle(.secondary)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(EditorTheme.chrome(0.035), in: RoundedRectangle(cornerRadius: 10))
+                } else {
+                    HStack(spacing: 10) {
+                        Label("缩放轨道已隐藏", systemImage: "eye.slash")
+                            .font(.appUI(.caption))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                        Button("显示缩放轨道") {
+                            visibleTimelineTracks.insert(.zoom)
+                        }
+                        .buttonStyle(.editorQuiet)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
+                        .accessibilityIdentifier("editor.inspector.zoom.show-track")
+                        .onKeyPress(keys: [.return], phases: .down) { press in
+                            guard !isCropping,
+                                  press.modifiers.intersection([.command, .control, .option, .shift]).isEmpty else {
+                                return .ignored
+                            }
+                            visibleTimelineTracks.insert(.zoom)
+                            return .handled
+                        }
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(EditorTheme.chrome(0.035), in: RoundedRectangle(cornerRadius: 10))
+                }
 
                 motionGlobalDefaults
             }

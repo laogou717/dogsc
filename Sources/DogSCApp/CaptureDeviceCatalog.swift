@@ -23,10 +23,6 @@ struct CameraRuntimeFormat: Equatable, Sendable {
     }
 }
 
-struct CameraSystemVideoEffects: Equatable, Sendable {
-    let names: [String]
-}
-
 /// The AVFoundation boundary for device discovery. Discovery sessions are
 /// rebuilt for each catalog refresh and again for every recorder start.
 enum CaptureDeviceCatalog {
@@ -59,18 +55,6 @@ enum CaptureDeviceCatalog {
                 continuation.resume(returning: cameraResolutions(deviceUniqueID: deviceUniqueID))
             }
         }
-    }
-
-    static func enabledSystemVideoEffects() -> CameraSystemVideoEffects {
-        var names: [String] = []
-        if AVCaptureDevice.isPortraitEffectEnabled { names.append(appLocalized("人像")) }
-        if AVCaptureDevice.isCenterStageEnabled { names.append(appLocalized("人物居中")) }
-        if AVCaptureDevice.isStudioLightEnabled { names.append(appLocalized("演播室灯光")) }
-        if AVCaptureDevice.reactionEffectGesturesEnabled { names.append(appLocalized("手势特效识别")) }
-        if #available(macOS 15.0, *), AVCaptureDevice.isBackgroundReplacementEnabled {
-            names.append(appLocalized("背景替换"))
-        }
-        return CameraSystemVideoEffects(names: names)
     }
 
     static func showSystemVideoEffects() {

@@ -7,7 +7,7 @@ extension EditorInspectorView {
             if editorStore.previewProject.canvas.backgroundSource.usesWallpaperMedia {
                 Divider().overlay(EditorTheme.hairline)
                 sliderRow("背景模糊", value: canvasBinding(\.backgroundBlur, actionName: "调整背景模糊"),
-                          range: 0...80, format: .points)
+                          range: 0...80, format: .points, compact: usesCompactBackgroundLayout)
             }
         }
     }
@@ -46,15 +46,25 @@ extension EditorInspectorView {
         if let context = primarySegmentContext(id: segmentID) {
             let overrides = editorStore.previewProject.timeline.primarySegmentAudioOverrides[segmentID]
             let inherits = overrides?.isEmpty ?? true
-            VStack(alignment: .leading, spacing: 9) {
+            VStack(alignment: .leading, spacing: usesCompactSelectedAudioLayout ? 6 : 9) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("第 \(context.index + 1) 段").font(.appUI(.callout, weight: .semibold))
+                    if usesCompactSelectedAudioLayout {
+                        Text(appLocalized(inherits ? "继承全片声音设置" : "已覆盖此段的声音设置"))
+                            .font(.appUI(.caption)).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        Text(String(format: appLocalized("第 %lld 段"), Int64(context.index + 1)))
+                            .font(.appUI(.callout, weight: .semibold))
+                    }
                     Spacer(minLength: 4)
                     Text("\(segmentTimestamp(context.segment.outputStart)) – \(segmentTimestamp(context.segment.outputEnd))")
                         .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: usesCompactSelectedAudioLayout, vertical: false)
                 }
-                Text(appLocalized(inherits ? "继承全片声音设置" : "已覆盖此段的声音设置"))
-                    .font(.appUI(.caption)).foregroundStyle(.secondary)
+                if !usesCompactSelectedAudioLayout {
+                    Text(appLocalized(inherits ? "继承全片声音设置" : "已覆盖此段的声音设置"))
+                        .font(.appUI(.caption)).foregroundStyle(.secondary)
+                }
                 HStack(spacing: 8) {
                     Button("定位到此段") {
                         playbackController.seek(to: context.segment.outputStart)
@@ -78,7 +88,7 @@ extension EditorInspectorView {
                 }
             }
             .padding(.horizontal, 2)
-            .padding(.vertical, 4)
+            .padding(.vertical, usesCompactSelectedAudioLayout ? 0 : 4)
         }
     }
 

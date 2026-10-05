@@ -13,7 +13,7 @@ private enum ProjectPersistenceControllerError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .autosaveInterrupted:
-            "自动保存被意外中断；本次编辑仍保留在内存中，请继续编辑或手动保存。"
+            appLocalized("自动保存被意外中断；本次编辑仍保留在内存中，请继续编辑或手动保存。")
         }
     }
 }

@@ -26,15 +26,6 @@ extension EditorView {
         }
     }
 
-    func setCanvasAspectRatio(_ aspectRatio: CanvasAspectRatio) {
-        guard cropPresentation.permits(.changeCanvasAspectRatio) else { return }
-        var canvas = editorStore.project.canvas
-        canvas.aspectRatio = aspectRatio
-        performEditorCommand {
-            try editorStore.replaceCanvas(with: canvas, actionName: "调整画布比例")
-        }
-    }
-
     func beginCrop() {
         guard cropPresentation.permits(.beginCrop) else { return }
         playbackController.endHoverPreview()

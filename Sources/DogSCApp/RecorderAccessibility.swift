@@ -5,9 +5,6 @@ enum RecorderAccessibilityID {
     static let phaseFinishing = "recorder.phase.finishing"
     static let permissionGate = "recorder.permission-gate"
 
-    static let setupSettings = "recorder.setup.settings"
-    static let setupStart = "recorder.setup.start"
     static let recordingPauseResume = "recorder.recording.pause-resume"
     static let recordingStop = "recorder.recording.stop"
-    static let recordingMore = "recorder.recording.more"
 }

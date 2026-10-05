@@ -48,9 +48,9 @@ enum ProjectAssetTransferError: LocalizedError, Equatable, Sendable {
     var errorDescription: String? {
         switch self {
         case .unavailableProject:
-            return "请先打开一个可编辑项目。"
+            return appLocalized("请先打开一个可编辑项目。")
         case .invalidImportedAsset:
-            return "项目素材的回滚路径无效。"
+            return appLocalized("项目素材的回滚路径无效。")
         }
     }
 }
@@ -143,11 +143,11 @@ enum ProjectRepositoryError: LocalizedError, Equatable, Sendable {
     var errorDescription: String? {
         switch self {
         case .sessionMismatch:
-            return "项目保存会话与当前项目不一致。"
+            return appLocalized("项目保存会话与当前项目不一致。")
         case .inactiveEpoch:
-            return "项目保存会话已经关闭。"
+            return appLocalized("项目保存会话已经关闭。")
         case .projectWriteTimedOut:
-            return "项目文件写入超时，已终止本次保存；素材文件不会受影响。"
+            return appLocalized("项目文件写入超时，已终止本次保存；素材文件不会受影响。")
         }
     }
 }
@@ -925,19 +925,6 @@ enum ProjectStore {
         defer { try? handle.close() }
         try handle.seekToEnd()
         try handle.write(contentsOf: line)
-    }
-
-    static func recordingPerformanceSamples(
-        session: RecordingSession
-    ) throws -> [RecordingPerformanceSample] {
-        guard FileManager.default.fileExists(atPath: session.recordingDiagnosticsURL.path) else {
-            return []
-        }
-        let data = try Data(contentsOf: session.recordingDiagnosticsURL)
-        let decoder = JSONDecoder()
-        return try data.split(separator: 0x0A).filter { !$0.isEmpty }.map {
-            try decoder.decode(RecordingPerformanceSample.self, from: Data($0))
-        }
     }
 
     static func isRecoverableProject(at packageURL: URL) -> Bool {

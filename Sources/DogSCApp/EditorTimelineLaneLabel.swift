@@ -14,10 +14,13 @@ struct EditorTimelineLaneLabel: View {
                 .font(.appUI(size: 13, weight: .regular))
                 .foregroundStyle(EditorTheme.chrome(0.48))
                 .frame(width: 20)
-            Text(title)
+            Text(appLocalized(title))
                 .font(.appUI(size: 11, weight: .medium))
                 .foregroundStyle(EditorTheme.chrome(0.66))
-                .lineLimit(1)
+                .lineLimit(2)
+                .minimumScaleFactor(0.85)
+                .allowsTightening(true)
+                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
             Group {
                 if let onHide {
@@ -28,8 +31,8 @@ struct EditorTimelineLaneLabel: View {
                             .frame(width: 24, height: 28)
                     }
                     .buttonStyle(.editorToolbarPress)
-                    .help("隐藏“\(title)”轨道；效果仍然生效")
-                    .accessibilityLabel("隐藏“\(title)”轨道")
+                    .help(String(format: appLocalized("隐藏“%@”轨道；效果仍然生效"), appLocalized(title)))
+                    .accessibilityLabel(String(format: appLocalized("隐藏“%@”轨道"), appLocalized(title)))
                 } else {
                     Color.clear.frame(width: 24, height: 28)
                 }

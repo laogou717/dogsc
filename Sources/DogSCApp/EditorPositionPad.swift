@@ -14,13 +14,14 @@ struct EditorPositionPad: View {
     let onChanged: (NormalizedPoint) -> Void
     let onEnded: () -> Void
     let onCancelled: () -> Void
+    var onTextPreviewValidityChanged: (Bool) -> Void = { _ in }
     var snapsToGrid = true
     var compactLayout = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 8) {
-                Text(title)
+                Text(appLocalized(title))
                     .font(.appUI(.caption, weight: .semibold))
                     .foregroundStyle(EditorTheme.chrome(0.84))
 
@@ -36,13 +37,14 @@ struct EditorPositionPad: View {
                         .font(.appUI(.caption2, weight: .semibold))
                 }
                 .buttonStyle(.editorGhost)
+                .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous))
                 .controlSize(.small)
                 .disabled(isCentered)
-                .accessibilityLabel("居中\(title)")
+                .accessibilityLabel(String(format: appLocalized("居中%@"), appLocalized(title)))
             }
 
             if let detail {
-                Text(detail)
+                Text(appLocalized(detail))
                     .font(.appUI(.caption2))
                     .foregroundStyle(EditorTheme.chrome(0.50))
                     .fixedSize(horizontal: false, vertical: true)
@@ -64,6 +66,7 @@ struct EditorPositionPad: View {
             EditorPairedParameterReadouts(
                 first: EditorPairedParameterValue(
                     title: "X",
+                    accessibilityTitle: String(format: appLocalized("%@ X 坐标"), appLocalized(title)),
                     value: clamp01(point.x),
                     range: 0...1,
                     displayText: EditorSliderValueFormat.percent.text(for: clamp01(point.x)),
@@ -71,6 +74,7 @@ struct EditorPositionPad: View {
                 ),
                 second: EditorPairedParameterValue(
                     title: "Y",
+                    accessibilityTitle: String(format: appLocalized("%@ Y 坐标"), appLocalized(title)),
                     value: clamp01(point.y),
                     range: 0...1,
                     displayText: EditorSliderValueFormat.percent.text(for: clamp01(point.y)),
@@ -82,6 +86,7 @@ struct EditorPositionPad: View {
                 onEnded: onEnded,
                 onCancelled: onCancelled,
                 onEditingChanged: { isCoordinateEditing = $0 },
+                onTextPreviewValidityChanged: onTextPreviewValidityChanged,
                 vertical: compactLayout
             )
     }
@@ -282,6 +287,13 @@ struct EditorTransactionalPositionPad: View {
             onChanged: updatePoint,
             onEnded: commitPoint,
             onCancelled: cancelPoint,
+            onTextPreviewValidityChanged: {
+                updateEditorTextPreviewValidity(
+                    store: editorStore, isValid: $0,
+                    commandScope: commandScope, selection: selection,
+                    actionName: actionName
+                )
+            },
             snapsToGrid: snapsToGrid,
             compactLayout: compactLayout
         )

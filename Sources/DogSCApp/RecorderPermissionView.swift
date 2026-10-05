@@ -166,7 +166,7 @@ final class RequiredPermissionWindowController: NSObject, NSWindowDelegate {
         hostingController = NSHostingController(
             rootView: RequiredRecordingPermissionView(model: model, presentation: presentation)
         )
-        let window = NSWindow(
+        let window = EscapeDismissibleWindow(
             contentRect: NSRect(x: 0, y: 0, width: 640, height: 460),
             styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
             backing: .buffered,
@@ -175,7 +175,7 @@ final class RequiredPermissionWindowController: NSObject, NSWindowDelegate {
         windowController = NSWindowController(window: window)
         super.init()
         window.identifier = permissionOnboardingWindowIdentifier
-        window.title = "开始使用 \(AppIdentity.displayName)"
+        window.title = String(format: appLocalized("开始使用 %@"), AppIdentity.displayName)
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true

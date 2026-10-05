@@ -248,18 +248,18 @@ func pointerCaptureFrame(
             height: area.height * screen.height
         )
     case .window:
-        guard let window = availableWindows.first(where: { $0.id == configuration.windowID }) else {
+        guard let windowID = configuration.windowID,
+              availableWindows.contains(where: { $0.id == windowID }),
+              let geometry = CaptureWindowGeometryLookup.live(windowID: windowID),
+              geometry.windowID == windowID else {
             // 窗口在 plan 冻结与录制开始之间已关闭：静默退化为整屏会让指针
             // 事件按整屏归一化而视频轨按窗口裁切，光标位置全部错位。必须显式失败。
             throw RecordingPlanError.windowUnavailable
         }
-        let mainDisplayHeight = CGDisplayBounds(CGMainDisplayID()).height
-        return CGRect(
-            x: window.frame.minX,
-            y: mainDisplayHeight - window.frame.maxY,
-            width: window.frame.width,
-            height: window.frame.height
-        )
+        // The selected catalog entry preserves identity and app metadata. Its
+        // frame may be minutes old after a take, so freeze current geometry
+        // again for every new run, including an immediate re-record.
+        return geometry.frame
     case .device:
         return .zero
     }

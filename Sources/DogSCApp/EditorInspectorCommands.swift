@@ -460,7 +460,11 @@ extension EditorInspectorView {
                 draftText: format.editingText(for: current),
                 onBegin: beginZoomTimeEditing,
                 onPreview: { text in
-                    guard let parsed = format.value(from: text) else { return false }
+                    guard let parsed = format.value(from: text) else {
+                        updateZoomTimeTextValidity(false)
+                        return false
+                    }
+                    updateZoomTimeTextValidity(true)
                     value.wrappedValue = resolvedValue(
                         min(max(parsed, range.lowerBound), range.upperBound)
                     )
@@ -510,6 +514,15 @@ extension EditorInspectorView {
         _ = editorStore.beginContinuousInteraction(
             commandScope: .selection,
             selection: .zoom(selectedZoomID)
+        )
+    }
+
+    func updateZoomTimeTextValidity(_ isValid: Bool) {
+        guard let selectedZoomID else { return }
+        updateEditorTextPreviewValidity(
+            store: editorStore, isValid: isValid,
+            commandScope: .selection, selection: .zoom(selectedZoomID),
+            actionName: "调整缩放时间"
         )
     }
 

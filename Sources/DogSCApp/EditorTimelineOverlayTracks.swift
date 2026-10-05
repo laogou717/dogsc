@@ -49,7 +49,7 @@ extension EditorTimelineView {
             TimelineOverlayClip(
                 id: $0.id,
                 timing: $0.timing,
-                title: $0.style == .spotlight ? "突出" : "柔化",
+                title: appLocalized($0.style == .spotlight ? "突出" : "柔化"),
                 tint: .orange,
                 kind: .mosaic,
                 layerIndex: -1
@@ -65,7 +65,9 @@ extension EditorTimelineView {
             TimelineOverlayClip(
                 id: sticker.id,
                 timing: sticker.timing,
-                title: orderedStickers.count > 1 ? "贴图 · 层 \(rank + 1)" : "贴图",
+                title: orderedStickers.count > 1
+                    ? String(format: appLocalized("贴图 · 层 %lld"), Int64(rank + 1))
+                    : appLocalized("贴图"),
                 tint: editorOverlayClip,
                 kind: .sticker,
                 layerIndex: sticker.layerIndex
@@ -340,10 +342,10 @@ extension EditorTimelineView {
                 .contextMenu { clipClipboardMenu(for: selection) }
                 .help("拖动中部移动；拖动两端调整时长")
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(clip.title)片段")
+                .accessibilityLabel(String(format: appLocalized("%@片段"), clip.title))
                 .accessibilityValue(
                     String(
-                        format: "开始 %.2f 秒，时长 %.2f 秒",
+                        format: appLocalized("开始 %.2f 秒，时长 %.2f 秒"),
                         clip.timing.startTime,
                         clip.timing.duration
                     )

@@ -4,22 +4,21 @@ import RecorderCore
 /// Shared material for the three independent tools surrounding the video.
 /// A single outer surface supplies depth; individual parameter groups stay flat.
 struct EditorFloatingSurface: ViewModifier {
-    @Environment(\.colorScheme) private var colorScheme
-    var cornerRadius: CGFloat = 24
+    var cornerRadius: CGFloat = EditorInterfaceRadius.floating
 
     func body(content: Content) -> some View {
         content
-            .background(LinearGradient(colors: [EditorTheme.cardElevated, EditorTheme.panelSurface], startPoint: .topLeading, endPoint: .bottomTrailing))
+            .background(EditorTheme.cardElevated)
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .strokeBorder(
-                        Color.white.opacity(colorScheme == .light ? 0.85 : 0.09),
-                        lineWidth: 1
+                        EditorTheme.hairline,
+                        lineWidth: 0.75
                     )
                     .allowsHitTesting(false)
             }
-            .shadow(color: .black.opacity(colorScheme == .light ? 0.055 : 0.20), radius: 16, y: 7)
+            .shadow(color: EditorTheme.softShadow.opacity(0.65), radius: 14, y: 5)
     }
 }
 
@@ -48,6 +47,7 @@ struct EditorWorkspaceGrid: View {
 /// Navigation lives to the left of the canvas, while the selected tool's
 /// controls remain on the right. The parent owns the existing routing binding.
 struct EditorWorkspaceToolRail: View {
+    @Environment(\.isEnabled) private var isEnabled
     @Binding var selection: InspectorTab
     let isCropping: Bool
     let cameraAvailable: Bool
@@ -60,54 +60,68 @@ struct EditorWorkspaceToolRail: View {
         ViewThatFits(in: .vertical) {
             rail(buttonHeight: 52, spacing: 5)
             rail(buttonHeight: 38, spacing: 2)
-            ScrollView(.vertical, showsIndicators: false) {
+            AppKeyboardFocusScrollView {
                 rail(buttonHeight: 38, spacing: 2)
                     .padding(.vertical, 8)
             }
+            .scrollIndicators(.hidden)
         }
         .frame(width: 72)
+        // Keep the surface on the viewport while the buttons scroll inside it.
+        .modifier(EditorFloatingSurface())
         .disabled(isCropping)
         .opacity(isCropping ? 0.45 : 1)
         
     }
 
     private func rail(buttonHeight: CGFloat, spacing: CGFloat) -> some View {
-        VStack(spacing: spacing) {
+        let compact = buttonHeight < 44
+        return VStack(spacing: spacing) {
             ForEach(InspectorTab.allCases) { tab in
                 let selected = selection == tab
                 Button {
-                    withAnimation(SpringMotion.fluid) { selection = tab }
+                    selectTab(tab)
                 } label: {
-                    VStack(spacing: 4) {
+                    VStack(spacing: compact ? 2 : 4) {
                         Image(systemName: tab.icon)
-                            .font(.appUI(size: 19, weight: .regular))
+                            .font(.appUI(size: compact ? 17 : 19, weight: .regular))
                         Text(tab.localizedLabel)
-                            .font(.appUI(size: 11, weight: selected ? .medium : .regular))
+                            .font(.appUI(size: compact ? 11 : 12, weight: selected ? .medium : .regular))
                             .lineLimit(1)
                             .minimumScaleFactor(0.85)
                     }
-                    .foregroundStyle(selected ? Color.primary : Color.secondary)
+                    .foregroundStyle(selected ? EditorTheme.primaryText : EditorTheme.secondaryText)
                     .frame(width: 56, height: buttonHeight)
                     .background {
                         if selected {
-                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous)
                                 .fill(EditorTheme.railSelectionWash)
-                                .shadow(color: EditorTheme.softShadow, radius: 4, y: 2)
                                 .matchedGeometryEffect(id: "toolSelection", in: selectionNamespace)
                         } else if hoveredTab == tab {
-                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous)
                                 .fill(EditorTheme.chrome(0.045))
                         }
                     }
-                    .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .contentShape(RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous))
                 }
-                .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 14, showsHover: false))
+                .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: EditorInterfaceRadius.group, showsHover: false))
+                .appButtonKeyboardFocus(
+                    in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous)
+                )
                 .disabled(!isAvailable(tab))
                 .opacity(isAvailable(tab) ? 1 : 0.38)
                 .help(help(for: tab))
                 .accessibilityLabel(tab.localizedLabel)
                 .accessibilityIdentifier("editor.workspace.tool.\(tab.id)")
                 .accessibilityAddTraits(selected ? .isSelected : [])
+                .onKeyPress(keys: [.return], phases: .down) { press in
+                    guard isEnabled, !isCropping, isAvailable(tab),
+                          press.modifiers.intersection([.command, .control, .option, .shift]).isEmpty else {
+                        return .ignored
+                    }
+                    selectTab(tab)
+                    return .handled
+                }
                 .onHover { hovering in
                     withAnimation(SpringMotion.interactive) {
                         hoveredTab = hovering ? tab : nil
@@ -117,7 +131,10 @@ struct EditorWorkspaceToolRail: View {
         }
         .padding(8)
         .fixedSize(horizontal: false, vertical: true)
-        .modifier(EditorFloatingSurface(cornerRadius: 24))
+    }
+
+    private func selectTab(_ tab: InspectorTab) {
+        withAnimation(SpringMotion.fluid) { selection = tab }
     }
 
     private func isAvailable(_ tab: InspectorTab) -> Bool {
@@ -152,22 +169,6 @@ enum EditorWorkspaceGeometry {
     }
 }
 
-/// Native NSPanel owns the only outer shadow. SwiftUI supplies the opaque
-/// rounded content silhouette, leaving the window corners transparent.
-struct RecorderPanelSurface: ViewModifier {
-    var cornerRadius: CGFloat = 18
-    func body(content: Content) -> some View {
-        content
-            .background(EditorTheme.panelSurface)
-            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(EditorTheme.chrome(0.06), lineWidth: 0.5)
-                    .allowsHitTesting(false)
-            }
-    }
-}
-
 struct EditorSoftRaisedButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View { Surface(configuration: configuration) }
 
@@ -179,22 +180,22 @@ struct EditorSoftRaisedButtonStyle: ButtonStyle {
         var body: some View {
             configuration.label
                 .foregroundStyle(EditorTheme.chrome(isEnabled ? 0.88 : 0.28))
-                .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
                 .background {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous)
                         .fill(configuration.isPressed && isEnabled
                             ? EditorTheme.panelRaised : EditorTheme.cardElevated)
                         .overlay {
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous)
                                 .fill(EditorTheme.chrome(isHovered && isEnabled ? 0.045 : 0))
                         }
                         .overlay {
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .strokeBorder(EditorTheme.chrome(isHovered && isEnabled ? 0.10 : 0.065), lineWidth: 0.75)
+                            RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous)
+                                .strokeBorder(EditorTheme.chrome(isHovered && isEnabled ? 0.14 : 0.085), lineWidth: 0.75)
                         }
                         .allowsHitTesting(false)
                 }
-                .shadow(color: EditorTheme.softShadow.opacity(isHovered && isEnabled ? 0.8 : 0.5), radius: 4, y: 2)
+                .shadow(color: EditorTheme.softShadow.opacity(isHovered && isEnabled ? 0.35 : 0.2), radius: 2, y: 1)
                 .scaleEffect(configuration.isPressed && isEnabled ? 0.97 : 1)
                 .onHover { isHovered = $0 }
                 .onChange(of: isEnabled) { _, enabled in if !enabled { isHovered = false } }

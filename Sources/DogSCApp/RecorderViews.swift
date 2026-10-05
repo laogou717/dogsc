@@ -15,7 +15,6 @@ let editorCameraSyncClip = Color(red: 0.34, green: 0.56, blue: 0.47)
 let editorOverlayClip = Color(red: 0.58, green: 0.37, blue: 0.31)
 /// 内容色：主片段的经典暖琥珀橙（Orange + White 标志性主片段风格）。
 let editorClipAmberTop = Color(red: 0.82, green: 0.56, blue: 0.22)
-let editorClipAmberBottom = Color(red: 0.65, green: 0.42, blue: 0.14)
 
 func setupWindowWidth() -> CGFloat { 714 }
 func recordingWindowWidth(recordsMicrophone: Bool) -> CGFloat {
@@ -158,8 +157,9 @@ struct SetupView: View {
 
     private var setupErrorDialog: AppDialog {
         let message = model.errorMessage ?? "未知错误"
+        let recovery = RecorderSetupErrorRecovery.forMessage(message)
         let actions: [AppDialog.Action]
-        if message.hasPrefix("保存目录不可用") {
+        if recovery == .projectFolder {
             actions = [
                 .init(id: "cancel", title: "取消", role: .cancel),
                 .init(id: "default", title: "使用默认位置") { _ in
@@ -168,12 +168,12 @@ struct SetupView: View {
                 },
                 .init(id: "choose", title: "重新选择文件夹…", role: .primary) { _ in model.chooseProjectsFolder() }
             ]
-        } else if message.hasPrefix("没有摄像头采集权限") {
+        } else if recovery == .camera {
             actions = [
                 .init(id: "cancel", title: "暂不使用摄像头", role: .cancel) { _ in model.selectCamera(nil) },
                 .init(id: "settings", title: "打开系统设置", role: .primary) { _ in model.openCameraPrivacySettings() }
             ]
-        } else if message.hasPrefix("没有麦克风权限") {
+        } else if recovery == .microphone {
             actions = [
                 .init(id: "cancel", title: "暂不使用麦克风", role: .cancel) { _ in model.selectMicrophone(nil) },
                 .init(id: "settings", title: "打开系统设置", role: .primary) { _ in model.openMicrophonePrivacySettings() }
@@ -209,9 +209,9 @@ struct RecordingBar: View {
         } action: { width in
             onContentWidthChange(width)
         }
-        .background(LinearGradient(colors: [.white, RecorderStyle.silver], startPoint: .top, endPoint: .bottom))
-        .clipShape(RoundedRectangle(cornerRadius: 18))
-        .overlay { RoundedRectangle(cornerRadius: 18).strokeBorder(.white.opacity(0.9)) }
+        .background(Color.white)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(RecorderStyle.line, lineWidth: 0.75) }
         .foregroundStyle(RecorderStyle.ink)
         .preferredColorScheme(.light)
         .accessibilityElement(children: .contain)
@@ -239,7 +239,7 @@ struct RecordingBar: View {
             )
         }
         .appDialog(isPresented: Binding(
-            get: { model.errorMessage?.hasPrefix("无法更新录制画面") == true },
+            get: { model.errorMessage.map(RecorderSetupErrorRecovery.isSurfaceUpdateErrorMessage) == true },
             set: { if !$0 { model.errorMessage = nil } }
         )) {
             AppDialog(title: "无法更新录制画面", message: model.errorMessage ?? "未知错误",
@@ -275,8 +275,9 @@ struct RecordingBar: View {
                     .font(.appUI(size: 17, weight: .medium)).monospacedDigit()
                     .frame(minWidth: 54, alignment: .leading)
             }
-            Text(model.isRecordingPaused ? "已暂停" : "录制中")
-                .font(.appUI(size: 11)).foregroundStyle(RecorderStyle.muted).frame(width: 40)
+            Text(appLocalized(model.isRecordingPaused ? "已暂停" : "录制中"))
+                .font(.appUI(size: 11)).foregroundStyle(RecorderStyle.muted)
+                .fixedSize(horizontal: true, vertical: false).frame(minWidth: 40)
             RecorderMicrophoneOrb(meter: model.microphoneInputLevel,
                 enabled: model.configuration.recordsMicrophone && !model.isRecordingPaused, size: 34)
                 .help("麦克风实时音量")
@@ -335,20 +336,14 @@ struct RecordingBar: View {
     private func recordingActionButton(icon: String, accessibilityLabel: String,
         accessibilityIdentifier: String, isEnabled: Bool = true,
         emphasized: Bool = false, action: @escaping () -> Void) -> some View {
-        ZStack {
+        RecorderNativeActionButton(accessibilityLabel: accessibilityLabel,
+            accessibilityIdentifier: accessibilityIdentifier, isEnabled: isEnabled,
+            width: 36, height: 34, action: action) {
             Image(systemName: icon).font(.appUI(size: 13, weight: .medium))
                 .foregroundStyle(emphasized ? Color.red : RecorderStyle.ink)
                 .frame(width: 36, height: 34)
                 .modifier(RecorderRaisedSurface(radius: 10))
-                .accessibilityHidden(true)
-            RecorderActionTrigger(action: action, accessibilityLabel: accessibilityLabel,
-                isEnabled: isEnabled, accessibilityIdentifier: accessibilityIdentifier,
-                cornerRadius: 10, highlightOpacity: 0.04)
-                .frame(width: 36, height: 34)
         }
-        .frame(width: 36, height: 34)
-        .opacity(isEnabled ? 1 : 0.4)
-        .help(accessibilityLabel)
     }
 
     private var recordingMenuItems: [RecorderMenuItem] {
@@ -478,19 +473,6 @@ enum CropHandle: CaseIterable {
     case bottom
     case bottomLeft
     case left
-
-    var accessibilityName: String {
-        switch self {
-        case .topLeft: return "左上裁切点"
-        case .top: return "上边裁切点"
-        case .topRight: return "右上裁切点"
-        case .right: return "右边裁切点"
-        case .bottomRight: return "右下裁切点"
-        case .bottom: return "下边裁切点"
-        case .bottomLeft: return "左下裁切点"
-        case .left: return "左边裁切点"
-        }
-    }
 }
 
 enum ZoomResizeEdge {

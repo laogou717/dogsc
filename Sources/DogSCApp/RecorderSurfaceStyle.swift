@@ -10,35 +10,113 @@ enum RecorderStyle {
     static let mintWash = Color(red: 0.84, green: 0.95, blue: 0.90)
     static let silver = Color(red: 0.965, green: 0.973, blue: 0.977)
     static let line = Color.black.opacity(0.065)
-    static let lift = Color(red: 0.17, green: 0.23, blue: 0.27).opacity(0.12)
+    static let lift = Color(red: 0.17, green: 0.23, blue: 0.27).opacity(0.08)
 }
 
 struct RecorderRaisedSurface: ViewModifier {
-    var radius: CGFloat = 13
+    var radius: CGFloat = EditorInterfaceRadius.group
     var selected = false
     func body(content: Content) -> some View {
         content.background {
             RoundedRectangle(cornerRadius: radius, style: .continuous)
-                .fill(LinearGradient(colors: [.white, selected ? RecorderStyle.mintWash : RecorderStyle.silver], startPoint: .top, endPoint: .bottom))
-                .shadow(color: RecorderStyle.lift, radius: 5, y: 3)
-                .overlay { RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(.white.opacity(0.94), lineWidth: 1) }
-                .overlay { RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(RecorderStyle.line, lineWidth: 0.5) }
+                .fill(selected ? RecorderStyle.mintWash : .white)
+                .shadow(color: RecorderStyle.lift.opacity(0.4), radius: 3, y: 1)
+                .overlay { RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(RecorderStyle.line, lineWidth: 0.75) }
         }
     }
 }
 
 struct RecorderButtonStyle: ButtonStyle {
     var primary = false
+    @Environment(\.isEnabled) private var isEnabled
+    func makeBody(configuration: Configuration) -> some View {
+        let pressed = configuration.isPressed && isEnabled
+        return configuration.label
+            .foregroundStyle(primary ? .white : RecorderStyle.ink)
+            .background(primary ? AnyShapeStyle(Color(white: pressed ? 0.16 : 0.24)) : AnyShapeStyle(Color.white), in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
+            .overlay { RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous).strokeBorder(RecorderStyle.line, lineWidth: 0.75) }
+            .appKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous),
+                              color: primary ? .white.opacity(0.65) : EditorTheme.chrome(0.40))
+            .shadow(color: RecorderStyle.lift.opacity(pressed ? 0.2 : 0.4), radius: pressed ? 1 : 3, y: 1)
+            .modifier(RecorderPressFeedback(isPressed: pressed, cornerRadius: EditorInterfaceRadius.control))
+    }
+}
+
+/// Keep compact configuration actions inside their existing hit bounds while
+/// sharing the toolbar's short pressed settle and reduced-motion behavior.
+struct RecorderPlainPressButtonStyle: ButtonStyle {
+    var cornerRadius: CGFloat = 10
+    @Environment(\.isEnabled) private var isEnabled
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .foregroundStyle(primary ? .white : RecorderStyle.ink)
-            .background(primary ? AnyShapeStyle(Color(white: configuration.isPressed ? 0.16 : 0.24)) : AnyShapeStyle(Color.white), in: RoundedRectangle(cornerRadius: 11))
-            .overlay { RoundedRectangle(cornerRadius: 11).strokeBorder(RecorderStyle.line, lineWidth: 0.75) }
-            .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 11),
-                              color: primary ? .white.opacity(0.65) : EditorTheme.chrome(0.40))
-            .shadow(color: RecorderStyle.lift.opacity(configuration.isPressed ? 0.3 : 0.8), radius: configuration.isPressed ? 1 : 4, y: 2)
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
-            .animation(.easeOut(duration: 0.14), value: configuration.isPressed)
+            .modifier(RecorderPressFeedback(isPressed: configuration.isPressed,
+                                           isEnabled: isEnabled, cornerRadius: cornerRadius))
+    }
+}
+
+/// Artwork reacts inside its existing native hit target. The inset edge and
+/// shade remain visible when accessibility settings suppress physical motion.
+struct RecorderPressFeedback: ViewModifier {
+    let isPressed: Bool
+    var isEnabled = true
+    var cornerRadius: CGFloat = 10
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        let pressed = isPressed && isEnabled
+        return content
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(.black.opacity(pressed ? 0.075 : 0))
+                    .allowsHitTesting(false)
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(colors: [.black.opacity(0.15), .white.opacity(0.5)],
+                                       startPoint: .top, endPoint: .bottom),
+                        lineWidth: 0.75
+                    )
+                    .opacity(pressed ? 1 : 0)
+                    .allowsHitTesting(false)
+            }
+            .scaleEffect(pressed && !reduceMotion ? 0.985 : 1)
+            .offset(y: pressed && !reduceMotion ? 0.7 : 0)
+            .animation(reduceMotion ? nil : .easeOut(duration: pressed ? 0.09 : 0.15), value: pressed)
+            .animation(nil, value: reduceMotion)
+    }
+}
+
+/// Each action keeps its press state through updates to the recording bar.
+/// The original AppKit control still owns mouse-up actions and accessibility.
+struct RecorderNativeActionButton<Label: View>: View {
+    let accessibilityLabel: String
+    var accessibilityIdentifier: String? = nil
+    var isEnabled = true
+    let width: CGFloat
+    let height: CGFloat
+    var cornerRadius: CGFloat = 10
+    var highlightOpacity: Double = 0.04
+    let action: () -> Void
+    @ViewBuilder let label: () -> Label
+    @State private var pressed = false
+
+    var body: some View {
+        ZStack {
+            label()
+                .frame(width: width, height: height)
+                .modifier(RecorderPressFeedback(isPressed: pressed, isEnabled: isEnabled,
+                                               cornerRadius: cornerRadius))
+                .accessibilityHidden(true)
+            RecorderActionTrigger(action: action, accessibilityLabel: accessibilityLabel,
+                isEnabled: isEnabled, accessibilityIdentifier: accessibilityIdentifier,
+                cornerRadius: cornerRadius, highlightOpacity: highlightOpacity,
+                onPressChange: { pressed = $0 })
+        }
+        .frame(width: width, height: height)
+        .opacity(isEnabled ? 1 : 0.4)
+        .help(accessibilityLabel)
     }
 }
 
@@ -63,9 +141,8 @@ struct RecorderInputOrb: View {
         }
         .frame(width: size, height: size)
         .clipShape(Circle())
-        .overlay { Circle().strokeBorder(.white.opacity(0.95), lineWidth: 1.2) }
         .overlay { Circle().strokeBorder(RecorderStyle.line, lineWidth: 0.6) }
-        .shadow(color: RecorderStyle.lift, radius: 4, y: 2)
+        .shadow(color: RecorderStyle.lift.opacity(0.5), radius: 3, y: 1)
         .overlay(alignment: .bottomTrailing) {
             if showsStatus {
                 Circle().fill(enabled ? RecorderStyle.mint : RecorderStyle.muted.opacity(0.5))
@@ -129,14 +206,14 @@ struct RecorderCirclePressStyle: ButtonStyle {
                 .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .fill(.black.opacity(isEnabled ? (configuration.isPressed ? 0.10 : hovered ? 0.065 : 0) : 0))
+                        .fill(.black.opacity(isEnabled && hovered && !configuration.isPressed ? 0.065 : 0))
                         .allowsHitTesting(false)
                 }
                 .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .scaleEffect(configuration.isPressed && isEnabled ? 0.95 : 1)
+                .modifier(RecorderPressFeedback(isPressed: configuration.isPressed, isEnabled: isEnabled,
+                                               cornerRadius: 18))
                 .onHover { hovered = $0 }
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: hovered)
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.13), value: configuration.isPressed)
         }
     }
 }

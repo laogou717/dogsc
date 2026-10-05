@@ -60,7 +60,7 @@ final class EditorMenuBridge: NSObject, NSMenuItemValidation {
     func installMainMenuItems() {
         guard let mainMenu = NSApplication.shared.mainMenu else { return }
         if !mainMenu.items.contains(where: { $0.identifier == fileMenuIdentifier }) {
-            let fileMenu = NSMenu(title: "文件")
+            let fileMenu = NSMenu(title: appLocalized("文件"))
             fileMenu.addItem(makeItem(
                 title: "打开项目…",
                 action: #selector(openProjectFromMenu(_:)),
@@ -71,7 +71,7 @@ final class EditorMenuBridge: NSObject, NSMenuItemValidation {
                 action: #selector(exportFromMenu(_:)),
                 keyEquivalent: "e"
             ))
-            let root = NSMenuItem(title: "文件", action: nil, keyEquivalent: "")
+            let root = NSMenuItem(title: appLocalized("文件"), action: nil, keyEquivalent: "")
             root.identifier = fileMenuIdentifier
             root.submenu = fileMenu
             mainMenu.insertItem(root, at: 1)
@@ -131,10 +131,15 @@ final class EditorMenuBridge: NSObject, NSMenuItemValidation {
     /// alert. Do not expose a dead menu until the product has real in-app help.
     private func removeUnavailableHelpMenu(from mainMenu: NSMenu) {
         let showHelpSelector = #selector(NSApplication.showHelp(_:))
+        let generatedHelpMenu = NSApplication.shared.helpMenu
         let generatedHelpRoots = mainMenu.items.dropFirst().filter { root in
             guard let submenu = root.submenu else { return false }
-            return submenu.items.contains(where: { $0.action == showHelpSelector })
-                || submenu.title == "帮助"
+            // AppKit may fill Help's commands only after its first opening.
+            // Identify the role and both supported titles before that happens.
+            return submenu === generatedHelpMenu
+                || submenu.items.contains(where: { $0.action == showHelpSelector })
+                || ["帮助", "Help"].contains(submenu.title)
+                || ["帮助", "Help"].contains(root.title)
         }
         NSApplication.shared.helpMenu = nil
         for root in generatedHelpRoots {
@@ -165,8 +170,8 @@ final class EditorMenuBridge: NSObject, NSMenuItemValidation {
             root = existingRoot
             editMenu = existingMenu
         } else {
-            editMenu = NSMenu(title: "编辑")
-            root = NSMenuItem(title: "编辑", action: nil, keyEquivalent: "")
+            editMenu = NSMenu(title: appLocalized("编辑"))
+            root = NSMenuItem(title: appLocalized("编辑"), action: nil, keyEquivalent: "")
             root.submenu = editMenu
             mainMenu.insertItem(root, at: min(2, mainMenu.items.count))
         }
@@ -219,7 +224,7 @@ final class EditorMenuBridge: NSObject, NSMenuItemValidation {
         keyEquivalent: String,
         modifiers: NSEvent.ModifierFlags
     ) {
-        item.title = title
+        item.title = appLocalized(title)
         item.target = self
         item.action = action
         item.keyEquivalent = keyEquivalent
@@ -232,7 +237,7 @@ final class EditorMenuBridge: NSObject, NSMenuItemValidation {
         keyEquivalent: String,
         modifiers: NSEvent.ModifierFlags = [.command]
     ) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: action, keyEquivalent: keyEquivalent)
+        let item = NSMenuItem(title: appLocalized(title), action: action, keyEquivalent: keyEquivalent)
         item.keyEquivalentModifierMask = modifiers
         item.target = self
         return item
@@ -269,25 +274,25 @@ final class EditorMenuBridge: NSObject, NSMenuItemValidation {
         case #selector(undoFromMenu(_:)):
             if let textView = NSApplication.shared.keyWindow?.firstResponder as? NSTextView,
                textView.isEditable {
-                menuItem.title = "撤销"
+                menuItem.title = appLocalized("撤销")
                 return textView.undoManager?.canUndo ?? false
             }
             if let name = editorUndoManager?.undoActionName, !name.isEmpty {
-                menuItem.title = "撤销“\(name)”"
+                menuItem.title = String(format: appLocalized("撤销“%@”"), appLocalized(name))
             } else {
-                menuItem.title = "撤销"
+                menuItem.title = appLocalized("撤销")
             }
             return editorUndoManager?.canUndo ?? false
         case #selector(redoFromMenu(_:)):
             if let textView = NSApplication.shared.keyWindow?.firstResponder as? NSTextView,
                textView.isEditable {
-                menuItem.title = "重做"
+                menuItem.title = appLocalized("重做")
                 return textView.undoManager?.canRedo ?? false
             }
             if let name = editorUndoManager?.redoActionName, !name.isEmpty {
-                menuItem.title = "重做“\(name)”"
+                menuItem.title = String(format: appLocalized("重做“%@”"), appLocalized(name))
             } else {
-                menuItem.title = "重做"
+                menuItem.title = appLocalized("重做")
             }
             return editorUndoManager?.canRedo ?? false
         case #selector(exportFromMenu(_:)):

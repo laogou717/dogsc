@@ -50,7 +50,8 @@ struct EditorFocusEffectInspector: View {
                             var updated = effect
                             updated.angleDegrees = value
                             update(updated)
-                        }, onEditingEnded: commit, onEditingCancelled: { editorStore.cancelInteraction() })
+                        }, onEditingEnded: commit, onEditingCancelled: { editorStore.cancelInteraction() },
+                        onTextPreviewValidityChanged: updateTextDraftValidity)
                 } else {
                 EditorSegmentedControl(
                     options: FocusEffectTarget.allCases,
@@ -74,7 +75,8 @@ struct EditorFocusEffectInspector: View {
                             var updated = effect
                             updated.center = point
                             update(updated)
-                        }, onEnded: commit, onCancelled: { editorStore.cancelInteraction() })
+                        }, onEnded: commit, onCancelled: { editorStore.cancelInteraction() },
+                        onTextPreviewValidityChanged: updateTextDraftValidity)
                 }
                 }
                 parameter("清晰范围", keyPath: \.size, range: 0.1...1, effect: effect)
@@ -98,7 +100,8 @@ struct EditorFocusEffectInspector: View {
                 var updated = effect
                 updated[keyPath: keyPath] = value
                 update(updated)
-            }, onEditingEnded: commit, onEditingCancelled: { editorStore.cancelInteraction() })
+            }, onEditingEnded: commit, onEditingCancelled: { editorStore.cancelInteraction() },
+            onTextPreviewValidityChanged: updateTextDraftValidity)
     }
 
     private func update(_ proposed: FocusEffect?) {
@@ -121,6 +124,15 @@ struct EditorFocusEffectInspector: View {
             default: break
             }
         }
+    }
+
+    private func updateTextDraftValidity(_ isValid: Bool) {
+        guard editorStore.selection == selection else { return }
+        updateEditorTextPreviewValidity(
+            store: editorStore, isValid: isValid,
+            commandScope: .selection, selection: selection,
+            actionName: "调整聚焦"
+        )
     }
 
     private func commit() {

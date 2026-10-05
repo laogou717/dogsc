@@ -23,7 +23,7 @@ struct EditorWorkspaceLayout: Equatable {
     var toolbarHeight: CGFloat { value(regular: 72, compact: 56) }
     var outerInset: CGFloat { value(regular: 16, compact: 10) }
     var timelineGap: CGFloat { value(regular: 12, compact: 8) }
-    var surfaceRadius: CGFloat { 24 * chromeScale }
+    var surfaceRadius: CGFloat { EditorInterfaceRadius.floating * chromeScale }
     var inspectorLogicalWidth: CGFloat {
         value(regular: min(max(size.width * 0.23, 384), 432), compact: 384)
     }

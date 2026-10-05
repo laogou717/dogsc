@@ -8,7 +8,7 @@ import UniformTypeIdentifiers
 
 private struct CameraPreviewReadinessTimeout: LocalizedError {
     var errorDescription: String? {
-        "没有收到摄像头画面，已暂时关闭摄像头。请在摄像头菜单中重新选择后再试。"
+        appLocalized("没有收到摄像头画面，已暂时关闭摄像头。请在摄像头菜单中重新选择后再试。")
     }
 }
 
@@ -191,7 +191,7 @@ extension AppModel {
                 // no-frame timeout is deliberately silent so the fallback
                 // remains non-blocking; real permission and device failures
                 // still use the existing recorder alert.
-                self.errorMessage = didTimeOut ? nil : error.localizedDescription
+                self.errorMessage = didTimeOut ? nil : appErrorDescription(error)
             }
         }
     }
@@ -230,12 +230,13 @@ extension AppModel {
                       self.configuration.microphoneDeviceID == device.id else { return }
                 _ = self.captureSetup.clearMicrophone(ifMatching: device.id)
                 self.microphoneInputLevel.update(0)
-                self.errorMessage = error.localizedDescription
+                self.errorMessage = appErrorDescription(error)
             }
         }
     }
 
     func suspendLiveInputIndicators() {
+        guard purpose == .recording else { return }
         _ = captureDeviceLifecycle.begin(.camera)
         _ = captureDeviceLifecycle.begin(.microphone)
         // The editor consumes recorded files only. Stop connection observers
@@ -270,6 +271,7 @@ extension AppModel {
     /// resources first prevents CoreMediaIO/VideoToolbox helpers from carrying
     /// stale work into the next foreground video application.
     func shutdownForApplicationTermination() {
+        cancelPendingRecordingRestart()
         if phase == .editor {
             EditorStylePresetStore.rememberLastUsedStyle(from: project)
         }
@@ -287,6 +289,7 @@ extension AppModel {
         finishingTask?.cancel()
         finishingTask = nil
         exporter.cancelExport()
+        guard purpose == .recording else { return }
         captureDeviceLifecycle.stop()
         captureCatalogTask?.cancel()
         captureCatalogTask = nil
@@ -383,7 +386,7 @@ extension AppModel {
                     guard !Task.isCancelled,
                           self.phase == .recording,
                           self.recordingRuns.isCurrent(runID) else { break }
-                    self.errorMessage = error.localizedDescription
+                    self.errorMessage = appErrorDescription(error)
                 }
             }
         }
@@ -484,7 +487,7 @@ extension AppModel {
             closeProject(resumingLiveInputs: resumingLiveInputs)
             return phase == .setup
         } catch {
-            appendCompletedRecordingError("保存项目失败：\(error.localizedDescription)")
+            appendCompletedRecordingError(String(format: appLocalized("保存项目失败：%@"), appErrorDescription(error)))
             return false
         }
     }
@@ -516,7 +519,7 @@ extension AppModel {
             return phase == .setup
         } catch {
             workspace.activate(session: session, isSaved: wasSaved)
-            appendCompletedRecordingError("无法删除项目：\(error.localizedDescription)")
+            appendCompletedRecordingError(String(format: appLocalized("无法删除项目：%@"), appErrorDescription(error)))
             return false
         }
     }
@@ -565,7 +568,7 @@ extension AppModel {
                     closeProject()
                 }
             } catch {
-                errorMessage = "保存项目失败：\(error.localizedDescription)"
+                errorMessage = String(format: appLocalized("保存项目失败：%@"), appErrorDescription(error))
                 if closeAfterSave {
                     recorderTransitionStage = .idle
                     phase = .editor
@@ -594,7 +597,7 @@ extension AppModel {
                 }
                 closeProject()
             } catch {
-                errorMessage = "保存项目失败：\(error.localizedDescription)"
+                errorMessage = String(format: appLocalized("保存项目失败：%@"), appErrorDescription(error))
                 recorderTransitionStage = .idle
                 phase = .editor
             }
@@ -624,7 +627,7 @@ extension AppModel {
                 closeProject()
             } catch {
                 workspace.activate(session: session, isSaved: wasSaved)
-                errorMessage = "无法删除项目：\(error.localizedDescription)"
+                errorMessage = String(format: appLocalized("无法删除项目：%@"), appErrorDescription(error))
                 recorderTransitionStage = .idle
                 phase = .editor
             }
@@ -640,10 +643,10 @@ extension AppModel {
 
     func detailedErrorDescription(_ error: any Error) -> String {
         let nsError = error as NSError
-        var details = [nsError.localizedDescription]
+        var details = [appErrorDescription(error)]
         details.append("\(nsError.domain) \(nsError.code)")
         if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
-            details.append("底层错误：\(underlying.domain) \(underlying.code)")
+            details.append(String(format: appLocalized("底层错误：%@ %ld"), underlying.domain, underlying.code))
         }
         return details.joined(separator: " · ")
     }
@@ -667,6 +670,7 @@ extension AppModel {
         guard phase == .recording,
               !isPauseTransitioning,
               let run = recordingRuns.active else { return }
+        cancelPendingRecordingRestart()
         suspendLiveInputIndicators()
         captureSetup.stopPresentation()
         surfaceVisibilityTask?.cancel()
@@ -720,7 +724,7 @@ extension AppModel {
                             discardedSession.packageURL
                         )
                     } catch {
-                        finalizationErrors.append(error.localizedDescription)
+                        finalizationErrors.append(appErrorDescription(error))
                     }
                 }
             }
@@ -730,14 +734,14 @@ extension AppModel {
             resetTransientRecordingState()
             if !restart { captureSetup.reset() }
             refreshRecentProjects()
-            if !finalizationErrors.isEmpty {
-                errorMessage = finalizationErrors.joined(separator: "；")
-            }
             // 丢弃/放弃录制回悬浮窗同样恢复麦克风监听与摄像头预览。
             resumeLiveInputIndicatorsForSetup()
             recorderTransitionStage = .idle
             phase = .setup
-            if restart { startRecording() }
+            if !finalizationErrors.isEmpty {
+                errorMessage = finalizationErrors.joined(separator: appLocalized("；"))
+            }
+            if restart { requestRecordingRestart(after: run) }
         }
     }
 
@@ -752,7 +756,6 @@ extension AppModel {
         restart: Bool
     ) async {
         finishingTask = nil
-        errorMessage = error.localizedDescription
         if let session = await workspace.invalidateCurrentSession() {
             let systemAudioDiagnostics = run.plan.configuration.recordsSystemAudio
                 ? await recorder.systemAudioDiagnostics() : nil
@@ -785,7 +788,66 @@ extension AppModel {
         resumeLiveInputIndicatorsForSetup()
         recorderTransitionStage = .idle
         phase = .setup
-        if restart { startRecording() }
+        errorMessage = appErrorDescription(error)
+        if restart { requestRecordingRestart(after: run) }
+    }
+
+    func cancelPendingRecordingRestart() {
+        pendingRecordingRestartGeneration &+= 1
+        pendingRecordingRestartTask?.cancel()
+        pendingRecordingRestartTask = nil
+    }
+
+    /// Restoring setup creates a new camera sample generation. Restart only
+    /// after that generation has delivered a real format, while the target and
+    /// configuration still belong to this exact automatic restart request.
+    private func requestRecordingRestart(after run: RecordingRun) {
+        cancelPendingRecordingRestart()
+        guard !Task.isCancelled,
+              phase == .setup,
+              currentSession == nil,
+              recordingRuns.active == nil,
+              captureSetup.target == run.plan.target,
+              let selectionToken = captureSetup.selectionToken else { return }
+        if cameraReadiness.permitsRecording {
+            startRecording()
+            return
+        }
+
+        let expectedConfiguration = configuration
+        let generation = pendingRecordingRestartGeneration
+        let deadline = ContinuousClock.now.advanced(by: .seconds(12))
+        pendingRecordingRestartTask = Task { @MainActor [weak self] in
+            defer {
+                if self?.pendingRecordingRestartGeneration == generation {
+                    self?.pendingRecordingRestartTask = nil
+                }
+            }
+            while !Task.isCancelled {
+                guard let self,
+                      self.pendingRecordingRestartGeneration == generation,
+                      self.phase == .setup,
+                      self.currentSession == nil,
+                      self.recordingRuns.active == nil,
+                      self.captureSetup.selectionToken == selectionToken,
+                      self.captureSetup.target == run.plan.target,
+                      self.configuration == expectedConfiguration else { return }
+                if self.cameraReadiness.permitsRecording {
+                    // startRecording cancels pending requests too. Detach this
+                    // completed request first, so it cannot cancel itself.
+                    self.pendingRecordingRestartTask = nil
+                    self.pendingRecordingRestartGeneration &+= 1
+                    self.startRecording()
+                    return
+                }
+                guard ContinuousClock.now < deadline else {
+                    self.errorMessage = "摄像头尚未就绪，已暂停重新录制。画面恢复后可再次开始。"
+                    return
+                }
+                do { try await Task.sleep(for: .milliseconds(100)) }
+                catch { return }
+            }
+        }
     }
 
     func resetTransientRecordingState() {
@@ -852,13 +914,11 @@ extension AppModel {
             // preparation 尾段会抛出该错误走 rollback，避免 UI 显示录制中
             // 但录屏流已死，直到用户手动停止才发现没有可用视频轨。
             preparingInterruptedError = error
-            errorMessage = "录制意外停止，正在安全结束并保留已经写入的素材："
-                + detailedErrorDescription(error)
+            errorMessage = String(format: appLocalized("录制意外停止，正在安全结束并保留已经写入的素材：%@"), detailedErrorDescription(error))
             return
         }
         guard phase == .recording else { return }
-        errorMessage = "录制意外停止，正在安全结束并保留已经写入的素材："
-            + detailedErrorDescription(error)
+        errorMessage = String(format: appLocalized("录制意外停止，正在安全结束并保留已经写入的素材：%@"), detailedErrorDescription(error))
         stopRecording()
     }
 }

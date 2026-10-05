@@ -590,39 +590,3 @@ enum CursorAssetLibrary {
         )
     }
 }
-
-/// Coordinate adapter shared by both renderers. The preview already uses a
-/// top-left origin; export supplies a Core Image bottom-left pointer and is
-/// converted before evaluating the exact same RecorderCore geometry.
-enum CursorRenderContract {
-    static func previewLayout(
-        pointer: CompositionPoint,
-        canvasSize: CursorAssetSize,
-        style: CursorStyle,
-        metrics: CursorAssetMetrics
-    ) -> CursorRenderLayout? {
-        CursorRenderGeometry.layout(
-            pointer: pointer,
-            canvasShortEdge: min(canvasSize.width, canvasSize.height),
-            styleSize: style.size,
-            metrics: metrics
-        )
-    }
-
-    static func exportLayout(
-        coreImagePointer: CompositionPoint,
-        canvasSize: CursorAssetSize,
-        style: CursorStyle,
-        metrics: CursorAssetMetrics
-    ) -> CursorRenderLayout? {
-        previewLayout(
-            pointer: CompositionPoint(
-                x: coreImagePointer.x,
-                y: canvasSize.height - coreImagePointer.y
-            ),
-            canvasSize: canvasSize,
-            style: style,
-            metrics: metrics
-        )
-    }
-}

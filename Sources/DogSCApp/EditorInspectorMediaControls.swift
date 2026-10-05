@@ -90,7 +90,7 @@ extension EditorInspectorView {
                 }
 
                 EditorDisclosure("移动手感", detail: editorStore.previewProject.motion.cursor == .none
-                    ? "线性" : appLocalized(editorStore.previewProject.motion.cursor.rawValue)) {
+                    ? appLocalized("线性") : appLocalized(editorStore.previewProject.motion.cursor.rawValue)) {
                     EditorSegmentedControl(
                         options: CursorMotionStyle.allCases,
                         title: { style in
@@ -123,7 +123,12 @@ extension EditorInspectorView {
                     if editorStore.previewProject.motion.cursor == .smooth {
                         EditorDisclosure(
                             "高级平滑参数",
-                            detail: "质量 \(EditorSliderValueFormat.decimal1.text(for: editorStore.previewProject.motion.cursorSpringMass)) · 刚度 \(EditorSliderValueFormat.points.text(for: editorStore.previewProject.motion.cursorSpringStiffness)) · 阻尼 \(EditorSliderValueFormat.points.text(for: editorStore.previewProject.motion.cursorSpringDamping))"
+                            detail: String(
+                                format: appLocalized("质量 %@ · 刚度 %@ · 阻尼 %@"),
+                                EditorSliderValueFormat.decimal1.text(for: editorStore.previewProject.motion.cursorSpringMass),
+                                EditorSliderValueFormat.points.text(for: editorStore.previewProject.motion.cursorSpringStiffness),
+                                EditorSliderValueFormat.points.text(for: editorStore.previewProject.motion.cursorSpringDamping)
+                            )
                         ) {
                             VStack(spacing: 10) {
                                 sliderRow(
@@ -203,6 +208,7 @@ extension EditorInspectorView {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.editorPrimary(minHeight: 32))
+                .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous), color: EditorTheme.onAccent.opacity(0.65))
             } else {
                 EditorInspectorSection("位置与形状") {
                     Label(
@@ -311,6 +317,7 @@ extension EditorInspectorView {
                                 }
                             }
                             .buttonStyle(.editorGhost)
+                            .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous))
                         }
                     }
                 }
@@ -325,12 +332,12 @@ extension EditorInspectorView {
                     ? "checkmark.circle.fill"
                     : "waveform.path.ecg",
                 iconTint: cameraSyncIsUnmodified ? Color.green : editorAccent,
-                expanded: $isCameraSyncEditing
+                expanded: $isCameraSyncEditing,
+                accessibilityHint: isCameraSyncEditing ? "收起校正设置" : "展开校正设置"
             ) {
                 cameraSyncCorrectionControls
                     .padding(.top, 6)
             }
-            .accessibilityHint(isCameraSyncEditing ? "收起校正设置" : "展开校正设置")
         }
     }
 
@@ -369,6 +376,7 @@ extension EditorInspectorView {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.editorQuiet)
+                .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
                 .foregroundStyle(.secondary)
 
                 if !savedLayoutPresets.isEmpty {
@@ -456,9 +464,14 @@ extension EditorInspectorView {
     }
 
     var cameraSyncSummaryLabel: String {
-        if cameraSyncIsUnmodified { return "同步正常" }
-        if cameraSyncAnchors.isEmpty { return "已应用 \(cameraSyncOffsetLabel)" }
-        return "已应用 \(cameraSyncOffsetLabel) · \(cameraSyncAnchors.count) 个分段点"
+        if cameraSyncIsUnmodified { return appLocalized("同步正常") }
+        if cameraSyncAnchors.isEmpty {
+            return String(format: appLocalized("已应用 %@"), cameraSyncOffsetLabel)
+        }
+        return String(
+            format: appLocalized("已应用 %@ · %lld 个分段点"),
+            cameraSyncOffsetLabel, Int64(cameraSyncAnchors.count)
+        )
     }
 
     var cameraSyncCorrectionControls: some View {
@@ -475,6 +488,7 @@ extension EditorInspectorView {
                     Label("归零", systemImage: "arrow.counterclockwise")
                 }
                 .buttonStyle(.editorGhost)
+                .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous))
                 .disabled(abs(cameraSyncOffset) < 0.000_5)
                 .help("只归零全片偏移，保留分段同步点")
             }
@@ -499,7 +513,10 @@ extension EditorInspectorView {
             HStack(spacing: 8) {
                 Text("分段同步点").font(.appUI(.caption, weight: .semibold))
                 Spacer()
-                Text("\(cameraSyncAnchors.count) 个 · 当前 \(cameraAnchorTotalOffsetLabel)")
+                Text(String(
+                    format: appLocalized("%lld 个 · 当前 %@"),
+                    Int64(cameraSyncAnchors.count), cameraAnchorTotalOffsetLabel
+                ))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
@@ -519,6 +536,7 @@ extension EditorInspectorView {
                     removeCameraAnchorAtPlayhead()
                 }
                 .buttonStyle(.editorDestructive)
+                .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 7, style: .continuous))
             } else {
                 Button {
                     adjustCameraAnchor(by: 0)
@@ -527,6 +545,7 @@ extension EditorInspectorView {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.editorQuiet)
+                .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
             }
 
             Text("先在错位前固定当前，再到错位后调整；两点之间自动平滑重映射。")
@@ -542,13 +561,25 @@ extension EditorInspectorView {
     ) -> some View {
         HStack(spacing: 8) {
             Button(action: onDelay) {
-                Label("画面延后 \(stepTitle)", systemImage: "arrow.left")
+                Label(
+                    String(format: appLocalized("画面延后 %@"), appLocalized(stepTitle)),
+                    systemImage: "arrow.left"
+                )
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
                     .frame(maxWidth: .infinity)
             }
+            .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
             Button(action: onAdvance) {
-                Label("画面提前 \(stepTitle)", systemImage: "arrow.right")
+                Label(
+                    String(format: appLocalized("画面提前 %@"), appLocalized(stepTitle)),
+                    systemImage: "arrow.right"
+                )
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
                     .frame(maxWidth: .infinity)
             }
+            .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
         }
         .buttonStyle(.editorQuiet)
     }
@@ -678,10 +709,10 @@ extension EditorInspectorView {
     }
 
     var audioInspector: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: usesCompactSelectedAudioLayout ? 8 : 14) {
             if let segmentID = selectedPrimarySegmentForAudio {
                 selectedAudioContext(segmentID)
-                EditorInspectorSection("片段声音") {
+                EditorInspectorSection("片段声音", showsTitle: !usesCompactSelectedAudioLayout) {
                     if sourceHasAudio {
                         audioVolumeRow(
                             "系统声音",
@@ -831,17 +862,8 @@ extension EditorInspectorView {
         return VStack(alignment: .leading, spacing: 11) {
             HStack(spacing: 10) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    EditorTheme.chrome(isEnabled.wrappedValue ? 0.13 : 0.055),
-                                    EditorTheme.chrome(isEnabled.wrappedValue ? 0.065 : 0.025)
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        )
+                    RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous)
+                        .fill(EditorTheme.chrome(isEnabled.wrappedValue ? 0.075 : 0.035))
                     Image(systemName: symbol)
                         .font(.appUI(size: 14, weight: .semibold))
                         .foregroundStyle(
@@ -854,19 +876,20 @@ extension EditorInspectorView {
                 .accessibilityHidden(true)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
+                    Text(appLocalized(title))
                         .font(.appUI(.caption, weight: .semibold))
-                    Text(detail)
+                    Text(appLocalized(detail))
                         .font(.appUI(.caption2))
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .accessibilityHidden(true)
                 Spacer()
                 EditorToggle(isOn: isEnabled)
-                    .accessibilityLabel("\(title)启用")
+                    .accessibilityLabel(String(format: appLocalized("%@启用"), appLocalized(title)))
                     .accessibilityValue(
-                        isEnabled.wrappedValue ? "开启" : "关闭"
+                        appLocalized(isEnabled.wrappedValue ? "开关状态 · 开启" : "开关状态 · 关闭")
                     )
                     .accessibilityIdentifier(
                         "\(accessibilityStem).enabled"
@@ -874,27 +897,21 @@ extension EditorInspectorView {
             }
             EditorTransactionalSliderRow(
                 editorStore: editorStore, title: "音量", value: value, range: 0...1,
-                commandScope: commandScope, format: .percent, onError: onError
+                commandScope: commandScope, format: .percent,
+                accessibilityTitle: "\(title)音量", onError: onError
             )
             .disabled(isMuted.wrappedValue)
             .opacity(isMuted.wrappedValue ? 0.45 : 1)
         }
         .padding(12)
         .background(
-            LinearGradient(
-                colors: [
-                    EditorTheme.chrome(isEnabled.wrappedValue ? 0.025 : 0.015),
-                    EditorTheme.chrome(0.012)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            ),
-            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+            EditorTheme.chrome(isEnabled.wrappedValue ? 0.028 : 0.015),
+            in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous)
         )
         .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous)
                 .stroke(
-                    EditorTheme.chrome(isEnabled.wrappedValue ? 0.10 : 0.055),
+                    EditorTheme.chrome(isEnabled.wrappedValue ? 0.085 : 0.055),
                     lineWidth: 0.75
                 )
         }
@@ -907,7 +924,8 @@ extension EditorInspectorView {
         value: Binding<Double>,
         range: ClosedRange<Double>,
         interactionScope: EditorInteractionCommandScope? = nil,
-        format: EditorSliderValueFormat = .decimal2
+        format: EditorSliderValueFormat = .decimal2,
+        compact: Bool = false
     ) -> some View {
         let commandScope = interactionScope ?? inferredContinuousCommandScope
         return EditorTransactionalSliderRow(
@@ -917,6 +935,7 @@ extension EditorInspectorView {
             range: range,
             commandScope: commandScope,
             format: format,
+            compact: compact,
             onError: onError
         )
     }
@@ -1003,7 +1022,7 @@ struct CursorClickEffectStylePicker: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 5) {
+            HStack(spacing: 4) {
                 ForEach(CursorClickEffectStyle.allCases, id: \.self) { style in
                     let isSelected = selection == style
                     let isPreviewing = hoveredStyle == style
@@ -1016,7 +1035,7 @@ struct CursorClickEffectStylePicker: View {
                                 isActive: isPreviewing,
                                 color: isSelected ? EditorTheme.selectionTint : Color.secondary
                             )
-                            Text(shortName(for: style))
+                            Text(appLocalized(shortName(for: style)))
                                 .font(.appUI(size: 11, weight: isSelected ? .medium : .regular))
                                 .lineLimit(1)
                         }
@@ -1026,24 +1045,25 @@ struct CursorClickEffectStylePicker: View {
                         .frame(maxWidth: .infinity)
                         .frame(height: 50)
                         .background(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous)
                                 .fill(
                                     isSelected
-                                        ? EditorTheme.selectionWash
-                                        : EditorTheme.chrome(hoveredStyle == style ? 0.045 : 0.012)
+                                        ? EditorTheme.cardElevated
+                                        : EditorTheme.chrome(hoveredStyle == style ? 0.045 : 0)
                                 )
                         )
                         .overlay(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .stroke(
+                            RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous)
+                                .strokeBorder(
                                     isSelected
-                                        ? EditorTheme.selectionTint.opacity(0.65)
-                                        : EditorTheme.chrome(hoveredStyle == style ? 0.16 : 0.06),
-                                    lineWidth: 1
+                                        ? EditorTheme.chrome(0.12)
+                                        : EditorTheme.chrome(hoveredStyle == style ? 0.10 : 0),
+                                    lineWidth: 0.75
                                 )
                         )
                     }
                     .buttonStyle(.editorThumbnail)
+                    .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous))
                     .onHover { isHovering in
                         hoveredStyle = isHovering ? style : (hoveredStyle == style ? nil : hoveredStyle)
                     }
@@ -1051,6 +1071,15 @@ struct CursorClickEffectStylePicker: View {
                     .accessibilityLabel("\(appLocalized("点击动画"))：\(appLocalized(style.displayName))")
                     .accessibilityAddTraits(isSelected ? .isSelected : [])
                 }
+            }
+            .padding(4)
+            .background(
+                EditorTheme.groupSurface,
+                in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous)
+                    .strokeBorder(EditorTheme.hairline, lineWidth: 0.75)
             }
         }
         .accessibilityElement(children: .contain)
@@ -1173,6 +1202,7 @@ struct CursorClickColorPicker: View {
                         .frame(width: 25, height: 28)
                 }
                 .buttonStyle(.editorToolbarPress).help("恢复光标默认颜色")
+                .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .accessibilityLabel("点击颜色：跟随光标主题")
                 ForEach(Self.presets, id: \.hex) { preset in
                     Button { onSelect(preset.hex) } label: {
@@ -1181,8 +1211,9 @@ struct CursorClickColorPicker: View {
                             .overlay(RoundedRectangle(cornerRadius: 7)
                                 .strokeBorder(selectedColor == preset.hex ? EditorTheme.selectionTint : .clear, lineWidth: 1.5))
                     }
-                    .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 7, cornerStyle: .circular)).help(preset.name)
-                    .accessibilityLabel("预设颜色：\(preset.name)")
+                    .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 7, cornerStyle: .circular)).help(appLocalized(preset.name))
+                    .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 7))
+                    .accessibilityLabel(String(format: appLocalized("预设颜色：%@"), appLocalized(preset.name)))
                     .accessibilityAddTraits(selectedColor == preset.hex ? .isSelected : [])
                 }
                 Button { showsCustomColor = true } label: {
@@ -1191,11 +1222,12 @@ struct CursorClickColorPicker: View {
                         .frame(width: 28, height: 28)
                 }
                 .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 14, cornerStyle: .circular)).accessibilityLabel("自定义点击颜色")
-                .popover(isPresented: $showsCustomColor) {
+                .appButtonKeyboardFocus(in: Circle())
+                .editorPopoverKeyboardEntry { showsCustomColor = true }
+                .editorPopover(isPresented: $showsCustomColor, establishesKeyboardEntry: false) {
                     EditorTransactionalColorInput(editorStore: editorStore, title: "点击颜色",
                         value: customColorBinding, commandScope: .cursor,
                         actionName: "调整点击动画颜色", onError: onError, presentsPalette: true)
-                        .appControlFocusAppearance()
                 }
             }
         }
@@ -1264,6 +1296,7 @@ private struct EditorCursorStylePreview: View {
         }
         .buttonStyle(.plain)
         .disabled(cursorIsHidden)
+        .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 14))
         .accessibilityLabel(appLocalized(cursorIsHidden ? "光标已始终隐藏" : "播放光标效果示意"))
         .task(id: "\(replayID):\(style.clickEffectStyle):\(isEditorActive):\(cursorIsHidden)") {
             isReplaying = isEditorActive && !cursorIsHidden

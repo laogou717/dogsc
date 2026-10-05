@@ -9,13 +9,23 @@ extension View {
         modifier(AppControlFocusAppearance())
     }
 
+    /// Bind at the native Button boundary, outside its ButtonStyle label.
+    /// The button keeps its standard activation and accessibility behavior.
+    func appButtonKeyboardFocus<Outline: InsettableShape>(
+        in outline: Outline,
+        color: Color = EditorTheme.chrome(0.40)
+    ) -> some View {
+        modifier(AppButtonKeyboardFocusCue(outline: outline, color: color))
+    }
+
     /// An inset, shape-matched keyboard cue; automatic first-button focus and
     /// pointer clicks do not leave a replacement ring behind.
     func appKeyboardFocus<Outline: InsettableShape>(
         in outline: Outline,
-        color: Color = EditorTheme.chrome(0.40)
+        color: Color = EditorTheme.chrome(0.40),
+        isFocused: Bool? = nil
     ) -> some View {
-        modifier(AppKeyboardFocusCue(outline: outline, color: color))
+        modifier(AppKeyboardFocusCue(outline: outline, color: color, explicitFocus: isFocused))
     }
 }
 
@@ -23,7 +33,7 @@ private struct AppShowsKeyboardFocusKey: EnvironmentKey {
     static let defaultValue = false
 }
 
-private extension EnvironmentValues {
+extension EnvironmentValues {
     var appShowsKeyboardFocus: Bool {
         get { self[AppShowsKeyboardFocusKey.self] }
         set { self[AppShowsKeyboardFocusKey.self] = newValue }
@@ -51,21 +61,35 @@ private struct AppControlFocusAppearance: ViewModifier {
     }
 }
 
+private struct AppButtonKeyboardFocusCue<Outline: InsettableShape>: ViewModifier {
+    @FocusState private var hasFocus: Bool
+    let outline: Outline
+    let color: Color
+
+    func body(content: Content) -> some View {
+        content
+            .focused($hasFocus)
+            .modifier(AppKeyboardFocusCue(outline: outline, color: color, explicitFocus: hasFocus))
+    }
+}
+
 private struct AppKeyboardFocusCue<Outline: InsettableShape>: ViewModifier {
     @Environment(\.isFocused) private var isFocused
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.appShowsKeyboardFocus) private var showsKeyboardFocus
     let outline: Outline
     let color: Color
+    var explicitFocus: Bool? = nil
 
     func body(content: Content) -> some View {
         content.overlay {
-            if isEnabled && isFocused && showsKeyboardFocus {
+            if isEnabled && (explicitFocus ?? isFocused) && showsKeyboardFocus {
                 outline.strokeBorder(color, lineWidth: 1.5)
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
             }
         }
+        .appKeyboardFocusScrollTarget(isFocused: explicitFocus ?? isFocused)
     }
 }
 
@@ -73,7 +97,7 @@ private struct AppKeyboardFocusCue<Outline: InsettableShape>: ViewModifier {
 /// event, inspect text, monitor pointer motion, or schedule per-frame work.
 /// The one monitor lives only while an app-owned presentation is mounted.
 @MainActor
-private final class AppKeyboardFocusVisibility: ObservableObject {
+final class AppKeyboardFocusVisibility: ObservableObject {
     static let shared = AppKeyboardFocusVisibility()
     @Published private(set) var isVisible = false
     private var mountedRoots = 0
@@ -81,7 +105,8 @@ private final class AppKeyboardFocusVisibility: ObservableObject {
 
     func acquire() {
         mountedRoots += 1
-        setVisible(false)
+        // A keyboard-opened presentation inherits navigation mode. Pointer
+        // events and the final release reset it, not another root mounting.
         guard monitor == nil else { return }
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
             MainActor.assumeIsolated {

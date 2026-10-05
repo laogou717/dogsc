@@ -17,24 +17,25 @@ struct RecorderSetupSurface: View {
             HStack(spacing: 2) {
                 ForEach(sources, id: \.0) { source, label, symbol in
                     ZStack {
-                        if activeSource == source {
-                            RoundedRectangle(cornerRadius: 14, style: .continuous).fill(LinearGradient(colors: [.white, RecorderStyle.mintWash], startPoint: .top, endPoint: .bottom))
-                                .overlay { RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(.white, lineWidth: 1.2) }
-                                .shadow(color: RecorderStyle.lift, radius: 4, y: 2)
-                                .matchedGeometryEffect(id: "capture-source", in: selection)
+                        ZStack {
+                            if activeSource == source {
+                                RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous).fill(RecorderStyle.mintWash)
+                                    .overlay { RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous).strokeBorder(RecorderStyle.line, lineWidth: 0.75) }
+                                    .matchedGeometryEffect(id: "capture-source", in: selection)
+                            }
+                            VStack(spacing: 5) {
+                                Image(systemName: symbol).font(.appUI(size: 21, weight: .regular))
+                                Text(appLocalized(label)).font(.appUI(size: 11, weight: activeSource == source ? .medium : .regular))
+                            }
+                            .foregroundStyle(activeSource == source ? RecorderStyle.ink : RecorderStyle.muted)
                         }
-                        VStack(spacing: 5) {
-                            Image(systemName: symbol).font(.appUI(size: 21, weight: .regular))
-                            Text(appLocalized(label)).font(.appUI(size: 11, weight: activeSource == source ? .medium : .regular))
-                        }
-                        .scaleEffect(pressedSource == source ? 0.94 : 1)
-                        .animation(.easeOut(duration: 0.13), value: pressedSource)
-                        .foregroundStyle(activeSource == source ? RecorderStyle.ink : RecorderStyle.muted)
+                        .frame(width: 56, height: 58)
+                        .modifier(RecorderPressFeedback(isPressed: pressedSource == source, cornerRadius: EditorInterfaceRadius.group))
                         .accessibilityHidden(true)
                         RecorderActionTrigger(action: {
                             RecorderPopoverPresenter.shared.dismiss()
                             model.selectCaptureSource(source)
-                        }, accessibilityLabel: appLocalized(label), accessibilityIdentifier: RecorderCaptureSourceAccessibilityID.value(for: source), cornerRadius: 14, highlightOpacity: 0.06, onPressChange: { pressedSource = $0 ? source : nil })
+                        }, accessibilityLabel: appLocalized(label), accessibilityIdentifier: RecorderCaptureSourceAccessibilityID.value(for: source), cornerRadius: EditorInterfaceRadius.group, highlightOpacity: 0.06, onPressChange: { pressedSource = $0 ? source : nil })
                     }.frame(width: 56, height: 58)
                 }
             }
@@ -66,9 +67,9 @@ struct RecorderSetupSurface: View {
                     Image(systemName: "chevron.down").font(.appUI(size: 10, weight: .medium))
                 }
                 .foregroundStyle(RecorderStyle.ink).padding(.horizontal, 12).frame(width: 154, height: 46)
-                .modifier(RecorderRaisedSurface(radius: 13))
+                .modifier(RecorderRaisedSurface(radius: EditorInterfaceRadius.group))
             } panel: { RecorderSavePopover(model: model) }
-            .firstUseTourTarget("recorder.save", in: .recorder, highlight: .rounded(13))
+            .firstUseTourTarget("recorder.save", in: .recorder, highlight: .rounded(EditorInterfaceRadius.group))
             RecorderMemoButton()
             Button {
                 RecorderPopoverPresenter.shared.dismiss()
@@ -79,13 +80,14 @@ struct RecorderSetupSurface: View {
                     .modifier(RecorderRaisedSurface(radius: 18))
             }
             .buttonStyle(RecorderCirclePressStyle()).help("退出DogSC").accessibilityLabel("退出DogSC")
+            .appButtonKeyboardFocus(in: Circle())
             .accessibilityIdentifier("recorder.setup.close")
         }
         .padding(.horizontal, 14)
         .frame(width: setupWindowWidth(), height: 80)
-        .background(LinearGradient(colors: [.white, RecorderStyle.silver], startPoint: .topLeading, endPoint: .bottomTrailing))
+        .background(Color.white)
         .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: 24).strokeBorder(.white.opacity(0.92), lineWidth: 1) }
+        .overlay { RoundedRectangle(cornerRadius: 24, style: .continuous).strokeBorder(RecorderStyle.line, lineWidth: 0.75) }
         .preferredColorScheme(.light)
         .firstUseTour(.recorder, enabled: model.phase == .setup && !model.showsRequiredPermissionGate)
     }

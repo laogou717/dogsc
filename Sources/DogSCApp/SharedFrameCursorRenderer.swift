@@ -25,11 +25,6 @@ enum SharedFrameCursorRenderer {
         return layer.image.composited(over: background).cropped(to: canvasRect)
     }
 
-    private struct CursorLayer {
-        var image: CIImage
-        var footprint: CGRect
-    }
-
     nonisolated static func layer(
         source: CIImage,
         scene: FrameCursorScene,

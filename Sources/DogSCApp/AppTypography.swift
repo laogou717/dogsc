@@ -31,6 +31,14 @@ enum AppTypography {
         }
         return .custom("AlibabaPuHuiTi_3_\(face)", fixedSize: size)
     }
+
+    static func regularTextWidth(_ text: String, size: CGFloat) -> CGFloat {
+        let systemFont = NSFont.systemFont(ofSize: size)
+        let font = registered
+            ? NSFont(name: "AlibabaPuHuiTi_3_55_Regular", size: size) ?? systemFont
+            : systemFont
+        return (text as NSString).size(withAttributes: [.font: font]).width
+    }
 }
 
 extension Font {

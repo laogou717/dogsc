@@ -46,7 +46,7 @@ extension AppModel {
             } catch {
                 guard !Task.isCancelled, self.recordingRuns.isCurrent(run.id) else { return }
                 self.captureSetup.replaceConfiguration(previous)
-                self.errorMessage = "无法更新录制画面：\(error.localizedDescription)"
+                self.errorMessage = String(format: appLocalized("无法更新录制画面：%@"), appErrorDescription(error))
             }
         }
     }
@@ -65,10 +65,6 @@ extension AppModel {
         return max(effectiveEnd.timeIntervalSince(startedAt) - accumulatedPausedDuration, 0)
     }
 
-    func recordAgain() {
-        requestCloseProject()
-    }
-
     /// Choosing Edit is the only completion-card action that creates the
     /// editor. Media and the project already crossed the stop/save boundary.
     func editCompletedRecording() {
@@ -76,6 +72,20 @@ extension AppModel {
               !isResolvingCompletedRecording,
               !AppDialogPresenter.isPresenting,
               currentSession != nil, recordingURL != nil else { return }
+        if WindowCoordinator.hasRecordingProjectEditor {
+            let sessionURL = currentSession?.packageURL
+            isResolvingCompletedRecording = true
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                defer { isResolvingCompletedRecording = false }
+                guard await WindowCoordinator.closeRecordingProjectEditorForReplacement(),
+                      phase == .recordingComplete,
+                      currentSession?.packageURL == sessionURL else { return }
+                recorderTransitionStage = .openingEditor
+                phase = .editor
+            }
+            return
+        }
         recorderTransitionStage = .openingEditor
         phase = .editor
     }
@@ -258,7 +268,7 @@ extension AppModel {
             do {
                 _ = try await workspace.flush(snapshot)
             } catch {
-                errorMessage = "保存项目失败：\(error.localizedDescription)"
+                errorMessage = String(format: appLocalized("保存项目失败：%@"), appErrorDescription(error))
             }
         }
     }
@@ -268,6 +278,7 @@ extension AppModel {
             errorMessage = "项目保存或关闭屏障尚未完成。"
             return
         }
+        cancelPendingRecordingRestart()
         captureSetup.stopPresentation()
         EditorStylePresetStore.rememberLastUsedStyle(from: project)
         let previousAudio = project.audio
@@ -303,16 +314,17 @@ extension AppModel {
     /// to setup must restart them, otherwise the level bar stays dead until
     /// the user manually re-selects the microphone.
     func resumeLiveInputIndicatorsForSetup() {
+        guard purpose == .recording else { return }
         // start() is idempotent and refreshes the catalog immediately after an
         // editor-only suspension. This avoids retaining device observers while
         // editing without showing stale choices on return to setup.
         captureDeviceLifecycle.start()
         applySavedSystemAudioPreference()
-        applySavedMicrophonePreferenceForSetup()
+        applySavedMicrophonePreferenceForSetup(clearingError: false)
         if configuration.recordsCamera,
            let cameraID = configuration.cameraDeviceID,
            let device = availableCameras.first(where: { $0.id == cameraID }) {
-            selectCamera(device)
+            selectCamera(device, clearingError: false)
         }
         if configuration.recordsMicrophone,
            microphoneMeterTask == nil,
@@ -328,8 +340,8 @@ extension AppModel {
             return nil
         }
         let panel = NSOpenPanel()
-        panel.title = "选择画布背景"
-        panel.prompt = "使用这个背景"
+        panel.title = appLocalized("选择画布背景")
+        panel.prompt = appLocalized("使用这个背景")
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         panel.allowedContentTypes = [
@@ -340,7 +352,7 @@ extension AppModel {
         do {
             return try importBackgroundAsset(from: sourceURL, session: currentSession)
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = appErrorDescription(error)
             return nil
         }
     }
@@ -351,8 +363,8 @@ extension AppModel {
             return nil
         }
         let panel = NSOpenPanel()
-        panel.title = "选择贴图"
-        panel.prompt = "添加"
+        panel.title = appLocalized("选择贴图")
+        panel.prompt = appLocalized("添加")
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         panel.allowedContentTypes = [.png, .jpeg, .heic, .tiff]
@@ -363,7 +375,7 @@ extension AppModel {
                 session: currentSession
             )
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = appErrorDescription(error)
             return nil
         }
     }
@@ -379,7 +391,7 @@ extension AppModel {
                 session: currentSession
             ).relativePath
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = appErrorDescription(error)
             return nil
         }
     }
@@ -395,7 +407,7 @@ extension AppModel {
                     session: currentSession
                 )
             } catch {
-                errorMessage = error.localizedDescription
+                errorMessage = appErrorDescription(error)
                 return nil
             }
         }
@@ -412,7 +424,7 @@ extension AppModel {
                 session: currentSession
             )
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = appErrorDescription(error)
             return nil
         }
     }
@@ -444,7 +456,7 @@ extension AppModel {
         do {
             return try importBackgroundAsset(from: sourceURL, session: currentSession)
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = appErrorDescription(error)
             return nil
         }
     }
@@ -472,8 +484,8 @@ extension AppModel {
               !isMediaExchangeRunning,
               let screen = recordingURL else { return }
         let panel = NSOpenPanel()
-        panel.title = "选择源文件导出文件夹"
-        panel.prompt = "导出到这里"
+        panel.title = appLocalized("选择源文件导出文件夹")
+        panel.prompt = appLocalized("导出到这里")
         panel.directoryURL = AppPreferences.exportDirectoryURL
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
@@ -501,7 +513,7 @@ extension AppModel {
                 }.value
                 NSWorkspace.shared.activateFileViewerSelecting([folder])
             } catch {
-                errorMessage = "导出源文件失败：\(error.localizedDescription)"
+                errorMessage = String(format: appLocalized("导出源文件失败：%@"), appErrorDescription(error))
             }
         }
     }
@@ -553,7 +565,7 @@ extension AppModel {
                 editorContextRevision &+= 1
                 _ = try await workspace.flush(replacement)
             } catch {
-                errorMessage = "替换摄像头文件失败：\(error.localizedDescription)"
+                errorMessage = String(format: appLocalized("替换摄像头文件失败：%@"), appErrorDescription(error))
             }
         }
     }
@@ -565,8 +577,8 @@ extension AppModel {
         initialURL: URL?
     ) -> URL? {
         let panel = NSOpenPanel()
-        panel.title = title
-        panel.prompt = prompt
+        panel.title = appLocalized(title)
+        panel.prompt = appLocalized(prompt)
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
@@ -578,9 +590,9 @@ extension AppModel {
     /// Lets the user choose where saved projects land (另存为/保存后的项目包).
     func chooseProjectsFolder() {
         let panel = NSOpenPanel()
-        panel.title = "选择项目保存位置"
-        panel.prompt = "选择"
-        panel.message = "后续录制的项目会自动保存到所选文件夹。"
+        panel.title = appLocalized("选择项目保存位置")
+        panel.prompt = appLocalized("选择")
+        panel.message = appLocalized("后续录制的项目会自动保存到所选文件夹。")
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.canCreateDirectories = true
@@ -597,15 +609,15 @@ extension AppModel {
             recordingDestinationName = ProjectStore.savedProjectsFolder.lastPathComponent
             refreshRecentProjects()
         } catch {
-            errorMessage = "无法设置项目保存位置：\(error.localizedDescription)"
+            errorMessage = String(format: appLocalized("无法设置项目保存位置：%@"), appErrorDescription(error))
         }
     }
 
     func openProjectPicker() {
         let panel = NSOpenPanel()
-        panel.title = "打开 \(AppIdentity.displayName) 项目"
-        panel.prompt = "打开"
-        panel.message = "选择要继续编辑的项目"
+        panel.title = String(format: appLocalized("打开 %@ 项目"), AppIdentity.displayName)
+        panel.prompt = appLocalized("打开")
+        panel.message = appLocalized("选择要继续编辑的项目")
         panel.directoryURL = ProjectStore.savedProjectsFolder
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
@@ -653,6 +665,11 @@ extension AppModel {
     }
 
     func requestOpenProject(at packageURL: URL) {
+        if WindowCoordinator.routeProjectOpen(at: packageURL, from: self) { return }
+        if purpose == .editing, exporter.isExporting || isMediaExchangeRunning {
+            errorMessage = "请先完成当前项目的打开、保存或导出操作。"
+            return
+        }
         switch phase {
         case .setup:
             beginProjectOpen(at: packageURL, projectToFlush: nil)
@@ -727,7 +744,7 @@ extension AppModel {
                     }
                 } catch {
                     guard !Task.isCancelled else { return }
-                    errorMessage = "打开新项目前无法安全保存当前项目：\(error.localizedDescription)"
+                    errorMessage = String(format: appLocalized("打开新项目前无法安全保存当前项目：%@"), appErrorDescription(error))
                     recorderTransitionStage = .idle
                     phase = .editor
                     return
@@ -755,7 +772,7 @@ extension AppModel {
                 projectOpenLogger.error(
                     "project open failed url=\(packageURL.path, privacy: .private) error=\(String(reflecting: error), privacy: .public)"
                 )
-                errorMessage = error.localizedDescription
+                errorMessage = appErrorDescription(error)
                 resumeLiveInputIndicatorsForSetup()
                 recorderTransitionStage = .idle
                 phase = .setup
@@ -831,6 +848,7 @@ extension AppModel {
     }
 
     func selectCaptureSource(_ source: CaptureSource) {
+        cancelPendingRecordingRestart()
         guard phase == .setup else { return }
         RecorderPopoverPresenter.shared.dismiss()
         guard hasRequiredRecordingPermissions else {
@@ -839,24 +857,6 @@ extension AppModel {
             return
         }
         captureSetup.selectSource(source)
-    }
-
-    func beginWindowSelection() {
-        selectCaptureSource(.window)
-    }
-
-    func selectCaptureDisplay(_ display: CaptureDisplay) {
-        guard phase == .setup else { return }
-        guard hasRequiredRecordingPermissions else {
-            captureSetup.stopPresentation()
-            beginRequiredPermissionOnboardingIfNeeded()
-            return
-        }
-        captureSetup.selectDisplay(display)
-    }
-
-    func chooseCaptureArea() {
-        selectCaptureSource(.area)
     }
 
     func refreshCaptureReadiness() {
@@ -882,7 +882,8 @@ extension AppModel {
             WindowCoordinator.endCaptureSourceSelection()
         }
         if hasRequiredRecordingPermissions,
-           errorMessage?.contains("权限") == true {
+           let message = errorMessage,
+           RecorderSetupErrorRecovery.isPermissionMessage(message) {
             errorMessage = nil
         }
     }
@@ -1043,6 +1044,11 @@ extension AppModel {
     }
 
     func selectCamera(_ device: CaptureDeviceInfo?) {
+        selectCamera(device, clearingError: true)
+    }
+
+    private func selectCamera(_ device: CaptureDeviceInfo?, clearingError: Bool) {
+        cancelPendingRecordingRestart()
         let operation = captureDeviceLifecycle.begin(.camera)
         cameraPreviewTask?.cancel()
         cameraPreviewTask = nil
@@ -1050,7 +1056,7 @@ extension AppModel {
         cameraRuntimeFormat = nil
         refreshAvailableCameraResolutions(deviceUniqueID: device?.id)
         saveCameraPreference(device)
-        errorMessage = nil
+        if clearingError { errorMessage = nil }
         if let device {
             startCameraPreview(device, operation: operation)
         } else {
@@ -1067,6 +1073,7 @@ extension AppModel {
         guard phase == .setup,
               let deviceID = configuration.cameraDeviceID,
               let device = availableCameras.first(where: { $0.id == deviceID }) else { return }
+        cancelPendingRecordingRestart()
         let operation = captureDeviceLifecycle.begin(.camera)
         cameraPreviewTask?.cancel()
         cameraPreviewTask = nil
@@ -1077,13 +1084,17 @@ extension AppModel {
     }
 
     func selectMicrophone(_ device: CaptureDeviceInfo?) {
+        selectMicrophone(device, clearingError: true)
+    }
+
+    private func selectMicrophone(_ device: CaptureDeviceInfo?, clearingError: Bool) {
         let operation = captureDeviceLifecycle.begin(.microphone)
         microphoneMeterTask?.cancel()
         microphoneMeterTask = nil
         microphoneInputLevel.update(0)
         captureSetup.setMicrophone(device)
         saveMicrophonePreference(device)
-        errorMessage = nil
+        if clearingError { errorMessage = nil }
         if let device {
             startMicrophoneMeter(device, operation: operation)
         } else {
@@ -1139,11 +1150,11 @@ extension AppModel {
         )
     }
 
-    private func applySavedMicrophonePreferenceForSetup() {
+    private func applySavedMicrophonePreferenceForSetup(clearingError: Bool = true) {
         let enabled = AppPreferences.isDefaultMicrophoneRecordingEnabled
         guard enabled else {
             if configuration.recordsMicrophone {
-                selectMicrophone(nil)
+                selectMicrophone(nil, clearingError: clearingError)
             }
             return
         }
@@ -1159,17 +1170,19 @@ extension AppModel {
             availableMicrophones.first(where: { $0.id == preferredID })
         } ?? availableMicrophones.first
         guard let device else { return }
-        selectMicrophone(device)
+        selectMicrophone(device, clearingError: clearingError)
     }
 
     func restorePreferredCaptureDevicesIfAvailable() {
         guard phase.allowsAutomaticLiveInputRestoration else { return }
+        // Device restoration also runs after project-open failures. Keep that
+        // pending notice until the user acknowledges it or chooses a device.
         let defaults = UserDefaults.standard
         if !configuration.recordsCamera,
            defaults.bool(forKey: CaptureDevicePreferenceKey.cameraEnabled),
            let preferredID = defaults.string(forKey: CaptureDevicePreferenceKey.cameraID),
            let device = availableCameras.first(where: { $0.id == preferredID }) {
-            selectCamera(device)
+            selectCamera(device, clearingError: false)
         }
         if !configuration.recordsMicrophone,
            defaults.bool(forKey: CaptureDevicePreferenceKey.microphoneEnabled) {
@@ -1179,7 +1192,7 @@ extension AppModel {
             let device = preferredID.flatMap { preferredID in
                 availableMicrophones.first(where: { $0.id == preferredID })
             } ?? availableMicrophones.first
-            if let device { selectMicrophone(device) }
+            if let device { selectMicrophone(device, clearingError: false) }
         }
     }
 

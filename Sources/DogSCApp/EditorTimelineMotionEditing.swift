@@ -144,7 +144,7 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
                 }
                 .accessibilityElement(children: .ignore)
                 .help("单击选中；拖动移动过渡；拖两端调整时长；右键可删除")
-                .accessibilityLabel(track == .screen ? "屏幕 3D \(index + 1)" : "摄像运动 \(index + 1)")
+                .accessibilityLabel(String(format: appLocalized(track == .screen ? "屏幕 3D %d" : "摄像运动 %d"), index + 1))
                 .accessibilityValue(
                     "\(timelineTimestamp(clip.timing.startTime)) 至 \(timelineTimestamp(clip.timing.endTime))"
                 )
@@ -235,7 +235,7 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
         Capsule(style: .continuous)
             .fill(EditorTheme.chrome(0.94))
             .frame(width: 3, height: 26)
-            .accessibilityLabel(leading ? "调整动画开始" : "调整动画结束")
+            .accessibilityLabel(appLocalized(leading ? "调整动画开始" : "调整动画结束"))
     }
 
     func motionTrackColor(_ track: EditorMotionTimelineTrack) -> Color {

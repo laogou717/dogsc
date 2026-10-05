@@ -130,11 +130,15 @@ struct RecorderPopoverButton<Label: View, Panel: View>: View {
     @ViewBuilder let label: () -> Label
     @ViewBuilder let panel: () -> Panel
     @State private var pressed = false
+    private var cornerRadius: CGFloat { width == height ? height / 2 : EditorInterfaceRadius.group }
     var body: some View {
         ZStack {
-            label().scaleEffect(pressed ? 0.96 : 1).animation(.easeOut(duration: 0.13), value: pressed).accessibilityHidden(true)
+            label()
+                .frame(width: width, height: height)
+                .modifier(RecorderPressFeedback(isPressed: pressed, cornerRadius: cornerRadius))
+                .accessibilityHidden(true)
             RecorderPopoverTrigger(id: id, title: title, content: AnyView(panel()), panelWidth: panelWidth,
-                                   cornerRadius: width == height ? height / 2 : 13,
+                                   cornerRadius: cornerRadius,
                                    onPressChange: { pressed = $0 })
         }
         .frame(width: width, height: height)
@@ -186,9 +190,9 @@ struct RecorderPopoverSurface<Content: View>: View {
         content().padding(18).frame(width: width)
             .foregroundStyle(RecorderStyle.ink)
             .font(.appUI(size: 13))
-            .background(LinearGradient(colors: [.white, RecorderStyle.silver], startPoint: .topLeading, endPoint: .bottomTrailing))
-            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-            .overlay { RoundedRectangle(cornerRadius: 20).strokeBorder(.white.opacity(0.9), lineWidth: 1).allowsHitTesting(false) }
+            .background(Color.white)
+            .clipShape(RoundedRectangle(cornerRadius: EditorInterfaceRadius.floating, style: .continuous))
+            .overlay { RoundedRectangle(cornerRadius: EditorInterfaceRadius.floating, style: .continuous).strokeBorder(RecorderStyle.line, lineWidth: 0.75).allowsHitTesting(false) }
     }
 }
 
@@ -215,7 +219,9 @@ struct RecorderChoiceRow: View {
             .background(selected ? RecorderStyle.mintWash.opacity(0.6) : hovered ? Color.black.opacity(0.035) : .clear, in: RoundedRectangle(cornerRadius: 10))
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain).disabled(!enabled).opacity(enabled ? 1 : 0.4)
+        .buttonStyle(RecorderPlainPressButtonStyle())
+        .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 10))
+        .disabled(!enabled).opacity(enabled ? 1 : 0.4)
         .onHover { value in withAnimation(.easeOut(duration: 0.12)) { hovered = value } }
         .accessibilityValue(selected ? appLocalized("已选择") : "")
     }

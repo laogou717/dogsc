@@ -21,7 +21,6 @@ protocol CaptureSetupSelectorPresenting: AnyObject {
     var onDeviceStart: ((CaptureDeviceInfo, CaptureSelectionToken) -> Void)? { get set }
     var onDeviceCancel: ((CaptureSelectionToken) -> Void)? { get set }
     var onDeviceRefresh: (() -> Void)? { get set }
-    var onAutomaticallyCreatesZoomsChange: ((Bool) -> Void)? { get set }
     var onAreaSelectionChanged: ((NormalizedRect) -> Void)? { get set }
 
     func startDisplay(displays: [CaptureDisplay], token: CaptureSelectionToken)
@@ -37,10 +36,14 @@ protocol CaptureSetupSelectorPresenting: AnyObject {
         token: CaptureSelectionToken
     )
     func updateScreenDevices(_ devices: [CaptureDeviceInfo])
-    func setAutomaticallyCreatesZooms(_ enabled: Bool)
     func stopAll()
+    func stopAll(preservingRetiringSelections: Bool)
     func beginRecordingPresentation(configuration: CaptureConfiguration)
     func updateWindowRecordingGeometry(_ geometry: CaptureWindowGeometry?)
+}
+
+extension CaptureSetupSelectorPresenting {
+    func stopAll(preservingRetiringSelections: Bool) { stopAll() }
 }
 
 @MainActor
@@ -56,7 +59,6 @@ final class CaptureSetupSelectorPresenter: CaptureSetupSelectorPresenting {
     var onDeviceStart: ((CaptureDeviceInfo, CaptureSelectionToken) -> Void)?
     var onDeviceCancel: ((CaptureSelectionToken) -> Void)?
     var onDeviceRefresh: (() -> Void)?
-    var onAutomaticallyCreatesZoomsChange: ((Bool) -> Void)?
     /// Fired while the area selector's drag selection settles, before the
     /// explicit 开始录制 confirm. Lets the controller publish the area
     /// immediately so the start button is live without an extra step.
@@ -85,9 +87,6 @@ final class CaptureSetupSelectorPresenter: CaptureSetupSelectorPresenting {
         windowSelector.onUnlock = { [weak self] in self?.onWindowUnlock?($0) }
         windowSelector.onStart = { [weak self] in self?.onWindowStart?($0, $1) }
         windowSelector.onCancel = { [weak self] in self?.onWindowCancel?($0) }
-        windowSelector.onAutomaticallyCreatesZoomsChange = { [weak self] in
-            self?.onAutomaticallyCreatesZoomsChange?($0)
-        }
         deviceSelector.onSelect = { [weak self] in self?.onDeviceSelect?($0, $1) }
         deviceSelector.onStart = { [weak self] in self?.onDeviceStart?($0, $1) }
         deviceSelector.onCancel = { [weak self] in self?.onDeviceCancel?($0) }
@@ -139,20 +138,20 @@ final class CaptureSetupSelectorPresenter: CaptureSetupSelectorPresenting {
         deviceSelector.updateDevices(devices)
     }
 
-    func setAutomaticallyCreatesZooms(_ enabled: Bool) {
-        windowSelector.setAutomaticallyCreatesZooms(enabled)
+    func stopAll() {
+        stopAll(preservingRetiringSelections: false)
     }
 
-    func stopAll() {
-        windowSelector.stop()
-        displaySelector.stop()
+    func stopAll(preservingRetiringSelections: Bool) {
+        windowSelector.stop(preservingRetiringPanels: preservingRetiringSelections)
+        displaySelector.stop(preservingRetiringPanels: preservingRetiringSelections)
         deviceSelector.stop()
-        areaSelector.cancel()
+        areaSelector.cancel(preservingRetiringPanels: preservingRetiringSelections)
         areaSelector.hideRecordingOverlay()
     }
 
     func beginRecordingPresentation(configuration: CaptureConfiguration) {
-        displaySelector.stop()
+        displaySelector.stop(preservingRetiringPanels: true)
         deviceSelector.stop()
         if configuration.source == .window,
            let windowID = configuration.windowID {
@@ -217,12 +216,14 @@ final class CaptureSetupController: ObservableObject {
 
     var onStartRequested: (() -> Void)?
     var onError: ((String?) -> Void)?
-    var onSelectionPresentationStarted: (() -> Void)?
+    var onSelectionPresentationStarted: ((CaptureSource) -> Void)?
+    var onSelectionPresentationEnded: (() -> Void)?
     var onFocusRestorationRequested: (() -> Void)?
     var recorderDisplayID: (() -> UInt32?)?
 
     var selectedSource: CaptureSource? { selection.state.selectedSource }
     var target: CaptureSelectionTarget? { selection.state.target }
+    var selectionToken: CaptureSelectionToken? { selection.state.session?.token }
     var canStartRecording: Bool { selection.state.canStartRecording }
 
     private let presenter: any CaptureSetupSelectorPresenting
@@ -233,6 +234,7 @@ final class CaptureSetupController: ObservableObject {
     private var windowsRefreshToken: CaptureSelectionToken?
     private var focusRestorationGeneration: UInt64 = 0
     private var startRequestedToken: CaptureSelectionToken?
+    private var presentationSource: CaptureSource?
     private var selectionBaselineToken: CaptureSelectionToken?
     private var selectionBaselineConfiguration: CaptureConfiguration?
     private var selectionBaselineTarget: CaptureSelectionTarget?
@@ -267,7 +269,6 @@ final class CaptureSetupController: ObservableObject {
         self.windowGeometryRuntime.onChange = { [weak self] geometry in
             self?.presenter.updateWindowRecordingGeometry(geometry)
         }
-        presenter.setAutomaticallyCreatesZooms(automaticallyCreatesZooms)
         presenter.updateScreenDevices(availableScreenDevices)
     }
 
@@ -281,7 +282,10 @@ final class CaptureSetupController: ObservableObject {
         selectionBaselineTarget = baselineTarget
         startRequestedToken = nil
         stopPresentation()
-        onSelectionPresentationStarted?()
+        // Resolve the originating screen before hiding the setup window.
+        let requestedDisplayID = recorderDisplayID?()
+        presentationSource = source
+        onSelectionPresentationStarted?(source)
 
         var updated = configuration
         updated.source = source
@@ -305,7 +309,6 @@ final class CaptureSetupController: ObservableObject {
             presenter.startWindow(token: session.token)
         case .area:
             availableDisplays = providers.displays()
-            let requestedDisplayID = recorderDisplayID?()
             presenter.startArea(
                 displayID: requestedDisplayID,
                 token: session.token
@@ -319,40 +322,14 @@ final class CaptureSetupController: ObservableObject {
             refreshScreenDevices()
             presenter.startDevice(
                 devices: availableScreenDevices,
-                displayID: recorderDisplayID?(),
+                displayID: requestedDisplayID,
                 token: session.token
             )
         }
     }
 
-    /// Direct confirmation applies a display choice without opening a selector
-    /// overlay.
-    func selectDisplay(_ display: CaptureDisplay) {
-        let session = selection.choose(.display)
-        selectionBaselineToken = nil
-        selectionBaselineConfiguration = nil
-        selectionBaselineTarget = nil
-        startRequestedToken = nil
-        stopPresentation()
-        var updated = configuration
-        updated.source = .display
-        clearTarget(for: .display, in: &updated)
-        publishConfiguration(updated)
-        _ = confirm(
-            .display(id: display.id, name: display.name),
-            token: session.token
-        )
-    }
-
     func replaceConfiguration(_ replacement: CaptureConfiguration) {
         publishConfiguration(replacement)
-        refreshReadiness()
-    }
-
-    func setCaptureFrameRate(_ frameRate: OutputFrameRate) {
-        var updated = configuration
-        updated.captureFrameRate = frameRate
-        publishConfiguration(updated)
         refreshReadiness()
     }
 
@@ -492,11 +469,24 @@ final class CaptureSetupController: ObservableObject {
         }
     }
 
-    func stopPresentation() {
+    func stopPresentation(preservingRetiringSelections: Bool = false) {
         windowsRefreshToken = nil
         isRefreshingWindows = false
         windowGeometryRuntime.stop()
-        presenter.stopAll()
+        presenter.stopAll(preservingRetiringSelections: preservingRetiringSelections)
+        if presentationSource != nil {
+            presentationSource = nil
+            onSelectionPresentationEnded?()
+        }
+    }
+
+    /// The selector may already have closed before AppModel's synchronous
+    /// preflight refuses to start. Keep the confirmed target available to retry.
+    func recordingStartDidNotProceed() {
+        guard startRequestedToken != nil else { return }
+        startRequestedToken = nil
+        stopPresentation()
+        restoreFocus(allowingSelectedSource: true)
     }
 
     func reset() {
@@ -558,11 +548,6 @@ final class CaptureSetupController: ObservableObject {
         }
         presenter.onDeviceCancel = { [weak self] token in self?.cancel(token: token) }
         presenter.onDeviceRefresh = { [weak self] in self?.refreshScreenDevices() }
-        presenter.onAutomaticallyCreatesZoomsChange = { [weak self] enabled in
-            guard let self, automaticallyCreatesZooms != enabled else { return }
-            automaticallyCreatesZooms = enabled
-            presenter.setAutomaticallyCreatesZooms(enabled)
-        }
     }
 
     private func completeAreaSelection(
@@ -667,7 +652,7 @@ final class CaptureSetupController: ObservableObject {
         selectionBaselineToken = nil
         selectionBaselineConfiguration = nil
         selectionBaselineTarget = nil
-        stopPresentation()
+        stopPresentation(preservingRetiringSelections: true)
         if let baselineConfiguration {
             publishConfiguration(baselineConfiguration)
         } else {

@@ -44,7 +44,7 @@ cp Resources/Info.plist "$app/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName DogSC Dev' "$app/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier cn.laogou.dogsc.dev' "$app/Contents/Info.plist"
 cp Resources/AppIcon.icns "$app/Contents/Resources/"
-for resource in en.lproj zh-Hans.lproj Fonts Onboarding; do
+for resource in en.lproj zh-Hans.lproj Fonts Onboarding Support; do
   ditto "Resources/$resource" "$app/Contents/Resources/$resource"
   diff -qr "Resources/$resource" "$app/Contents/Resources/$resource"
 done

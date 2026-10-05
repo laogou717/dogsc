@@ -95,8 +95,15 @@ enum EditorPreviewResolutionMode: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .low: return appLocalized("低分辨率")
+        case .low: return appLocalized("清晰预览")
         case .full: return appLocalized("完整分辨率")
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .low: return appLocalized("播放更流畅")
+        case .full: return appLocalized("保留素材细节")
         }
     }
 }
@@ -201,22 +208,5 @@ final class PausedPreviewFrameRequest: @unchecked Sendable {
 
     func cancel() {
         generator.cancelAllCGImageGeneration()
-    }
-}
-
-enum PausedPreviewFrameLoader {
-    nonisolated static func image(
-        from source: ImmutablePreviewAsset,
-        at time: CMTime
-    ) async throws -> CGImage {
-        let request = PausedPreviewFrameRequest(
-            source.asset,
-            videoComposition: source.videoComposition
-        )
-        return try await withTaskCancellationHandler {
-            try await request.image(at: time)
-        } onCancel: {
-            request.cancel()
-        }
     }
 }

@@ -11,10 +11,12 @@ struct EditorActionMenu<Label: View>: View {
     var body: some View {
         Button { isPresented.toggle() } label: { label() }
             .buttonStyle(.editorToolbarPress)
+            .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             .focusEffectDisabled()
-            .help(title)
-            .accessibilityLabel(title)
-            .popover(isPresented: $isPresented, arrowEdge: .bottom) {
+            .help(appLocalized(title))
+            .accessibilityLabel(appLocalized(title))
+            .editorPopoverKeyboardEntry { isPresented = true }
+            .editorPopover(isPresented: $isPresented, arrowEdge: .bottom) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(appLocalized(title))
                         .font(.appUI(size: 13, weight: .semibold))
@@ -28,30 +30,49 @@ struct EditorActionMenu<Label: View>: View {
                         case .separator:
                             Divider().padding(.horizontal, 10).padding(.vertical, 5)
                         case .info:
-                            Text(item.title).font(.appUI(size: 12)).foregroundStyle(.secondary)
+                            Text(item.title).font(.appUI(size: 12)).foregroundStyle(EditorTheme.popoverSecondaryText)
                                 .padding(10)
                         case .action:
                             Button {
-                                isPresented = false
-                                item.handler?()
+                                performAction(item)
                             } label: {
                                 HStack(spacing: 12) {
                                     if let symbol = item.systemImage {
                                         Image(systemName: symbol).font(.system(size: 16))
                                             .frame(width: 22).accessibilityHidden(true)
                                     }
-                                    Text(item.title).font(.appUI(size: 13)).lineLimit(1).truncationMode(.middle)
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(item.title).font(.appUI(size: 13)).lineLimit(1).truncationMode(.middle)
+                                        if let detail = item.detail {
+                                            Text(detail)
+                                                .font(.appUI(size: 12))
+                                                .foregroundStyle(EditorTheme.popoverSecondaryText)
+                                                .lineLimit(1)
+                                        }
+                                    }
                                     Spacer(minLength: 12)
                                     Image(systemName: "checkmark")
                                         .font(.appUI(size: 12, weight: .medium))
                                         .foregroundStyle(EditorTheme.selectionTint)
                                         .opacity(item.isOn ? 1 : 0)
+                                        .accessibilityHidden(true)
                                 }
-                                .padding(.horizontal, 12).frame(minHeight: 36)
+                                .padding(.horizontal, 12).frame(minHeight: item.detail == nil ? 36 : 52)
                             }
                             .buttonStyle(EditorActionRowStyle(selected: item.isOn))
+                            .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 8))
                             .disabled(!item.isEnabled)
-                            .help(item.title)
+                            .accessibilityLabel(appLocalized(item.title))
+                            .accessibilityAddTraits(item.isOn ? .isSelected : [])
+                            .help(appLocalized(item.detail ?? item.title))
+                            .onKeyPress(keys: [.return], phases: .down) { press in
+                                guard item.isEnabled,
+                                      press.modifiers.intersection([.command, .control, .option, .shift]).isEmpty else {
+                                    return .ignored
+                                }
+                                performAction(item)
+                                return .handled
+                            }
                         }
                     }
                         }
@@ -59,17 +80,40 @@ struct EditorActionMenu<Label: View>: View {
                     .scrollIndicators(.hidden)
                     .frame(height: menuContentHeight)
                 }
-                .padding(8).frame(width: 270)
-                .background(EditorTheme.panelSurface)
-                .appControlFocusAppearance()
+                .padding(8).frame(width: menuWidth)
             }
     }
+    private func performAction(_ item: RecorderMenuItem) {
+        isPresented = false
+        item.handler?()
+    }
+
+    private var menuWidth: CGFloat {
+        let contentWidth = items.map { item -> CGFloat in
+            switch item.kind {
+            case .separator:
+                return 0
+            case .info:
+                return AppTypography.regularTextWidth(item.title, size: 12) + 36
+            case .action:
+                let titleWidth = AppTypography.regularTextWidth(item.title, size: 13)
+                let detailWidth = item.detail.map {
+                    AppTypography.regularTextWidth($0, size: 12)
+                } ?? 0
+                // Padding, the trailing checkmark and gaps stay aligned;
+                // rows with an icon also reserve its 22-point column.
+                return max(titleWidth, detailWidth) + 88 + (item.systemImage == nil ? 0 : 34)
+            }
+        }.max() ?? 0
+        return min(360, max(270, ceil(contentWidth) + 2))
+    }
+
     private var menuContentHeight: CGFloat {
         min(items.reduce(CGFloat(0)) { result, item in
             switch item.kind {
             case .separator: result + 15
             case .info: result + 40
-            case .action: result + 40
+            case .action: result + (item.detail == nil ? 40 : 56)
             }
         }, 360)
     }

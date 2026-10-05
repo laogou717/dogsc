@@ -137,8 +137,8 @@ extension EditorTimelineView {
                     }
                     .buttonStyle(EditorTimelineControlButtonStyle())
                     .disabled(!canSplitCurrentTimelineSelectionAtPlayhead)
-                    .help(currentTimelineSplitHelp)
-                    .accessibilityLabel(currentTimelineSplitAccessibilityLabel)
+                    .help(appLocalized(currentTimelineSplitHelp))
+                    .accessibilityLabel(appLocalized(currentTimelineSplitAccessibilityLabel))
                     .accessibilityIdentifier("editor.timeline.primary.split")
 
                     Button {
@@ -151,7 +151,7 @@ extension EditorTimelineView {
                     .buttonStyle(EditorTimelineControlButtonStyle())
                     .disabled(!canRemoveCurrentTimelineSelection)
                     .help(currentTimelineDeleteHelp)
-                    .accessibilityLabel(currentTimelineDeleteAccessibilityLabel)
+                    .accessibilityLabel(appLocalized(currentTimelineDeleteAccessibilityLabel))
                     .accessibilityIdentifier("editor.timeline.primary.delete")
 
                     Button {
@@ -178,11 +178,11 @@ extension EditorTimelineView {
                             && primaryLeadingGap == nil
                             && primaryTrailingGap == nil
                     )
-                    .help(isRestoreCutMode
+                    .help(appLocalized(isRestoreCutMode
                         ? "恢复剪辑模式已开启：标尺显示所有剪切缝以合并或还原；点击退出"
-                        : "恢复剪辑模式：点击显示所有剪切缝，方便合并片段或还原已删除内容")
+                        : "恢复剪辑模式：点击显示所有剪切缝，方便合并片段或还原已删除内容"))
                     .accessibilityLabel("恢复剪辑模式")
-                    .accessibilityValue(isRestoreCutMode ? "开启" : "关闭")
+                    .accessibilityValue(appLocalized(isRestoreCutMode ? "开关状态 · 开启" : "开关状态 · 关闭"))
                     .accessibilityIdentifier("editor.timeline.primary.restore-mode")
 
                     Rectangle().fill(EditorTheme.hairline).frame(width: 1, height: 18).padding(.horizontal, 3)
@@ -206,8 +206,8 @@ extension EditorTimelineView {
                     }
                     .buttonStyle(EditorSoftRaisedButtonStyle())
                     .disabled(!transportCanPlay)
-                    .help(transportIsPlaying ? "暂停（空格）" : "播放（空格）")
-                    .accessibilityLabel(transportIsPlaying ? "暂停" : "播放")
+                    .help(appLocalized(transportIsPlaying ? "暂停（空格）" : "播放（空格）"))
+                    .accessibilityLabel(appLocalized(transportIsPlaying ? "暂停" : "播放"))
                     Button { stepTimeline(byFrames: 1) } label: {
                         Image(systemName: "forward.frame.fill").font(.appUI(size: 16))
                             .frame(width: layout.compactTimelineControls ? 34 : 48, height: layout.compactTimelineControls ? 34 : 42)
@@ -221,7 +221,7 @@ extension EditorTimelineView {
                         .frame(width: 72, height: 30)
                     Text("/ " + transportTimestamp(duration))
                         .font(.appUI(size: 13, weight: .regular)).monospacedDigit()
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(EditorTheme.secondaryText)
             }
 
             HStack(spacing: layout.compactTimelineControls ? 4 : 10) {
@@ -232,7 +232,7 @@ extension EditorTimelineView {
                             if layout.iconOnlyTimelineControls {
                                 EditorMagnetIcon().frame(width: 13, height: 13)
                             } else {
-                                Label { Text(isSnappingEnabled ? "吸附" : "吸附已关") } icon: { EditorMagnetIcon().frame(width: 13, height: 13) }
+                                Label { Text(appLocalized(isSnappingEnabled ? "吸附" : "吸附已关")) } icon: { EditorMagnetIcon().frame(width: 13, height: 13) }
                             }
                         }
                             .font(.appUI(.caption, weight: .medium))
@@ -243,9 +243,9 @@ extension EditorTimelineView {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(EditorTimelineControlButtonStyle())
-                    .help(isSnappingEnabled ? "靠近边界吸附，继续拖动脱开；Shift 临时跳过" : "吸附已关闭，点击开启片段边界吸附")
+                    .help(appLocalized(isSnappingEnabled ? "靠近边界吸附，继续拖动脱开；Shift 临时跳过" : "吸附已关闭，点击开启片段边界吸附"))
                     .accessibilityLabel("时间线吸附")
-                    .accessibilityValue(isSnappingEnabled ? "开启" : "关闭")
+                    .accessibilityValue(appLocalized(isSnappingEnabled ? "开关状态 · 开启" : "开关状态 · 关闭"))
                 }
 
                 timelineCapsule {
@@ -279,11 +279,11 @@ extension EditorTimelineView {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(EditorTimelineControlButtonStyle())
-                    .help(isHoverPreviewEnabled
+                    .help(appLocalized(isHoverPreviewEnabled
                         ? "悬浮预览已开启：指针扫过时间线实时预览并优先在预览轴剪辑（S/Q/W）"
-                        : "悬浮预览已关闭：点击开启；开启后扫过时间线即可实时预览画面")
+                        : "悬浮预览已关闭：点击开启；开启后扫过时间线即可实时预览画面"))
                     .accessibilityLabel("时间线悬浮预览")
-                    .accessibilityValue(isHoverPreviewEnabled ? "开启" : "关闭")
+                    .accessibilityValue(appLocalized(isHoverPreviewEnabled ? "开关状态 · 开启" : "开关状态 · 关闭"))
                     .accessibilityIdentifier("editor.timeline.hover-preview-toggle")
                 }
 
@@ -304,18 +304,30 @@ extension EditorTimelineView {
 
                     Button { zoomTimeline(to: max(timelineZoom / 1.5, 1), pointerViewportX: nil) } label: {
                         Image(systemName: "minus").frame(width: 28, height: 28)
-                    }.buttonStyle(EditorTimelineControlButtonStyle()).accessibilityLabel("缩小时间线")
+                    }
+                    .buttonStyle(EditorTimelineControlButtonStyle())
+                    .disabled(timelineZoom <= EditorTimelineZoomPolicy.minimum)
+                    .help(timelineZoom <= EditorTimelineZoomPolicy.minimum
+                        ? appLocalized("已显示完整时间线")
+                        : appLocalized("缩小时间线，显示更多内容"))
+                    .accessibilityLabel("缩小时间线")
                     EditorSlider(value: zoomSliderPosition, range: 0...1, showsFloatingValue: false, onEditingChanged: { editing in
                         if !editing { timelineZoomInputCoalescer.flush() }
                     })
                         .frame(width: layout.compactTimelineControls ? 64 : 100)
 
-                        .help("时间线缩放：常用倍率会占用更多滑动空间")
+                        .help("向左显示更多内容，向右放大查看细节")
                         .accessibilityLabel("时间线缩放")
                         .accessibilityValue("\(Int((timelineZoom * 100).rounded()))%")
                     Button { zoomTimeline(to: min(timelineZoom * 1.5, maximumTimelineZoom), pointerViewportX: nil) } label: {
                         Image(systemName: "plus").frame(width: 28, height: 28)
-                    }.buttonStyle(EditorTimelineControlButtonStyle()).accessibilityLabel("放大时间线")
+                    }
+                    .buttonStyle(EditorTimelineControlButtonStyle())
+                    .disabled(timelineZoom >= maximumTimelineZoom)
+                    .help(timelineZoom >= maximumTimelineZoom
+                        ? appLocalized("已达到最大缩放")
+                        : appLocalized("放大时间线，精确查看片段"))
+                    .accessibilityLabel("放大时间线")
 
                 }
             }
@@ -346,6 +358,7 @@ extension EditorTimelineView {
 
     private func timelineDisplayModeButton(_ title: String, symbol: String, waveform: Bool) -> some View {
         let selected = usesWaveformClips == waveform
+        let displayTitle = appLocalized(waveform ? title : "时间线显示 · 画面")
         return Button {
             guard !selected else { return }
             if gestureOwnership.activeIntent != nil || editorStore.interaction != nil {
@@ -355,7 +368,7 @@ extension EditorTimelineView {
         } label: {
             HStack(spacing: 7) {
                 Image(systemName: symbol).frame(width: 14)
-                if !layout.iconOnlyTimelineControls { Text(title).lineLimit(1).fixedSize() }
+                if !layout.iconOnlyTimelineControls { Text(displayTitle).lineLimit(1).fixedSize() }
             }
                 .font(.appUI(size: 11, weight: .medium))
                 .foregroundStyle(selected ? EditorTheme.chrome(0.90) : EditorTheme.chrome(0.55))
@@ -372,8 +385,8 @@ extension EditorTimelineView {
                 }
         }
         .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 8, cornerStyle: .circular))
-        .help(waveform ? "放大显示片段内的音频波形" : "上方画面，下方波形")
-        .accessibilityLabel(waveform ? "波形：放大音频波形" : "画面：上方缩略图，下方波形")
+        .help(appLocalized(waveform ? "放大显示片段内的音频波形" : "上方画面，下方波形"))
+        .accessibilityLabel(appLocalized(waveform ? "波形：放大音频波形" : "画面：上方缩略图，下方波形"))
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityIdentifier(waveform ? "editor.timeline.display.waveform" : "editor.timeline.display.film")
     }
@@ -442,7 +455,7 @@ extension EditorTimelineView {
                                 horizontalInset: layout.value(regular: 16, compact: 6))
             .frame(height: height)
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("\(title)轨道")
+            .accessibilityLabel(String(format: appLocalized("%@轨道"), appLocalized(title)))
             .accessibilityAddTraits(.isHeader)
     }
 
@@ -541,7 +554,7 @@ extension EditorTimelineView {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("时间线")
-        .accessibilityValue("播放头位于 \(timelineTimestamp(playbackTime))")
+        .accessibilityValue(String(format: appLocalized("播放头位于 %@"), timelineTimestamp(playbackTime)))
         // All time-bound geometry (clips, waveform masks and handles) changes
         // in one display update. Do not inherit a button/delete/layout spring.
         // Explicit local ink and display-mode fades remain scoped below this.
@@ -675,7 +688,6 @@ extension EditorTimelineView {
             }
             .frame(width: width, height: timelineRulerHeight, alignment: .topLeading)
         }
-        .help("拖动播放头靠近边界时吸附；继续拖动或按住 Shift 可脱开")
     }
 
     func clampedTimelineVisibleDocumentRange(width: CGFloat) -> ClosedRange<CGFloat> {
@@ -821,7 +833,7 @@ extension EditorTimelineView {
         segment: ResolvedRecordingSegment,
         segmentsCount: Int
     ) -> String {
-        segmentsCount == 1 ? "屏幕片段" : "片段 \(index + 1)"
+        segmentsCount == 1 ? appLocalized("屏幕片段") : String(format: appLocalized("片段 %d"), index + 1)
     }
 
 
@@ -1139,7 +1151,7 @@ extension EditorTimelineView {
             .stroke(editorCameraSyncClip.opacity(0.92), style: StrokeStyle(lineWidth: 2, lineJoin: .round))
             .allowsHitTesting(false)
 
-            Text("基准 \(cameraSyncOffsetLabel(cameraSyncBaselineOffset))")
+            Text(String(format: appLocalized("基准 %@"), cameraSyncOffsetLabel(cameraSyncBaselineOffset)))
                 .font(.appUI(size: 9, weight: .semibold, design: .monospaced))
                 .foregroundStyle(editorCameraSyncClip.opacity(0.92))
                 .padding(.horizontal, 6)

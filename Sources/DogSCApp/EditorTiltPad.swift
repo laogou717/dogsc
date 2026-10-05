@@ -12,6 +12,7 @@ struct EditorTiltPad: View {
     let onChanged: (Double, Double) -> Void
     let onEnded: () -> Void
     let onCancelled: () -> Void
+    var onTextPreviewValidityChanged: (Bool) -> Void = { _ in }
 
     private let maximumX = 28.0
     private let maximumY = 32.0
@@ -40,6 +41,7 @@ struct EditorTiltPad: View {
                         .font(.appUI(.caption2, weight: .semibold))
                 }
                 .buttonStyle(.editorGhost)
+                .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous))
                 .controlSize(.small)
                 .disabled(isNeutral)
                 .accessibilityLabel("归零 3D 倾斜")
@@ -50,6 +52,7 @@ struct EditorTiltPad: View {
             EditorPairedParameterReadouts(
                 first: EditorPairedParameterValue(
                     title: "X",
+                    accessibilityTitle: "3D 倾斜 X 角度",
                     value: clamped(rotationX, to: -maximumX...maximumX),
                     range: -maximumX...maximumX,
                     displayText: String(format: "%.1f°", rotationX),
@@ -57,6 +60,7 @@ struct EditorTiltPad: View {
                 ),
                 second: EditorPairedParameterValue(
                     title: "Y",
+                    accessibilityTitle: "3D 倾斜 Y 角度",
                     value: clamped(rotationY, to: -maximumY...maximumY),
                     range: -maximumY...maximumY,
                     displayText: String(format: "%.1f°", rotationY),
@@ -65,7 +69,8 @@ struct EditorTiltPad: View {
                 onChanged: onChanged,
                 onEnded: onEnded,
                 onCancelled: onCancelled,
-                onEditingChanged: { isAngleEditing = $0 }
+                onEditingChanged: { isAngleEditing = $0 },
+                onTextPreviewValidityChanged: onTextPreviewValidityChanged
             )
         }
     }

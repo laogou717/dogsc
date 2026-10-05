@@ -70,7 +70,7 @@ struct EditorHexColorInput: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(title)
+            Text(appLocalized(title))
                 .font(.appUI(.caption))
                 // Both actual controls below already carry this context:
                 // "选择\(title)" and "\(title)十六进制值". Keep the
@@ -78,10 +78,7 @@ struct EditorHexColorInput: View {
                 .accessibilityHidden(true)
 
             HStack(spacing: 8) {
-                Button {
-                    pickerDraft = draft.parsed ?? draft.committed
-                    showsPicker = true
-                } label: {
+                Button(action: presentColorPicker) {
                     RoundedRectangle(cornerRadius: 5)
                         .fill(Color(hex: draft.parsed ?? draft.committed))
                         .frame(width: 32, height: 26)
@@ -93,10 +90,11 @@ struct EditorHexColorInput: View {
                         .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                 }
                 .buttonStyle(.editorSwatch)
-                .accessibilityLabel("选择\(title)")
-                .help("打开\(title)取色器")
-                .popover(isPresented: $showsPicker, arrowEdge: .trailing) {
-                    pickerPopover.appControlFocusAppearance()
+                .accessibilityLabel(String(format: appLocalized("选择%@"), appLocalized(title)))
+                .help(String(format: appLocalized("打开%@取色器"), appLocalized(title)))
+                .editorPopoverKeyboardEntry(action: presentColorPicker)
+                .editorPopover(isPresented: $showsPicker, arrowEdge: .trailing, establishesKeyboardEntry: false) {
+                    pickerPopover
                 }
 
                 TextField(
@@ -107,6 +105,7 @@ struct EditorHexColorInput: View {
                     )
                 )
                 .textFieldStyle(.plain)
+                .tint(nil)
                 .font(.appUI(size: 12, weight: .medium, design: .monospaced))
                 .padding(.horizontal, 9)
                 .frame(height: 30)
@@ -137,7 +136,7 @@ struct EditorHexColorInput: View {
                         endColorInteraction()
                     }
                 }
-                .accessibilityLabel("\(title)十六进制值")
+                .accessibilityLabel(String(format: appLocalized("%@十六进制值"), appLocalized(title)))
                 .animation(SpringMotion.interactive, value: textIsFocused)
             }
 
@@ -145,13 +144,17 @@ struct EditorHexColorInput: View {
                 Text("请输入 6 位十六进制颜色，例如 #D8B26A")
                     .font(.appUI(.caption2))
                     .foregroundStyle(.red)
-                    .accessibilityLabel("\(title)格式无效")
+                    .accessibilityLabel(String(format: appLocalized("%@格式无效"), appLocalized(title)))
             }
         }
         .onChange(of: value) { _, newValue in
-            guard !interactionIsActive else { return }
+            // Our own preview keeps the original text-edit baseline for Esc.
+            // Undo or another external edit must replace even a focused draft,
+            // otherwise blur would publish the old color over that edit.
+            guard !interactionIsActive || newValue != pickerDraft else { return }
             draft.rebase(newValue)
             pickerDraft = newValue
+            endColorInteraction()
         }
         .onChange(of: showsPicker) { _, isPresented in
             if isPresented {
@@ -164,6 +167,11 @@ struct EditorHexColorInput: View {
         .onDisappear {
             endColorInteraction()
         }
+    }
+
+    private func presentColorPicker() {
+        pickerDraft = draft.parsed ?? draft.committed
+        showsPicker = true
     }
 
     private var pickerPopover: some View {

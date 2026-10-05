@@ -41,11 +41,12 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                     CGFloat((segment.endTime - segment.startTime) / max(duration, 0.001)) * width,
                     14
                 )
-                let accessibilityValue =
-                    "\(timelineTimestamp(segment.startTime)) 至 "
-                    + "\(timelineTimestamp(segment.endTime))，"
-                    + "\(String(format: "%.1f", segment.scale)) 倍，"
-                    + (segment.origin == .manual ? "手动" : "自动")
+                let originTitle = appLocalized(segment.origin == .manual ? "手动" : "自动")
+                let accessibilityValue = String(
+                    format: appLocalized("%@ 至 %@，%@ 倍，%@"),
+                    timelineTimestamp(segment.startTime), timelineTimestamp(segment.endTime),
+                    String(format: "%.1f", segment.scale), originTitle
+                )
                 let accessibilityTraits: AccessibilityTraits = selectedZoomID == segment.id
                     ? [.isButton, .isSelected] : .isButton
                 let isSelected = selectedZoomID == segment.id
@@ -56,7 +57,7 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                     isHovered: isHovered
                 )
                 let label = "\(appLocalized("缩放")) \(String(format: "%.1f", segment.scale))× · "
-                    + (segment.origin == .manual ? "手动" : "自动")
+                    + originTitle
                 ZStack {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(
@@ -108,7 +109,7 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                 }
                 .accessibilityElement(children: .ignore)
                 .help("单击选中；拖动移动；拖两端调整保持时间；右键可删除")
-                .accessibilityLabel("缩放动画 \(index + 1)")
+                .accessibilityLabel(String(format: appLocalized("缩放动画 %d"), index + 1))
                 .accessibilityValue(accessibilityValue)
                 .accessibilityAddTraits(accessibilityTraits)
                 .accessibilityAction {
@@ -216,7 +217,7 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
         Capsule()
             .fill(EditorTheme.chrome(0.92))
             .frame(width: 4, height: 30)
-            .accessibilityLabel(edge == .leading ? "调整动画开始" : "调整动画结束")
+            .accessibilityLabel(appLocalized(edge == .leading ? "调整动画开始" : "调整动画结束"))
     }
 
     func zoomTrackGesture(width: CGFloat, duration: TimeInterval) -> some Gesture {
@@ -483,6 +484,10 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
             guard event.window?.identifier?.rawValue
                     == "cn.laogou.dogsc.editor-window" else { return event }
 
+            if event.type == .keyDown, event.targetsPresentedContent {
+                return event
+            }
+
             if event.type == .rightMouseDown {
                 clipboardContextTime = clipboardTime(at: event.locationInWindow, in: event.window)
                     ?? playbackController.outputTime
@@ -557,7 +562,7 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
     }
 
     var currentTimelineDeleteHelp: String {
-        "\(currentTimelineDeleteAccessibilityLabel)（D 或 Delete）"
+        String(format: appLocalized("%@（D 或 Delete）"), appLocalized(currentTimelineDeleteAccessibilityLabel))
     }
 
     var currentTimelineDeleteAccessibilityLabel: String {
@@ -588,14 +593,7 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
         return true
     }
 
-    /// Current effective edit time for split (S) and ripple trim (Q/W).
-    /// When skimming (hover preview) is enabled, the editor is paused, and the pointer
-    /// is hovering over the timeline, the hover position takes precedence ("cut what you see").
-    /// Otherwise (during playback or when hover is inactive/disabled), it defaults to the playhead time.
-    var isSkimmingActive: Bool {
-        isHoverPreviewEnabled && !playbackController.isPlaying && hoveredTimelineContentX != nil
-    }
-
+    /// Current playhead time for split (S) and ripple trim (Q/W).
     var effectiveTimelineEditTime: TimeInterval {
         snappedTimelineTime(playbackTime)
     }

@@ -35,6 +35,7 @@ struct SharedRenderedPreviewView: NSViewRepresentable {
     var playbackFrameProvider: SharedPreviewPlaybackFrameProvider? = nil
     var onCameraContentApplied: (() -> Void)? = nil
     var onScreenContentApplied: (() -> Void)? = nil
+    var onSleepCoverChanged: PreviewSleepCoverHandler? = nil
 
     func makeNSView(context: Context) -> SharedRenderedPreviewNSView {
         let view = SharedRenderedPreviewNSView()
@@ -51,6 +52,7 @@ struct SharedRenderedPreviewView: NSViewRepresentable {
     }
 
     private func update(_ view: SharedRenderedPreviewNSView) {
+        view.onSleepCoverChanged = onSleepCoverChanged
         view.preparePresentationTransition(presentationMode)
         view.configurePlayback(
             controller: playbackController,
@@ -102,6 +104,7 @@ final class SharedRenderedPreviewNSView: NSView {
     private var suppressScreenContent = false
     var onCameraContentApplied: (() -> Void)?
     var onScreenContentApplied: (() -> Void)?
+    var onSleepCoverChanged: PreviewSleepCoverHandler?
     /// 上一帧应用时的内容包含状态：只有相邻两帧包含状态一致才允许交叉淡化，
     /// 否则“无摄像头→有摄像头”会被淡化成一次淡入闪烁（松手闪帧的根因）。
     private var lastAppliedIncludesCamera: Bool?
@@ -268,6 +271,7 @@ final class SharedRenderedPreviewNSView: NSView {
         colorProfile = nil
         onCameraContentApplied = nil
         onScreenContentApplied = nil
+        onSleepCoverChanged = nil
         renderGeneration &+= 1
         presentationEpochIdentity = PreviewPresentationEpoch(
             mediaGeneration: nil,
@@ -1203,6 +1207,9 @@ final class SharedRenderedPreviewNSView: NSView {
         job: PreviewRenderJob,
         presented: Bool
     ) {
+        if presented {
+            windowVisibilityController.previewFrameBecameReady(epochID: job.presentationEpochID)
+        }
         if presented, renderGeneration == job.generation {
             if job.includesCamera { onCameraContentApplied?() }
             if job.includesScreen { onScreenContentApplied?() }

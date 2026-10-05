@@ -34,7 +34,6 @@ extension EditorTimelineView {
     var waveformContentHeight: CGFloat { primaryVideoHeight }
     // Display mode changes the contents, never the workspace geometry.
     var primaryVideoHeight: CGFloat { layout.value(regular: 96, compact: 72) }
-    var primaryClipContentHeight: CGFloat { primaryTimelineHeight - 12 }
     var timelineViewportHeight: CGFloat {
         max(panelHeight - timelineControlsHeight - timelineOverviewHeight - timelineDividerHeight, 80)
     }

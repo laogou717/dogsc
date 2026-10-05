@@ -6,26 +6,23 @@ import SwiftUI
 /// Mac's wallpapers, simple patterns, dynamic backgrounds, and custom media.
 struct EditorBackgroundInspector: View {
     @ObservedObject var editorStore: EditorStore
+    @ObservedObject var systemWallpaperCatalog: SystemWallpaperCatalog
     let onChooseWallpaper: () -> BackgroundSource?
-    let onChooseDesktopWallpaper: () -> BackgroundSource?
     let onError: (String) -> Void
+    var usesCompactLayout = false
 
     @State private var selectedBackgroundTab: BackgroundPanelTab = .wallpaper
     @State private var selectedSystemAssetID: String?
     @State private var selectedSystemVariantByGroup: [String: String] = [:]
     @State private var systemImageGroupLimit = 12
     @State private var systemVideoGroupLimit = 12
-    @StateObject private var systemWallpaperCatalog = SystemWallpaperCatalog()
 
     var body: some View {
-            EditorInspectorSection("背景素材") {
+            // The frame subnavigation already names this task. In a short
+            // browser, spend that repeated heading's space on actual media.
+            EditorInspectorSection("背景素材", showsTitle: !usesCompactLayout) {
                 // 页签切换只浏览候选；真正选择资源或调整颜色时才写入项目。
-                EditorSegmentedControl(
-                    options: BackgroundPanelTab.allCases,
-                    title: { $0.localizedLabel },
-                    icon: { $0.icon },
-                    selection: $selectedBackgroundTab
-                )
+                backgroundSourceNavigation
 
                 Group {
                 switch selectedBackgroundTab {
@@ -63,6 +60,39 @@ struct EditorBackgroundInspector: View {
             }
     }
 
+    var backgroundSourceNavigation: some View {
+        HStack(spacing: 8) {
+            EditorSegmentedControl(
+                options: BackgroundPanelTab.allCases,
+                title: { $0.localizedLabel },
+                icon: { $0.icon },
+                selection: $selectedBackgroundTab
+            )
+            if usesCompactLayout, selectedBackgroundTab == .wallpaper {
+                wallpaperReloadButton
+            }
+        }
+    }
+
+    var wallpaperReloadButton: some View {
+        Button {
+            Task { await systemWallpaperCatalog.refresh() }
+        } label: {
+            ZStack {
+                Image(systemName: "arrow.clockwise")
+                    .opacity(usesCompactLayout && systemWallpaperCatalog.isLoading ? 0 : 1)
+                if usesCompactLayout, systemWallpaperCatalog.isLoading {
+                    ProgressView().controlSize(.mini)
+                }
+            }
+            .frame(width: 14, height: 14)
+        }
+        .buttonStyle(.editorQuiet)
+        .disabled(systemWallpaperCatalog.isLoading)
+        .help("重新读取本机壁纸")
+        .accessibilityLabel("重新读取本机壁纸")
+    }
+
     var wallpaperLibraryGrid: some View {
         systemWallpaperSection
             .task {
@@ -81,22 +111,15 @@ struct EditorBackgroundInspector: View {
 
     @ViewBuilder
     var systemWallpaperSection: some View {
-        HStack {
-            Text("本机壁纸").font(.appUI(size: 12, weight: .medium)).foregroundStyle(.secondary)
-            Spacer()
-            if systemWallpaperCatalog.isLoading {
-                ProgressView().controlSize(.mini)
+        if !usesCompactLayout {
+            HStack {
+                Text("本机壁纸").font(.appUI(size: 12, weight: .medium)).foregroundStyle(.secondary)
+                Spacer()
+                if systemWallpaperCatalog.isLoading {
+                    ProgressView().controlSize(.mini)
+                }
+                wallpaperReloadButton
             }
-            Button {
-                Task { await systemWallpaperCatalog.refresh() }
-            } label: {
-                Image(systemName: "arrow.clockwise")
-                    .frame(width: 14, height: 14)
-            }
-            .buttonStyle(.editorQuiet)
-            .disabled(systemWallpaperCatalog.isLoading)
-            .help("重新读取本机壁纸")
-            .accessibilityLabel("重新读取本机壁纸")
         }
 
         let current = systemWallpaperCatalog.currentDesktopGroup
@@ -130,6 +153,8 @@ struct EditorBackgroundInspector: View {
     func systemWallpaperGroupCard(_ group: SystemWallpaperGroup) -> some View {
         if let asset = preferredAsset(for: group) {
             let isSelected = group.assets.contains { $0.id == selectedSystemAssetID }
+            let displayName = group.isCurrentDesktop ? appLocalized("当前桌面") : localizedSystemWallpaperLabel(group.name)
+            let variantName = localizedSystemWallpaperLabel(asset.variantName)
             VStack(spacing: 5) {
                 Button { selectSystemAsset(asset, in: group) } label: {
                     Color.clear.aspectRatio(1, contentMode: .fit)
@@ -143,7 +168,8 @@ struct EditorBackgroundInspector: View {
                             if isSelected {
                                 Image(systemName: "checkmark")
                                     .font(.appUI(size: 8, weight: .semibold))
-                                    .foregroundStyle(EditorTheme.selectionTint)
+                                    // The white media badge needs dark ink in both workspace themes.
+                                    .foregroundStyle(.black.opacity(0.84))
                                     .frame(width: 17, height: 17).background(.white, in: Circle()).padding(5)
                             }
                         }
@@ -157,24 +183,24 @@ struct EditorBackgroundInspector: View {
                 }
                 .buttonStyle(.editorThumbnail)
                 .focusEffectDisabled()
-                .help("\(group.name) · \(asset.variantName)")
-                .accessibilityLabel("\(group.name)，\(asset.variantName)")
+                .help("\(displayName) · \(variantName)")
+                .accessibilityLabel(String(format: appLocalized("%@，%@"), displayName, variantName))
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
                 if group.assets.count > 1 {
-                    EditorActionMenu(title: group.name, items: group.assets.map { variant in
-                        .action(variant.variantName, isOn: selectedSystemAssetID == variant.id) {
+                    EditorActionMenu(title: displayName, items: group.assets.map { variant in
+                        .action(localizedSystemWallpaperLabel(variant.variantName), isOn: selectedSystemAssetID == variant.id) {
                             selectSystemAsset(variant, in: group)
                         }
                     }) {
                         HStack(spacing: 3) {
-                            Text(group.name).lineLimit(1).truncationMode(.middle)
+                            Text(displayName).lineLimit(1).truncationMode(.middle)
                             Image(systemName: "chevron.down").font(.appUI(size: 8))
                         }.font(.appUI(size: 11)).foregroundStyle(EditorTheme.chrome(0.65))
                             .frame(maxWidth: .infinity).frame(height: 20)
                     }
-                    .accessibilityLabel("\(group.name) 版本，当前 \(asset.variantName)")
+                    .accessibilityLabel(String(format: appLocalized("%@ 版本，当前 %@"), displayName, variantName))
                 } else {
-                    Text(group.name).font(.appUI(size: 11)).foregroundStyle(EditorTheme.chrome(0.65))
+                    Text(displayName).font(.appUI(size: 11)).foregroundStyle(EditorTheme.chrome(0.65))
                         .lineLimit(1).frame(height: 20)
                 }
             }
@@ -182,17 +208,11 @@ struct EditorBackgroundInspector: View {
         }
     }
 
-    @ViewBuilder
-    func variantSwatch(for asset: SystemWallpaperAsset) -> some View {
-        if let rgb = asset.variantColorRGB {
-            Circle()
-                .fill(Color(hex: HexColor(rgb24: rgb)))
-                .frame(width: 8, height: 8)
-                .overlay(Circle().stroke(EditorTheme.chrome(0.25), lineWidth: 0.5))
-        } else {
-            Image(systemName: "circle.lefthalf.filled")
-                .font(.appUI(size: 8))
-        }
+    private func localizedSystemWallpaperLabel(_ label: String) -> String {
+        // The catalog keeps stable descriptors for grouping and color matching.
+        // Localize only the display components, including Current Desktop's
+        // combined family and appearance label.
+        label.components(separatedBy: " · ").map(appLocalized).joined(separator: " · ")
     }
 
     func preferredAsset(for group: SystemWallpaperGroup) -> SystemWallpaperAsset? {
@@ -233,16 +253,6 @@ struct EditorBackgroundInspector: View {
         canvas.backgroundSource = source
         performEditorCommand {
             try editorStore.replaceCanvas(with: canvas, actionName: "选择自定义壁纸")
-        }
-    }
-
-    func chooseDesktopWallpaper() {
-        guard let source = onChooseDesktopWallpaper() else { return }
-        selectedSystemAssetID = nil
-        var canvas = editorStore.project.canvas
-        canvas.backgroundSource = source
-        performEditorCommand {
-            try editorStore.replaceCanvas(with: canvas, actionName: "使用当前桌面壁纸")
         }
     }
 

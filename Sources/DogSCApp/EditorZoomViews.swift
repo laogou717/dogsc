@@ -12,6 +12,7 @@ struct ZoomFocusMap: View {
     var isPlaying = false
     var onEditingChanged: (Bool) -> Void = { _ in }
     var onEditingCancelled: () -> Void = { }
+    var onTextPreviewValidityChanged: (Bool) -> Void = { _ in }
 
     @State private var thumbnail: NSImage?
     @State private var isEditingFocus = false
@@ -33,6 +34,7 @@ struct ZoomFocusMap: View {
                         EditorPairedParameterReadouts(
                             first: EditorPairedParameterValue(
                                 title: "X",
+                                accessibilityTitle: "缩放焦点 X 坐标",
                                 value: clamp01(displayedFocus.x),
                                 range: 0...1,
                                 displayText: EditorSliderValueFormat.percent.text(for: clamp01(displayedFocus.x)),
@@ -40,6 +42,7 @@ struct ZoomFocusMap: View {
                             ),
                             second: EditorPairedParameterValue(
                                 title: "Y",
+                                accessibilityTitle: "缩放焦点 Y 坐标",
                                 value: clamp01(displayedFocus.y),
                                 range: 0...1,
                                 displayText: EditorSliderValueFormat.percent.text(for: clamp01(displayedFocus.y)),
@@ -51,7 +54,8 @@ struct ZoomFocusMap: View {
                             },
                             onEnded: endFocusEditing,
                             onCancelled: cancelFocusEditing,
-                            onEditingChanged: { isCoordinateEditing = $0 }
+                            onEditingChanged: { isCoordinateEditing = $0 },
+                            onTextPreviewValidityChanged: onTextPreviewValidityChanged
                         )
                         Button {
                             beginFocusEditingIfNeeded()
@@ -63,6 +67,7 @@ struct ZoomFocusMap: View {
                                 .frame(width: 32, height: 30)
                         }
                         .buttonStyle(EditorSoftRaisedButtonStyle())
+                        .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous))
                         .disabled(isCentered(displayedFocus))
                         .help("焦点居中")
                         .accessibilityLabel("居中缩放焦点")

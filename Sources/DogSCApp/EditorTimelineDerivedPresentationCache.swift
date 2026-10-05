@@ -87,7 +87,6 @@ final class EditorTimelineDerivedPresentationCache {
     private var zoomInput: ZoomInput?
     private var zoomSegments: [TimelineZoomSegment] = []
     private var zoomSegmentIndicesByID: [UUID: Int] = [:]
-    private var resolvedZoomsByID: [UUID: ZoomAnimationClip] = [:]
     private var screenMotionInput: ScreenMotionInput?
     private var screenMotionClips: [EditorMotionTimelineClip] = []
     private var screenMotionClipIndicesByID: [UUID: Int] = [:]
@@ -95,7 +94,6 @@ final class EditorTimelineDerivedPresentationCache {
     private var cameraMotionClips: [EditorMotionTimelineClip] = []
     private var cameraMotionClipIndicesByID: [UUID: Int] = [:]
     private var primaryJunctionMap: TimelineMap?
-    private var primarySegmentIndicesByID: [UUID: Int] = [:]
     private var primaryJunctions: [EditorTimelineSegmentJunction] = []
     private var primaryLeadingGap: EditorTimelineLeadingGap?
     private var primaryTrailingGap: EditorTimelineTrailingGap?
@@ -132,10 +130,6 @@ final class EditorTimelineDerivedPresentationCache {
         let nextInput = ZoomInput(animations: animations, duration: duration)
         if zoomInput != nextInput {
             zoomInput = nextInput
-            resolvedZoomsByID = Dictionary(
-                ZoomTransitionResolution.resolve(animations, outputDuration: duration).map { ($0.id, $0) },
-                uniquingKeysWith: { first, _ in first }
-            )
             zoomSegments = EditorTimelineMath.zoomSegments(
                 from: animations,
                 duration: duration
@@ -151,10 +145,6 @@ final class EditorTimelineDerivedPresentationCache {
 
     func zoomSegmentIndex(for id: UUID?) -> Int? {
         id.flatMap { zoomSegmentIndicesByID[$0] }
-    }
-
-    func resolvedZoom(for id: UUID?) -> ZoomAnimationClip? {
-        id.flatMap { resolvedZoomsByID[$0] }
     }
 
     func screenMotionClips(
@@ -217,11 +207,6 @@ final class EditorTimelineDerivedPresentationCache {
 
     func cameraMotionClipIndex(for id: UUID?) -> Int? {
         id.flatMap { cameraMotionClipIndicesByID[$0] }
-    }
-
-    func primarySegmentIndex(for id: UUID?, in map: TimelineMap) -> Int? {
-        preparePrimaryJunctions(for: map)
-        return id.flatMap { primarySegmentIndicesByID[$0] }
     }
 
     func segmentJunctions(for map: TimelineMap) -> [EditorTimelineSegmentJunction] {
@@ -296,11 +281,6 @@ final class EditorTimelineDerivedPresentationCache {
     private func preparePrimaryJunctions(for map: TimelineMap) {
         guard primaryJunctionMap != map else { return }
         primaryJunctionMap = map
-        primarySegmentIndicesByID = Dictionary(
-            uniqueKeysWithValues: map.segments.indices.map {
-                (map.segments[$0].id, $0)
-            }
-        )
         primaryJunctions = EditorPrimaryTimelinePresentation.segmentJunctions(from: map)
         primaryLeadingGap = EditorPrimaryTimelinePresentation.leadingGap(from: map)
         primaryTrailingGap = EditorPrimaryTimelinePresentation.trailingGap(from: map)

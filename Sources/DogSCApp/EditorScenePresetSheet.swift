@@ -48,7 +48,8 @@ struct EditorScenePresetSheet: View {
                 configurationRow("speaker.wave.2", "声音与背景", "全片音量、静音和背景资源副本")
             }
             .padding(16)
-            .background(EditorTheme.panelRaised, in: RoundedRectangle(cornerRadius: 12))
+            .background(EditorTheme.groupSurface, in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous).strokeBorder(EditorTheme.hairline, lineWidth: 0.75))
             Text("保留当前项目的素材、剪辑、分段声音和时间线动画。新录制默认场景可在预设菜单中单独选择。")
                 .font(.appUI(.caption))
                 .foregroundStyle(.secondary)
@@ -65,10 +66,12 @@ struct EditorScenePresetSheet: View {
                 Button("取消", action: onCancel)
                     .keyboardShortcut(.cancelAction)
                     .buttonStyle(.editorQuiet)
+                    .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
                     .disabled(isSaving)
                 Button(appLocalized(isUpdating ? "更新预设" : "保存预设"), action: onSave)
                     .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.editorPrimary)
+                    .buttonStyle(.editorPrimary(minHeight: EditorInterfaceHeight.compact))
+                    .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous), color: EditorTheme.onAccent.opacity(0.65))
                     .disabled(isSaving || nameConflict || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
@@ -150,7 +153,7 @@ struct EditorScenePresetPreview: View {
             HStack {
                 Spacer()
                 Button("取消", action: onCancel).keyboardShortcut(.cancelAction).buttonStyle(.editorQuiet)
-                Button("应用预设", action: onApply).keyboardShortcut(.defaultAction).buttonStyle(.editorPrimary)
+                Button("应用预设", action: onApply).keyboardShortcut(.defaultAction).buttonStyle(.editorPrimary(minHeight: EditorInterfaceHeight.compact))
             }
         }
         .padding(24)

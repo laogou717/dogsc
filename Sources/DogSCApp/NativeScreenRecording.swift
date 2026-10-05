@@ -139,8 +139,8 @@ final class NativeScreenRecordingSegment: NSObject,
     private let lock = NSLock()
     private var startResult: Result<Date, any Error>?
     private var finishResult: Result<Void, any Error>?
-    private var startContinuation: CheckedContinuation<Date, any Error>?
-    private var finishContinuation: CheckedContinuation<Void, any Error>?
+    private var startWaiters: [UUID: CheckedContinuation<Date, any Error>] = [:]
+    private var finishWaiters: [UUID: CheckedContinuation<Void, any Error>] = [:]
     private var startedAtHostTimeStorage: TimeInterval?
     private let onFailure: @Sendable (any Error) -> Void
 
@@ -184,53 +184,85 @@ final class NativeScreenRecordingSegment: NSObject,
 
     func waitForStart(timeout: TimeInterval) async throws -> Date {
         try await withThrowingTaskGroup(of: Date.self) { group in
+            defer { group.cancelAll() }
             group.addTask { try await self.awaitStart() }
             group.addTask {
                 try await Task.sleep(for: .seconds(timeout))
                 throw ScreenRecorderError.noFrames
             }
             let result = try await group.next() ?? Date()
-            group.cancelAll()
             return result
         }
     }
 
     func waitForFinish(timeout: TimeInterval) async throws {
         try await withThrowingTaskGroup(of: Void.self) { group in
+            defer { group.cancelAll() }
             group.addTask { try await self.awaitFinish() }
             group.addTask {
                 try await Task.sleep(for: .seconds(timeout))
                 throw ScreenRecorderError.recordingFailed("苹果原生录制没有按时完成文件写入")
             }
             _ = try await group.next()
-            group.cancelAll()
         }
     }
 
     private func awaitStart() async throws -> Date {
-        try await withCheckedThrowingContinuation { continuation in
-            lock.lock()
-            if let startResult {
-                lock.unlock()
-                continuation.resume(with: startResult)
-            } else {
-                startContinuation = continuation
-                lock.unlock()
+        // A task-group timeout also waits for its losing child. Removing that
+        // child's waiter is what makes the timeout an actual bounded wait.
+        let waiterID = UUID()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                lock.lock()
+                if let startResult {
+                    lock.unlock()
+                    continuation.resume(with: startResult)
+                } else if Task<Never, Never>.isCancelled {
+                    lock.unlock()
+                    continuation.resume(throwing: CancellationError())
+                } else {
+                    startWaiters[waiterID] = continuation
+                    lock.unlock()
+                }
             }
+        } onCancel: { [weak self] in
+            self?.cancelStartWaiter(waiterID)
         }
     }
 
     private func awaitFinish() async throws {
-        try await withCheckedThrowingContinuation { continuation in
-            lock.lock()
-            if let finishResult {
-                lock.unlock()
-                continuation.resume(with: finishResult)
-            } else {
-                finishContinuation = continuation
-                lock.unlock()
+        let waiterID = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                lock.lock()
+                if let finishResult {
+                    lock.unlock()
+                    continuation.resume(with: finishResult)
+                } else if Task<Never, Never>.isCancelled {
+                    lock.unlock()
+                    continuation.resume(throwing: CancellationError())
+                } else {
+                    finishWaiters[waiterID] = continuation
+                    lock.unlock()
+                }
             }
+        } onCancel: { [weak self] in
+            self?.cancelFinishWaiter(waiterID)
         }
+    }
+
+    private func cancelStartWaiter(_ waiterID: UUID) {
+        lock.lock()
+        let continuation = startWaiters.removeValue(forKey: waiterID)
+        lock.unlock()
+        continuation?.resume(throwing: CancellationError())
+    }
+
+    private func cancelFinishWaiter(_ waiterID: UUID) {
+        lock.lock()
+        let continuation = finishWaiters.removeValue(forKey: waiterID)
+        lock.unlock()
+        continuation?.resume(throwing: CancellationError())
     }
 
     private func resolveStart(_ result: Result<Date, any Error>) {
@@ -240,10 +272,10 @@ final class NativeScreenRecordingSegment: NSObject,
             return
         }
         startResult = result
-        let continuation = startContinuation
-        startContinuation = nil
+        let waiters = Array(startWaiters.values)
+        startWaiters.removeAll()
         lock.unlock()
-        continuation?.resume(with: result)
+        waiters.forEach { $0.resume(with: result) }
     }
 
     private func resolveFinish(_ result: Result<Void, any Error>) {
@@ -253,10 +285,10 @@ final class NativeScreenRecordingSegment: NSObject,
             return
         }
         finishResult = result
-        let continuation = finishContinuation
-        finishContinuation = nil
+        let waiters = Array(finishWaiters.values)
+        finishWaiters.removeAll()
         lock.unlock()
-        continuation?.resume(with: result)
+        waiters.forEach { $0.resume(with: result) }
     }
 }
 

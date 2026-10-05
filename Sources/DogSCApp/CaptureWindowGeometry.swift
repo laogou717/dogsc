@@ -88,14 +88,12 @@ enum CaptureWindowGeometryLookup {
 /// RecordingPlan/CaptureSelectionTarget boundary.
 @MainActor
 final class CaptureWindowGeometryRuntime {
-    typealias Lookup = @MainActor (UInt32) -> CaptureWindowGeometry?
     typealias PollingLookup = @Sendable (UInt32) async -> CaptureWindowGeometry?
 
     var onChange: ((CaptureWindowGeometry?) -> Void)?
     private(set) var windowID: UInt32?
     private(set) var geometry: CaptureWindowGeometry?
 
-    private let lookup: Lookup
     private let pollingLookup: PollingLookup
     private let pollInterval: Duration?
     private var pollingTask: Task<Void, Never>?
@@ -103,13 +101,11 @@ final class CaptureWindowGeometryRuntime {
 
     init(
         pollInterval: Duration? = .milliseconds(75),
-        lookup: @escaping Lookup = CaptureWindowGeometryLookup.live(windowID:),
         pollingLookup: @escaping PollingLookup = { windowID in
             await CaptureWindowGeometryLookup.background(windowID: windowID)
         }
     ) {
         self.pollInterval = pollInterval
-        self.lookup = lookup
         self.pollingLookup = pollingLookup
     }
 
@@ -138,12 +134,6 @@ final class CaptureWindowGeometryRuntime {
                 try? await Task.sleep(for: interval)
             }
         }
-    }
-
-    func refreshNow() {
-        guard let windowID else { return }
-        let replacement = lookup(windowID)
-        publishLookupResult(replacement, expectedWindowID: windowID)
     }
 
     private func publishLookupResult(

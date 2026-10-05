@@ -845,6 +845,23 @@ final class EditorStore: ObservableObject {
         return true
     }
 
+    /// Text drafts autosave only while valid. Keep their last valid preview,
+    /// but cancel it if another window or control takes over an invalid draft.
+    func setContinuousInteractionReplacementPolicy(
+        commandScope: EditorInteractionCommandScope,
+        selection requestedSelection: EditorSelection? = nil,
+        commitsWhenReplacedAs actionName: String?
+    ) {
+        let resolvedSelection = requestedSelection ?? selection ?? commandScope.fallbackSelection
+        guard var draft = interaction,
+              draft.commandScope == commandScope,
+              draft.selection == resolvedSelection else { return }
+        let policy = actionName.map(EditorInteractionReplacementPolicy.commit(actionName:)) ?? .cancel
+        guard draft.replacementPolicy != policy else { return }
+        draft.replacementPolicy = policy
+        interaction = draft
+    }
+
     /// Starts a preview-canvas gesture without collapsing motion targets into
     /// their inspector tab. The same interaction draft and command reducer are
     /// used for base styles and timeline motion clips.

@@ -1,13 +1,11 @@
 import AppKit
+import RecorderCore
 import Combine
 import CoreGraphics
 import SwiftUI
 
 let recorderMainWindowIdentifier = NSUserInterfaceItemIdentifier(
     "cn.laogou.dogsc.main-window"
-)
-private let recorderEditorWindowIdentifier = NSUserInterfaceItemIdentifier(
-    "cn.laogou.dogsc.editor-window"
 )
 
 /// FOC-001: an inactive SwiftUI hosting view normally consumes the activation
@@ -223,6 +221,7 @@ enum WindowCoordinator {
     }
 
     private static let editorWindowController = EditorWindowController()
+    private static let recordingProjectEditor = RecordingProjectEditor()
     private static let completionWindowController = RecordingCompletionWindowController()
     private static var recorderPanelController: RecorderPanelController?
     private static var permissionWindowController: RequiredPermissionWindowController?
@@ -236,6 +235,13 @@ enum WindowCoordinator {
 
     static func install(model: AppModel) {
         self.model = model
+        recordingProjectEditor.onPresentationChange = { [weak model] in
+            guard let model else { return }
+            apply(phase: model.phase, model: model)
+        }
+        recordingProjectEditor.onFailure = { [weak model] message in
+            model?.errorMessage = message
+        }
         recorderPanelController = RecorderPanelController(model: model)
         permissionWindowController = RequiredPermissionWindowController(model: model)
         let presentationTriggers: [AnyPublisher<Void, Never>] = [
@@ -278,7 +284,7 @@ enum WindowCoordinator {
         if permissionWindowController.isManualGuideActive,
            phase == .setup || phase == .editor { return }
         if phase != .setup {
-            recorderPanelController.setCaptureSelectionActive(false)
+            recorderPanelController.setCaptureSelectionActive(false, restoringSetup: false)
         }
         if phase != .recordingComplete {
             completionWindowController.close()
@@ -292,9 +298,19 @@ enum WindowCoordinator {
         }
 
         permissionWindowController.hide()
+        if let editor = recordingProjectEditor.presentedModel {
+            // Recorder notifications must not steal focus from a recording
+            // or force a still-valid editor to recreate its playback graph.
+            if !editorWindowController.isShowing(model: editor) {
+                showEditor(model: editor)
+            }
+        } else if phase == .editor {
+            showEditor(model: model)
+        } else {
+            editorWindowController.closeForPhaseChange()
+        }
         switch phase {
         case .recordingComplete:
-            editorWindowController.closeForPhaseChange()
             let capturedScreen = NSScreen.screens.first { screen in
                 (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")]
                     as? NSNumber)?.uint32Value == model.project.capture.displayID
@@ -304,31 +320,81 @@ enum WindowCoordinator {
             completionWindowController.show(model: model, preferredScreen: preferredScreen)
         case .editor:
             recorderPanelController.present(phase: phase)
-            // The active recording/open-project flow is owned by AppModel. Its
-            // editor keeps using that same document and workspace so close,
-            // project replacement and save all cross one persistence barrier.
-            let preferredVisibleFrame = pendingExternalProjectVisibleFrame
-            pendingExternalProjectVisibleFrame = nil
-            editorWindowController.show(
-                model: model,
-                preferredVisibleFrame: preferredVisibleFrame
-            )
         case .setup, .preparing, .recording, .finishing:
-            editorWindowController.closeForPhaseChange()
             recorderPanelController.present(phase: phase)
         }
     }
 
-    static func beginCaptureSourceSelection() {
-        RecorderMemoController.shared.suspendForSelection()
-        recorderPanelController?.setCaptureSelectionActive(true)
+    private static func showEditor(model: AppModel) {
+        let preferredVisibleFrame = pendingExternalProjectVisibleFrame
+        pendingExternalProjectVisibleFrame = nil
+        editorWindowController.show(model: model, preferredVisibleFrame: preferredVisibleFrame)
     }
 
-    static func endCaptureSourceSelection() {
-        recorderPanelController?.setCaptureSelectionActive(false)
+    static var activeEditorModel: AppModel? {
+        recordingProjectEditor.presentedModel ?? (model?.phase == .editor ? model : nil)
+    }
+
+    static var hasRecordingProjectEditor: Bool { recordingProjectEditor.model != nil }
+
+    /// All URL entrances share this routing, including Dock, Finder and the
+    /// editor's own picker. A live take is never replaced by an editing file.
+    static func routeProjectOpen(at url: URL, from requester: AppModel) -> Bool {
+        guard let recorder = model else { return false }
+        let packageURL = url.lastPathComponent == "project.json" ? url.deletingLastPathComponent() : url
+        let recorderOwnsPendingTake = recorder.phase == .preparing || recorder.phase == .recording
+            || recorder.phase == .recordingComplete
+            || (recorder.phase == .finishing && recorder.recordingRuns.active != nil)
+        // This guard also covers the independent editor's own picker. A
+        // shared URL must never activate a second persistence epoch for a take
+        // whose writer or completion decision is still owned by the recorder.
+        if recorderOwnsPendingTake, let currentURL = recorder.currentSession?.packageURL,
+           currentURL.standardizedFileURL.resolvingSymlinksInPath()
+            == packageURL.standardizedFileURL.resolvingSymlinksInPath() {
+            requester.errorMessage = "这次录制尚未进入编辑器，请先完成录制后的处理。"
+            return true
+        }
+        guard requester === recorder else { return false }
+        let separateEditorIsRequired = hasRecordingProjectEditor
+            || recorderOwnsPendingTake
+        guard separateEditorIsRequired else { return false }
+        recordingProjectEditor.openProject(at: packageURL)
+        return true
+    }
+
+    static func closeRecordingProjectEditorForReplacement() async -> Bool {
+        await recordingProjectEditor.closeForReplacement()
+    }
+
+    static func flushRecordingProjectEditorForTermination() async -> Bool {
+        await recordingProjectEditor.flushForTermination()
+    }
+
+    static func beginCaptureSourceSelection(source: CaptureSource) {
+        RecorderMemoController.shared.suspendForSelection()
+        recorderPanelController?.setCaptureSelectionActive(true, source: source)
+    }
+
+    static func endCaptureSourceSelection(restoringRecorder: Bool = true) {
+        recorderPanelController?.setCaptureSelectionActive(
+            false,
+            restoringSetup: restoringRecorder
+        )
+        guard restoringRecorder else { return }
         if let owner = recorderPanelController?.window {
             RecorderMemoController.shared.resumeAfterSelection(relativeTo: owner)
         }
+    }
+
+    static func restoreCaptureSourceSelectionFocus() {
+        guard let model, model.phase == .setup,
+              !model.showsRequiredPermissionGate,
+              permissionWindowController?.isManualGuideActive != true else { return }
+        endCaptureSourceSelection()
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        guard let window = recorderPanelController?.window, window.isVisible else { return }
+        window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(nil)
     }
 
     static func toggleRecorderMemo() {
@@ -350,10 +416,10 @@ enum WindowCoordinator {
     static func bringCurrentWindowFront() {
         if permissionWindowController?.isManualGuideActive == true {
             permissionWindowController?.bringToFront()
-        } else if model?.phase == .editor {
-            editorWindowController.bringToFront()
         } else if model?.phase == .recordingComplete {
             completionWindowController.bringToFront()
+        } else if activeEditorModel != nil {
+            editorWindowController.bringToFront()
         } else if model?.showsRequiredPermissionGate == true {
             permissionWindowController?.bringToFront()
         } else {
@@ -423,6 +489,7 @@ enum WindowCoordinator {
         presentationObservation = nil
         completionWindowController.close()
         editorWindowController.closeForPhaseChange()
+        recordingProjectEditor.shutdown()
         permissionWindowController?.shutdown()
         permissionWindowController = nil
         recorderPanelController?.shutdown()
@@ -463,6 +530,7 @@ private final class EditorWindowController: NSObject, NSWindowDelegate {
     }
 
     func show(model: AppModel, preferredVisibleFrame: NSRect? = nil) {
+        if self.model !== model { closeForPhaseChange() }
         self.model = model
 
         if let window = windowController?.window {
@@ -481,6 +549,7 @@ private final class EditorWindowController: NSObject, NSWindowDelegate {
             }
             window.makeKeyAndOrderFront(nil)
             window.orderFrontRegardless()
+            CaptureEditorWindows.shared.register(window)
             return
         }
 
@@ -557,6 +626,7 @@ private final class EditorWindowController: NSObject, NSWindowDelegate {
         controller.showWindow(nil)
         window.makeKeyAndOrderFront(nil)
         window.orderFrontRegardless()
+        CaptureEditorWindows.shared.register(window)
         // 不把键盘焦点交给第一个可聚焦控件（导出按钮等），避免无边框
         // 窗口出现"键盘控制"焦点环；与录制条面板同一先例。
         window.makeFirstResponder(nil)
@@ -582,6 +652,7 @@ private final class EditorWindowController: NSObject, NSWindowDelegate {
         hostingView?.rootView = AnyView(EmptyView())
         hostingView?.layoutSubtreeIfNeeded()
         if let window = controller.window {
+            CaptureEditorWindows.shared.unregister(window)
             window.delegate = nil
             window.orderOut(nil)
             window.contentViewController = nil
@@ -592,6 +663,10 @@ private final class EditorWindowController: NSObject, NSWindowDelegate {
         model = nil
         isRequestingProjectClose = false
         isClosingForPhaseChange = false
+    }
+
+    func isShowing(model: AppModel) -> Bool {
+        windowController != nil && self.model === model
     }
 
     func bringToFront() {
@@ -684,6 +759,7 @@ private final class EditorWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowDidEnterFullScreen(_ notification: Notification) {
+        if let window = windowController?.window { CaptureEditorWindows.shared.register(window) }
         UserDefaults.standard.set(
             true,
             forKey: AppPreferences.editorWindowFullScreenKey
@@ -691,6 +767,7 @@ private final class EditorWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowDidExitFullScreen(_ notification: Notification) {
+        if let window = windowController?.window { CaptureEditorWindows.shared.register(window) }
         UserDefaults.standard.set(
             false,
             forKey: AppPreferences.editorWindowFullScreenKey

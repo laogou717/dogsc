@@ -943,13 +943,23 @@ final class CameraRecorder: NSObject,
                 )
             )
         }
-        writer.finishWriting { [weak self] in
-            self?.sessionQueue.async { [weak self] in
-                guard let self else { return }
-                let completedWriter = self.sampleWriter
-                let error = completedWriter?.status == .completed
+        let writerID = ObjectIdentifier(writer)
+        writer.finishWriting { [weak self, writerID, requestID] in
+            self?.sessionQueue.async { [weak self, writerID, requestID] in
+                guard let self,
+                      case let .stopping(activeRequestID) = self.activity,
+                      activeRequestID == requestID,
+                      self.sampleWriterIsFinishing,
+                      let finishedWriter = self.sampleWriter,
+                      ObjectIdentifier(finishedWriter) == writerID else { return }
+                // A timed-out writer can finish after a new preview/recording
+                // starts. Only this exact stop request may release its graph.
+                let error: (any Error)? = finishedWriter.status == .completed
                     ? nil
-                    : completedWriter?.error
+                    : finishedWriter.error ?? CameraRecorderError.recordingFailed(
+                        self.role.displayName,
+                        "摄像头文件没有完成封装"
+                    )
                 self.finishSampleWriterLocked(error: error)
             }
         }

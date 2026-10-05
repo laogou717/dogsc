@@ -17,14 +17,16 @@ final class AppSettingsWindowController {
     static let shared = AppSettingsWindowController()
 
     private var controller: NSWindowController?
+    private let navigation = AppSettingsNavigation()
 
-    func show() {
+    func show(section: AppSettingsSection? = nil) {
+        if let section { navigation.selectedSection = section }
         let screen = NSApp.keyWindow?.screen ?? NSScreen.main
         let controller = controller ?? makeController()
         let isOpening = controller.window?.isVisible != true
         if let window = controller.window, !window.isVisible, let screen {
             let height = min(Self.initialContentHeight, max(screen.visibleFrame.height - 100, 400))
-            (window.contentViewController as? NSHostingController<AppSettingsView>)?.rootView = AppSettingsView(contentHeight: height)
+            (window.contentViewController as? NSHostingController<AppSettingsView>)?.rootView = AppSettingsView(contentHeight: height, navigation: navigation)
             window.setContentSize(NSSize(width: Self.contentWidth, height: height))
             window.contentView?.layoutSubtreeIfNeeded()
             let bounds = screen.visibleFrame
@@ -54,7 +56,7 @@ final class AppSettingsWindowController {
 
     private func makeController() -> NSWindowController {
         let applicationName = AppIdentity.displayName
-        let window = NSWindow(
+        let window = EscapeDismissibleWindow(
             contentRect: NSRect(
                 x: 0,
                 y: 0,
@@ -66,7 +68,7 @@ final class AppSettingsWindowController {
             defer: false
         )
         let hostingController = NSHostingController(
-            rootView: AppSettingsView()
+            rootView: AppSettingsView(navigation: navigation)
         )
         window.identifier = Self.windowIdentifier
         window.title = "\(applicationName) \(appLocalized("设置"))"
@@ -80,12 +82,10 @@ final class AppSettingsWindowController {
         window.isRestorable = false
         window.tabbingMode = .disallowed
         window.animationBehavior = .documentWindow
-        // The setup recorder is intentionally a floating HUD. A normal-level
-        // settings window therefore opens behind it and the HUD covers the
-        // lower storage controls. Keep settings in the same app-local band;
-        // the deferred order-front in show() then places the requested window
-        // above the idle recorder without outranking active recording controls.
-        window.level = .floating
+        // Settings follows ordinary app-window ordering. It must not pin
+        // itself above the desktop or other apps when the user switches away.
+        window.level = .normal
+        window.hidesOnDeactivate = true
         window.contentMinSize = NSSize(width: Self.contentWidth, height: 400)
         window.contentMaxSize = NSSize(width: Self.contentWidth, height: 640)
         window.standardWindowButton(.zoomButton)?.isEnabled = false

@@ -1,6 +1,7 @@
 import AppKit
 import OSLog
 import QuartzCore
+import RecorderCore
 import SwiftUI
 
 @MainActor
@@ -119,14 +120,20 @@ final class DogSCApplicationDelegate: NSObject,
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let model, model.phase == .recordingComplete else { return .terminateNow }
+        guard let model,
+              model.phase == .recordingComplete || WindowCoordinator.hasRecordingProjectEditor
+        else { return .terminateNow }
         guard !isWaitingForRecordingCompletionDecision,
               !model.isResolvingCompletedRecording,
               !AppDialogPresenter.isPresenting else { return .terminateCancel }
         isWaitingForRecordingCompletionDecision = true
         let owner = sender.keyWindow
         Task { @MainActor [weak self] in
-            let shouldTerminate = await model.confirmCompletedRecordingForTermination(relativeTo: owner)
+            var shouldTerminate = await WindowCoordinator.flushRecordingProjectEditorForTermination()
+            if shouldTerminate, model.phase == .recordingComplete {
+                let decisionOwner = owner?.isVisible == true ? owner : sender.keyWindow
+                shouldTerminate = await model.confirmCompletedRecordingForTermination(relativeTo: decisionOwner)
+            }
             self?.isWaitingForRecordingCompletionDecision = false
             sender.reply(toApplicationShouldTerminate: shouldTerminate)
         }
@@ -204,7 +211,7 @@ final class DogSCApplicationDelegate: NSObject,
 
     @objc private func openRecentProject(_ sender: NSMenuItem) {
         guard let path = sender.representedObject as? String else { return }
-        // requestOpenProject 会处理当前阶段（编辑器时先安全保存、录制中提示）。
+        // URL routing keeps a live take separate and safely saves editor switches.
         WindowCoordinator.prepareExternalProjectPresentation()
         model?.requestOpenProject(at: URL(fileURLWithPath: path, isDirectory: true))
     }
@@ -410,15 +417,7 @@ final class DogSCApplicationDelegate: NSObject,
     }
 
     @objc private func openAboutFromApplicationMenu(_ sender: NSMenuItem) {
-        NSApplication.shared.activate(ignoringOtherApps: true)
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
-        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
-        AppDialogPresenter.present(AppDialog(
-            title: AppIdentity.displayName,
-            message: "\(appLocalized("录制、剪辑，让画面自然出彩。"))\n\n\(appLocalized("版本")) \(version) (\(build))\n© laogou",
-            showsAppIcon: true,
-            actions: [.init(id: "acknowledge", title: "好", role: .primary)]
-        ))
+        settingsWindowController.show(section: .about)
     }
 
     /// SwiftUI contributes the standard application submenu, but this app's
@@ -480,7 +479,7 @@ final class DogSCApplicationDelegate: NSObject,
         installApplicationMenuActions()
         EditorMenuBridge.shared.installMainMenuItems()
         installProjectMediaMenu()
-        setMainMenuEditorMode(model?.phase == .editor)
+        setMainMenuEditorMode(WindowCoordinator.activeEditorModel != nil)
     }
 
     func setMainMenuEditorMode(_ isEditor: Bool) {
@@ -543,11 +542,11 @@ final class DogSCApplicationDelegate: NSObject,
     }
 
     @objc private func exportProjectSourceMedia(_ sender: NSMenuItem) {
-        model?.exportCurrentProjectSourceMedia()
+        WindowCoordinator.activeEditorModel?.exportCurrentProjectSourceMedia()
     }
 
     @objc private func importCameraReplacement(_ sender: NSMenuItem) {
-        model?.importCameraReplacement()
+        WindowCoordinator.activeEditorModel?.importCameraReplacement()
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
@@ -557,8 +556,7 @@ final class DogSCApplicationDelegate: NSObject,
         guard menuItem.action == #selector(exportProjectSourceMedia(_:))
                 || menuItem.action == #selector(importCameraReplacement(_:))
         else { return true }
-        guard let model,
-              model.phase == .editor,
+        guard let model = WindowCoordinator.activeEditorModel,
               !model.isMediaExchangeRunning else { return false }
         if menuItem.action == #selector(importCameraReplacement(_:)) {
             return model.project.media?.camera != nil
@@ -644,6 +642,8 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
     private var hasPositionedPanel = false
     private var currentPhase: AppPhase
     private var selectionIsActive = false
+    private var selectionSource: CaptureSource?
+    private let transition = RecorderPanelTransition()
     private let isDesignReview = CommandLine.arguments.contains("--design-review")
     private let logger = Logger(
         subsystem: "cn.laogou.dogsc",
@@ -672,6 +672,10 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
     }
 
     var window: NSPanel { panel }
+
+    private var hidesSetupForSelection: Bool {
+        currentPhase == .setup && selectionIsActive && selectionSource != .device
+    }
 
     private func resizeRecordingContent(to width: CGFloat) {
         guard currentPhase == .recording, width.isFinite,
@@ -713,7 +717,7 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
             for: phase,
             recordsMicrophone: model.configuration.recordsMicrophone
         ) else {
-            panel.orderOut(nil)
+            transition.hide(panel, animated: false)
             return
         }
 
@@ -728,8 +732,10 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
         } else {
             panel.sharingType = isDesignReview ? .readOnly : .none
         }
-        panel.contentMinSize = contentSize
-        panel.contentMaxSize = contentSize
+        if phaseChanged || phase != .recording {
+            panel.contentMinSize = contentSize
+            panel.contentMaxSize = contentSize
+        }
 
         if !hasPositionedPanel {
             panel.setContentSize(contentSize)
@@ -772,64 +778,89 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
             visibleFrame: panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
         )
 
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0
-            context.allowsImplicitAnimation = false
-            panel.setFrame(destination, display: false, animate: false)
-            hostingController.rootView = RecorderMainWindowRoot(
-                model: model,
-                phase: phase,
-                onRecordingWidthChange: { [weak self] width in
-                    self?.resizeRecordingContent(to: width)
+        // Readiness updates are observed by the existing root. Replacing it
+        // inside a zero-duration transaction interrupted press/selection state.
+        if phaseChanged || (phase != .recording && panel.frame.size != destination.size) {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0
+                context.allowsImplicitAnimation = false
+                panel.setFrame(destination, display: false, animate: false)
+                if phaseChanged {
+                    hostingController.rootView = RecorderMainWindowRoot(
+                        model: model,
+                        phase: phase,
+                        onRecordingWidthChange: { [weak self] width in
+                            self?.resizeRecordingContent(to: width)
+                        }
+                    )
                 }
-            )
-            panel.contentView?.layoutSubtreeIfNeeded()
-            panel.contentView?.needsDisplay = true
-            panel.invalidateShadow()
+                panel.contentView?.layoutSubtreeIfNeeded()
+                panel.contentView?.needsDisplay = true
+                panel.invalidateShadow()
+            }
+            CATransaction.commit()
         }
-        CATransaction.commit()
-        if phaseChanged, panel.isVisible { animateRecorderOverlayIn(panel) }
 
         logger.info(
             "phase=\(String(describing: phase), privacy: .public) frame=\(destination.width, privacy: .public)x\(destination.height, privacy: .public)"
         )
+        guard !hidesSetupForSelection else {
+            transition.hide(panel, animated: true)
+            return
+        }
+        if phaseChanged || !panel.isVisible || panel.alphaValue < 1 {
+            transition.show(panel, animated: true)
+        }
         if phase == .setup, shouldActivateSetup {
             NSApplication.shared.activate(ignoringOtherApps: true)
             panel.makeKeyAndOrderFront(nil)
-        } else if phaseChanged || !panel.isVisible {
-            panel.orderFrontRegardless()
         }
     }
 
-    func setCaptureSelectionActive(_ active: Bool) {
-        if active { FirstUseTourController.controller(for: .recorder).suspend() }
-        else { FirstUseTourController.controller(for: .recorder).resume() }
+    func setCaptureSelectionActive(
+        _ active: Bool,
+        source: CaptureSource? = nil,
+        restoringSetup: Bool = true
+    ) {
+        if selectionIsActive != active {
+            if active { FirstUseTourController.controller(for: .recorder).suspend() }
+            else { FirstUseTourController.controller(for: .recorder).resume() }
+        }
         selectionIsActive = active
+        selectionSource = active ? source : nil
         panel.level = CaptureWindowLevelPolicy.level(for: .recorderPanel(
             phase: currentPhase,
             selectionActive: active
         ))
-        if panel.isVisible {
+        if hidesSetupForSelection {
+            RecorderPopoverPresenter.shared.dismiss()
+            panel.makeFirstResponder(nil)
+            transition.hide(panel, animated: true)
+        } else if !active, restoringSetup, currentPhase == .setup {
+            present(phase: .setup)
+        } else if active, currentPhase == .setup {
+            present(phase: .setup)
             panel.orderFrontRegardless()
         }
     }
 
     func hide() {
         FirstUseTourController.controller(for: .recorder).suspend()
-        panel.orderOut(nil)
+        transition.hide(panel, animated: false)
     }
 
     func bringToFront() {
-        guard currentPhase != .editor else { return }
+        guard currentPhase != .editor, !hidesSetupForSelection else { return }
+        transition.show(panel, animated: !panel.isVisible)
         NSApplication.shared.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
     }
 
     func shutdown() {
         RecorderPopoverPresenter.shared.dismiss()
-        panel.orderOut(nil)
+        transition.hide(panel, animated: false)
         panel.contentViewController = nil
         panel.close()
     }

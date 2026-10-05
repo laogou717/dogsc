@@ -10,6 +10,73 @@ func appLocalized(_ key: String) -> String {
     Bundle.main.localizedString(forKey: key, value: key, table: nil)
 }
 
+/// Core errors retain their stable domain values. Translate their presentation
+/// here, preserving associated versions, diagnostics and user-authored names.
+func appErrorDescription(_ error: any Error) -> String {
+    if let schema = error as? ProjectSchemaError {
+        switch schema {
+        case let .unsupportedLegacyVersion(found, minimumSupported):
+            return String(format: appLocalized("项目版本 %ld 过旧；当前应用最低支持版本 %ld。"), found, minimumSupported)
+        case let .unsupportedFutureVersion(found, current):
+            return String(format: appLocalized("项目版本 %ld 来自更新的应用；当前应用只支持到版本 %ld，为避免损坏项目已停止打开。"), found, current)
+        case let .refusingToEncodeUnsupportedVersion(found, supportedRange):
+            return String(format: appLocalized("拒绝写入项目版本 %ld；可写入版本范围为 %ld...%ld。"), found, supportedRange.lowerBound, supportedRange.upperBound)
+        case let .refusingToEncodeFutureVersion(found, current):
+            return String(format: appLocalized("拒绝用当前应用覆盖未来项目版本 %ld；当前应用只支持到版本 %ld。"), found, current)
+        }
+    }
+    if let validation = error as? ProjectValidationError {
+        switch validation {
+        case let .invalidCanvas(reason):
+            return String(format: appLocalized("画布参数无效：%@"), appLocalized(reason))
+        case let .invalidCamera(reason):
+            return String(format: appLocalized("摄像头参数无效：%@"), appLocalized(reason))
+        case let .invalidAudio(reason):
+            return String(format: appLocalized("音频参数无效：%@"), appLocalized(reason))
+        case let .invalidCursor(reason):
+            return String(format: appLocalized("光标参数无效：%@"), appLocalized(reason))
+        case let .invalidMotion(reason):
+            return String(format: appLocalized("动画参数无效：%@"), appLocalized(reason))
+        case let .invalidOpening(reason):
+            return String(format: appLocalized("开场编排参数无效：%@"), appLocalized(reason))
+        case let .invalidZoom(_, reason):
+            return String(format: appLocalized("缩放片段无效：%@"), appLocalized(reason))
+        case let .invalidTimeline(reason):
+            return String(format: appLocalized("时间线无效：%@"), appLocalized(reason))
+        case .duplicateZoomID, .overlappingZoom:
+            return appLocalized(validation.localizedDescription)
+        }
+    }
+    if let editing = error as? ProjectTimelineEditingError {
+        switch editing {
+        case let .duplicateClipID(track, _):
+            return String(format: appLocalized("%@轨道中存在重复片段。"), appTimelineTrackName(track))
+        case let .missingClip(track, _):
+            return String(format: appLocalized("%@轨道中找不到要编辑的片段。"), appTimelineTrackName(track))
+        case let .mismatchedClipID(track, _, _):
+            return String(format: appLocalized("%@轨道中的片段已发生变化，请重新选择后再试。"), appTimelineTrackName(track))
+        case let .invalidClip(track, _):
+            return String(format: appLocalized("%@轨道中存在无效片段。"), appTimelineTrackName(track))
+        case let .overlappingClips(track, _, _):
+            return String(format: appLocalized("%@轨道中的片段发生重叠。"), appTimelineTrackName(track))
+        default:
+            return appLocalized(editing.localizedDescription)
+        }
+    }
+    return appLocalized(error.localizedDescription)
+}
+
+private func appTimelineTrackName(_ track: ProjectTimelineTrack) -> String {
+    switch track {
+    case .primaryRecording: appLocalized("主片段")
+    case .zoom: appLocalized("缩放")
+    case .screenMotion: appLocalized("屏幕 3D")
+    case .cameraMotion: appLocalized("摄像运动")
+    case .mosaic: appLocalized("打码")
+    case .sticker: appLocalized("贴图")
+    }
+}
+
 enum AppAppearancePreference: String, CaseIterable, Identifiable {
     case system
     case light
@@ -175,10 +242,6 @@ enum AppPreferences {
     static let exportCompletionSoundEnabledKey =
         "cn.laogou.dogsc.export-completion-sound-enabled"
     static let previewResolutionModeKey = "editor.previewResolutionMode"
-    static let editorTimelinePrimaryLaneHeightKey =
-        "editor.timeline.primary-lane-height"
-    private static let editorTimelinePrimaryLaneHeightPrefix =
-        "editor.timeline.primary-lane-height.v2"
     static let editorTimelineHoverPreviewEnabledKey =
         "editor.timeline.hover-preview-enabled"
     private static let editorTimelineTrackVisibilityPrefix =
@@ -322,34 +385,6 @@ enum AppPreferences {
         UserDefaults.standard.set(
             min(max(scale, 1), 6),
             forKey: zoomCreationScaleKey
-        )
-    }
-
-    static func timelinePrimaryLaneHeight(for project: RecorderProject) -> Double {
-        let defaults = UserDefaults.standard
-        let key = "\(editorTimelinePrimaryLaneHeightPrefix).\(projectPresentationIdentity(for: project))"
-        let stored: Double
-        if defaults.object(forKey: key) != nil {
-            stored = defaults.double(forKey: key)
-        } else if defaults.object(forKey: editorTimelinePrimaryLaneHeightKey) != nil {
-            // One-time compatibility with the previous global workspace value.
-            stored = defaults.double(forKey: editorTimelinePrimaryLaneHeightKey)
-        } else {
-            stored = Double(EditorTimelineSizing.defaultPrimaryLaneHeight)
-        }
-        return Double(EditorTimelineSizing.clampedPrimaryLaneHeight(CGFloat(stored)))
-    }
-
-    static func rememberTimelinePrimaryLaneHeight(
-        _ height: Double,
-        for project: RecorderProject
-    ) {
-        let value = Double(
-            EditorTimelineSizing.clampedPrimaryLaneHeight(CGFloat(height))
-        )
-        UserDefaults.standard.set(
-            value,
-            forKey: "\(editorTimelinePrimaryLaneHeightPrefix).\(projectPresentationIdentity(for: project))"
         )
     }
 

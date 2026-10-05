@@ -27,6 +27,11 @@ enum AppPhase: Equatable {
     }
 }
 
+enum AppModelPurpose {
+    case recording
+    case editing
+}
+
 enum RecorderTransitionStage: Equatable, Sendable {
     case idle
     case checkingPermissions
@@ -188,6 +193,7 @@ enum LegacyMotionDefaultsUpgrade {
 
 @MainActor
 final class AppModel: ObservableObject {
+    let purpose: AppModelPurpose
     @Published var phase: AppPhase = .setup
     @Published var recorderTransitionStage = RecorderTransitionStage.idle
     let workspace: ProjectWorkspace
@@ -274,15 +280,15 @@ final class AppModel: ObservableObject {
                 || !hasCompletedRequiredPermissionOnboarding)
     }
 
-    let recorder = ScreenRecorder()
+    lazy var recorder = ScreenRecorder()
     let exporter = VideoExporter()
-    let cameraRecorder = CameraRecorder()
-    let deviceRecorder = CameraRecorder(role: .iosDevice)
-    let microphoneRecorder = MicrophoneRecorder()
+    lazy var cameraRecorder = CameraRecorder()
+    lazy var deviceRecorder = CameraRecorder(role: .iosDevice)
+    lazy var microphoneRecorder = MicrophoneRecorder()
     lazy var cameraPreviewController = CameraPreviewWindowController(
         session: cameraRecorder.previewSession
     )
-    let pointerRecorder = PointerEventRecorder()
+    lazy var pointerRecorder = PointerEventRecorder()
     lazy var trackFinalizer = RecordingTrackFinalizer(operations: .live(
         screenRecorder: recorder,
         iosDeviceRecorder: deviceRecorder,
@@ -303,6 +309,8 @@ final class AppModel: ObservableObject {
     var cameraResolutionTask: Task<Void, Never>?
     var cameraResolutionDeviceID: String?
     var cameraPreviewTask: Task<Void, Never>?
+    var pendingRecordingRestartTask: Task<Void, Never>?
+    var pendingRecordingRestartGeneration: UInt64 = 0
     var microphoneMeterTask: Task<Void, Never>?
     var recordingRuns = RecordingRunState()
     var preparationTask: Task<Void, Never>?
@@ -328,8 +336,10 @@ final class AppModel: ObservableObject {
 
     init(
         workspace: ProjectWorkspace,
-        captureSetup: CaptureSetupController? = nil
+        captureSetup: CaptureSetupController? = nil,
+        purpose: AppModelPurpose = .recording
     ) {
+        self.purpose = purpose
         self.workspace = workspace
         self.captureSetup = captureSetup ?? CaptureSetupController()
         workspace.objectWillChange
@@ -350,6 +360,9 @@ final class AppModel: ObservableObject {
         workspace.onFailure = { [weak self] message in
             self?.errorMessage = message
         }
+        // A saved-project editor owns persistence and file playback only. It
+        // must never install a second set of live-input/device callbacks.
+        guard purpose == .recording else { return }
         recorder.onUnexpectedStop = { [weak self] runID, error in
             self?.handleUnexpectedCaptureStop(runID: runID, error: error)
         }
@@ -367,7 +380,7 @@ final class AppModel: ObservableObject {
                   self.recordingRuns.active?.startedTracks.contains(.microphone) == true
             else { return }
             self.recordingInterruptionWarnings.append(
-                "麦克风连接已中断：\(error.localizedDescription)"
+                String(format: appLocalized("麦克风连接已中断：%@"), appErrorDescription(error))
             )
         }
         // REC-PRE-001: present the newest capture sample immediately. The sink
@@ -381,18 +394,15 @@ final class AppModel: ObservableObject {
         }
         self.captureSetup.onError = { [weak self] message in self?.errorMessage = message }
         self.captureSetup.onStartRequested = { [weak self] in self?.startRecording() }
-        self.captureSetup.onSelectionPresentationStarted = {
-            WindowCoordinator.beginCaptureSourceSelection()
+        self.captureSetup.onSelectionPresentationStarted = { source in
+            WindowCoordinator.beginCaptureSourceSelection(source: source)
+        }
+        self.captureSetup.onSelectionPresentationEnded = {
+            WindowCoordinator.endCaptureSourceSelection(restoringRecorder: false)
         }
         self.captureSetup.onFocusRestorationRequested = { [weak self] in
             guard let self, phase == .setup else { return }
-            WindowCoordinator.endCaptureSourceSelection()
-            NSApplication.shared.activate(ignoringOtherApps: true)
-            guard let window = NSApplication.shared.windows.first(where: {
-                $0.identifier == recorderMainWindowIdentifier && $0.isVisible
-            }) else { return }
-            window.makeKeyAndOrderFront(nil)
-            window.makeFirstResponder(nil)
+            WindowCoordinator.restoreCaptureSourceSelectionFocus()
         }
         self.captureSetup.recorderDisplayID = {
             WindowCoordinator.recorderDisplayID()
@@ -427,7 +437,11 @@ final class AppModel: ObservableObject {
     var canStartRecording: Bool { recorderStartAvailability.permitsRecording }
 
     func startRecording() {
-        guard phase == .setup else { return }
+        guard purpose == .recording, phase == .setup else { return }
+        cancelPendingRecordingRestart()
+        defer {
+            if phase == .setup { captureSetup.recordingStartDidNotProceed() }
+        }
         switch recorderStartAvailability {
         case .needsCaptureTarget:
             errorMessage = "请先选择显示器、窗口、区域或设备。"
@@ -459,7 +473,7 @@ final class AppModel: ObservableObject {
             )
             plan = candidate
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = appErrorDescription(error)
             return
         }
         guard captureReadiness.hasSufficientDisk else {
@@ -494,6 +508,25 @@ final class AppModel: ObservableObject {
         pauseStartedAt = nil
         accumulatedPausedDuration = 0
         let run = recordingRuns.begin(plan)
+        // Capture the run before starting any track. Recorder callbacks copy
+        // these handlers before dispatching to MainActor, so a queued failure
+        // from an old run keeps its original identity after a restart.
+        deviceRecorder.onUnexpectedStop = { [weak self, runID = run.id] error in
+            self?.handleUnexpectedCaptureStop(runID: runID, error: error)
+        }
+        cameraRecorder.onUnexpectedStop = { [weak self, runID = run.id] error in
+            self?.handleUnexpectedCaptureStop(runID: runID, error: error)
+        }
+        microphoneRecorder.onUnexpectedStop = { [weak self, runID = run.id] error in
+            // 麦克风中途断连只丢失一条音轨：提示但不终止整段录制。
+            guard let self,
+                  self.recordingRuns.isCurrent(runID),
+                  self.recordingRuns.active?.startedTracks.contains(.microphone) == true
+            else { return }
+            self.recordingInterruptionWarnings.append(
+                String(format: appLocalized("麦克风连接已中断：%@"), appErrorDescription(error))
+            )
+        }
         if let operation = recordingMicrophoneOperation,
            let microphoneID = plan.configuration.microphoneDeviceID {
             startRecordingMicrophoneLevelObservation(
@@ -744,7 +777,7 @@ final class AppModel: ObservableObject {
                 startRecoveryHeartbeat(session: session, runID: run.id, plan: plan)
             } catch {
                 guard recordingRuns.isCurrent(run.id) else { return }
-                let message = error.localizedDescription
+                let message = appErrorDescription(error)
                 captureSetup.stopPresentation()
                 recoveryHeartbeatTask?.cancel()
                 recoveryHeartbeatTask = nil
@@ -1028,9 +1061,9 @@ final class AppModel: ObservableObject {
                     )
                 }
                 errorMessage = finalizationErrors.isEmpty
-                    ? nil : finalizationErrors.joined(separator: "；")
+                    ? nil : finalizationErrors.joined(separator: appLocalized("；"))
             } else if !finalizationErrors.isEmpty {
-                errorMessage = finalizationErrors.joined(separator: "；")
+                errorMessage = finalizationErrors.joined(separator: appLocalized("；"))
             } else {
                 errorMessage = "录制文件没有可播放的视频轨道，已保留临时项目供恢复。"
             }
