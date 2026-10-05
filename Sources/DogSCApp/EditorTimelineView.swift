@@ -856,10 +856,10 @@ struct EditorTimelineView: View {
     @State var isRestoreCutMode = false
     @State var usesWaveformClips: Bool
     @Namespace var displayModeSelection
-    /// 时间轴悬浮预览轴开关（Skimming）：默认开启；关闭后恢复传统固定播放头模式。
+    /// 时间轴悬浮预览轴开关（Skimming）：默认关闭，主动开启后按悬浮位置预览。
     @AppStorage(AppPreferences.editorTimelineHoverPreviewEnabledKey)
-    var isHoverPreviewEnabled = true
-    @AppStorage("editorTimelineSnappingEnabled") var isSnappingEnabled = true
+    var isHoverPreviewEnabled = false
+    @AppStorage("editorTimelineSnappingEnabled") var isSnappingEnabled = false
     @State var manualZoomDragStart: TimeInterval?
     @State var manualZoomDragEnd: TimeInterval?
     @State var hoveredZoomTrackLocation: CGPoint?

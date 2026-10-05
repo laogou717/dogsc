@@ -297,7 +297,7 @@ enum AppPreferences {
     static var isTimelineHoverPreviewEnabled: Bool {
         let defaults = UserDefaults.standard
         guard defaults.object(forKey: editorTimelineHoverPreviewEnabledKey) != nil else {
-            return true
+            return false
         }
         return defaults.bool(forKey: editorTimelineHoverPreviewEnabledKey)
     }

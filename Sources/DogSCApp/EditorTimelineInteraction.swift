@@ -7,7 +7,7 @@ import RecorderCore
 /// switch at its launch state, so keep the live value in a stable reference.
 @MainActor
 final class EditorTimelineHoverPreviewGate {
-    var isEnabled = true
+    var isEnabled = false
 }
 
 @MainActor

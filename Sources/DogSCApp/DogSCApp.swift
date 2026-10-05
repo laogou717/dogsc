@@ -563,19 +563,26 @@ private final class EditorWindowController: NSObject, NSWindowDelegate {
         let hostingView = EditorFirstMouseHostingView(
             rootView: AnyView(EditorSessionHost(model: model))
         )
+        // The window owns its frame and minimum size. Content fitting must
+        // not replace the display-sized initial frame during attachment.
+        hostingView.sizingOptions = []
         self.hostingView = hostingView
         hostingController.view = hostingView
+        let initialFrame = preferredVisibleFrame ?? systemMainScreen()?.visibleFrame
+            ?? NSRect(x: 0, y: 0, width: 1728, height: 900)
+        let styleMask: NSWindow.StyleMask = [
+            .titled,
+            .closable,
+            .miniaturizable,
+            .resizable,
+            .fullSizeContentView,
+        ]
         let window = NSWindow(
-            contentRect: editorInitialFrame(
-                inside: preferredVisibleFrame ?? systemMainScreen()?.visibleFrame
+            contentRect: NSWindow.contentRect(
+                forFrameRect: initialFrame,
+                styleMask: styleMask
             ),
-            styleMask: [
-                .titled,
-                .closable,
-                .miniaturizable,
-                .resizable,
-                .fullSizeContentView,
-            ],
+            styleMask: styleMask,
             backing: .buffered,
             defer: false
         )
@@ -600,7 +607,12 @@ private final class EditorWindowController: NSObject, NSWindowDelegate {
         let restoredFrame = window.setFrameUsingName(
             AppPreferences.editorWindowFrameAutosaveName
         )
-        if let preferredVisibleFrame {
+        if !restoredFrame {
+            // Apply the whole-window frame after installing its content.
+            // Centering the host's current frame can preserve a small fitting
+            // size on a fresh install instead of the intended work area.
+            window.setFrame(initialFrame, display: false)
+        } else if let preferredVisibleFrame {
             window.setFrame(
                 centeredFrame(
                     preserving: window.frame,
@@ -612,21 +624,6 @@ private final class EditorWindowController: NSObject, NSWindowDelegate {
         _ = window.setFrameAutosaveName(
             AppPreferences.editorWindowFrameAutosaveName
         )
-        if !restoredFrame, preferredVisibleFrame == nil {
-            let visibleFrame = systemMainScreen()?.visibleFrame
-            if let visibleFrame {
-                window.setFrame(
-                    centeredFrame(
-                        preserving: window.frame,
-                        inside: visibleFrame
-                    ),
-                    display: false
-                )
-            } else {
-                window.center()
-            }
-        }
-
         let controller = NSWindowController(window: window)
         windowController = controller
         installFirstMouseActivationMonitor(for: window)
@@ -779,28 +776,6 @@ private final class EditorWindowController: NSObject, NSWindowDelegate {
         UserDefaults.standard.set(
             false,
             forKey: AppPreferences.editorWindowFullScreenKey
-        )
-    }
-
-    private func editorInitialFrame(inside visibleFrame: NSRect?) -> NSRect {
-        guard let visibleFrame else {
-            return NSRect(origin: .zero, size: NSSize(width: 1728, height: 900))
-        }
-        // First use should fill a comfortable share of the actual work area,
-        // including large displays. AppKit still restores any saved frame.
-        let minimum = editorMinimumSize()
-        return NSRect(
-            origin: .zero,
-            size: NSSize(
-                width: min(
-                    max(visibleFrame.width * 0.9, minimum.width),
-                    max(visibleFrame.width - 24, minimum.width)
-                ),
-                height: min(
-                    max(visibleFrame.height * 0.9, minimum.height),
-                    max(visibleFrame.height - 24, minimum.height)
-                )
-            )
         )
     }
 

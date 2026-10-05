@@ -59,7 +59,7 @@ struct AppSettingsView: View {
     @AppStorage(AppPreferences.exportCompletionSoundEnabledKey)
     private var exportCompletionSoundEnabled = true
     @AppStorage(AppPreferences.previewResolutionModeKey)
-    private var previewResolutionMode = EditorPreviewResolutionMode.low
+    private var previewResolutionMode = EditorPreviewResolutionMode.defaultValue
     @AppStorage(AppPreferences.recordingCameraPreviewShapeKey)
     private var recordingCameraPreviewShape = RecordingCameraPreviewShape.circle
     @AppStorage(AppPreferences.appearancePreferenceKey)

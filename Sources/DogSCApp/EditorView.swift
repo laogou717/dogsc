@@ -135,7 +135,7 @@ struct EditorView: View {
     @State private var explicitInspectorTab: InspectorTab?
     @State private var timelineTrackVisibility: EditorTimelineTrackVisibility
     @AppStorage(AppPreferences.previewResolutionModeKey)
-    private var previewResolutionMode = EditorPreviewResolutionMode.low
+    private var previewResolutionMode = EditorPreviewResolutionMode.defaultValue
     @State private var preferredTimelineHeight: CGFloat?
     @State private var isEditorActive = true
     @State private var workspaceScreenSize = NSScreen.main?.visibleFrame.size
@@ -200,7 +200,6 @@ struct EditorView: View {
         }
         .frame(minWidth: EditorWorkspaceLayout.minimumWindowSize.width,
                minHeight: EditorWorkspaceLayout.minimumWindowSize.height)
-        .frame(idealWidth: 1510, idealHeight: 980)
         .background(appBackground)
         // 界面交互使用铂金强调；橙/红/绿只表达内容身份与录制状态。
         .tint(editorAccent)

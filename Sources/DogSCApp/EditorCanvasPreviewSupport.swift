@@ -91,6 +91,8 @@ enum EditorPreviewResolutionMode: String, CaseIterable, Identifiable {
     case low
     case full
 
+    static let defaultValue: Self = .full
+
     var id: String { rawValue }
 
     var label: String {
@@ -112,7 +114,7 @@ enum CanvasPreviewRasterPolicy {
     static func pixelSize(
         points: CGSize,
         displayScale _: CGFloat,
-        mode: EditorPreviewResolutionMode = .low,
+        mode: EditorPreviewResolutionMode = .defaultValue,
         fullResolution: CGSize? = nil
     ) -> CGSize {
         // “流畅”是用户主动选择的性能档，而不是窗口当前 backing
