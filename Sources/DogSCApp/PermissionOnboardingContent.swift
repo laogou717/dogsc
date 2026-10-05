@@ -54,15 +54,9 @@ struct RequiredRecordingPermissionView: View {
             }
             .padding(.top, 22)
 
-            VStack(alignment: .leading, spacing: 9) {
-                Label("返回后自动检查", systemImage: "checkmark.circle")
-                Label("摄像头和麦克风在启用时再授权", systemImage: "video")
-            }
-            .font(.appUI(size: 12))
-            .foregroundStyle(PermissionOnboardingStyle.muted)
-            .padding(.top, 20)
+            permissionNotes.padding(.top, 20)
 
-            Spacer(minLength: 10)
+            Spacer(minLength: 18)
             if model.hasRequiredRecordingPermissions {
                 Button {
                     isEntryButtonFocused = false
@@ -83,8 +77,12 @@ struct RequiredRecordingPermissionView: View {
         }
         .padding(.horizontal, PermissionOnboardingStyle.brandInset.x)
         .padding(.top, PermissionOnboardingStyle.brandInset.y)
-        .padding(.bottom, 24)
+        .padding(.bottom, 28)
         .frame(width: PermissionOnboardingStyle.size.width, height: PermissionOnboardingStyle.size.height)
+        // The AppKit window uses a full-size content view. Its fixed page
+        // already reserves the titlebar in brandInset; applying that safe
+        // area again pushes the page below its frame and clips footer space.
+        .ignoresSafeArea(.container, edges: .top)
         .foregroundStyle(PermissionOnboardingStyle.ink)
         .background(Color(nsColor: PermissionOnboardingStyle.background))
         .preferredColorScheme(.light)
@@ -111,6 +109,32 @@ struct RequiredRecordingPermissionView: View {
                 catch { return }
             }
         }
+    }
+
+    private var permissionNotes: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 20) {
+                automaticCheckNote
+                optionalPermissionNote
+            }
+            .fixedSize()
+            VStack(alignment: .leading, spacing: 6) {
+                automaticCheckNote
+                optionalPermissionNote
+            }
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .font(.appUI(size: 12))
+        .foregroundStyle(PermissionOnboardingStyle.muted)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var automaticCheckNote: some View {
+        Label("返回后自动检查", systemImage: "checkmark.circle")
+    }
+
+    private var optionalPermissionNote: some View {
+        Label("摄像头和麦克风在启用时再授权", systemImage: "video")
     }
 
     private func permissionRow(_ permission: RequiredRecordingPermissionKind) -> some View {

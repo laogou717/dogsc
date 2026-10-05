@@ -376,11 +376,17 @@ enum WindowCoordinator {
     }
 
     static func endCaptureSourceSelection(restoringRecorder: Bool = true) {
+        // Selection cleanup also runs during permission onboarding. Never
+        // restore the recorder or memo before the permission page hands off.
+        let shouldRestoreRecorder = restoringRecorder
+            && model?.phase == .setup
+            && model?.showsRequiredPermissionGate == false
+            && permissionWindowController?.isManualGuideActive != true
         recorderPanelController?.setCaptureSelectionActive(
             false,
-            restoringSetup: restoringRecorder
+            restoringSetup: shouldRestoreRecorder
         )
-        guard restoringRecorder else { return }
+        guard shouldRestoreRecorder else { return }
         if let owner = recorderPanelController?.window {
             RecorderMemoController.shared.resumeAfterSelection(relativeTo: owner)
         }
@@ -560,7 +566,9 @@ private final class EditorWindowController: NSObject, NSWindowDelegate {
         self.hostingView = hostingView
         hostingController.view = hostingView
         let window = NSWindow(
-            contentRect: editorInitialFrame(),
+            contentRect: editorInitialFrame(
+                inside: preferredVisibleFrame ?? systemMainScreen()?.visibleFrame
+            ),
             styleMask: [
                 .titled,
                 .closable,
@@ -774,16 +782,24 @@ private final class EditorWindowController: NSObject, NSWindowDelegate {
         )
     }
 
-    private func editorInitialFrame() -> NSRect {
-        let desired = NSSize(width: 1728, height: 900)
-        guard let visibleFrame = systemMainScreen()?.visibleFrame else {
-            return NSRect(origin: .zero, size: desired)
+    private func editorInitialFrame(inside visibleFrame: NSRect?) -> NSRect {
+        guard let visibleFrame else {
+            return NSRect(origin: .zero, size: NSSize(width: 1728, height: 900))
         }
+        // First use should fill a comfortable share of the actual work area,
+        // including large displays. AppKit still restores any saved frame.
+        let minimum = editorMinimumSize()
         return NSRect(
             origin: .zero,
             size: NSSize(
-                width: min(desired.width, max(visibleFrame.width - 24, 840)),
-                height: min(desired.height, max(visibleFrame.height - 24, 640))
+                width: min(
+                    max(visibleFrame.width * 0.9, minimum.width),
+                    max(visibleFrame.width - 24, minimum.width)
+                ),
+                height: min(
+                    max(visibleFrame.height * 0.9, minimum.height),
+                    max(visibleFrame.height - 24, minimum.height)
+                )
             )
         )
     }

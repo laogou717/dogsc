@@ -879,7 +879,7 @@ extension AppModel {
         }
         if showsRequiredPermissionGate {
             captureSetup.stopPresentation()
-            WindowCoordinator.endCaptureSourceSelection()
+            WindowCoordinator.endCaptureSourceSelection(restoringRecorder: false)
         }
         if hasRequiredRecordingPermissions,
            let message = errorMessage,
@@ -892,7 +892,7 @@ extension AppModel {
         refreshRequiredRecordingPermissions()
         guard showsRequiredPermissionGate else { return }
         captureSetup.stopPresentation()
-        WindowCoordinator.endCaptureSourceSelection()
+        WindowCoordinator.endCaptureSourceSelection(restoringRecorder: false)
     }
 
     func resumeRequiredPermissionOnboardingAfterActivation() {
@@ -941,7 +941,7 @@ extension AppModel {
         guard phase == .setup else { return }
         errorMessage = nil
         captureSetup.stopPresentation()
-        WindowCoordinator.endCaptureSourceSelection()
+        WindowCoordinator.endCaptureSourceSelection(restoringRecorder: false)
         // This button has one job: open the exact settings page. Calling the
         // TCC request API here as well presents a second native alert over
         // System Settings and leaves two competing authorization paths.

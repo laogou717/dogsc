@@ -167,7 +167,7 @@ final class RequiredPermissionWindowController: NSObject, NSWindowDelegate {
             rootView: RequiredRecordingPermissionView(model: model, presentation: presentation)
         )
         let window = EscapeDismissibleWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 640, height: 460),
+            contentRect: NSRect(origin: .zero, size: PermissionOnboardingStyle.size),
             styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
