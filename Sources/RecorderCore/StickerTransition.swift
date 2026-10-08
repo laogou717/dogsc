@@ -51,7 +51,8 @@ public struct FrameStickerBackdropScene: Equatable, Sendable {
 
 /// Prepared once per sticker edit, then shared by paused preview, playback and
 /// export. Only numerical endpoint noise counts as adjacency, never a frame-
-/// sized gap. Authored clip timings and layer order remain unchanged.
+/// sized gap. Crossing stickers keep their individual motion, but bridge any
+/// backdrop treatment both request. Authored timings and layers stay unchanged.
 public struct StickerTransitionTrack: Equatable, Sendable {
     private static let endpointTolerance = 0.000_000_1
 
@@ -103,6 +104,14 @@ public struct StickerTransitionTrack: Equatable, Sendable {
         }
     }
 
+    private struct BackdropBridge: Equatable, Sendable {
+        let start: TimeInterval
+        let end: TimeInterval
+        let treatment: FrameStickerBackdropScene
+
+        func contains(_ time: TimeInterval) -> Bool { time >= start && time < end }
+    }
+
     struct Sample {
         let clip: StickerClip
         let visibility: Double
@@ -112,6 +121,7 @@ public struct StickerTransitionTrack: Equatable, Sendable {
 
     private var entries: [Entry]
     private var joins: [Join] = []
+    private var backdropBridges: [BackdropBridge] = []
 
     public init(_ clips: [StickerClip]) {
         entries = clips.filter {
@@ -166,6 +176,39 @@ public struct StickerTransitionTrack: Equatable, Sendable {
             for index in outgoing { entries[index].exitJoin = joinIndex }
             for index in incoming { entries[index].entryJoin = joinIndex }
         }
+        // A short overlap can leave both stickers inside their independent
+        // fades, so max(visibility) alone briefly reveals the recording. Keep
+        // only their shared treatment at full strength from the outgoing
+        // exit's start until the incoming entry settles. Unlike adjacency,
+        // this must not retime either image or change its stacking order.
+        let ordered = entries.indices.sorted {
+            let lhs = entries[$0].clip.timing, rhs = entries[$1].clip.timing
+            return lhs.startTime == rhs.startTime
+                ? lhs.endTime < rhs.endTime : lhs.startTime < rhs.startTime
+        }
+        for (offset, outgoingIndex) in ordered.enumerated() {
+            let outgoing = entries[outgoingIndex]
+            for incomingIndex in ordered.dropFirst(offset + 1) {
+                let incoming = entries[incomingIndex]
+                guard incoming.clip.timing.startTime
+                        < outgoing.clip.timing.endTime - Self.endpointTolerance else { break }
+                // A contained sticker does not replace its enclosing sticker.
+                guard incoming.clip.timing.endTime > outgoing.clip.timing.endTime else { continue }
+                let start = outgoing.clip.timing.endTime - outgoing.joinExitDuration
+                let end = incoming.clip.timing.startTime + incoming.joinEnterDuration
+                guard end > start else { continue }
+                let from = FrameStickerBackdropScene(clip: outgoing.clip, visibility: 1)
+                let to = FrameStickerBackdropScene(clip: incoming.clip, visibility: 1)
+                var treatment = FrameStickerBackdropScene()
+                treatment.screenSuppression = min(from.screenSuppression, to.screenSuppression)
+                treatment.cameraSuppression = min(from.cameraSuppression, to.cameraSuppression)
+                treatment.screenBlur = min(from.screenBlur, to.screenBlur)
+                treatment.cameraBlur = min(from.cameraBlur, to.cameraBlur)
+                if treatment != FrameStickerBackdropScene() {
+                    backdropBridges.append(BackdropBridge(start: start, end: end, treatment: treatment))
+                }
+            }
+        }
     }
 
     public func hasJoinedEntry(_ id: UUID) -> Bool {
@@ -177,6 +220,9 @@ public struct StickerTransitionTrack: Equatable, Sendable {
         suppressesInitialEntry: Bool
     ) -> (stickers: [Sample], backdrop: FrameStickerBackdropScene) {
         var backdrop = FrameStickerBackdropScene()
+        for bridge in backdropBridges where bridge.contains(time) {
+            backdrop.merge(bridge.treatment)
+        }
         for join in joins where join.contains(time) {
             backdrop.merge(join.outgoingBackdrop.interpolated(
                 to: join.incomingBackdrop,

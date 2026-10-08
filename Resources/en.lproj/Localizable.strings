@@ -1,4 +1,13 @@
 /* DogSC main workflow */
+"时间对齐" = "Timing";
+"光标偏移" = "Cursor Offset";
+"提前 100 ms" = "Advance 100 ms";
+"延后 100 ms" = "Delay 100 ms";
+"提前 %.0f ms" = "Advance %.0f ms";
+"延后 %.0f ms" = "Delay %.0f ms";
+"归零光标时间偏移" = "Reset Cursor Timing";
+"校准光标时间" = "Adjust Cursor Timing";
+"正值让光标与点击提前，负值延后；不改变移动手感。" = "Positive values advance the cursor and clicks; negative values delay them. Movement smoothing is preserved.";
 "3D 倾斜" = "3D Tilt";
 "上一帧" = "Previous Frame";
 "上一帧（←；Shift+← 移动 5 帧）" = "Previous frame (←; Shift+← moves 5 frames)";

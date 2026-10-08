@@ -754,7 +754,6 @@ extension EditorTimelineView {
         let intent = EditorTimelineGestureIntent.scrub
         return DragGesture(minimumDistance: 0)
             .onChanged { value in
-                let isBeginning = gestureOwnership.activeIntent == nil
                 guard beginTimelineGesture(intent) else { return }
                 let rawTime = EditorTimelineMath.clampedTime(
                     atX: Double(value.location.x),
@@ -762,7 +761,8 @@ extension EditorTimelineView {
                     duration: duration
                 )
                 let time = magneticTime(snappedTimelineTime(rawTime), width: width, duration: duration)
-                if isBeginning { clearTimelineSelection() }
+                // The ruler controls transport only. Keep the selected object
+                // and inspector task while reviewing its result at other times.
                 playbackController.beginScrubbing()
                 playbackController.updateScrubbing(to: time)
             }

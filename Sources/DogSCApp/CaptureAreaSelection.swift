@@ -122,7 +122,6 @@ final class CaptureAreaSelector {
         transition.settlePresentation([window])
         window.level = CaptureWindowLevelPolicy.level(for: .recordingGuideOverlay)
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
-        window.sharingType = .none
         _ = view.beginRecordingHighlight()
         hideRecordingOverlay()
         recordingOverlayWindow = window
@@ -167,7 +166,7 @@ final class CaptureAreaSelector {
         window.hidesOnDeactivate = false
         window.level = CaptureWindowLevelPolicy.level(for: .recordingGuideOverlay)
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
-        window.sharingType = .none
+        window.sharingType = .readOnly
         window.orderFrontRegardless()
         recordingOverlayWindow = window
     }

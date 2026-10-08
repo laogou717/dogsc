@@ -42,6 +42,40 @@ extension EditorInspectorView {
             }
 
             if !cursorIsHidden {
+                if editorStore.previewProject.media?.pointerEvents != nil {
+                    EditorDisclosure("时间对齐", detail: cursorTimingLabel) {
+                        EditorNumericStepControl(
+                            "光标偏移",
+                            valueText: String(format: "%+.0f ms", cursorTimingAdvance * 1_000),
+                            canDecrease: cursorTimingAdvance > -1,
+                            canIncrease: cursorTimingAdvance < 1,
+                            onDecrease: { adjustCursorTiming(by: -0.010) },
+                            onIncrease: { adjustCursorTiming(by: 0.010) },
+                            repeatsSteps: false
+                        )
+                        HStack(spacing: 8) {
+                            Button("提前 100 ms") { adjustCursorTiming(by: 0.100) }
+                                .frame(maxWidth: .infinity)
+                            Button("延后 100 ms") { adjustCursorTiming(by: -0.100) }
+                                .frame(maxWidth: .infinity)
+                            Button {
+                                adjustCursorTiming(by: -cursorTimingAdvance)
+                            } label: {
+                                Image(systemName: "arrow.counterclockwise")
+                            }
+                            .help("归零光标时间偏移")
+                            .accessibilityLabel("归零光标时间偏移")
+                            .disabled(abs(cursorTimingAdvance) < 0.000_5)
+                        }
+                        .buttonStyle(.editorQuiet)
+                        .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
+                        Text("正值让光标与点击提前，负值延后；不改变移动手感。")
+                            .font(.appUI(.caption2))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
                 EditorInspectorSection("点击反馈") {
                     CursorClickEffectStylePicker(
                         selection: editorStore.previewProject.cursorStyle.clickEffectStyle,
@@ -157,6 +191,34 @@ extension EditorInspectorView {
                     }
                 }
             }
+        }
+    }
+
+    private var cursorTimingAdvance: TimeInterval {
+        guard let reference = editorStore.previewProject.media?.pointerEvents else { return 0 }
+        return reference.sourceStartTime - reference.startOffset
+    }
+
+    private var cursorTimingLabel: String {
+        let value = cursorTimingAdvance
+        guard abs(value) >= 0.000_5 else { return "0 ms" }
+        return String(
+            format: appLocalized(value > 0 ? "提前 %.0f ms" : "延后 %.0f ms"),
+            abs(value) * 1_000
+        )
+    }
+
+    private func adjustCursorTiming(by delta: TimeInterval) {
+        var project = editorStore.project
+        guard delta.isFinite, var media = project.media,
+              var reference = media.pointerEvents else { return }
+        let advance = min(max(reference.sourceStartTime - reference.startOffset + delta, -1), 1)
+        reference.sourceStartTime = max(advance, 0)
+        reference.startOffset = max(-advance, 0)
+        media.pointerEvents = reference
+        project.media = media
+        performEditorCommand {
+            try editorStore.replaceProject(with: project, actionName: "校准光标时间")
         }
     }
 

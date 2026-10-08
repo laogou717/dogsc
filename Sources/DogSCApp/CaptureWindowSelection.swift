@@ -621,7 +621,6 @@ private final class WindowSelectionPanel: NSPanel {
             selectionLocked: selectionLocked,
             recordingHighlight: recordingHighlight
         )
-        sharingType = recordingHighlight ? .none : .readOnly
         ignoresMouseEvents = recordingHighlight
     }
 }

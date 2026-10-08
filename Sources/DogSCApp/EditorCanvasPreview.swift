@@ -1329,6 +1329,14 @@ struct CanvasPreview: View {
     private func interactionPreviewTime() -> TimeInterval? {
         guard let selection = editorStore.interaction?.selection else { return nil }
         switch selection {
+        case let .zoom(id):
+            guard showsEditingControls, !playbackController.isPlaying,
+                  let clip = project.timeline.zoomClips.first(where: { $0.id == id }),
+                  clip.origin == .manual else { return nil }
+            // Inspect the fully entered composition without seeking the media
+            // or changing the authored animation. Stay strictly inside this
+            // clip: its exact end can already select an adjacent next zoom.
+            return clip.endTime.nextDown
         case let .cameraMotion(id):
             guard let clip = project.timeline.cameraMotionClips.first(where: { $0.id == id }) else {
                 return nil

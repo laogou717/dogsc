@@ -207,9 +207,10 @@ public enum CompositionSceneEvaluator {
             fittedHeight: fittedRect.height,
             styleScale: scale
         )
-        let screenMotionSample = (screenMotionTrack ?? motionTrackCache.screenTrack(
+        let resolvedScreenMotionTrack = screenMotionTrack ?? motionTrackCache.screenTrack(
             for: project.timeline.screenMotionClips
-        )).sampleLayout(
+        )
+        let screenMotionSample = resolvedScreenMotionTrack.sampleLayout(
             at: sampleTime,
             base: baseScreenMotion,
             motion: project.motion,
@@ -269,7 +270,26 @@ public enum CompositionSceneEvaluator {
             inheritedAutomaticFocus: inheritedAutomaticZoomFocus,
             reanchorAutomaticEntry: reanchorAutomaticEntry
         )
-        let viewport = ZoomViewportTransform.make(from: zoom, crop: crop)
+        // A screen that already covers the canvas zooms within that viewport.
+        // Padding alone cannot select this rule: aspect-fit may still leave
+        // gaps, while a manually enlarged screen can cover a padded canvas.
+        // Authored screen-card motion and frame chrome keep their own framing.
+        let coverageTolerance = max(width, height) * 0.000_000_001
+        let keepsCanvasCovered = project.canvas.screenFrame == .none
+            && resolvedScreenMotionTrack.activeClip(at: sampleTime) == nil
+            && baseRect.x <= coverageTolerance
+            && baseRect.y <= coverageTolerance
+            && baseRect.x + baseRect.width >= width - coverageTolerance
+            && baseRect.y + baseRect.height >= height - coverageTolerance
+        let visibleRect = keepsCanvasCovered ? CompositionRect(
+            x: -baseRect.x / baseRect.width,
+            y: -baseRect.y / baseRect.height,
+            width: width / baseRect.width,
+            height: height / baseRect.height
+        ) : nil
+        let viewport = ZoomViewportTransform.make(
+            from: zoom, crop: crop, covering: visibleRect
+        )
         // Placement centres the complete card. Keep that same centre while
         // magnifying it: asymmetric chrome (such as a browser toolbar) must
         // not grow away from the already-centred content rectangle. The
@@ -300,7 +320,9 @@ public enum CompositionSceneEvaluator {
             projectionAnchor: screenMotionSample.projectionAnchor,
             baseCornerRadius: max(project.canvas.cornerRadius, 0) * scale * manualScale,
             baseBorderWidth: baseBorderWidth,
-            finalCornerRadius: max(project.canvas.cornerRadius, 0)
+            // Full-canvas content has no inner card cut-outs. Keep the authored
+            // radius in the project so it returns when the layout has margins.
+            finalCornerRadius: keepsCanvasCovered ? 0 : max(project.canvas.cornerRadius, 0)
                 * scale * manualScale * viewport.scale,
             finalBorderWidth: baseBorderWidth * viewport.scale,
             zoom: zoom,

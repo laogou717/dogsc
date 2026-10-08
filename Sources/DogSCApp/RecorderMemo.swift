@@ -107,10 +107,9 @@ final class RecorderMemoController: NSObject, ObservableObject, NSWindowDelegate
         panel.appearance = NSAppearance(named: .aqua)
         panel.title = appLocalized("备忘录")
         panel.identifier = NSUserInterfaceItemIdentifier("recorder.memo.window")
-        // ScreenRecorder's display/area filter excludes our whole PID, including
-        // windows opened mid-recording. Window capture includes only its target.
-        // sharingType is additional protection, not our ScreenCaptureKit filter.
-        panel.sharingType = .none
+        // CaptureSurfaceFilter excludes this process's helper windows, including
+        // memos opened mid-recording. Other recorders may capture the memo.
+        panel.sharingType = .readOnly
         panel.onClose = { [weak self] in self?.hide() }
         panel.onMoveEnded = { [weak self] in
             self?.constrainToScreen()

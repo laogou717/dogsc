@@ -23,7 +23,6 @@ final class CaptureSelectionTransition {
     func retire(_ windows: [NSWindow], animated: Bool) {
         for window in windows {
             window.ignoresMouseEvents = true
-            window.sharingType = .none
             window.makeFirstResponder(nil)
             window.resignKey()
             window.resignMain()

@@ -25,7 +25,9 @@ struct RecorderInputPopover: View {
     var body: some View {
         RecorderPopoverSurface {
             VStack(alignment: .leading, spacing: 14) {
-                Toggle(appLocalized(title), isOn: enabled).toggleStyle(.switch).tint(RecorderStyle.mint).font(.appUI(size: 14, weight: .medium))
+                Toggle(appLocalized(title), isOn: enabled)
+                    .toggleStyle(RecorderInputToggleStyle(title: appLocalized(title)))
+                    .font(.appUI(size: 14, weight: .medium))
                 switch kind {
                 case .microphone: microphone
                 case .camera: camera
@@ -54,7 +56,8 @@ struct RecorderInputPopover: View {
                                 .background(RecorderStyle.silver)
                         }
                     }
-                Toggle("镜像画面", isOn: $model.recordingCameraMirrored).toggleStyle(.switch).tint(RecorderStyle.mint)
+                Toggle("镜像画面", isOn: $model.recordingCameraMirrored)
+                    .toggleStyle(RecorderInputToggleStyle(title: appLocalized("镜像画面")))
                 if let runtime = model.cameraRuntimeFormat {
                     Text(runtime.label).font(.appUI(size: 11)).foregroundStyle(RecorderStyle.muted)
                 }

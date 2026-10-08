@@ -451,15 +451,23 @@ public struct ZoomViewportTransform: Equatable, Sendable {
         )
     }
 
+    /// `visibleRect` is the canvas in unzoomed, crop-local screen coordinates.
+    /// Supply it only when the base screen already covers the entire canvas.
     public static func make(
         from sample: ZoomSample,
-        crop: NormalizedCrop = .full
+        crop: NormalizedCrop = .full,
+        covering visibleRect: CompositionRect? = nil
     ) -> ZoomViewportTransform {
         if let transition = sample.manualViewportTransition {
             let from = make(from: ZoomSample(scale: transition.fromScale,
-                focus: transition.fromFocus, framingProgress: 1), crop: crop)
+                focus: transition.fromFocus, framingProgress: 1), crop: crop,
+                covering: visibleRect)
             let to = make(from: ZoomSample(scale: transition.toScale,
-                focus: transition.toFocus, framingProgress: 1), crop: crop)
+                focus: transition.toFocus, framingProgress: 1), crop: crop,
+                covering: visibleRect)
+            // Frame both endpoints before interpolating. Clamping only the
+            // interpolated path would make an edge-to-edge hand-off dwell at
+            // the boundary and then abruptly start moving.
             let progress = min(max(transition.progress, 0), 1)
             return ZoomViewportTransform(
                 scale: from.scale + (to.scale - from.scale) * progress,
@@ -492,13 +500,25 @@ public struct ZoomViewportTransform: Equatable, Sendable {
         // Scale and camera travel share one progress value. This starts from
         // the manually selected anchor, finishes on a readable safe framing,
         // and remains continuous when two clips touch.
-        return ZoomViewportTransform(
-            scale: scale,
-            translation: NormalizedPoint(
-                x: desiredPoint.x - scaledPoint.x,
-                y: desiredPoint.y - scaledPoint.y
-            )
+        var translation = NormalizedPoint(
+            x: desiredPoint.x - scaledPoint.x,
+            y: desiredPoint.y - scaledPoint.y
         )
+        if let visibleRect {
+            // The transformed source spans [0.5 - scale/2 + translation,
+            // 0.5 + scale/2 + translation]. Keep both canvas edges inside it.
+            translation = NormalizedPoint(
+                x: min(
+                    max(translation.x, visibleRect.x + visibleRect.width - 0.5 - scale / 2),
+                    visibleRect.x - 0.5 + scale / 2
+                ),
+                y: min(
+                    max(translation.y, visibleRect.y + visibleRect.height - 0.5 - scale / 2),
+                    visibleRect.y - 0.5 + scale / 2
+                )
+            )
+        }
+        return ZoomViewportTransform(scale: scale, translation: translation)
     }
 }
 
@@ -727,8 +747,11 @@ public enum ZoomInterpolator {
             zoomProgress = 0
         }
         if let inheritedStart, time <= clip.endTime {
+            // An incoming manual move starts at the preceding rendered
+            // viewport, whether that clip was manual or automatic. Blending
+            // focus before framing/clamping reaches the edges too early.
             let manualTransition: ManualZoomViewportTransition? =
-                clip.origin == .manual && adjacentPrevious?.origin == .manual
+                clip.origin == .manual
                 ? ManualZoomViewportTransition(
                     fromScale: inheritedStart.scale, fromFocus: inheritedStart.focus,
                     toScale: clip.scale, toFocus: clip.focus, progress: zoomProgress

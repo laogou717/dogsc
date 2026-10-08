@@ -314,7 +314,14 @@ public struct ProjectTimelineMediaPlan: Equatable, Sendable {
         )
         pointer = ProjectPointerTrack(
             timelineMap: map,
-            sourceEvents: sourcePointerEvents
+            // Calibrate in the original recording clock before retaining cuts
+            // or applying playback rates. Shifting the output playhead instead
+            // would sample a deleted interval or the next clip too early.
+            sourceEvents: PointerTimelineAlignment.align(
+                sourcePointerEvents,
+                startOffset: mediaManifest?.pointerEvents?.startOffset ?? 0,
+                sourceStartTime: mediaManifest?.pointerEvents?.sourceStartTime ?? 0
+            )
         )
     }
 

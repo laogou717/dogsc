@@ -399,7 +399,7 @@ final class FirstUseTourController {
         let card = FirstUseTourPanel(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
         card.hasShadow = true
         for (offset, panel) in [(2, shade), (3, card)] {
-            panel.sharingType = .none
+            panel.sharingType = .readOnly
             panel.isOpaque = false
             panel.backgroundColor = .clear
             panel.isReleasedWhenClosed = false

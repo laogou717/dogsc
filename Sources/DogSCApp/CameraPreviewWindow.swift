@@ -268,7 +268,7 @@ final class CameraPreviewWindowController {
         panel.hidesOnDeactivate = false
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
-        panel.sharingType = .none
+        panel.sharingType = .readOnly
         panel.isMovableByWindowBackground = true
         let surface = CameraPreviewSurface(
             frame: CGRect(origin: .zero, size: size),

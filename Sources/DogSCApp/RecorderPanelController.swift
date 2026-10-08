@@ -644,7 +644,6 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
     private var selectionIsActive = false
     private var selectionSource: CaptureSource?
     private let transition = RecorderPanelTransition()
-    private let isDesignReview = CommandLine.arguments.contains("--design-review")
     private let logger = Logger(
         subsystem: "cn.laogou.dogsc",
         category: "recorder-panel"
@@ -725,13 +724,9 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
             phase: phase,
             selectionActive: selectionIsActive
         ))
-        // Setup is a normal inspectable UI. Active recording controls remain
-        // excluded; the recorder also excludes this application's PID.
-        if case .setup = phase {
-            panel.sharingType = .readOnly
-        } else {
-            panel.sharingType = isDesignReview ? .readOnly : .none
-        }
+        // CaptureSurfaceFilter excludes this process's helper windows. Keep
+        // the panel readable by other recorders throughout every phase.
+        panel.sharingType = .readOnly
         if phaseChanged || phase != .recording {
             panel.contentMinSize = contentSize
             panel.contentMaxSize = contentSize
