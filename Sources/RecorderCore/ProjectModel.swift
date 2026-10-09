@@ -7,7 +7,8 @@ public enum ProjectSchema {
     public static let minimumSupportedVersion = 23
     // Version 24 adds authored canvas ratios. Version 23 projects retain their defaults.
     // Version 27 persists recording markers; older apps must not silently discard them.
-    public static let currentVersion = 27
+    // Version 28 stores independently editable canvas margins.
+    public static let currentVersion = 28
 
     static func validateForDecoding(_ version: Int) throws {
         guard version >= minimumSupportedVersion else {
@@ -83,15 +84,6 @@ public enum CanvasResolution: String, CaseIterable, Codable, Identifiable, Senda
     case ultraHD = "4K"
 
     public var id: String { rawValue }
-
-    fileprivate var presetEdges: (short: Int, long: Int)? {
-        switch self {
-        case .source: return nil
-        case .fullHD: return (1_080, 1_920)
-        case .quadHD: return (1_440, 2_560)
-        case .ultraHD: return (2_160, 3_840)
-        }
-    }
 }
 
 /// Stable, project-facing identity for the vector frame drawn around the
@@ -814,7 +806,7 @@ public struct CanvasStyle: Codable, Equatable, Sendable {
     public var aspectRatio: CanvasAspectRatio
     public var customAspectRatio: CanvasCustomAspectRatio
     public var backgroundSource: BackgroundSource
-    public var padding: Double
+    public var paddingInsets: CanvasPadding
     public var contentScale: Double
     public var contentPosition: NormalizedPoint
     public var crop: NormalizedCrop
@@ -849,6 +841,7 @@ public struct CanvasStyle: Codable, Equatable, Sendable {
         customAspectRatio: CanvasCustomAspectRatio = .init(),
         backgroundSource: BackgroundSource = .safeFallback,
         padding: Double = 100,
+        paddingInsets: CanvasPadding? = nil,
         contentScale: Double = 1,
         contentPosition: NormalizedPoint = NormalizedPoint(x: 0.5, y: 0.5),
         crop: NormalizedCrop = .full,
@@ -871,7 +864,7 @@ public struct CanvasStyle: Codable, Equatable, Sendable {
         self.aspectRatio = aspectRatio
         self.customAspectRatio = customAspectRatio
         self.backgroundSource = backgroundSource
-        self.padding = padding
+        self.paddingInsets = paddingInsets ?? CanvasPadding(uniform: padding)
         self.contentScale = contentScale
         self.contentPosition = contentPosition
         self.crop = crop.clamped()
@@ -901,6 +894,7 @@ public struct CanvasStyle: Codable, Equatable, Sendable {
         case customAspectRatio
         case backgroundSource
         case padding
+        case paddingInsets
         case contentScale
         case contentPosition
         case crop
@@ -937,7 +931,8 @@ public struct CanvasStyle: Codable, Equatable, Sendable {
             BackgroundSource.self,
             forKey: .backgroundSource
         ) ?? .safeFallback
-        padding = try container.decodeIfPresent(Double.self, forKey: .padding) ?? 100
+        paddingInsets = try container.decodeIfPresent(CanvasPadding.self, forKey: .paddingInsets)
+            ?? CanvasPadding(uniform: container.decodeIfPresent(Double.self, forKey: .padding) ?? 100)
         contentScale = try container.decodeIfPresent(Double.self, forKey: .contentScale) ?? 1
         contentPosition = try container.decodeIfPresent(NormalizedPoint.self, forKey: .contentPosition)
             ?? NormalizedPoint(x: 0.5, y: 0.5)
@@ -989,7 +984,7 @@ public struct CanvasStyle: Codable, Equatable, Sendable {
         try container.encode(aspectRatio, forKey: .aspectRatio)
         try container.encode(customAspectRatio, forKey: .customAspectRatio)
         try container.encode(backgroundSource, forKey: .backgroundSource)
-        try container.encode(padding, forKey: .padding)
+        try container.encode(paddingInsets, forKey: .paddingInsets)
         try container.encode(contentScale, forKey: .contentScale)
         try container.encode(contentPosition, forKey: .contentPosition)
         try container.encode(crop.clamped(), forKey: .crop)
@@ -1025,92 +1020,6 @@ public struct CanvasDimensions: Codable, Equatable, Sendable {
     public init(width: Int, height: Int) {
         self.width = width
         self.height = height
-    }
-}
-
-public extension CanvasStyle {
-    func pixelDimensions(
-        resolution: CanvasResolution,
-        sourceAspectRatio: Double? = nil,
-        sourcePixelSize: CanvasDimensions? = nil
-    ) -> CanvasDimensions {
-        if resolution == .source {
-            return sourcePixelDimensions(sourcePixelSize)
-        }
-        guard let preset = resolution.presetEdges else {
-            return sourcePixelDimensions(sourcePixelSize)
-        }
-        let shortEdge = preset.short
-        switch aspectRatio {
-        case .adaptive:
-            let ratio = min(max(sourceAspectRatio ?? (16.0 / 9.0), 0.2), 5)
-            let longEdge = preset.long
-            if ratio >= 1 {
-                return CanvasDimensions(
-                    width: even(longEdge),
-                    height: even(Double(longEdge) / ratio)
-                )
-            }
-            return CanvasDimensions(
-                width: even(Double(longEdge) * ratio),
-                height: even(longEdge)
-            )
-        case .landscape:
-            return CanvasDimensions(width: shortEdge * 16 / 9, height: shortEdge)
-        case .standard:
-            return CanvasDimensions(width: shortEdge * 4 / 3, height: shortEdge)
-        case .portrait:
-            return CanvasDimensions(width: shortEdge, height: shortEdge * 16 / 9)
-        case .square:
-            return CanvasDimensions(width: shortEdge, height: shortEdge)
-        case .standardPortrait:
-            return CanvasDimensions(width: shortEdge, height: shortEdge * 4 / 3)
-        case .cinema, .cinemaPortrait, .custom:
-            let ratio = resolvedFixedAspectRatio ?? 1
-            let long = Double(preset.long)
-            return ratio >= 1
-                ? CanvasDimensions(width: even(long), height: even(long / ratio))
-                : CanvasDimensions(width: even(long * ratio), height: even(long))
-        }
-    }
-
-    /// Resolves the full-quality canvas from the actual recorded pixels. A
-    /// crop produces a correspondingly smaller native canvas; fixed aspect
-    /// ratios fit inside that cropped pixel envelope and never upscale it.
-    private func sourcePixelDimensions(
-        _ sourcePixelSize: CanvasDimensions?
-    ) -> CanvasDimensions {
-        let source = sourcePixelSize ?? CanvasDimensions(width: 1_920, height: 1_080)
-        let crop = crop.clamped()
-        let croppedWidth = max(Double(source.width) * crop.width, 2)
-        let croppedHeight = max(Double(source.height) * crop.height, 2)
-
-        guard aspectRatio != .adaptive else {
-            return CanvasDimensions(
-                width: even(croppedWidth),
-                height: even(croppedHeight)
-            )
-        }
-
-        let targetRatio = resolvedFixedAspectRatio ?? croppedWidth / croppedHeight
-        if croppedWidth / croppedHeight >= targetRatio {
-            return CanvasDimensions(
-                width: even(croppedHeight * targetRatio),
-                height: even(croppedHeight)
-            )
-        }
-        return CanvasDimensions(
-            width: even(croppedWidth),
-            height: even(croppedWidth / targetRatio)
-        )
-    }
-
-    private func even(_ value: Double) -> Int {
-        max(Int((value / 2).rounded()) * 2, 2)
-    }
-
-    private func even(_ value: Int) -> Int {
-        max(value - value % 2, 2)
     }
 }
 

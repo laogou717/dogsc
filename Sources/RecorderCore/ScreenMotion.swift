@@ -59,6 +59,8 @@ public struct ScreenAnchorViewport: Equatable, Sendable {
     public var canvasHeight: Double
     public var fittedWidth: Double
     public var fittedHeight: Double
+    public var fittedCenterX: Double
+    public var fittedCenterY: Double
     /// Outer border at screen-motion scale 1. The border scales with the card,
     /// so it participates in the same direct pixel-offset interpolation.
     public var borderWidthAtScaleOne: Double
@@ -79,17 +81,39 @@ public struct ScreenAnchorViewport: Equatable, Sendable {
         decorationTopAtScaleOne: Double = 0,
         decorationRightAtScaleOne: Double = 0,
         decorationBottomAtScaleOne: Double = 0,
-        decorationLeftAtScaleOne: Double = 0
+        decorationLeftAtScaleOne: Double = 0,
+        fittedCenterX: Double? = nil,
+        fittedCenterY: Double? = nil
     ) {
         self.canvasWidth = canvasWidth
         self.canvasHeight = canvasHeight
         self.fittedWidth = fittedWidth
         self.fittedHeight = fittedHeight
+        self.fittedCenterX = fittedCenterX ?? canvasWidth / 2
+        self.fittedCenterY = fittedCenterY ?? canvasHeight / 2
         self.borderWidthAtScaleOne = borderWidthAtScaleOne
         self.decorationTopAtScaleOne = decorationTopAtScaleOne
         self.decorationRightAtScaleOne = decorationRightAtScaleOne
         self.decorationBottomAtScaleOne = decorationBottomAtScaleOne
         self.decorationLeftAtScaleOne = decorationLeftAtScaleOne
+    }
+
+    public func placementAxes(scale: Double) -> (x: ScreenPlacementAxis, y: ScreenPlacementAxis) {
+        let border = borderWidthAtScaleOne * scale
+        return (
+            ScreenPlacementAxis(
+                canvasLength: canvasWidth, contentLength: fittedWidth * scale,
+                fittedCenter: fittedCenterX,
+                leadingInset: border + decorationLeftAtScaleOne * scale,
+                trailingInset: border + decorationRightAtScaleOne * scale
+            ),
+            ScreenPlacementAxis(
+                canvasLength: canvasHeight, contentLength: fittedHeight * scale,
+                fittedCenter: fittedCenterY,
+                leadingInset: border + decorationTopAtScaleOne * scale,
+                trailingInset: border + decorationBottomAtScaleOne * scale
+            )
+        )
     }
 }
 
@@ -557,20 +581,13 @@ public struct ScreenMotionTrack: Equatable, Sendable {
         let right = border + viewport.decorationRightAtScaleOne * cardScale
         let top = border + viewport.decorationTopAtScaleOne * cardScale
         let bottom = border + viewport.decorationBottomAtScaleOne * cardScale
-        let decoratedWidth = contentWidth + left + right
-        let decoratedHeight = contentHeight + top + bottom
         let contentCenterX: Double
         let contentCenterY: Double
         switch framing {
         case .placement:
-            // Solve the content centre from the complete asymmetric card
-            // bounds. Base-screen edge values keep chrome and border inside.
-            contentCenterX = state.position.x
-                * (viewport.canvasWidth - decoratedWidth)
-                + contentWidth / 2 + left
-            contentCenterY = state.position.y
-                * (viewport.canvasHeight - decoratedHeight)
-                + contentHeight / 2 + top
+            let axes = viewport.placementAxes(scale: cardScale)
+            contentCenterX = axes.x.center(at: state.position.x)
+            contentCenterY = axes.y.center(at: state.position.y)
         case .focus:
             let focusX = min(max(state.position.x, 0), 1)
             let focusY = min(max(state.position.y, 0), 1)
@@ -593,8 +610,8 @@ public struct ScreenMotionTrack: Equatable, Sendable {
             contentCenterY = targetY + (0.5 - focusY) * contentHeight
         }
         return CompositionPoint(
-            x: contentCenterX - viewport.canvasWidth / 2,
-            y: contentCenterY - viewport.canvasHeight / 2
+            x: contentCenterX - viewport.fittedCenterX,
+            y: contentCenterY - viewport.fittedCenterY
         )
     }
 

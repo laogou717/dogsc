@@ -20,6 +20,10 @@ let package = Package(
             name: "RecorderCore",
             path: "Sources/RecorderCore"
         ),
+        .testTarget(
+            name: "RecorderCoreTests",
+            dependencies: ["RecorderCore"]
+        ),
         .executableTarget(
             name: "DogSCApp",
             dependencies: [

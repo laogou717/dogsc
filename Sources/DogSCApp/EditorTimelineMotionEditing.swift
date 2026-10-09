@@ -917,11 +917,13 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
             ) else { return }
             let sourceSize = mediaSession.sourceDisplaySize
             let cameraSize = mediaSession.cameraDisplaySize
-            let canvasAspect = max(Double(sourceSize.width) / max(Double(sourceSize.height), 1), 0.01)
+            let project = editorStore.project
+            let canvasAspect = Double(EditorWorkspaceGeometry.aspectRatio(
+                canvas: project.canvas, sourceSize: sourceSize
+            ))
             let cameraAspect = cameraSize.map {
                 max(Double($0.width) / max(Double($0.height), 1), 0.01)
             } ?? (4.0 / 3.0)
-            let project = editorStore.project
             let baked = CameraMotionTrack(timeline.cameraMotionClips).sample(
                 at: pieces.splitTime,
                 base: CameraMotionState(

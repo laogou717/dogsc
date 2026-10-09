@@ -891,16 +891,29 @@ struct CanvasPreview: View {
                             // 的几分之几）配套：像素位移按 offset 对 pos 的导数
                             // （画布尺寸 − 内容尺寸）换算；放大时为负值——抓取内容
                             // 右拖等于可见区域左移，始终跟手。
-                            let xTravel = abs(canvasSize.width - CGFloat(scene.baseRect.width)) < 1
+                            var xTravel = abs(canvasSize.width - CGFloat(scene.baseRect.width)) < 1
                                 ? 1
                                 : canvasSize.width - CGFloat(scene.baseRect.width)
-                            let yTravel = abs(canvasSize.height - CGFloat(scene.baseRect.height)) < 1
+                            var yTravel = abs(canvasSize.height - CGFloat(scene.baseRect.height)) < 1
                                 ? 1
                                 : canvasSize.height - CGFloat(scene.baseRect.height)
-                            let proposed = NormalizedPoint(
+                            var proposed = NormalizedPoint(
                                 x: min(max(origin.x + Double(value.translation.width / xTravel), 0), 1),
                                 y: min(max(origin.y + Double(value.translation.height / yTravel), 0), 1)
                             )
+                            if interactionScope == .screen(.base) {
+                                let axes = screenPlacementAxes(
+                                    scene: scene, canvasSize: canvasSize, scale: contentScale
+                                )
+                                proposed = NormalizedPoint(
+                                    x: min(max(axes.x.position(for: axes.x.center(at: origin.x)
+                                        + Double(value.translation.width)), 0), 1),
+                                    y: min(max(axes.y.position(for: axes.y.center(at: origin.y)
+                                        + Double(value.translation.height)), 0), 1)
+                                )
+                                xTravel = CGFloat(axes.x.travel(at: proposed.x))
+                                yTravel = CGFloat(axes.y.travel(at: proposed.y))
+                            }
                             // 屏幕素材吸附画布中心
                             let snapped = CanvasSnapMath.snapped(
                                 proposed,

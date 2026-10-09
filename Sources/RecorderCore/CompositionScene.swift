@@ -147,7 +147,7 @@ public enum CompositionSceneEvaluator {
         canvasWidth: Double,
         canvasHeight: Double
     ) -> Double {
-        max(min(canvasWidth, canvasHeight), 1) / 1080
+        max(min(canvasWidth, canvasHeight), 1) / CanvasPadding.referenceShortEdge
     }
 
     /// The current scene and previous-frame geometry read the same authored
@@ -177,18 +177,19 @@ public enum CompositionSceneEvaluator {
         let scale = max(styleScale, 0.000_1)
         let crop = project.canvas.crop.clamped()
         let croppedAspect = max(sourceAspectRatio * crop.width / crop.height, 0.01)
-        let maximumPadding = min(width, height) * 0.42
-        let padding = min(max(project.canvas.padding * scale, 0), maximumPadding)
-        let availableWidth = max(width - padding * 2, 2)
-        let availableHeight = max(height - padding * 2, 2)
+        let padding = project.canvas.paddingInsets.scaled(
+            by: scale, maximum: min(width, height) * CanvasPadding.maximumFraction
+        )
+        let availableWidth = max(width - padding.left - padding.right, 2)
+        let availableHeight = max(height - padding.top - padding.bottom, 2)
         let fittedSize = aspectFit(
             aspectRatio: croppedAspect,
             width: availableWidth,
             height: availableHeight
         )
         let fittedRect = CompositionRect(
-            x: (width - fittedSize.width) / 2,
-            y: (height - fittedSize.height) / 2,
+            x: padding.left + (availableWidth - fittedSize.width) / 2,
+            y: padding.top + (availableHeight - fittedSize.height) / 2,
             width: fittedSize.width,
             height: fittedSize.height
         )
@@ -223,7 +224,9 @@ public enum CompositionSceneEvaluator {
                 decorationTopAtScaleOne: decorationInsetsAtScaleOne.top,
                 decorationRightAtScaleOne: decorationInsetsAtScaleOne.right,
                 decorationBottomAtScaleOne: decorationInsetsAtScaleOne.bottom,
-                decorationLeftAtScaleOne: decorationInsetsAtScaleOne.left
+                decorationLeftAtScaleOne: decorationInsetsAtScaleOne.left,
+                fittedCenterX: fittedRect.midX,
+                fittedCenterY: fittedRect.midY
             )
         )
         let screenMotion = screenMotionSample.state

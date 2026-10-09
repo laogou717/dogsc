@@ -1708,3 +1708,37 @@
 "赞赏码" = "Support QR code";
 "使用手机扫描图片中的赞赏码" = "Scan this support code with your phone";
 "赞赏码暂时无法显示" = "Support code is unavailable";
+
+"边距模式" = "Padding Mode";
+
+"统一" = "Uniform";
+
+"左右 / 上下" = "Horizontal / Vertical";
+
+"独立" = "Independent";
+
+"左右边距" = "Horizontal Padding";
+
+"上下边距" = "Vertical Padding";
+
+"上边距" = "Top Padding";
+
+"右边距" = "Right Padding";
+
+"下边距" = "Bottom Padding";
+
+"左边距" = "Left Padding";
+
+"切换联动模式时，关联边距取平均值" = "Linked margins are averaged when switching modes";
+
+"四边边距" = "All Edges";
+
+"边距联动" = "Link Edges";
+
+"四边联动" = "Link All Edges";
+
+"左右 / 上下联动" = "Link Opposite Edges";
+
+"四边独立" = "Independent Edges";
+
+"点击切换联动方式" = "Click to change edge linkage";

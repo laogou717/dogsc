@@ -162,10 +162,10 @@ struct EditorWorkspaceToolRail: View {
 enum EditorWorkspaceGeometry {
     static func aspectRatio(canvas: CanvasStyle, sourceSize: CGSize) -> CGFloat {
         let sourceSize = sourceSize.width > 0 && sourceSize.height > 0 ? sourceSize : CGSize(width: 16, height: 9)
-        if let fixed = canvas.resolvedFixedAspectRatio { return CGFloat(fixed) }
         let crop = canvas.crop.clamped()
-        return max(sourceSize.width / max(sourceSize.height, 1)
-            * CGFloat(crop.width / crop.height), 0.01)
+        let croppedAspect = Double(sourceSize.width / max(sourceSize.height, 1))
+            * crop.width / crop.height
+        return CGFloat(canvas.resolvedAspectRatio(sourceAspectRatio: croppedAspect))
     }
 }
 

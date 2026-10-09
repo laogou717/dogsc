@@ -641,8 +641,7 @@ struct EditorInspectorView: View {
 
     var canvasLayoutSection: some View {
         EditorInspectorSection("画面留白") {
-            sliderRow("边距", value: canvasBinding(\.padding, actionName: "调整画布边距"),
-                      range: 0...360, format: .points)
+            EditorCanvasPaddingControls(editorStore: editorStore, onError: onError)
         }
     }
 

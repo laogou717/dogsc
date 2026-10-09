@@ -52,7 +52,15 @@ extension ProjectValidationError: LocalizedError {
 /// value the user authored.
 public enum ProjectValidator {
     public static func validate(_ style: CanvasStyle) throws {
-        guard finite(style.padding, in: 0...1_000),
+        let padding = style.paddingInsets
+        let paddingValues = [padding.top, padding.right, padding.bottom, padding.left]
+        let linkageIsValid = switch padding.mode {
+        case .uniform: paddingValues.allSatisfy { $0 == padding.top }
+        case .axes: padding.top == padding.bottom && padding.left == padding.right
+        case .independent: true
+        }
+        guard paddingValues.allSatisfy({ finite($0, in: 0...1_000) }),
+              linkageIsValid,
               finite(style.contentScale, in: 0.05...8),
               finite(style.contentPosition.x, in: 0...1),
               finite(style.contentPosition.y, in: 0...1),
