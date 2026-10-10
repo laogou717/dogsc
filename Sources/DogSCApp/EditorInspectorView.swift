@@ -1013,11 +1013,11 @@ struct EditorInspectorView: View {
                     }
                     .buttonStyle(.editorQuiet)
                     .disabled(!canSplitPrimarySegmentFromInspector(context: context))
-                    .help(
+                    .help(appLocalized(
                         canSplitPrimarySegmentFromInspector(context: context)
                             ? "在播放头处分割（S）"
                             : "把播放头移进这个片段内部后才能分割"
-                    )
+                    ))
 
                     if let junctionBefore = context.junctionBefore,
                        junctionBefore.hasRemovedSourceGap {

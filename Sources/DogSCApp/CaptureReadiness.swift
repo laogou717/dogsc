@@ -77,7 +77,11 @@ struct CaptureReadiness: Equatable, Sendable {
     var frameRateWarningText: String? {
         guard let displayRefreshRate,
               displayRefreshRate < targetFrameRate.rawValue else { return nil }
-        return "目标为 \(targetFrameRate.rawValue) FPS，但显示器当前仅报告 \(displayRefreshRate) Hz；录制会保留实际帧率，不会补帧冒充。"
+        return String(
+            format: appLocalized("目标为 %ld FPS，但显示器当前仅报告 %ld Hz；录制会保留实际帧率，不会补帧冒充。"),
+            targetFrameRate.rawValue,
+            displayRefreshRate
+        )
     }
 
     @MainActor
@@ -90,7 +94,7 @@ struct CaptureReadiness: Equatable, Sendable {
             displayID == nil || $0.id == displayID
         } ?? CaptureDisplay(
             id: 0,
-            name: "未知显示器",
+            name: appLocalized("未知显示器"),
             width: 1920,
             height: 1080,
             refreshRate: 60

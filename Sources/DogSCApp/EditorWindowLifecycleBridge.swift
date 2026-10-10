@@ -65,6 +65,10 @@ final class WindowObservationView: NSView {
         guard let window else { return }
         updateWindowTitle()
         let center = NotificationCenter.default
+        observers.append(center.addObserver(forName: .appLanguageDidChange,
+            object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.updateWindowTitle() }
+            })
         observers.append(center.addObserver(forName: NSWindow.didResignKeyNotification,
             object: window, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.onResignKey() }
@@ -119,7 +123,7 @@ final class WindowObservationView: NSView {
         guard let window else { return }
         let trimmed = projectTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         window.title = trimmed.isEmpty
-            ? "\(AppIdentity.displayName) 编辑器"
+            ? "\(AppIdentity.displayName) \(appLocalized("编辑器"))"
             : "\(trimmed) — \(AppIdentity.displayName)"
     }
 

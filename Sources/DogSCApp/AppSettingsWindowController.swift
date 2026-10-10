@@ -108,7 +108,7 @@ final class AppSettingsWindowController {
             rootView: AppSettingsView(navigation: navigation)
         )
         window.identifier = Self.windowIdentifier
-        window.title = "\(applicationName) \(appLocalized("设置"))"
+        appLocalizeWindowTitle(window, "设置", prefix: applicationName)
         window.contentViewController = hostingController
         window.appearance = nil
         window.backgroundColor = RecorderStyle.canvasNSColor

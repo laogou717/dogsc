@@ -47,6 +47,7 @@ private struct AppControlFocusAppearance: ViewModifier {
     func body(content: Content) -> some View {
         content
             .focusEffectDisabled()
+            .environment(\.locale, AppLocalization.shared.locale)
             .environment(\.appShowsKeyboardFocus, visibility.isVisible)
             .onAppear {
                 guard !isMounted else { return }

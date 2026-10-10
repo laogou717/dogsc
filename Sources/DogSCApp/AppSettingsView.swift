@@ -40,6 +40,7 @@ final class AppSettingsNavigation: ObservableObject {
 
 /// Settings shares the recorder palette in both application appearances.
 struct AppSettingsView: View {
+    @ObservedObject private var languageSettings = AppLanguageSettings.shared
     @ObservedObject private var updateController = AppUpdateController.shared
     @ObservedObject private var guideAccess = FirstLaunchGuideAccess.shared
     var contentHeight: CGFloat = 600
@@ -91,7 +92,7 @@ struct AppSettingsView: View {
                     .frame(maxWidth: 496)
                     .padding(.horizontal, 32)
                     .padding(.top, 8)
-                    .padding(.bottom, 40)
+                    .padding(.bottom, navigation.selectedSection == .general ? 24 : 40)
                     .frame(maxWidth: .infinity, alignment: .top)
                     .id(navigation.selectedSection)
                     // Recorder handoff: the old page leaves quickly, the new
@@ -126,6 +127,7 @@ struct AppSettingsView: View {
             WindowCoordinator.setDefaultMicrophoneRecordingEnabled(enabled)
         }
         .onAppear {
+            languageSettings.refreshFromPreferences()
             refreshPermissionStates()
             updateController.startIfEligible()
         }
@@ -135,6 +137,7 @@ struct AppSettingsView: View {
         .onReceive(
             NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
         ) { _ in
+            languageSettings.refreshFromPreferences()
             refreshPermissionStates()
         }
     }
@@ -197,7 +200,7 @@ struct AppSettingsView: View {
 
     @ViewBuilder
     private func pageContent(for section: AppSettingsSection) -> some View {
-        VStack(spacing: 24) {
+        VStack(spacing: section == .general ? 20 : 24) {
             switch section {
             case .general:
                 generalPageView
@@ -217,7 +220,17 @@ struct AppSettingsView: View {
 
     @ViewBuilder
     private var generalPageView: some View {
-        SettingsCard("声音") {
+        SettingsCard("语言与声音") {
+            SettingsRow(
+                icon: .settings,
+                title: "界面语言",
+                detail: "立即生效"
+            ) {
+                languageMenu
+            }
+
+            SettingsDivider()
+
             SettingsRow(
                 icon: .bell,
                 title: "导出完成提示音"
@@ -280,6 +293,42 @@ struct AppSettingsView: View {
                 .accessibilityIdentifier("settings.first-launch-guide")
             }
         }
+    }
+
+    private var languageMenu: some View {
+        Menu {
+            Picker("界面语言", selection: Binding(
+                get: { languageSettings.selection },
+                set: { languageSettings.select($0) }
+            )) {
+                ForEach(AppLanguagePreference.allCases) { language in
+                    Text(language.label).tag(language)
+                }
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+        } label: {
+            HStack(spacing: 8) {
+                Text(languageSettings.selection.label)
+                    .font(.appUI(size: 12, weight: .medium))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                AppLineIcon(kind: .chevronDown, size: 10)
+                    .accessibilityHidden(true)
+            }
+            .foregroundStyle(SettingsTheme.textPrimary)
+            .padding(.horizontal, 12)
+            .frame(width: 160, height: 32)
+            .background(RecorderStyle.well, in: Capsule())
+            .contentShape(Capsule())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .buttonStyle(SettingsPressStyle(scale: 0.96))
+        .accessibilityLabel(appLocalized("界面语言"))
+        .accessibilityValue(languageSettings.selection.label)
+        .accessibilityIdentifier("settings.interface-language")
+        .help(appLocalized("切换后立即生效，无需重新打开 DogSC"))
     }
 
     // MARK: - 编辑器设置

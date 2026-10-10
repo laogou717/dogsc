@@ -337,8 +337,8 @@ private final class CaptureAreaSelectionView: NSView {
     private let escapeHintCard = NSView()
     private let escapeHintContent = EscapeHintContentView()
     private let controlDividers = (0..<3).map { _ in NSView() }
-    private let widthCaption = NSTextField(labelWithString: "宽")
-    private let heightCaption = NSTextField(labelWithString: "高")
+    private let widthCaption = NSTextField(labelWithString: appLocalized("宽"))
+    private let heightCaption = NSTextField(labelWithString: appLocalized("高"))
     /// Width and height read as one value inside a single pill.
     private let sizeWell = NSView()
     private let widthField = VerticallyCenteredTextField()
@@ -394,6 +394,7 @@ private final class CaptureAreaSelectionView: NSView {
     private var acceptsSelectionInput = true
     private var recordingHighlight = false
     private let controlCardTransition = CaptureSelectionCardTransition()
+    private var languageBinding: AppLanguageBinding?
 
     var hasValidSelection: Bool {
         selectionRect.map { $0.width >= 24 && $0.height >= 24 } ?? false
@@ -501,21 +502,42 @@ private final class CaptureAreaSelectionView: NSView {
             field.action = #selector(applyManualSize(_:))
             controlCard.addSubview(field)
         }
-        widthField.placeholderString = "宽度"
-        heightField.placeholderString = "高度"
-        widthField.setAccessibilityLabel("录制区域宽度（像素）")
-        heightField.setAccessibilityLabel("录制区域高度（像素）")
+        widthField.placeholderString = appLocalized("宽度")
+        heightField.placeholderString = appLocalized("高度")
+        widthField.setAccessibilityLabel(appLocalized("录制区域宽度（像素）"))
+        heightField.setAccessibilityLabel(appLocalized("录制区域高度（像素）"))
 
         controlCard.addSubview(dimensionLinkButton)
         updateDimensionLink()
 
         confirmButton.keyEquivalent = "\r"
         confirmButton.isEnabled = false
-        cancelButton.setAccessibilityHelp("按 Esc 取消区域选择")
-        confirmButton.setAccessibilityHelp("按 Return 开始录制")
+        cancelButton.setAccessibilityHelp(appLocalized("按 Esc 取消区域选择"))
+        confirmButton.setAccessibilityHelp(appLocalized("按 Return 开始录制"))
         [applySizeButton, cancelButton, confirmButton].forEach(controlCard.addSubview)
 
         configureEscapeHint()
+        languageBinding = AppLanguageBinding { [weak self] in self?.refreshLanguage() }
+    }
+
+    private func refreshLanguage() {
+        widthCaption.stringValue = appLocalized("宽")
+        heightCaption.stringValue = appLocalized("高")
+        widthField.placeholderString = appLocalized("宽度")
+        heightField.placeholderString = appLocalized("高度")
+        widthField.setAccessibilityLabel(appLocalized("录制区域宽度（像素）"))
+        heightField.setAccessibilityLabel(appLocalized("录制区域高度（像素）"))
+        cancelButton.setAccessibilityHelp(appLocalized("按 Esc 取消区域选择"))
+        confirmButton.setAccessibilityHelp(appLocalized("按 Return 开始录制"))
+        presetButtons.forEach { $0.refreshLanguage() }
+        [applySizeButton, cancelButton, confirmButton].forEach { $0.refreshLanguage() }
+        dimensionLinkButton.refreshLanguage()
+        updateDimensionLink()
+        escapeHintContent.refreshLanguage()
+        // Refit the hint text only; never rewrite the user's dimension fields
+        // or selection identity as part of a language change.
+        needsLayout = true
+        needsDisplay = true
     }
 
     private func configureEscapeHint() {
@@ -1047,7 +1069,7 @@ private final class CaptureAreaSelectionView: NSView {
 
     private func updateDimensionLink() {
         dimensionLinkButton.setLinked(dimensionLinkEnabled)
-        dimensionLinkButton.toolTip = dimensionLinkEnabled ? "宽高比例已锁定" : "宽高比例未锁定"
+        dimensionLinkButton.toolTip = appLocalized(dimensionLinkEnabled ? "宽高比例已锁定" : "宽高比例未锁定")
     }
 
     private func updateSelectionUI(updateFields: Bool = true) {

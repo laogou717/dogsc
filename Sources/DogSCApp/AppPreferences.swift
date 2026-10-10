@@ -7,7 +7,7 @@ import SwiftUI
 /// to SwiftUI as localization keys. Keeping this at the app boundary also
 /// avoids coupling RecorderCore's persisted raw values to the UI language.
 func appLocalized(_ key: String) -> String {
-    Bundle.main.localizedString(forKey: key, value: key, table: nil)
+    AppLocalization.shared.localizedString(key)
 }
 
 /// Core errors retain their stable domain values. Translate their presentation
@@ -75,6 +75,80 @@ private func appTimelineTrackName(_ track: ProjectTimelineTrack) -> String {
     case .mosaic: appLocalized("打码")
     case .sticker: appLocalized("贴图")
     }
+}
+
+enum AppLanguagePreference: String, CaseIterable, Identifiable {
+    case system
+    case simplifiedChinese = "zh-Hans"
+    case english = "en"
+
+    var id: Self { self }
+
+    var label: String {
+        switch self {
+        case .system: appLocalized("跟随系统")
+        case .simplifiedChinese: appLocalized("简体中文")
+        case .english: "English"
+        }
+    }
+
+    var preferredLanguages: [String]? {
+        self == .system ? nil : [rawValue]
+    }
+
+    init(preferredLanguages: [String]?) {
+        guard let language = preferredLanguages?.first?.lowercased() else {
+            self = .system
+            return
+        }
+        if language == "en" || language.hasPrefix("en-") {
+            self = .english
+        } else if language == "zh-hans" || language.hasPrefix("zh-hans-")
+                    || language == "zh-cn" || language == "zh-sg" {
+            self = .simplifiedChinese
+        } else {
+            self = .system
+        }
+    }
+}
+
+/// The native application-domain override remains the single saved preference.
+/// App-owned UI observes a live bundle/locale without rebuilding its sessions.
+@MainActor
+final class AppLanguageSettings: ObservableObject {
+    static let shared = AppLanguageSettings()
+
+    @Published private(set) var selection: AppLanguagePreference
+    private var systemLocaleObserver: NSObjectProtocol?
+
+    private init() {
+        selection = AppLanguagePreference(preferredLanguages: AppPreferences.applicationLanguageOverride)
+        AppLocalization.shared.apply(selection)
+        systemLocaleObserver = NotificationCenter.default.addObserver(
+            forName: NSLocale.currentLocaleDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                if self?.selection == .system { self?.refreshFromPreferences() }
+            }
+        }
+    }
+
+    func select(_ preference: AppLanguagePreference) {
+        AppPreferences.setLanguagePreference(preference)
+        refreshFromPreferences()
+    }
+
+    func refreshFromPreferences() {
+        let preference = AppLanguagePreference(preferredLanguages: AppPreferences.applicationLanguageOverride)
+        // Language is a content update, never a page transition or a session
+        // replacement. Publish native labels in the same nonanimated change.
+        withTransaction(Transaction(animation: nil)) {
+            let changed = AppLocalization.shared.apply(preference)
+            if selection != preference { selection = preference }
+            if changed { NotificationCenter.default.post(name: .appLanguageDidChange, object: nil) }
+        }
+    }
+
 }
 
 enum AppAppearancePreference: String, CaseIterable, Identifiable {
@@ -238,6 +312,7 @@ extension Notification.Name {
 }
 
 enum AppPreferences {
+    private static let applicationLanguagesKey = "AppleLanguages"
     static let appearancePreferenceKey = "app.appearance"
     static let exportCompletionSoundEnabledKey =
         "cn.laogou.dogsc.export-completion-sound-enabled"
@@ -264,6 +339,23 @@ enum AppPreferences {
         "editor.sticker.last-used-creation-defaults.v1"
     private static let zoomCreationScaleKey =
         "editor.zoom.last-used-creation-scale.v1"
+
+    static var applicationLanguageOverride: [String]? {
+        guard let identifier = Bundle.main.bundleIdentifier else { return nil }
+        // Reading only this domain distinguishes Follow System from the
+        // global preferred-language list inherited by UserDefaults.standard.
+        return UserDefaults.standard.persistentDomain(forName: identifier)?[
+            applicationLanguagesKey
+        ] as? [String]
+    }
+
+    static func setLanguagePreference(_ preference: AppLanguagePreference) {
+        if let languages = preference.preferredLanguages {
+            UserDefaults.standard.set(languages, forKey: applicationLanguagesKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: applicationLanguagesKey)
+        }
+    }
 
     static var appearancePreference: AppAppearancePreference {
         AppAppearancePreference(

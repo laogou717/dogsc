@@ -20,6 +20,8 @@ private final class EditorFirstMouseHostingView<Content: View>: NSHostingView<Co
 enum DogSCApplication {
     @MainActor
     static func main() {
+        // Resolve the saved language before constructing any presentation.
+        _ = AppLanguageSettings.shared
         // SceneBuilder cannot conditionally apply newer scene modifiers.
         // Choose the host before creating the one application delegate.
         if #available(macOS 15.0, *) {
@@ -61,7 +63,7 @@ private struct DogSCSettingsScene: Scene {
         Settings { AppSettingsView() }
         .commands {
             CommandGroup(replacing: .appSettings) {
-                Button("设置…") {
+                Button(appLocalized("设置…")) {
                     AppSettingsWindowController.shared.show()
                 }
                 .keyboardShortcut(",", modifiers: .command)
@@ -69,17 +71,18 @@ private struct DogSCSettingsScene: Scene {
             // Declare this with the scene so SwiftUI retains it when rebuilding
             // the application menu for a different AppKit key window.
             CommandGroup(after: .appSettings) {
-                Button("首次使用引导…") {
+                Button(appLocalized("首次使用引导…")) {
                     WindowCoordinator.showFirstLaunchGuide()
                 }
                 .disabled(!guideAccess.isAvailable)
             }
             CommandGroup(after: .toolbar) {
-                Button("快捷键速查") {
+                Button(appLocalized("快捷键速查")) {
                     EditorMenuBridge.shared.shortcutCheatsheetRequest.send()
                 }
             }
         }
+        .environment(\.locale, AppLocalization.shared.locale)
     }
 
 }

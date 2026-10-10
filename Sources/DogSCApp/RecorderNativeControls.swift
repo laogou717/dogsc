@@ -263,6 +263,7 @@ final class RecorderMenuButtonNSView: NSButton {
 }
 
 struct RecorderActionTrigger: NSViewRepresentable {
+    @Environment(\.locale) private var locale
     let action: () -> Void
     let accessibilityLabel: String
     var isEnabled = true
@@ -297,6 +298,7 @@ struct RecorderActionTrigger: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: RecorderMenuButtonNSView, context: Context) {
+        _ = locale
         context.coordinator.action = action
         nsView.onPressChange = onPressChange
         nsView.hoverCornerRadius = cornerRadius

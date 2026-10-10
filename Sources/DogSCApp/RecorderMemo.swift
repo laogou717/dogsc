@@ -105,7 +105,7 @@ final class RecorderMemoController: NSObject, ObservableObject, NSWindowDelegate
         panel.isMovableByWindowBackground = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         panel.appearance = nil
-        panel.title = appLocalized("备忘录")
+        appLocalizeWindowTitle(panel, "备忘录")
         panel.identifier = NSUserInterfaceItemIdentifier("recorder.memo.window")
         // CaptureSurfaceFilter excludes this process's helper windows, including
         // memos opened mid-recording. Other recorders may capture the memo.
@@ -298,6 +298,7 @@ private struct RecorderMemoView: View {
 /// NSTextView supplies IME, plain-text paste, native undo and smooth scrolling.
 /// Updating settings never replaces text or selection during marked-text input.
 private struct RecorderMemoTextView: NSViewRepresentable {
+    @Environment(\.locale) private var locale
     @Binding var text: String
     let fontSize: Double
     let isEditing: Bool
@@ -333,8 +334,10 @@ private struct RecorderMemoTextView: NSViewRepresentable {
         return scroll
     }
     func updateNSView(_ scroll: NSScrollView, context: Context) {
+        _ = locale
         context.coordinator.text = $text
         guard let view = scroll.documentView as? NSTextView else { return }
+        view.setAccessibilityLabel(appLocalized("备忘录文稿"))
         view.isEditable = isEditing
         view.isSelectable = true
         if view.string != text, !view.hasMarkedText() { view.string = text }

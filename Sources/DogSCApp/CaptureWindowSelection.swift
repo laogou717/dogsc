@@ -47,7 +47,7 @@ struct CaptureWindowInfo: Identifiable, Equatable, Sendable {
                 CaptureWindowInfo(
                     id: window.windowID,
                     title: window.title ?? "",
-                    applicationName: window.owningApplication?.applicationName ?? "应用窗口",
+                    applicationName: window.owningApplication?.applicationName ?? appLocalized("应用窗口"),
                     applicationBundleIdentifier: window.owningApplication?.bundleIdentifier,
                     applicationProcessID: window.owningApplication?.processID ?? 0,
                     frame: window.frame
@@ -471,7 +471,7 @@ final class CaptureWindowSelector {
             title: description[kCGWindowName as String] as? String ?? "",
             applicationName: application?.localizedName
                 ?? description[kCGWindowOwnerName as String] as? String
-                ?? "应用窗口",
+                ?? appLocalized("应用窗口"),
             applicationBundleIdentifier: application?.bundleIdentifier,
             applicationProcessID: ownerPID,
             frame: CGRect(
@@ -647,6 +647,7 @@ private final class WindowSelectionOverlayView: NSView {
     private var thumbnailTask: Task<Void, Never>?
     private var acceptsSelectionInput = true
     private let cardTransition = CaptureSelectionCardTransition()
+    private var languageBinding: AppLanguageBinding?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -683,7 +684,7 @@ private final class WindowSelectionOverlayView: NSView {
         detailLabel.font = .systemFont(ofSize: 11)
         detailLabel.textColor = captureSelectionInkNSColor.withAlphaComponent(0.56)
         detailLabel.lineBreakMode = .byTruncatingTail
-        checkmark.image = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: "已选择")
+        checkmark.image = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: appLocalized("已选择"))
         checkmark.contentTintColor = captureSelectionAccentNSColor
         separator.wantsLayer = true
         separator.layer?.backgroundColor = captureSelectionInkNSColor.withAlphaComponent(0.08).cgColor
@@ -696,7 +697,7 @@ private final class WindowSelectionOverlayView: NSView {
             button.layer?.cornerRadius = 22
             button.target = self
         }
-        cancelButton.title = "取消"
+        cancelButton.title = appLocalized("取消")
         cancelButton.contentTintColor = captureSelectionInkNSColor
         cancelButton.layer?.backgroundColor = NSColor.clear.cgColor
         // Locking is shown by the frame and by the action lighting up.
@@ -707,12 +708,20 @@ private final class WindowSelectionOverlayView: NSView {
         startButton.captureKeyboardFocusColor = RecorderStyle.chromeNSColor.withAlphaComponent(0.65)
         startButton.layer?.backgroundColor = captureSelectionPlatinumNSColor.cgColor
         startButton.action = #selector(startRecording(_:))
+        languageBinding = AppLanguageBinding { [weak self] in self?.refreshLanguage() }
+    }
+
+    private func refreshLanguage() {
+        cancelButton.title = appLocalized("取消")
+        checkmark.image?.accessibilityDescription = appLocalized("已选择")
+        updateStartAppearance()
     }
 
     private func updateStartAppearance() {
         startButton.layer?.backgroundColor = (selectionLocked
             ? captureSelectionPlatinumNSColor : RecorderStyle.chromeNSColor.withAlphaComponent(0.1)).cgColor
-        let startTitle = NSMutableAttributedString(string: selectionLocked ? "●  开始录制" : "单击窗口以锁定", attributes: [
+        let startTitle = NSMutableAttributedString(string: selectionLocked
+            ? "●  " + appLocalized("开始录制（窗口选择）") : appLocalized("单击窗口以锁定"), attributes: [
             .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
             .foregroundColor: selectionLocked ? NSColor.white : captureSelectionInkNSColor.withAlphaComponent(0.56)])
         if selectionLocked {

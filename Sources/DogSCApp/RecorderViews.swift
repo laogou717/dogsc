@@ -34,9 +34,9 @@ struct RecordingQualityWarningPresentation: Equatable, Sendable {
             recentDroppedFramesText,
             recentWriteHealthText,
             droppedFramesText,
-            "这是画面写入提示，与麦克风录音无关。",
+            appLocalized("这是画面写入提示，与麦克风录音无关。"),
         ]
-            .joined(separator: "；")
+            .joined(separator: appLocalized("；"))
     }
 
     static func make(
@@ -48,18 +48,18 @@ struct RecordingQualityWarningPresentation: Equatable, Sendable {
         let recentTotal = max(recentWrittenFrames + recentDroppedFrames, 1)
         let dropRatio = Double(recentDroppedFrames) / Double(recentTotal)
         return Self(
-            title: "画面写入出现丢帧",
+            title: appLocalized("画面写入出现丢帧"),
             recentDroppedFramesText: String(
-                format: "最近 %.1f 秒明确丢弃 %d 帧",
+                format: appLocalized("最近 %.1f 秒明确丢弃 %d 帧"),
                 max(recentElapsed, 0),
                 recentDroppedFrames
             ),
             recentWriteHealthText: String(
-                format: "同期成功写入 %d 帧 · 丢弃比例 %.1f%%",
+                format: appLocalized("同期成功写入 %d 帧 · 丢弃比例 %.1f%%"),
                 recentWrittenFrames,
                 dropRatio * 100
             ),
-            droppedFramesText: "本次录制累计明确丢弃 \(totalDroppedFrames) 帧"
+            droppedFramesText: String(format: appLocalized("本次录制累计明确丢弃 %ld 帧"), totalDroppedFrames)
         )
     }
 }
@@ -338,7 +338,7 @@ struct RecordingBar: View {
     private func recordingActionButton(icon: String, accessibilityLabel: String,
         accessibilityIdentifier: String, isEnabled: Bool = true,
         action: @escaping () -> Void) -> some View {
-        RecorderNativeActionButton(accessibilityLabel: accessibilityLabel,
+        RecorderNativeActionButton(accessibilityLabel: appLocalized(accessibilityLabel),
             accessibilityIdentifier: accessibilityIdentifier, isEnabled: isEnabled,
             width: 36, height: 36, cornerRadius: 18, highlightOpacity: 0.05, action: action) {
             Image(systemName: icon).font(.system(size: 13, weight: .semibold))

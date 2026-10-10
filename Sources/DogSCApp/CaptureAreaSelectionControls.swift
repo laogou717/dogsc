@@ -52,6 +52,7 @@ final class AreaPresetSelectionView: NSView {
 }
 
 final class AreaPresetButton: CaptureSelectionNativeButton {
+    private let localizationKey: String
     private let areaSymbolName: String
     private let symbolView = MousePassthroughImageView()
     private let captionLabel = MousePassthroughLabel("")
@@ -59,6 +60,8 @@ final class AreaPresetButton: CaptureSelectionNativeButton {
     private var selectedState = false
 
     init(title: String, symbolName: String) {
+        let localizedTitle = appLocalized(title)
+        localizationKey = title
         areaSymbolName = symbolName
         super.init(frame: .zero)
         super.title = ""
@@ -66,14 +69,14 @@ final class AreaPresetButton: CaptureSelectionNativeButton {
         focusRingType = .none
         wantsLayer = true
         layer?.cornerRadius = 14
-        setAccessibilityLabel(title)
+        setAccessibilityLabel(localizedTitle)
 
         symbolView.imageAlignment = .alignCenter
         symbolView.imageScaling = .scaleProportionallyDown
-        symbolView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: title)
+        symbolView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: localizedTitle)
         addSubview(symbolView)
 
-        captionLabel.stringValue = title
+        captionLabel.stringValue = localizedTitle
         captionLabel.alignment = .center
         captionLabel.lineBreakMode = .byClipping
         captionLabel.font = .systemFont(ofSize: 11.5, weight: .medium)
@@ -86,8 +89,16 @@ final class AreaPresetButton: CaptureSelectionNativeButton {
 
     func setSelected(_ selected: Bool) {
         selectedState = selected
-        setAccessibilityValue(selected ? "已选择" : "未选择")
+        setAccessibilityValue(appLocalized(selected ? "已选择" : "未选择"))
         updateAppearance()
+    }
+
+    func refreshLanguage() {
+        let caption = appLocalized(localizationKey)
+        captionLabel.stringValue = caption
+        setAccessibilityLabel(caption)
+        setAccessibilityValue(appLocalized(selectedState ? "已选择" : "未选择"))
+        needsLayout = true
     }
 
     private func updateAppearance() {
@@ -139,6 +150,7 @@ final class AreaPresetButton: CaptureSelectionNativeButton {
 }
 
 final class AreaActionButton: CaptureSelectionNativeButton {
+    private let localizationKey: String
     private let buttonTitleLabel = MousePassthroughLabel("")
     private let primary: Bool
     private let plain: Bool
@@ -151,6 +163,8 @@ final class AreaActionButton: CaptureSelectionNativeButton {
         target: AnyObject?,
         action: Selector?
     ) {
+        let localizedTitle = appLocalized(title)
+        localizationKey = title
         self.primary = primary
         self.plain = plain
         super.init(frame: .zero)
@@ -168,9 +182,9 @@ final class AreaActionButton: CaptureSelectionNativeButton {
         layer?.shadowOpacity = 0
         layer?.shadowRadius = 2
         layer?.shadowOffset = CGSize(width: 0, height: -1)
-        setAccessibilityLabel(title)
+        setAccessibilityLabel(localizedTitle)
 
-        buttonTitleLabel.stringValue = title
+        buttonTitleLabel.stringValue = localizedTitle
         buttonTitleLabel.alignment = .center
         buttonTitleLabel.textColor = primary
             ? NSColor.white
@@ -192,6 +206,13 @@ final class AreaActionButton: CaptureSelectionNativeButton {
         layer?.borderWidth = 0
         layer?.shadowRadius = 2 * scale
         layer?.shadowOffset = CGSize(width: 0, height: -scale)
+        needsLayout = true
+    }
+
+    func refreshLanguage() {
+        let caption = appLocalized(localizationKey)
+        buttonTitleLabel.stringValue = caption
+        setAccessibilityLabel(caption)
         needsLayout = true
     }
 
@@ -247,7 +268,7 @@ final class AreaDimensionLinkButton: CaptureSelectionNativeButton {
         focusRingType = .none
         imagePosition = .imageOnly
         imageScaling = .scaleProportionallyDown
-        setAccessibilityLabel("锁定宽高比例")
+        setAccessibilityLabel(appLocalized("锁定宽高比例"))
         layer?.borderWidth = 0
     }
 
@@ -257,13 +278,19 @@ final class AreaDimensionLinkButton: CaptureSelectionNativeButton {
 
     func setLinked(_ linked: Bool) {
         self.linked = linked
-        setAccessibilityValue(linked ? "已锁定" : "未锁定")
+        setAccessibilityValue(appLocalized(linked ? "已锁定" : "未锁定"))
         updateAppearance()
+    }
+
+    func refreshLanguage() {
+        setAccessibilityLabel(appLocalized("锁定宽高比例"))
+        setAccessibilityValue(appLocalized(linked ? "已锁定" : "未锁定"))
+        image?.accessibilityDescription = appLocalized("锁定宽高比例")
     }
 
     func updateScale(_ scale: CGFloat) {
         captureKeyboardFocusLineWidth = 1.5 * scale
-        image = NSImage(systemSymbolName: "link", accessibilityDescription: "锁定宽高比例")?
+        image = NSImage(systemSymbolName: "link", accessibilityDescription: appLocalized("锁定宽高比例"))?
             .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 16 * scale, weight: .medium))
         layer?.cornerRadius = 8 * scale
     }
@@ -321,18 +348,23 @@ final class EscapeHintContentView: NSView {
         super.init(frame: frameRect)
         setAccessibilityElement(true)
         setAccessibilityRole(.staticText)
-        setAccessibilityLabel("拖动选择录制区域，按 Esc 取消")
+        setAccessibilityLabel(appLocalized("拖动选择录制区域，按 Esc 取消"))
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         setAccessibilityElement(true)
         setAccessibilityRole(.staticText)
-        setAccessibilityLabel("拖动选择录制区域，按 Esc 取消")
+        setAccessibilityLabel(appLocalized("拖动选择录制区域，按 Esc 取消"))
+    }
+
+    func refreshLanguage() {
+        setAccessibilityLabel(appLocalized("拖动选择录制区域，按 Esc 取消"))
+        needsDisplay = true
     }
 
     private func lines(for scale: CGFloat) -> (title: CTLine, key: CTLine) {
-        (makeLine("拖动选择录制区域", font: .systemFont(ofSize: 13 * scale, weight: .semibold), color: captureSelectionInkNSColor),
+        (makeLine(appLocalized("拖动选择录制区域"), font: .systemFont(ofSize: 13 * scale, weight: .semibold), color: captureSelectionInkNSColor),
          makeLine("esc", font: .systemFont(ofSize: 11 * scale, weight: .semibold),
                   color: captureSelectionInkNSColor.withAlphaComponent(0.56)))
     }

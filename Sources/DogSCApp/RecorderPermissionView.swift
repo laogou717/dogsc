@@ -56,6 +56,7 @@ enum RequiredRecordingPermissionKind: String, CaseIterable, Identifiable, Sendab
 }
 
 struct DraggableApplicationIcon: NSViewRepresentable {
+    @Environment(\.locale) private var locale
     let applicationURL: URL
     let onDragEnded: (Bool) -> Void
 
@@ -67,8 +68,10 @@ struct DraggableApplicationIcon: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: ApplicationBundleDragView, context: Context) {
+        _ = locale
         nsView.applicationURL = applicationURL
         nsView.onDragEnded = onDragEnded
+        nsView.refreshLanguage()
     }
 }
 
@@ -94,8 +97,12 @@ final class ApplicationBundleDragView: NSView, NSDraggingSource {
         icon = NSWorkspace.shared.icon(forFile: applicationURL.path)
         super.init(frame: .zero)
         setAccessibilityRole(.button)
-        setAccessibilityLabel("可拖动的 \(AppIdentity.displayName) 应用图标")
-        setAccessibilityHelp("拖到系统设置的应用列表")
+        refreshLanguage()
+    }
+
+    func refreshLanguage() {
+        setAccessibilityLabel(String(format: appLocalized("可拖动的 %@ 应用图标"), AppIdentity.displayName))
+        setAccessibilityHelp(appLocalized("拖到系统设置的应用列表"))
     }
 
     @available(*, unavailable)
@@ -175,7 +182,7 @@ final class RequiredPermissionWindowController: NSObject, NSWindowDelegate {
         windowController = NSWindowController(window: window)
         super.init()
         window.identifier = permissionOnboardingWindowIdentifier
-        window.title = String(format: appLocalized("开始使用 %@"), AppIdentity.displayName)
+        appLocalizeWindowTitle(window, "开始使用 %@", arguments: [AppIdentity.displayName])
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true

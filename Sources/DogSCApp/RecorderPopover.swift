@@ -147,6 +147,7 @@ struct RecorderPopoverButton<Label: View, Panel: View>: View {
 }
 
 private struct RecorderPopoverTrigger: NSViewRepresentable {
+    @Environment(\.locale) private var locale
     let id: String
     let title: String
     let content: AnyView
@@ -165,6 +166,7 @@ private struct RecorderPopoverTrigger: NSViewRepresentable {
         return button
     }
     func updateNSView(_ view: RecorderMenuButtonNSView, context: Context) {
+        _ = locale
         view.onPressChange = onPressChange
         view.hoverCornerRadius = cornerRadius
         context.coordinator.id = id
@@ -257,7 +259,7 @@ struct RecorderActionList: View {
                 ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                     switch item.kind {
                     case .separator: Rectangle().fill(RecorderStyle.line).frame(height: 1).padding(.horizontal, 8).padding(.vertical, 5)
-                    case .info: Text(item.title).font(.appUI(size: 12)).foregroundStyle(RecorderStyle.muted).fixedSize(horizontal: false, vertical: true).padding(.horizontal, 8).padding(.vertical, 4)
+                    case .info: Text(appLocalized(item.title)).font(.appUI(size: 12)).foregroundStyle(RecorderStyle.muted).fixedSize(horizontal: false, vertical: true).padding(.horizontal, 8).padding(.vertical, 4)
                     case .action:
                         RecorderChoiceRow(title: item.title, selected: item.isOn, enabled: item.isEnabled) {
                             RecorderPopoverPresenter.shared.dismissAndPerform { item.handler?() }

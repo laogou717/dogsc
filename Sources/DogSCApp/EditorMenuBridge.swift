@@ -76,7 +76,18 @@ final class EditorMenuBridge: NSObject, NSMenuItemValidation {
             root.submenu = fileMenu
             mainMenu.insertItem(root, at: 1)
         }
+        if let root = mainMenu.items.first(where: { $0.identifier == fileMenuIdentifier }) {
+            root.title = appLocalized("文件")
+            root.submenu?.title = root.title
+            root.submenu?.items.first(where: {
+                $0.action == #selector(openProjectFromMenu(_:))
+            })?.title = appLocalized("打开项目…")
+            root.submenu?.items.first(where: {
+                $0.action == #selector(exportFromMenu(_:))
+            })?.title = appLocalized("导出成片…")
+        }
         installEditItems(in: mainMenu)
+        localizeStandardMenuItems(in: mainMenu)
         removeUnavailableHelpMenu(from: mainMenu)
     }
 
@@ -176,6 +187,8 @@ final class EditorMenuBridge: NSObject, NSMenuItemValidation {
             mainMenu.insertItem(root, at: min(2, mainMenu.items.count))
         }
         root.identifier = editMenuIdentifier
+        root.title = appLocalized("编辑")
+        editMenu.title = root.title
 
         let undoItem = editMenu.items.first { item in
             item.action == undoSelector || item.action == #selector(undoFromMenu(_:))
@@ -215,6 +228,44 @@ final class EditorMenuBridge: NSObject, NSMenuItemValidation {
             keyEquivalent: "z",
             modifiers: [.command, .shift]
         )
+    }
+
+    /// Identify native menu roles by public actions, never by user/project
+    /// titles. Actions, validation, targets and shortcuts remain unchanged.
+    private func localizeStandardMenuItems(in mainMenu: NSMenu) {
+        let actionKeys: [String: String] = [
+            "cut:": "剪切", "copy:": "拷贝", "paste:": "粘贴", "selectAll:": "全选",
+            "hideOtherApplications:": "隐藏其他", "unhideAllApplications:": "显示全部",
+            "performMiniaturize:": "最小化", "performZoom:": "缩放",
+            "arrangeInFront:": "前置所有窗口",
+        ]
+        func refresh(_ menu: NSMenu) {
+            for item in menu.items {
+                if let action = item.action {
+                    let selector = NSStringFromSelector(action)
+                    if let key = actionKeys[selector] { item.title = appLocalized(key) }
+                    if selector == "hide:" {
+                        item.title = String(format: appLocalized("隐藏%@"), AppIdentity.displayName)
+                    }
+                    if selector == "toggleFullScreen:" {
+                        item.title = appLocalized(NSApp.keyWindow?.styleMask.contains(.fullScreen) == true
+                            ? "退出全屏" : "进入全屏")
+                    }
+                }
+                if let submenu = item.submenu {
+                    if submenu === NSApp.servicesMenu { item.title = appLocalized("服务") }
+                    if submenu === NSApp.windowsMenu {
+                        item.title = appLocalized("窗口")
+                    } else if submenu.items.contains(where: {
+                        $0.action == #selector(NSWindow.toggleFullScreen(_:))
+                    }) {
+                        item.title = appLocalized("显示")
+                    }
+                    refresh(submenu)
+                }
+            }
+        }
+        refresh(mainMenu)
     }
 
     private func configure(

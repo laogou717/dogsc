@@ -359,6 +359,8 @@ private final class CameraPreviewSurface: NSView {
     private let statusView = NSView()
     private let statusSpinner = NSProgressIndicator()
     private let statusTitle = NSTextField(labelWithString: "")
+    private var statusTitleKey = ""
+    private var languageBinding: AppLanguageBinding?
     private let statusDeviceName = NSTextField(labelWithString: "")
     private var previewShape = AppPreferences.recordingCameraPreviewShape
     private var sourceSize: CGSize?
@@ -418,6 +420,11 @@ private final class CameraPreviewSurface: NSView {
         statusDeviceName.textColor = RecorderStyle.inkNSColor.withAlphaComponent(0.58)
         statusDeviceName.lineBreakMode = .byTruncatingMiddle
         statusView.addSubview(statusDeviceName)
+        languageBinding = AppLanguageBinding { [weak self] in
+            guard let self else { return }
+            self.statusTitle.stringValue = appLocalized(self.statusTitleKey)
+            self.needsLayout = true
+        }
     }
 
     override func viewDidChangeEffectiveAppearance() {
@@ -446,7 +453,8 @@ private final class CameraPreviewSurface: NSView {
 
     func showConnecting(deviceName: String) {
         previewLayer.flushAndRemoveImage()
-        statusTitle.stringValue = "正在连接"
+        statusTitleKey = "正在连接"
+        statusTitle.stringValue = appLocalized(statusTitleKey)
         statusDeviceName.stringValue = deviceName
         statusSpinner.isHidden = false
         statusSpinner.startAnimation(nil)
@@ -455,7 +463,8 @@ private final class CameraPreviewSurface: NSView {
     }
 
     func showDisconnected(deviceName: String) {
-        statusTitle.stringValue = "设备已断开"
+        statusTitleKey = "设备已断开"
+        statusTitle.stringValue = appLocalized(statusTitleKey)
         statusDeviceName.stringValue = deviceName
         statusSpinner.stopAnimation(nil)
         statusSpinner.isHidden = true

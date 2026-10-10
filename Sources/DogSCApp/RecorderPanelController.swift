@@ -19,6 +19,7 @@ final class DogSCApplicationDelegate: NSObject,
     private var settingsShortcutMonitor: Any?
     private var recordingMarkerHotKey: RecordingMarkerHotKey?
     private var keyWindowObservation: NSObjectProtocol?
+    private var languageBinding: AppLanguageBinding?
     private var isWaitingForRecordingCompletionDecision = false
 
     /// Pure launch-order policy kept separate from AppKit callbacks so a cold
@@ -73,6 +74,14 @@ final class DogSCApplicationDelegate: NSObject,
         installStatusItem()
         installSettingsShortcutMonitor()
         installKeyWindowMenuRefresh()
+        languageBinding = AppLanguageBinding { [weak self] in
+            guard let self else { return }
+            self.refreshMainMenuBindings()
+            if let menu = self.statusItem?.menu { self.rebuildStatusMenu(menu) }
+            self.statusItem?.button?.setAccessibilityLabel(
+                String(format: appLocalized("%@菜单"), AppIdentity.displayName)
+            )
+        }
         AppUpdateController.shared.startIfEligible()
         DispatchQueue.main.async { [weak self] in
             self?.refreshMainMenuBindings()
@@ -94,6 +103,7 @@ final class DogSCApplicationDelegate: NSObject,
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        AppLanguageSettings.shared.refreshFromPreferences()
         model?.resumeRequiredPermissionOnboardingAfterActivation()
         refreshMainMenuBindings()
     }
@@ -430,9 +440,11 @@ final class DogSCApplicationDelegate: NSObject,
 
         if let about = applicationMenu.items.first(where: {
             $0.action == #selector(NSApplication.orderFrontStandardAboutPanel(_:))
+                || $0.action == #selector(openAboutFromApplicationMenu(_:))
                 || $0.title.hasPrefix("关于")
         }) {
             about.target = self
+            about.title = String(format: appLocalized("关于%@"), AppIdentity.displayName)
             about.action = #selector(openAboutFromApplicationMenu(_:))
             about.isEnabled = true
         }
@@ -441,6 +453,7 @@ final class DogSCApplicationDelegate: NSObject,
             $0.keyEquivalent == "," || $0.title.hasPrefix("设置")
         }) {
             settings.target = self
+            settings.title = appLocalized("设置…")
             settings.action = #selector(openSettingsFromStatusItem(_:))
             settings.keyEquivalent = ","
             settings.keyEquivalentModifierMask = [.command]
@@ -449,14 +462,19 @@ final class DogSCApplicationDelegate: NSObject,
 
         if let quit = applicationMenu.items.first(where: {
             $0.action == #selector(NSApplication.terminate(_:))
+                || $0.action == #selector(quitFromStatusItem(_:))
                 || $0.title.hasPrefix("退出")
         }) {
             quit.target = self
+            quit.title = String(format: appLocalized("退出%@"), AppIdentity.displayName)
             quit.action = #selector(quitFromStatusItem(_:))
             quit.keyEquivalent = "q"
             quit.keyEquivalentModifierMask = [.command]
             quit.isEnabled = true
         }
+        applicationMenu.items.first(where: {
+            $0.action == #selector(openFirstLaunchGuide(_:))
+        })?.title = appLocalized("首次使用引导…")
     }
 
     /// SwiftUI can replace scene-contributed menu items when a sheet becomes
@@ -512,6 +530,12 @@ final class DogSCApplicationDelegate: NSObject,
         guard let fileMenu = mainMenu.items.first(where: {
             $0.identifier == fileMenuIdentifier
         })?.submenu else { return }
+        fileMenu.items.first(where: {
+            $0.action == #selector(exportProjectSourceMedia(_:))
+        })?.title = appLocalized("导出项目源文件…")
+        fileMenu.items.first(where: {
+            $0.action == #selector(importCameraReplacement(_:))
+        })?.title = appLocalized("替换当前项目摄像头…")
         guard !fileMenu.items.contains(where: {
             $0.action == #selector(exportProjectSourceMedia(_:))
                 || $0.action == #selector(importCameraReplacement(_:))

@@ -370,7 +370,7 @@ enum AppDialogPresenter {
         panel.level = NSWindow.Level(rawValue: max(NSWindow.Level.modalPanel.rawValue, owner?.level.rawValue ?? 0) + 1)
         panel.collectionBehavior = [.fullScreenAuxiliary, .moveToActiveSpace]
         panel.identifier = NSUserInterfaceItemIdentifier("dogsc.app-dialog")
-        panel.title = appLocalized(dialog.title)
+        appLocalizeWindowTitle(panel, dialog.title)
         host.view.layoutSubtreeIfNeeded()
         let size = host.view.fittingSize
         // A decision appears over the thing it is about: centred on the

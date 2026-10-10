@@ -663,13 +663,13 @@ struct ExportSheet: View {
         requestErrorMessage = nil
         _ = editorStore.prepareForExternalAction(.export)
         guard let preparedMedia = mediaSession.prepared else {
-            requestErrorMessage = mediaSession.errorMessage ?? "导出素材尚未准备完成。"
+            requestErrorMessage = mediaSession.errorMessage ?? appLocalized("导出素材尚未准备完成。")
             return
         }
         do {
             let project = editorStore.project
             guard let outputURL = selectedOutputURL else {
-                requestErrorMessage = "请先选择导出保存位置。"
+                requestErrorMessage = appLocalized("请先选择导出保存位置。")
                 return
             }
             let request = try EditorExportRequestBuilder.make(
