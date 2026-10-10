@@ -194,26 +194,14 @@ struct RecordingBar: View {
     @State private var qualityWarningMonitor = RecordingQualityWarningMonitor()
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 0) {
             recordingStatus
-
             recordingActions
-                .fixedSize(horizontal: true, vertical: false)
-                .layoutPriority(2)
         }
-        .padding(.horizontal, 10)
-        .frame(height: 52)
+        .padding(.leading, 16).padding(.trailing, 6)
+        .frame(height: 48)
         .fixedSize(horizontal: true, vertical: false)
-        .onGeometryChange(for: CGFloat.self) { geometry in
-            geometry.size.width.rounded(.up)
-        } action: { width in
-            onContentWidthChange(width)
-        }
-        .background(Color.white)
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(RecorderStyle.line, lineWidth: 0.75) }
         .foregroundStyle(RecorderStyle.ink)
-        .preferredColorScheme(.light)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(RecorderAccessibilityID.phaseRecording)
         .appDialog(isPresented: Binding(
@@ -266,29 +254,34 @@ struct RecordingBar: View {
         }
     }
 
+    /// The take itself: a breathing point, the running time, and the voice.
     private var recordingStatus: some View {
-        HStack(spacing: 10) {
-            Circle().fill(model.isRecordingPaused ? Color.orange : Color.red)
-                .frame(width: 8, height: 8)
+        HStack(spacing: 9) {
+            RecordingIndicator(isPaused: model.isRecordingPaused)
             TimelineView(.periodic(from: .now, by: 0.5)) { context in
                 Text(elapsedText(at: context.date))
-                    .font(.appUI(size: 17, weight: .medium)).monospacedDigit()
-                    .frame(minWidth: 54, alignment: .leading)
+                    .font(.system(size: 15, weight: .semibold, design: .rounded)).monospacedDigit()
+                    .foregroundStyle(model.isRecordingPaused ? RecorderStyle.muted : RecorderStyle.ink)
+                    .contentTransition(.numericText())
+                    .frame(minWidth: 46, alignment: .leading)
             }
-            Text(appLocalized(model.isRecordingPaused ? "已暂停" : "录制中"))
-                .font(.appUI(size: 11)).foregroundStyle(RecorderStyle.muted)
-                .fixedSize(horizontal: true, vertical: false).frame(minWidth: 40)
-            RecorderMicrophoneOrb(meter: model.microphoneInputLevel,
-                enabled: model.configuration.recordsMicrophone && !model.isRecordingPaused, size: 34)
-                .help("麦克风实时音量")
+            .accessibilityLabel(appLocalized(model.isRecordingPaused ? "已暂停" : "录制中"))
+            if model.configuration.recordsMicrophone {
+                RecorderLevelBars(meter: model.microphoneInputLevel, active: !model.isRecordingPaused)
+                    .help("麦克风实时音量")
+            }
             recordingQualityWarning
-        }.fixedSize(horizontal: true, vertical: false)
+        }
+        .fixedSize(horizontal: true, vertical: false)
+        .padding(.trailing, 12)
+        .animation(RecorderMotion.quick, value: model.isRecordingPaused)
     }
 
     @ViewBuilder private var recordingQualityWarning: some View {
         if let warning = qualityWarningMonitor.warning {
             RecorderPopoverButton(id: "recording-quality", title: warning.title, width: 24, height: 28) {
-                Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
+                Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.orange)
             } panel: {
                 RecorderActionList(title: warning.title, items: [
                     .info(warning.recentDroppedFramesText), .info(warning.recentWriteHealthText),
@@ -300,49 +293,58 @@ struct RecordingBar: View {
     }
 
     private var recordingActions: some View {
-        HStack(spacing: 8) {
-            RecorderMemoButton(size: 34)
+        HStack(spacing: 0) {
             recordingActionButton(icon: "bookmark.fill", accessibilityLabel: appLocalized("添加录制标记"),
                 accessibilityIdentifier: "recorder.recording.marker",
                 isEnabled: model.canAddRecordingMarker, action: model.addRecordingMarker)
                 .overlay(alignment: .topTrailing) {
                     if !model.project.recordingMarkers.isEmpty {
                         Text(model.project.recordingMarkers.count, format: .number)
-                            .font(.appUI(size: 8, weight: .semibold)).monospacedDigit()
+                            .font(.system(size: 9, weight: .bold, design: .rounded)).monospacedDigit()
                             .foregroundStyle(RecorderStyle.ink)
-                            .padding(.horizontal, 3).padding(.vertical, 1)
-                            .background(RecorderStyle.mintWash, in: Capsule())
-                            .offset(x: 4, y: -3)
+                            .contentTransition(.numericText())
+                            .offset(x: -3, y: 7)
                             .allowsHitTesting(false)
                     }
                 }
                 .help(appLocalized(model.recordingMarkerShortcutAvailable
                     ? "添加录制标记（⌃⌥M）；保存到项目，不会录入画面"
                     : "添加录制标记；全局快捷键不可用，请使用此按钮"))
+            RecorderMemoButton(size: 36)
             recordingActionButton(icon: model.isRecordingPaused ? "play.fill" : "pause.fill",
                 accessibilityLabel: model.isRecordingPaused ? "继续录制" : "暂停录制",
                 accessibilityIdentifier: RecorderAccessibilityID.recordingPauseResume,
                 isEnabled: !model.isPauseTransitioning, action: model.toggleRecordingPause)
-            recordingActionButton(icon: "stop.fill", accessibilityLabel: "结束录制",
-                accessibilityIdentifier: RecorderAccessibilityID.recordingStop,
-                emphasized: true, action: model.stopRecording)
-            RecorderPopoverButton(id: "recording-more", title: "更多录制操作", width: 28, height: 34) {
-                Image(systemName: "ellipsis").font(.appUI(size: 16)).foregroundStyle(RecorderStyle.muted)
+            RecorderPopoverButton(id: "recording-more", title: "更多录制操作", width: 32, height: 36) {
+                Image(systemName: "ellipsis").font(.system(size: 14, weight: .semibold)).foregroundStyle(RecorderStyle.muted)
             } panel: { RecorderActionList(title: "录制操作", items: recordingMenuItems) }
+            stopButton.padding(.leading, 6)
+        }
+    }
 
+    /// Ending the take is the island's one solid, coloured control.
+    private var stopButton: some View {
+        RecorderNativeActionButton(accessibilityLabel: appLocalized("结束录制"),
+            accessibilityIdentifier: RecorderAccessibilityID.recordingStop, isEnabled: true,
+            width: 36, height: 36, cornerRadius: 18, highlightOpacity: 0, action: model.stopRecording) {
+            ZStack {
+                Circle().fill(RecorderStyle.recording)
+                RoundedRectangle(cornerRadius: 2.5, style: .continuous).fill(.white).frame(width: 11, height: 11)
+            }
+            .frame(width: 36, height: 36)
         }
     }
 
     private func recordingActionButton(icon: String, accessibilityLabel: String,
         accessibilityIdentifier: String, isEnabled: Bool = true,
-        emphasized: Bool = false, action: @escaping () -> Void) -> some View {
+        action: @escaping () -> Void) -> some View {
         RecorderNativeActionButton(accessibilityLabel: accessibilityLabel,
             accessibilityIdentifier: accessibilityIdentifier, isEnabled: isEnabled,
-            width: 36, height: 34, action: action) {
-            Image(systemName: icon).font(.appUI(size: 13, weight: .medium))
-                .foregroundStyle(emphasized ? Color.red : RecorderStyle.ink)
-                .frame(width: 36, height: 34)
-                .modifier(RecorderRaisedSurface(radius: 10))
+            width: 36, height: 36, cornerRadius: 18, highlightOpacity: 0.05, action: action) {
+            Image(systemName: icon).font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(RecorderStyle.ink)
+                .contentTransition(.symbolEffect(.replace))
+                .frame(width: 36, height: 36)
         }
     }
 
@@ -386,6 +388,10 @@ struct RecordingBar: View {
 
     private func elapsedText(at date: Date) -> String {
         let seconds = max(Int(model.elapsedRecordingTime(at: date)), 0)
+        // Past an hour, "75:03" stops reading as a duration.
+        if seconds >= 3600 {
+            return String(format: "%d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60)
+        }
         return String(format: "%02d:%02d", seconds / 60, seconds % 60)
     }
 }
@@ -393,6 +399,26 @@ struct RecordingBar: View {
 private enum RecordingBarAction {
     case restart
     case discard
+}
+
+/// A live take breathes; a paused one holds still in amber.
+private struct RecordingIndicator: View {
+    let isPaused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var dimmed = false
+
+    var body: some View {
+        let breathes = !isPaused && !reduceMotion
+        Circle()
+            .fill(isPaused ? Color(red: 0.95, green: 0.62, blue: 0.2) : RecorderStyle.recording)
+            .frame(width: 8, height: 8)
+            .opacity(breathes && dimmed ? 0.32 : 1)
+            .animation(breathes ? .easeInOut(duration: 0.9).repeatForever(autoreverses: true) : .easeOut(duration: 0.15),
+                       value: dimmed)
+            .onAppear { dimmed = breathes }
+            .onChange(of: breathes) { _, value in dimmed = value }
+            .accessibilityHidden(true)
+    }
 }
 
 enum InspectorTab: String, CaseIterable, Identifiable {
@@ -412,8 +438,8 @@ enum InspectorTab: String, CaseIterable, Identifiable {
         case .opening: return "sparkles.rectangle.stack"
         case .zoom: return "viewfinder"
         case .cursor: return "cursorarrow.motionlines"
-        case .camera: return "video.fill"
-        case .audio: return "speaker.wave.2.fill"
+        case .camera: return "video"
+        case .audio: return "speaker.wave.2"
         }
     }
 }

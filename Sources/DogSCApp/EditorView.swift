@@ -72,13 +72,82 @@ struct EditorToolbarIconSurface: View {
     let systemName: String
     var isActive = false
     var body: some View {
-        Image(systemName: systemName)
-            .font(.appUI(size: 15, weight: .regular))
-            .foregroundStyle(EditorTheme.chrome(0.78))
-            .frame(width: 32, height: 32)
-            .background(isActive ? EditorTheme.selectionWash : .clear,
-                        in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        Group {
+            // Toolbar actions share the recorder's hand-drawn stroke family;
+            // anything without a drawn counterpart keeps its system symbol.
+            if let kind = Self.lineIcon(for: systemName) {
+                AppLineIcon(kind: kind, size: 17)
+            } else {
+                Image(systemName: systemName).font(.appUI(size: 15, weight: .regular))
+            }
+        }
+        .foregroundStyle(EditorTheme.chrome(0.78))
+        .frame(width: 32, height: 32)
+        .background(isActive ? EditorTheme.selectionWash : .clear,
+                    in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    static func lineIcon(for systemName: String) -> AppLineIcon.Kind? {
+        switch systemName {
+        case "arrow.uturn.backward": .undo
+        case "arrow.uturn.forward": .redo
+        case "gearshape": .settings
+        case "plus": .plus
+        case "slider.horizontal.3": .sliders
+        case "moon.stars.fill", "moon.fill": .moon
+        case "sun.max.fill", "sun.max": .sun
+        case "trash": .trash
+        case "folder": .folder
+        case "square.3.layers.3d": .layers
+        case "rectangle.inset.filled", "square.on.square": .layout
+        case "macwindow": .window
+        case "photo": .scene
+        case "grid": .grid
+        case "waveform", "waveform.path.ecg.rectangle": .waveform
+        case "film", "film.stack", "film.stack.fill": .film
+        case "crop": .crop
+        case "scissors": .scissors
+        case "scope", "viewfinder": .zoom
+        case "sparkles.rectangle.stack": .opening
+        case "speaker.wave.2", "speaker.wave.2.fill": .speaker
+        case "mic", "mic.fill": .microphone
+        case "video", "video.fill": .camera
+        case "display": .display
+        case "pencil": .pencil
+        case "minus": .minus
+        default: nil
+        }
+    }
+}
+
+/// The one solid action on the editor's top edge, like the recorder's
+/// primary pill: ink fill, inverted label, a short pressed settle.
+struct EditorPrimaryPillButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View { Pill(configuration: configuration) }
+
+    private struct Pill: View {
+        let configuration: ButtonStyle.Configuration
+        @Environment(\.isEnabled) private var isEnabled
+        @State private var hovered = false
+        var body: some View {
+            let pressed = configuration.isPressed && isEnabled
+            configuration.label
+                .font(.appUI(size: 13, weight: .semibold))
+                .foregroundStyle(EditorTheme.onAccent)
+                .padding(.horizontal, 18)
+                .frame(height: 40)
+                .background(EditorTheme.platinumAccent.opacity(pressed ? 0.78 : hovered && isEnabled ? 0.9 : 1),
+                            in: Capsule(style: .continuous))
+                .contentShape(Capsule(style: .continuous))
+                .shadow(color: EditorTheme.softShadow.opacity(0.7), radius: 12, y: 5)
+                .appKeyboardFocus(in: Capsule(style: .continuous))
+                .scaleEffect(pressed && !RecorderMotion.reduces ? 0.96 : 1)
+                .opacity(isEnabled ? 1 : 0.4)
+                .onHover { hovered = $0 }
+                .animation(RecorderMotion.quick, value: pressed)
+                .animation(RecorderMotion.fade, value: hovered)
+        }
     }
 }
 
@@ -92,8 +161,8 @@ struct EditorToolbarControlSurface<Content: View>: View {
             .foregroundStyle(EditorTheme.chrome(0.82))
             .padding(.horizontal, 12).frame(height: 32)
             .background(isActive ? EditorTheme.selectionWash : .clear,
-                        in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                        in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(appLocalized(accessibilityTitle))
     }
@@ -597,10 +666,10 @@ struct EditorView: View {
             .action("导出项目源文件…", isEnabled: context.media.source != nil) { hostActions.exportProjectSourceMedia() },
             .action("替换当前项目摄像头…", isEnabled: editorStore.project.media?.camera != nil) { hostActions.importCameraReplacement() }
         ]) {
-            HStack(spacing: 4) {
-                Image(systemName: "folder").font(.appUI(size: 17))
-                Image(systemName: "chevron.down").font(.appUI(size: 9, weight: .medium))
-            }.foregroundStyle(.secondary).frame(width: 48, height: 38)
+            HStack(spacing: 3) {
+                AppLineIcon(kind: .folder, size: 17)
+                AppLineIcon(kind: .chevronDown, size: 10)
+            }.foregroundStyle(EditorTheme.chrome(0.62)).frame(width: 48, height: 36)
         }
         .disabled(isCropping)
         .accessibilityIdentifier("editor.project.menu")
@@ -610,65 +679,71 @@ struct EditorView: View {
         ZStack {
             EditorWindowChromeInteraction().accessibilityHidden(true)
             HStack(spacing: layout.value(regular: 12, compact: 8)) {
-                projectMenu
-                HStack(spacing: 5) {
+                HStack(spacing: 2) {
+                    projectMenu
                     titleEditor
                     Button { hostActions.deleteProject() } label: {
-                        Image(systemName: "trash").font(.appUI(size: 14))
-                            .foregroundStyle(.secondary).frame(width: 32, height: 36)
+                        AppLineIcon(kind: .trash, size: 15)
+                            .foregroundStyle(EditorTheme.chrome(0.5)).frame(width: 34, height: 34)
                     }
-                    .buttonStyle(.editorToolbarPress)
+                    .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 17))
                     .disabled(isCropping || isEditingTitle)
                     .help("删除当前项目…")
                     .accessibilityLabel("删除当前项目")
                     .accessibilityIdentifier("editor.project.delete")
                 }
                 .frame(maxWidth: layout.value(regular: 360, compact: 220), alignment: .leading)
+                .padding(.horizontal, 4)
+                .frame(height: 44)
+                .editorCapsuleIsland()
                 persistenceIndicator
                 Spacer(minLength: 20)
-                HStack(spacing: 0) {
+                // One island for history, scenes and app chrome; the recorder
+                // separates groups with spacing, not dividers.
+                HStack(spacing: 2) {
                     Button { undoManager?.undo() } label: {
                         EditorToolbarIconSurface(systemName: "arrow.uturn.backward")
                     }
-                    .buttonStyle(.editorToolbarPress)
+                    .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 16))
                     .disabled(isCropping || undoManager?.canUndo != true)
                     .help("撤销（⌘Z）").accessibilityLabel("撤销")
                     Button { undoManager?.redo() } label: {
                         EditorToolbarIconSurface(systemName: "arrow.uturn.forward")
                     }
-                    .buttonStyle(.editorToolbarPress)
+                    .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 16))
                     .disabled(isCropping || undoManager?.canRedo != true)
                     .help("重做（⌘⇧Z）").accessibilityLabel("重做")
+                    Color.clear.frame(width: 6, height: 1)
+                    stylePresetControl(compact: layout.isCompact)
+                        .disabled(isCropping || isSavingStylePreset)
+                        .help("保存或复用完整场景配置")
+                    Color.clear.frame(width: 6, height: 1)
+                    Button { AppSettingsWindowController.shared.show() } label: {
+                        EditorToolbarIconSurface(systemName: "gearshape")
+                    }
+                    .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 16))
+                    .help("设置（⌘,）").accessibilityLabel("设置")
+                    .accessibilityIdentifier("editor.app-settings")
+                    EditorAppearanceToggleButton()
                 }
-                .padding(4).background(EditorTheme.cardElevated, in: RoundedRectangle(cornerRadius: 13))
-                .overlay(RoundedRectangle(cornerRadius: 13).strokeBorder(EditorTheme.hairline, lineWidth: 0.75))
-                stylePresetControl(compact: layout.isCompact)
-                    .disabled(isCropping || isSavingStylePreset)
-                    .padding(4)
-                    .background(EditorTheme.cardElevated, in: RoundedRectangle(cornerRadius: 13))
-                    .overlay(RoundedRectangle(cornerRadius: 13).strokeBorder(EditorTheme.hairline, lineWidth: 0.75))
-                    .help("保存或复用完整场景配置")
+                .padding(.horizontal, 6)
+                .frame(height: 44)
+                .editorCapsuleIsland()
                 Button { presentExport(scope: .fullProject) } label: {
-                    Label("导出", systemImage: "square.and.arrow.up")
-                        .font(.appUI(size: 13, weight: .medium))
-                        .padding(.horizontal, 18).frame(height: 40)
+                    HStack(spacing: 7) {
+                        AppLineIcon(kind: .share, size: 15)
+                        Text("导出")
+                    }
                 }
-                .buttonStyle(EditorSoftRaisedButtonStyle())
+                .buttonStyle(EditorPrimaryPillButtonStyle())
                 .disabled(isCropping)
                 .help(appLocalized(isCropping ? "请先完成或取消裁切" : "导出成片（⌘E）"))
-                .firstUseTourTarget("editor.export", in: .editor, highlight: .rounded(12))
-                Button { AppSettingsWindowController.shared.show() } label: {
-                    EditorToolbarIconSurface(systemName: "gearshape")
-                }
-                .buttonStyle(.editorToolbarPress)
-                .help("设置（⌘,）").accessibilityLabel("设置")
-                .accessibilityIdentifier("editor.app-settings")
-                EditorAppearanceToggleButton()
+                .accessibilityLabel("导出")
+                .firstUseTourTarget("editor.export", in: .editor, highlight: .rounded(20))
             }
             .padding(.horizontal, 20)
         }
         .frame(height: layout.toolbarHeight)
-        .background(EditorTheme.panelSurface.opacity(0.88))
     }
 
     private var canvasToolbar: some View {
@@ -689,10 +764,9 @@ struct EditorView: View {
                 ]) { EditorToolbarIconSurface(systemName: "slider.horizontal.3") }
             }
         }
-        .padding(4)
+        .padding(.horizontal, 6).padding(.vertical, 4)
         .fixedSize(horizontal: true, vertical: false)
-        .background(EditorTheme.panelSurface.opacity(0.94), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).strokeBorder(EditorTheme.hairline, lineWidth: 0.5))
+        .editorCapsuleIsland()
     }
 
     @ViewBuilder
@@ -724,11 +798,11 @@ struct EditorView: View {
             TextField(appLocalized("项目名称"), text: $titleDraft)
                 .textFieldStyle(.plain).font(.appUI(size: 15, weight: .medium))
                 .tint(nil)
-                .padding(.horizontal, 10).frame(height: 36)
-                .background(EditorTheme.cardElevated, in: RoundedRectangle(cornerRadius: 9))
+                .padding(.horizontal, 12).frame(height: 34)
+                .background(EditorTheme.controlWell, in: Capsule(style: .continuous))
                 .background(EditorTextInputRegionAnchor(region: titleInputRegion))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 9)
+                    Capsule(style: .continuous)
                         .strokeBorder(EditorTheme.selectionTint.opacity(0.5))
                         .allowsHitTesting(false)
                 }
@@ -751,13 +825,13 @@ struct EditorView: View {
                         .font(.appUI(size: 15, weight: .medium))
                         .foregroundStyle(EditorTheme.chrome(0.88))
                         .lineLimit(1).truncationMode(.middle)
-                    Image(systemName: "pencil")
-                        .font(.appUI(size: 12)).foregroundStyle(.tertiary)
+                    AppLineIcon(kind: .pencil, size: 12)
+                        .foregroundStyle(EditorTheme.chrome(0.36))
                 }
-                .padding(.horizontal, 10).frame(height: 36)
-                .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .padding(.horizontal, 12).frame(height: 34)
+                .contentShape(Capsule(style: .continuous))
             }
-            .buttonStyle(.editorToolbarPress)
+            .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 17))
             .accessibilityLabel("重命名项目").accessibilityValue(projectDisplayTitle)
             .help("点击重命名项目")
         }

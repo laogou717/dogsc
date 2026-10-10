@@ -14,6 +14,7 @@ final class CaptureDisplaySelector {
     private var displays: [CaptureDisplay] = []
     private var selectedDisplayID: UInt32?
     private var localKeyMonitor: Any?
+    private var screenParametersObserver: NSObjectProtocol?
     private var activeToken: CaptureSelectionToken?
     private let transition = CaptureSelectionTransition()
 
@@ -23,13 +24,39 @@ final class CaptureDisplaySelector {
         self.displays = displays
         selectedDisplayID = nil
 
-        panels = NSScreen.screens.compactMap { screen in
+        reconcilePanels(screens: NSScreen.screens, token: token)
+        screenParametersObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.refreshConnectedDisplays(token: token)
+            }
+        }
+        installKeyMonitor()
+        // With one display there is nothing to choose between: frame it at
+        // once so the island already offers the take.
+        if panels.count == 1, let only = panels.first?.display {
+            DispatchQueue.main.async { [weak self] in self?.select(only, token: token) }
+        }
+        makePointerScreenKey()
+    }
+
+    private func reconcilePanels(screens: [NSScreen], token: CaptureSelectionToken) {
+        var previousPanels = panels
+        panels = screens.compactMap { screen in
             guard let displayID = screen.deviceDescription[
                 NSDeviceDescriptionKey("NSScreenNumber")
             ] as? NSNumber,
                   let display = displays.first(where: { $0.id == displayID.uint32Value })
             else { return nil }
 
+            if let index = previousPanels.firstIndex(where: { $0.display == display }) {
+                let panel = previousPanels.remove(at: index)
+                panel.setFrame(screen.frame, display: true)
+                return panel
+            }
             let panel = DisplaySelectionPanel(screen: screen, display: display)
             panel.onSelect = { [weak self] in self?.select(display, token: token) }
             panel.onStart = { [weak self] in self?.startSelectedDisplay(token: token) }
@@ -37,9 +64,30 @@ final class CaptureDisplaySelector {
             transition.present(panel)
             return panel
         }
+        previousPanels.forEach { $0.prepareForRetirement() }
+        transition.retire(previousPanels, animated: false)
         updateSelection()
-        installKeyMonitor()
-        NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
+    private func refreshConnectedDisplays(token: CaptureSelectionToken) {
+        guard activeToken == token else { return }
+        let screens = NSScreen.screens
+        displays = CaptureDisplay.available(screens: screens)
+        // A removed target must never silently become the built-in display.
+        if displays.isEmpty || selectedDisplayID.map({ selected in
+            !displays.contains(where: { $0.id == selected })
+        }) == true {
+            cancelSelection(token: token)
+            return
+        }
+        reconcilePanels(screens: screens, token: token)
+        makePointerScreenKey()
+    }
+
+    private func makePointerScreenKey() {
+        // A selector belongs over the currently visible desktop, including
+        // another app's full-screen Space. Taking key input must not activate
+        // DogSC and move the user back to the editor's Space.
         let pointer = NSEvent.mouseLocation
         (panels.first(where: { $0.frame.contains(pointer) }) ?? panels.first)?
             .makeKeyAndOrderFront(nil)
@@ -55,6 +103,10 @@ final class CaptureDisplaySelector {
 
     private func closeSelection(animated: Bool) {
         activeToken = nil
+        if let screenParametersObserver {
+            NotificationCenter.default.removeObserver(screenParametersObserver)
+            self.screenParametersObserver = nil
+        }
         removeKeyMonitor()
         let retiringPanels = panels
         panels = []
@@ -65,7 +117,7 @@ final class CaptureDisplaySelector {
     }
 
     private func select(_ display: CaptureDisplay, token: CaptureSelectionToken) {
-        guard activeToken == token else { return }
+        guard activeToken == token, displays.contains(display) else { return }
         selectedDisplayID = display.id
         updateSelection()
         onSelect?(display, token)
@@ -133,17 +185,18 @@ private final class DisplaySelectionPanel: NSPanel {
         self.display = display
         super.init(
             contentRect: screen.frame,
-            styleMask: [.borderless],
+            styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
         setFrame(screen.frame, display: false)
-        appearance = NSAppearance(named: .aqua)
+        appearance = nil
         isOpaque = false
         backgroundColor = .clear
         hasShadow = false
+        hidesOnDeactivate = false
         level = CaptureWindowLevelPolicy.level(for: .selectionOverlay)
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .canJoinAllApplications, .ignoresCycle]
         sharingType = .readOnly
         hostingView = NSHostingView(
             rootView: makeRoot(selected: false)
@@ -152,7 +205,7 @@ private final class DisplaySelectionPanel: NSPanel {
     }
 
     override var canBecomeKey: Bool { !retiring }
-    override var canBecomeMain: Bool { !retiring }
+    override var canBecomeMain: Bool { false }
 
     func update(selected: Bool) {
         guard !retiring else { return }
@@ -186,9 +239,12 @@ private final class DisplaySelectionPresentation: ObservableObject {
     @Published var retiring = false
 }
 
+/// Choosing a display is framing it: a viewfinder closes in from beyond the
+/// screen's edges, and a small island at the foot names the display and starts
+/// the take. Clicking anywhere on a display also chooses it.
 private struct DisplaySelectionOverlay: View {
     @ObservedObject var presentation: DisplaySelectionPresentation
-    @State private var thumbnail: NSImage?
+    @State private var arrived = false
     let display: CaptureDisplay
     let selected: Bool
     let onSelect: () -> Void
@@ -196,57 +252,73 @@ private struct DisplaySelectionOverlay: View {
     let onCancel: () -> Void
 
     var body: some View {
-        ZStack {
-            Color.black.opacity(selected ? 0.16 : 0.24)
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(
-                    selected ? captureSelectionAccent : Color.black.opacity(0.11),
-                    lineWidth: selected ? 3 : 1
-                )
-                .padding(10)
-
-            VStack(alignment: .leading, spacing: 16) {
-                HStack(spacing: 13) {
-                    ZStack {
-                        if let thumbnail {
-                            Image(nsImage: thumbnail).resizable().aspectRatio(contentMode: .fit)
-                                .padding(4).clipShape(RoundedRectangle(cornerRadius: 8))
-                        } else {
-                            Image(systemName: "display").font(.appUI(size: 26, weight: .regular))
-                        }
-                    }.frame(width: 70, height: 50)
-                        .modifier(RecorderRaisedSurface(radius: 10, selected: selected))
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(display.name).font(.appUI(size: 15, weight: .medium)).lineLimit(1)
-                        Text("\(display.width) × \(display.height) · \(display.refreshRate) Hz")
-                            .font(.appUI(size: 11)).foregroundStyle(RecorderStyle.muted)
-                    }
-                    Spacer(minLength: 0)
-                    if selected { Image(systemName: "checkmark.circle.fill").foregroundStyle(RecorderStyle.mint) }
-                }
-                Divider()
-                HStack(spacing: 10) {
-                    Button(action: onCancel) { Text("取消").frame(width: 74, height: 36) }
-                        .buttonStyle(RecorderButtonStyle()).help("按 Esc 取消")
-                        .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
-                    Spacer(minLength: 0)
-                    Button(action: selected ? onStart : onSelect) {
-                        Text(appLocalized(selected ? "开始录制" : "选择此显示器")).frame(width: 142, height: 36)
-                    }.buttonStyle(RecorderButtonStyle(primary: true))
-                        .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous), color: .white.opacity(0.65))
-                }.font(.appUI(size: 12, weight: .medium)).focusEffectDisabled()
-            }
-            .foregroundStyle(RecorderStyle.ink)
-            .padding(18)
-            .frame(width: 350, height: 178)
-            .captureSelectionCardSurface()
-            .modifier(CaptureSelectionCardMotion(retiring: presentation.retiring))
+        // Entry belongs to this view. Retirement belongs to the panel's
+        // single opacity transition: reversing this spring used to move the
+        // capsule while the red button was still releasing its own press.
+        let shown = arrived
+        ZStack(alignment: .bottom) {
+            Color.black.opacity(shown ? (selected ? 0.08 : 0.26) : 0)
+                .contentShape(Rectangle())
+                .onTapGesture { if !selected { onSelect() } }
+            CaptureViewfinder(inset: shown ? (selected ? 20 : 34) : -80, arm: selected ? 54 : 38)
+                .stroke(.white.opacity(selected ? 1 : 0.62),
+                        style: StrokeStyle(lineWidth: selected ? 3 : 2, lineCap: .round, lineJoin: .round))
+                .shadow(color: .black.opacity(0.4), radius: 8)
+                .allowsHitTesting(false)
+            island
+                .compositingGroup()
+                .opacity(shown ? 1 : 0)
+                .offset(y: shown || RecorderMotion.reduces ? 0 : 36)
+                .blur(radius: shown ? 0 : 8)
+                .scaleEffect(shown || RecorderMotion.reduces ? 1 : 0.94)
+                .padding(.bottom, 132)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea()
-        .preferredColorScheme(.light)
+        .animation(RecorderMotion.morph, value: shown)
+        .animation(RecorderMotion.settle, value: selected)
         .appControlFocusAppearance()
         .allowsHitTesting(!presentation.retiring)
-        .task(id: display.id) { thumbnail = await RecorderSourceThumbnail.image(displayID: display.id) }
+        .onAppear { arrived = true }
+    }
+
+    private var island: some View {
+        HStack(spacing: 6) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(display.name).font(.appUI(size: 14, weight: .semibold)).lineLimit(1)
+                Text(verbatim: "\(display.width) × \(display.height) · \(display.refreshRate) Hz")
+                    .font(.system(size: 11, weight: .medium, design: .rounded)).monospacedDigit()
+                    .foregroundStyle(RecorderStyle.muted)
+            }
+            .padding(.leading, 24).padding(.trailing, 18)
+            Button(action: onCancel) {
+                HStack(spacing: 7) { Text("取消"); RecorderKeyHint(key: "esc") }
+            }
+            .buttonStyle(RecorderPillButtonStyle(kind: .quiet)).help("按 Esc 取消")
+            Button(action: selected ? onStart : onSelect) {
+                // Both labels participate in sizing, including localization.
+                // Selection changes the action in place, never pushes the
+                // outer island wider while the inner pill is releasing.
+                ZStack {
+                    Text(appLocalized("选择此显示器"))
+                        .opacity(selected ? 0 : 1)
+                    HStack(spacing: 8) {
+                        Circle().fill(.white).frame(width: 8, height: 8)
+                        Text(appLocalized("开始录制"))
+                        RecorderKeyHint(key: "⌘R")
+                    }
+                    .opacity(selected ? 1 : 0)
+                }
+                .accessibilityHidden(true)
+            }
+            .buttonStyle(RecorderPillButtonStyle(kind: selected ? .record : .primary))
+            .animation(RecorderMotion.fade, value: selected)
+            .accessibilityLabel(appLocalized(selected ? "开始录制" : "选择此显示器"))
+        }
+        .padding(8)
+        .foregroundStyle(RecorderStyle.ink)
+        .focusEffectDisabled()
+        .fixedSize()
+        .recorderSurface(radius: 30, castsShadow: true)
     }
 }

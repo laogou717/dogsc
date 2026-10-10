@@ -23,8 +23,8 @@ struct CaptureDisplay: Identifiable, Equatable, Sendable {
     }
 
     @MainActor
-    static func available() -> [CaptureDisplay] {
-        NSScreen.screens.compactMap { screen in
+    static func available(screens: [NSScreen] = NSScreen.screens) -> [CaptureDisplay] {
+        screens.compactMap { screen in
             guard let screenNumber = screen.deviceDescription[
                 NSDeviceDescriptionKey("NSScreenNumber")
             ] as? NSNumber else { return nil }
@@ -48,15 +48,25 @@ struct CaptureDisplay: Identifiable, Equatable, Sendable {
 struct CaptureReadiness: Equatable, Sendable {
     let hasScreenRecordingPermission: Bool
     let availableDiskBytes: Int64?
-    let estimatedThirtyMinuteBytes: Int64
+    let estimatedOneMinuteBytes: Int64
     let displayRefreshRate: Int?
     let targetFrameRate: OutputFrameRate
     let captureCodec: CaptureCodec
 
     var hasSufficientDisk: Bool {
         guard let availableDiskBytes else { return true }
-        let reserve = max(Int64(Double(estimatedThirtyMinuteBytes) * 1.2), 2_000_000_000)
-        return availableDiskBytes >= reserve
+        return availableDiskBytes >= estimatedOneMinuteBytes
+    }
+
+    var insufficientDiskMessage: String? {
+        guard let availableDiskBytes, !hasSufficientDisk else { return nil }
+        let available = max(availableDiskBytes, 0)
+        return String(
+            format: appLocalized("开始录制需预留约 1 分钟的空间（%@），当前可用 %@。请再释放约 %@ 后重试。"),
+            ByteCountFormatter.string(fromByteCount: estimatedOneMinuteBytes, countStyle: .file),
+            ByteCountFormatter.string(fromByteCount: available, countStyle: .file),
+            ByteCountFormatter.string(fromByteCount: estimatedOneMinuteBytes - available, countStyle: .file)
+        )
     }
 
     var displayCanShowTargetRate: Bool {
@@ -91,12 +101,12 @@ struct CaptureReadiness: Equatable, Sendable {
             height: captureDimensions.height,
             frameRate: targetFrameRate,
             codec: captureCodec,
-            duration: 30 * 60
+            duration: 60
         )
         return CaptureReadiness(
             hasScreenRecordingPermission: CGPreflightScreenCaptureAccess(),
             availableDiskBytes: availableDiskCapacity(),
-            estimatedThirtyMinuteBytes: estimatedBytes,
+            estimatedOneMinuteBytes: estimatedBytes,
             displayRefreshRate: display.refreshRate,
             targetFrameRate: targetFrameRate,
             captureCodec: captureCodec
@@ -127,9 +137,14 @@ struct CaptureReadiness: Equatable, Sendable {
     }
 
     private static func availableDiskCapacity() -> Int64? {
-        let movies = FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        let attributes = try? FileManager.default.attributesOfFileSystem(forPath: movies.path)
+        // New recordings are written to the working-project volume before
+        // being archived. Movies or the saved-project destination may be on
+        // another disk. Walk to an existing ancestor on first launch.
+        var directory = ProjectStore.workingProjectsFolder
+        while !FileManager.default.fileExists(atPath: directory.path), directory.path != "/" {
+            directory.deleteLastPathComponent()
+        }
+        let attributes = try? FileManager.default.attributesOfFileSystem(forPath: directory.path)
         return (attributes?[.systemFreeSize] as? NSNumber)?.int64Value
     }
 

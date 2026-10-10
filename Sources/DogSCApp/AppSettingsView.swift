@@ -22,27 +22,15 @@ enum AppSettingsSection: String, CaseIterable, Identifiable {
         }
     }
 
-    var iconName: String {
+    var icon: AppLineIcon.Kind {
         switch self {
-        case .general: "gearshape.fill"
-        case .editor: "slider.horizontal.3"
-        case .recording: "record.circle.fill"
-        case .permissions: "lock.shield.fill"
-        case .about: "info.circle.fill"
+        case .general: .settings
+        case .editor: .sliders
+        case .recording: .record
+        case .permissions: .shield
+        case .about: .info
         }
     }
-
-    var subtitle: String? {
-        switch self {
-        case .general: "界面、声音与文件"
-        case .editor: "预览与编辑工作区"
-        case .recording: "开始录制时的默认选项"
-        case .permissions: "管理录制所需的系统权限"
-        case .about: nil
-        }
-    }
-
-
 }
 
 @MainActor
@@ -50,10 +38,11 @@ final class AppSettingsNavigation: ObservableObject {
     @Published var selectedSection = AppSettingsSection.general
 }
 
+/// Settings shares the recorder palette in both application appearances.
 struct AppSettingsView: View {
     @ObservedObject private var updateController = AppUpdateController.shared
     @ObservedObject private var guideAccess = FirstLaunchGuideAccess.shared
-    var contentHeight: CGFloat = 640
+    var contentHeight: CGFloat = 600
     @ObservedObject var navigation = AppSettingsNavigation()
 
     @AppStorage(AppPreferences.exportCompletionSoundEnabledKey)
@@ -63,7 +52,7 @@ struct AppSettingsView: View {
     @AppStorage(AppPreferences.recordingCameraPreviewShapeKey)
     private var recordingCameraPreviewShape = RecordingCameraPreviewShape.circle
     @AppStorage(AppPreferences.appearancePreferenceKey)
-    private var appearancePreference = AppAppearancePreference.system
+    private var appearancePreference = AppAppearancePreference.dark
     @AppStorage(CaptureDevicePreferenceKey.systemAudioEnabled)
     private var recordsSystemAudioByDefault = true
     @AppStorage(CaptureDevicePreferenceKey.microphoneEnabled)
@@ -71,15 +60,13 @@ struct AppSettingsView: View {
     @AppStorage(CaptureDevicePreferenceKey.microphoneName)
     private var preferredMicrophoneName = ""
 
-    @FocusState private var focusedSection: AppSettingsSection?
-    @FocusState private var isGuideFocused: Bool
-    @Namespace private var sectionHighlight
-    @State private var hoveredSection: AppSettingsSection?
+    @Namespace private var tabHighlight
     @State private var didResetWindowState = false
     @State private var isPlayingSoundPreview = false
     @State private var projectsFolder = ProjectStore.savedProjectsFolder
     @State private var exportFolder = AppPreferences.exportDirectoryURL
     @State private var fileLocationError: String?
+
     @State private var hasScreenRecordingPermission = CGPreflightScreenCaptureAccess()
     @State private var hasAccessibilityPermission = AXIsProcessTrusted()
     @State private var cameraPermission = CapturePermissionState(
@@ -89,44 +76,39 @@ struct AppSettingsView: View {
         authorizationStatus: AVCaptureDevice.authorizationStatus(for: .audio)
     )
 
+    private var requiredPermissionsReady: Bool {
+        hasScreenRecordingPermission && hasAccessibilityPermission
+    }
+
     var body: some View {
-        HStack(alignment: .top, spacing: 0) {
-            settingsNavigation
-                .frame(width: settingsNavigationWidth)
-                .frame(maxHeight: .infinity, alignment: .top)
-                .background(EditorTheme.panelRaised.opacity(0.65))
-            Rectangle().fill(EditorTheme.hairline).frame(width: 1)
+        VStack(spacing: 0) {
+            topNavigationBar
+                .padding(.top, contentHeight < 520 ? 44 : 64)
+                .padding(.bottom, 28)
+
             ScrollView(.vertical) {
-                VStack(alignment: .leading, spacing: 22) {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(navigation.selectedSection.label).font(.appUI(size: 22, weight: .semibold))
-                        if let subtitle = navigation.selectedSection.subtitle {
-                            Text(appLocalized(subtitle))
-                                .font(.appUI(size: 12)).foregroundStyle(.secondary)
-                        }
-                    }
-                    .padding(.bottom, 2)
-                    Group {
-                        switch navigation.selectedSection {
-                        case .general: generalSettingsView
-                        case .editor: editorSettingsView
-                        case .recording: recordingSettingsView
-                        case .permissions: permissionSettingsView
-                        case .about: AppAboutSettingsView()
-                        }
-                    }
-                }
-                .id(navigation.selectedSection)
-                .transition(.identity)
-                .padding(24)
+                pageContent(for: navigation.selectedSection)
+                    .frame(maxWidth: 496)
+                    .padding(.horizontal, 32)
+                    .padding(.top, 8)
+                    .padding(.bottom, 40)
+                    .frame(maxWidth: .infinity, alignment: .top)
+                    .id(navigation.selectedSection)
+                    // Recorder handoff: the old page leaves quickly, the new
+                    // one arrives a beat later and settles upward.
+                    .transition(RecorderMotion.reduces ? .opacity : .asymmetric(
+                        insertion: .opacity.combined(with: .offset(y: 10))
+                            .animation((RecorderMotion.settle ?? .easeOut(duration: 0.2)).delay(0.06)),
+                        removal: .opacity.animation(.easeOut(duration: 0.12))))
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .transaction { $0.animation = nil }
+            .scrollIndicators(.automatic)
+            .animation(RecorderMotion.fade, value: navigation.selectedSection)
         }
-        .frame(width: 780, height: contentHeight)
-        .background(EditorTheme.panelSurface)
-        .font(.appUI(.body))
-        .tint(editorAccent)
+        .frame(width: 560)
+        .frame(minHeight: contentHeight, maxHeight: .infinity)
+        .background(SettingsTheme.canvasBackground)
+        .ignoresSafeArea(.container, edges: .top)
+        .tint(SettingsTheme.mint)
         .appControlFocusAppearance()
         .onChange(of: appearancePreference) { _, _ in
             AppPreferences.applyAppearancePreferenceToOpenWindows()
@@ -148,217 +130,154 @@ struct AppSettingsView: View {
             updateController.startIfEligible()
         }
         .onChange(of: navigation.selectedSection) { _, section in
-            if section == .permissions {
-                refreshPermissionStates()
-            }
+            if section == .permissions { refreshPermissionStates() }
         }
         .onReceive(
-            NotificationCenter.default.publisher(
-                for: NSApplication.didBecomeActiveNotification
-            )
+            NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
         ) { _ in
-            if navigation.selectedSection == .permissions {
-                refreshPermissionStates()
-            }
+            refreshPermissionStates()
         }
     }
 
-    private var settingsNavigationWidth: CGFloat {
-        // SwiftUI can evaluate the parent width before its labels. Register
-        // their bundled font before measuring instead of using fallback metrics.
-        _ = Font.appUI(size: 12, weight: .medium)
-        let sectionFont = NSFont(name: "AlibabaPuHuiTi_3_65_Medium", size: 13)
-            ?? NSFont.systemFont(ofSize: 13, weight: .medium)
-        let guideFont = NSFont(name: "AlibabaPuHuiTi_3_65_Medium", size: 12)
-            ?? NSFont.systemFont(ofSize: 12, weight: .medium)
-        let sectionWidth = AppSettingsSection.allCases.map {
-            ($0.label as NSString).size(withAttributes: [.font: sectionFont]).width + 78
-        }.max() ?? 0
-        let guideWidth = (appLocalized("首次使用引导") as NSString)
-            .size(withAttributes: [.font: guideFont]).width + 70
-        // Preserve the original Chinese width; longer translations get the
-        // space their font actually needs, including a small rounding margin.
-        return ceil(max(156, max(sectionWidth, guideWidth) + 4))
-    }
+    // MARK: - Top Navigation Bar (Floating Island Tabs)
 
-    private var settingsNavigation: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text("设置").font(.appUI(size: 13, weight: .semibold))
-                .foregroundStyle(.secondary).padding(.horizontal, 12).padding(.bottom, 14)
+    private var topNavigationBar: some View {
+        HStack(spacing: 3) {
             ForEach(AppSettingsSection.allCases) { section in
-                Button {
-                    focusedSection = section
-                    selectSection(section)
+                let isSelected = navigation.selectedSection == section
+                AppChoiceButton(isSelected: isSelected) {
+                    switchTab(to: section)
                 } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: section.iconName.replacingOccurrences(of: ".fill", with: ""))
-                            .font(.system(size: 16)).frame(width: 20)
-                        Text(section.label).font(.appUI(size: 13, weight: .medium))
+                    HStack(spacing: 6) {
+                        AppLineIcon(kind: section.icon, size: 15)
+                            .modifier(AppChoiceIconFeedback())
+
+                        Text(section.label)
+                            .font(.appUI(size: 12, weight: isSelected ? .semibold : .medium))
                             .lineLimit(1)
-                            .fixedSize(horizontal: true, vertical: false)
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.horizontal, 12).frame(height: 40)
-                    .background {
-                        if navigation.selectedSection == section {
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(EditorTheme.chrome(0.08))
-                                .matchedGeometryEffect(id: "settings.selection", in: sectionHighlight)
-                        } else if hoveredSection == section {
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(EditorTheme.chrome(0.035))
+                            .fixedSize()
+
+                        if section == .permissions && !requiredPermissionsReady {
+                            Circle()
+                                .fill(SettingsTheme.recording)
+                                .frame(width: 5, height: 5)
                         }
                     }
-                    .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                }
-                .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 10, showsHover: false))
-                .focused($focusedSection, equals: section)
-                .focusEffectDisabled()
-                .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 10, style: .continuous), isFocused: focusedSection == section)
-                .onHover { hovering in
-                    withAnimation(SpringMotion.interactive) {
-                        hoveredSection = hovering ? section : nil
+                    .modifier(AppChoiceContentFeedback())
+                    .foregroundStyle(isSelected ? RecorderStyle.ink : SettingsTheme.textSecondary)
+                    .padding(.horizontal, 13)
+                    .frame(height: 36)
+                    .background {
+                        if isSelected {
+                            Capsule(style: .continuous)
+                                .fill(RecorderStyle.selection)
+                                .matchedGeometryEffect(id: "nav.tab.thumb", in: tabHighlight)
+                        }
                     }
+                    .contentShape(Capsule(style: .continuous))
                 }
-                .accessibilityAddTraits(navigation.selectedSection == section ? .isSelected : [])
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
                 .accessibilityIdentifier("settings.section.\(section.rawValue)")
             }
-            Spacer(minLength: 20)
-            Button {
-                WindowCoordinator.showFirstLaunchGuide()
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "sparkles").font(.system(size: 14)).frame(width: 18)
-                    Text("首次使用引导").font(.appUI(size: 12, weight: .medium))
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, 10).frame(height: 36)
-                .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .strokeBorder(isGuideFocused ? EditorTheme.chrome(0.35) : .clear, lineWidth: 1)
-                }
-            }
-            .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 10))
-            .focused($isGuideFocused).focusEffectDisabled()
-            .disabled(!guideAccess.isAvailable)
-            .help("重看启动动画、授权与当前界面教学")
-            .accessibilityIdentifier("settings.first-launch-guide")
-            Text("DogSC").font(.appUI(size: 11)).foregroundStyle(.tertiary).padding(12)
         }
-        .padding(.horizontal, 12).padding(.top, 24).padding(.bottom, 8)
+        .padding(6)
+        // Same island as the recording bar: 48 pt capsule, 6 pt inset so the
+        // selection pill stays concentric with the outer edge.
+        .recorderSurface(radius: 24, castsShadow: true)
     }
 
-    private func selectSection(_ section: AppSettingsSection) {
+    private func switchTab(to section: AppSettingsSection) {
         guard navigation.selectedSection != section else { return }
-        withAnimation(SpringMotion.fluid) { navigation.selectedSection = section }
+        withAnimation(RecorderMotion.settle) {
+            navigation.selectedSection = section
+        }
+    }
+
+    // MARK: - Pages
+
+    @ViewBuilder
+    private func pageContent(for section: AppSettingsSection) -> some View {
+        VStack(spacing: 24) {
+            switch section {
+            case .general:
+                generalPageView
+            case .editor:
+                editorPageView
+            case .recording:
+                recordingPageView
+            case .permissions:
+                permissionsPageView
+            case .about:
+                AppAboutSettingsView()
+            }
+        }
     }
 
     // MARK: - 通用设置
 
     @ViewBuilder
-    private var generalSettingsView: some View {
-        appearanceSettingsCard
-
-        // 提示与声音
-        settingsCard(title: "提示与声音", icon: "bell.badge.fill") {
-            VStack(spacing: 12) {
-                HStack(spacing: 12) {
-                    settingIconBadge("speaker.wave.2.fill", color: .orange)
-
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("导出完成后播放提示音")
-                            .font(.appUI(size: 13, weight: .medium))
-                            .foregroundStyle(Color.primary)
-                        Text("仅在成功导出后播放")
-                            .font(.appUI(.caption))
-                            .foregroundStyle(EditorTheme.chrome(0.50))
-                    }
-                    .accessibilityHidden(true)
-
-                    Spacer()
-
+    private var generalPageView: some View {
+        SettingsCard("声音") {
+            SettingsRow(
+                icon: .bell,
+                title: "导出完成提示音"
+            ) {
+                HStack(spacing: 8) {
                     Button {
                         playSampleSound()
                     } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: isPlayingSoundPreview ? "waveform" : "play.fill")
-                                .font(.appUI(size: 10))
+                        HStack(spacing: 5) {
+                            AppLineIcon(kind: .speaker, size: 15)
+                                .foregroundStyle(isPlayingSoundPreview ? RecorderStyle.positiveInk : SettingsTheme.textPrimary)
+                                .modifier(SettingsActivationFeedback(trigger: isPlayingSoundPreview ? 1 : 0))
                             Text("试听")
-                                .font(.appUI(size: 12))
                         }
                     }
-                    .buttonStyle(.editorQuiet)
-                    .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
+                    .buttonStyle(SettingsPillButtonStyle())
                     .accessibilityLabel("试听导出完成提示音")
 
-                    EditorToggle(isOn: $exportCompletionSoundEnabled)
-                        .accessibilityLabel("导出完成后播放提示音")
-                        .accessibilityValue(appLocalized(exportCompletionSoundEnabled ? "开关状态 · 开启" : "开关状态 · 关闭"))
-                        .accessibilityHint("导出取消或失败时不会播放提示音")
+                    SettingsToggle(
+                        isOn: $exportCompletionSoundEnabled,
+                        accessibilityLabel: "导出完成提示音"
+                    )
                 }
             }
         }
 
-        // 文件位置
-        settingsCard(title: "存储位置", icon: "folder.fill") {
-            VStack(spacing: 14) {
-                fileLocationCardRow(
-                    title: "项目位置",
-                    subtitle: "录制成片与草稿项目包的默认保存路径",
-                    icon: "doc.badge.arrow.up.fill",
-                    color: .orange,
-                    url: projectsFolder
-                ) {
-                    chooseProjectsFolder()
-                }
-
-                Divider().overlay(EditorTheme.chrome(0.06))
-
-                fileLocationCardRow(
-                    title: "导出位置",
-                    subtitle: "视频导出面板记住的默认目标文件夹",
-                    icon: "arrow.down.doc.fill",
-                    color: .green,
-                    url: exportFolder
-                ) {
-                    chooseExportFolder()
-                }
-
-                if let error = fileLocationError {
-                    Text(error)
-                        .font(.appUI(.caption))
-                        .foregroundStyle(Color.red)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
+        SettingsCard("存储与引导", footer: fileLocationError, footerColor: SettingsTheme.recording) {
+            fileLocationRow(
+                title: "项目目录",
+                icon: .box,
+                url: projectsFolder
+            ) {
+                chooseProjectsFolder()
             }
-        }
 
-    }
+            SettingsDivider()
 
-    private var appearanceSettingsCard: some View {
-        settingsCard(title: "外观", icon: "circle.lefthalf.filled") {
-            HStack(spacing: 10) {
-                ForEach(AppAppearancePreference.allCases) { preference in
-                    Button { appearancePreference = preference } label: {
-                        VStack(spacing: 8) {
-                            SettingsAppearanceMiniature(preference: preference)
-                                .frame(height: 58).padding(.horizontal, 8).padding(.top, 8)
-                            Text(preference.label).font(.appUI(size: 12))
-                        }
-                        .padding(8).frame(maxWidth: .infinity)
-                        .background(EditorTheme.groupSurface, in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous)
-                            .strokeBorder(appearancePreference == preference ? EditorTheme.selectionTint.opacity(0.5) : EditorTheme.hairline,
-                                          lineWidth: appearancePreference == preference ? 1.25 : 0.75))
-                    }
-                    .buttonStyle(.editorThumbnail)
-                    .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous))
-                    .accessibilityLabel(preference.label)
-                    .accessibilityAddTraits(appearancePreference == preference ? .isSelected : [])
+            fileLocationRow(
+                title: "导出目录",
+                icon: .download,
+                url: exportFolder
+            ) {
+                chooseExportFolder()
+            }
+
+            SettingsDivider()
+
+            SettingsRow(
+                icon: .sparkle,
+                title: "首次使用引导"
+            ) {
+                Button {
+                    WindowCoordinator.showFirstLaunchGuide()
+                } label: {
+                    Text("重新开始")
                 }
+                .buttonStyle(SettingsPillButtonStyle())
+                .disabled(!guideAccess.isAvailable)
+                .help("重看启动动画与功能教学")
+                .accessibilityIdentifier("settings.first-launch-guide")
             }
         }
     }
@@ -366,444 +285,276 @@ struct AppSettingsView: View {
     // MARK: - 编辑器设置
 
     @ViewBuilder
-    private var editorSettingsView: some View {
-        settingsCard(title: "画布与预览", icon: "display") {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(spacing: 12) {
-                    settingIconBadge("speedometer", color: EditorTheme.platinumAccent)
-
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("预览画质")
-                            .font(.appUI(size: 13, weight: .medium))
-                        Text("清晰预览更流畅，完整分辨率保留细节；导出画质不受影响。")
-                            .font(.appUI(.caption))
-                            .foregroundStyle(EditorTheme.chrome(0.50))
-                    }
-
-                    Spacer()
-
-                    previewResolutionPicker
-                }
+    private var editorPageView: some View {
+        SettingsCard("界面外观") {
+            SettingsRow(
+                icon: .appearance,
+                title: "外观偏好",
+                stacksControl: true
+            ) {
+                SettingsAppearancePicker(selection: $appearancePreference)
             }
         }
 
-        settingsCard(title: "窗口与界面状态", icon: "macwindow") {
-            HStack(spacing: 12) {
-                settingIconBadge("arrow.counterclockwise.circle.fill", color: .orange)
+        SettingsCard("画布与窗口") {
+            SettingsRow(
+                icon: .display,
+                title: "预览画质",
+                stacksControl: true
+            ) {
+                SettingsSegmented(
+                    options: EditorPreviewResolutionMode.allCases,
+                    selection: $previewResolutionMode,
+                    label: { $0.label },
+                    help: { $0.detail }
+                )
+            }
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("重置编辑窗口布局")
-                        .font(.appUI(size: 13, weight: .medium))
-                    Text(appLocalized(didResetWindowState
-                        ? "已成功重置，将在下次打开编辑器窗口时应用默认大小与居中位置。"
-                        : "清除系统记住的窗口位置、尺寸和全屏记忆状态。"))
-                        .font(.appUI(.caption))
-                        .foregroundStyle(didResetWindowState ? Color.green : EditorTheme.chrome(0.50))
-                }
+            SettingsDivider()
 
-                Spacer()
-
+            SettingsRow(
+                icon: .window,
+                title: "编辑窗口布局",
+                detail: didResetWindowState ? "已恢复默认大小与位置" : nil,
+                detailColor: RecorderStyle.positiveInk
+            ) {
                 Button {
                     AppPreferences.resetRememberedEditorWindowState()
-                    withAnimation(SpringMotion.interactive) {
+                    withAnimation(SettingsMotion.springMorph) {
                         didResetWindowState = true
                     }
                 } label: {
-                    Text(appLocalized(didResetWindowState ? "已重置" : "重置布局"))
-                        .font(.appUI(size: 12, weight: .medium))
-                        .foregroundStyle(didResetWindowState ? Color.green : Color.primary)
+                    HStack(spacing: 5) {
+                        if didResetWindowState {
+                            AppLineIcon(kind: .check, size: 14)
+                                .transition(.scale(scale: 0.3).combined(with: .opacity))
+                        }
+                        Text(appLocalized(didResetWindowState ? "已重置" : "重置布局"))
+                    }
+                    .foregroundStyle(didResetWindowState ? RecorderStyle.positiveInk : SettingsTheme.textPrimary)
                 }
-                .buttonStyle(.editorQuiet)
-                .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
+                .buttonStyle(SettingsPillButtonStyle())
                 .accessibilityLabel(appLocalized(didResetWindowState ? "编辑窗口布局已重置" : "重置编辑窗口布局"))
             }
         }
     }
 
-    /// 预览画质切换器
-    private var previewResolutionPicker: some View {
-        HStack(spacing: 3) {
-            ForEach(EditorPreviewResolutionMode.allCases) { mode in
-                let isSelected = previewResolutionMode == mode
-                Button {
-                    withAnimation(SpringMotion.interactive) {
-                        previewResolutionMode = mode
-                    }
-                } label: {
-                    Text(mode.label)
-                        .font(.appUI(size: 12, weight: isSelected ? .semibold : .regular))
-                        .foregroundStyle(isSelected ? Color.primary : EditorTheme.chrome(0.65))
-                        .padding(.horizontal, 12)
-                        .frame(height: EditorInterfaceHeight.compact)
-                        .background(
-                            RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous)
-                                .fill(isSelected ? EditorTheme.cardElevated : Color.clear)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous)
-                                        .strokeBorder(isSelected ? EditorTheme.controlBorder : Color.clear, lineWidth: 0.75)
-                                )
-                        )
-                }
-                .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: EditorInterfaceRadius.compact))
-                .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous))
-                .accessibilityAddTraits(isSelected ? .isSelected : [])
-                .help(mode.detail)
-            }
-        }
-        .padding(4)
-        .background(
-            RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous)
-                .fill(EditorTheme.groupSurface)
-        )
-    }
-
     // MARK: - 录制设置
 
     @ViewBuilder
-    private var recordingSettingsView: some View {
-        settingsCard(title: "默认音频输入", icon: "waveform.circle.fill") {
-            VStack(spacing: 14) {
-                HStack(spacing: 12) {
-                    settingIconBadge("speaker.wave.3.fill", color: .orange)
+    private var recordingPageView: some View {
+        SettingsCard("默认音频输入") {
+            SettingsRow(
+                icon: .speaker,
+                title: "录制系统声音"
+            ) {
+                SettingsToggle(
+                    isOn: $recordsSystemAudioByDefault,
+                    accessibilityLabel: "默认录制系统声音"
+                )
+            }
 
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("录制系统声音")
-                            .font(.appUI(size: 13, weight: .medium))
-                        Text("默认采集 macOS 系统中各应用程序发出的声音与媒体音频。")
-                            .font(.appUI(.caption))
-                            .foregroundStyle(EditorTheme.chrome(0.50))
-                    }
-                    .accessibilityHidden(true)
+            SettingsDivider()
 
-                    Spacer()
-
-                    EditorToggle(isOn: $recordsSystemAudioByDefault)
-                        .accessibilityLabel("默认录制系统声音")
-                        .accessibilityValue(appLocalized(recordsSystemAudioByDefault ? "开关状态 · 开启" : "开关状态 · 关闭"))
-                        .accessibilityHint("控制新录制是否默认采集系统声音")
-                }
-
-                Divider().overlay(EditorTheme.chrome(0.06))
-
-                HStack(spacing: 12) {
-                    settingIconBadge("mic.fill", color: EditorTheme.amberAccent)
-
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("录制麦克风声音")
-                            .font(.appUI(size: 13, weight: .medium))
-                        Text(microphonePreferenceDescription)
-                            .font(.appUI(.caption))
-                            .foregroundStyle(EditorTheme.chrome(0.50))
-                    }
-                    .accessibilityHidden(true)
-
-                    Spacer()
-
-                    EditorToggle(isOn: $recordsMicrophoneByDefault)
-                        .accessibilityLabel("默认录制麦克风声音")
-                        .accessibilityValue(appLocalized(recordsMicrophoneByDefault ? "开关状态 · 开启" : "开关状态 · 关闭"))
-                        .accessibilityHint(microphonePreferenceDescription)
-                }
+            SettingsRow(
+                icon: .microphone,
+                title: "录制麦克风声音",
+                detail: recordsMicrophoneByDefault && !preferredMicrophoneName.isEmpty ? preferredMicrophoneName : nil,
+                singleLineDetail: true
+            ) {
+                SettingsToggle(
+                    isOn: $recordsMicrophoneByDefault,
+                    accessibilityLabel: "默认录制麦克风声音"
+                )
             }
         }
 
-        settingsCard(title: "悬浮摄像头预览", icon: "camera.fill") {
-            VStack(alignment: .leading, spacing: 14) {
-                cameraShapeSelector
-
-                Text("只影响录制时的悬浮预览，不改变摄像头源文件或编辑器布局。")
-                    .font(.appUI(.caption))
-                    .foregroundStyle(EditorTheme.chrome(0.45))
-            }
+        SettingsCard("悬浮人像预览") {
+            SettingsCameraShapePicker(selection: $recordingCameraPreviewShape)
+                .padding(12)
         }
     }
 
     // MARK: - 权限设置
 
+    private enum PermissionDisplay {
+        case granted
+        case askLater(String)
+        case missing(String)
+    }
+
     @ViewBuilder
-    private var permissionSettingsView: some View {
-        settingsCard(title: "macOS 隐私与系统权限", icon: "lock.shield.fill") {
-            VStack(spacing: 14) {
-                permissionRow(
-                    title: "屏幕录制权限",
-                    description: "用于捕获屏幕画面、指定窗口与系统音频流",
-                    icon: "display.2",
-                    color: .orange,
-                    status: hasScreenRecordingPermission ? "已授权" : "未授权",
-                    statusColor: hasScreenRecordingPermission ? .green : .red
-                )
+    private var permissionsPageView: some View {
+        if !requiredPermissionsReady {
+            SettingsCard {
+                HStack(spacing: 12) {
+                    AppLineIcon(kind: .warning, size: 18)
+                        .foregroundStyle(SettingsTheme.amber)
 
-                Divider().overlay(EditorTheme.chrome(0.06))
+                    Text(appLocalized("屏幕录制或辅助功能尚未就绪，录制可能缺少画面或光标。"))
+                        .font(.appUI(size: 12))
+                        .foregroundStyle(SettingsTheme.textPrimary)
 
-                permissionRow(
-                    title: "辅助功能权限",
-                    description: "用于记录鼠标移动与点击，生成可编辑的光标轨道",
-                    icon: "cursorarrow.motionlines",
-                    color: EditorTheme.platinumAccent,
-                    status: hasAccessibilityPermission ? "已授权" : "未授权",
-                    statusColor: hasAccessibilityPermission ? .green : .red
-                )
-
-                Divider().overlay(EditorTheme.chrome(0.06))
-
-                permissionRow(
-                    title: "摄像头权限",
-                    description: "用于画中画人像出镜与外接相机输入",
-                    icon: "camera.fill",
-                    color: .green,
-                    status: cameraPermission.label,
-                    statusColor: permissionStatusColor(cameraPermission)
-                )
-
-                Divider().overlay(EditorTheme.chrome(0.06))
-
-                permissionRow(
-                    title: "麦克风权限",
-                    description: "用于人声解说录音与音频设备采集",
-                    icon: "mic.fill",
-                    color: EditorTheme.amberAccent,
-                    status: microphonePermission.label,
-                    statusColor: permissionStatusColor(microphonePermission)
-                )
-
-                Divider().overlay(EditorTheme.chrome(0.06))
-
-                HStack {
-                    Text("如遇录屏黑屏、鼠标无法跟随或无声音，请检查上方未授权项。")
-                        .font(.appUI(.caption))
-                        .foregroundStyle(EditorTheme.chrome(0.50))
-
-                    Spacer()
-
-                    Button {
-                        openPrivacySettings()
-                    } label: {
-                        HStack(spacing: 6) {
-                            Text(appLocalized(privacySettingsButtonTitle))
-                                .font(.appUI(size: 12, weight: .medium))
-                                .lineLimit(1)
-                                .fixedSize(horizontal: true, vertical: false)
-                            Image(systemName: "arrow.up.forward.square.fill")
-                                .font(.appUI(size: 11))
-                        }
-                    }
-                    .buttonStyle(.editorQuiet)
-                    .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
+                    Spacer(minLength: 0)
                 }
-                .padding(.top, 2)
+                .padding(12)
             }
         }
-    }
 
-    // MARK: - 辅助组件
+        SettingsCard("系统隐私权限") {
+            permissionRow(
+                title: "屏幕录制",
+                icon: .display,
+                display: hasScreenRecordingPermission ? .granted : .missing(appLocalized("未授权")),
+                pane: "Privacy_ScreenCapture"
+            )
 
-    /// 摄像头形状选择卡片
-    private var cameraShapeSelector: some View {
-        HStack(spacing: 12) {
-            ForEach(RecordingCameraPreviewShape.allCases) { shape in
-                let isSelected = recordingCameraPreviewShape == shape
-                Button {
-                    withAnimation(SpringMotion.interactive) {
-                        recordingCameraPreviewShape = shape
-                    }
-                } label: {
-                    VStack(spacing: 8) {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(EditorTheme.chrome(0.06))
-                                .frame(width: 44, height: 32)
+            SettingsDivider()
 
-                            switch shape {
-                            case .circle:
-                                Circle()
-                                    .fill(isSelected ? EditorTheme.platinumAccent : EditorTheme.chrome(0.6))
-                                    .frame(width: 20, height: 20)
-                            case .roundedSquare:
-                                RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                    .fill(isSelected ? EditorTheme.platinumAccent : EditorTheme.chrome(0.6))
-                                    .frame(width: 20, height: 20)
-                            case .sourceAspect:
-                                RoundedRectangle(cornerRadius: 3, style: .continuous)
-                                    .fill(isSelected ? EditorTheme.platinumAccent : EditorTheme.chrome(0.6))
-                                    .frame(width: 26, height: 16)
-                            }
-                        }
+            permissionRow(
+                title: "辅助功能",
+                icon: .cursor,
+                display: hasAccessibilityPermission ? .granted : .missing(appLocalized("未授权")),
+                pane: "Privacy_Accessibility"
+            )
 
-                        Text(shape.label)
-                            .font(.appUI(size: 12, weight: isSelected ? .medium : .regular))
-                            .foregroundStyle(isSelected ? Color.primary : EditorTheme.chrome(0.70))
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-                    .background(
-                        RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous)
-                            .fill(isSelected ? EditorTheme.selectionWash : EditorTheme.groupSurface)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous)
-                                    .strokeBorder(
-                                        isSelected ? EditorTheme.platinumAccent.opacity(0.25) : EditorTheme.hairline,
-                                        lineWidth: isSelected ? 1 : 0.75
-                                    )
-                            )
-                    )
-                }
-                .buttonStyle(.editorThumbnail)
-                .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous))
-                .accessibilityAddTraits(isSelected ? .isSelected : [])
-            }
+            SettingsDivider()
+
+            permissionRow(
+                title: "摄像头",
+                icon: .camera,
+                display: display(for: cameraPermission),
+                pane: "Privacy_Camera"
+            )
+
+            SettingsDivider()
+
+            permissionRow(
+                title: "麦克风",
+                icon: .microphone,
+                display: display(for: microphonePermission),
+                pane: "Privacy_Microphone"
+            )
         }
     }
 
-    private func settingsCard<Content: View>(title: String, icon: String,
-        @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: EditorInterfaceSpacing.headingGap) {
-            Text(appLocalized(title))
-                .font(EditorTypography.sectionTitle)
-                .foregroundStyle(EditorTheme.primaryText)
-                .fixedSize(horizontal: false, vertical: true)
-                .accessibilityAddTraits(.isHeader)
-            content()
+    private func display(for state: CapturePermissionState) -> PermissionDisplay {
+        switch state {
+        case .authorized: return .granted
+        case .notDetermined: return .askLater(state.label)
+        case .denied, .restricted: return .missing(state.label)
         }
-        .padding(16).frame(maxWidth: .infinity, alignment: .leading)
-        .background(EditorTheme.cardElevated.opacity(0.65), in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.card, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: EditorInterfaceRadius.card, style: .continuous).strokeBorder(EditorTheme.hairline, lineWidth: 0.75))
     }
 
-    private func settingIconBadge(_ icon: String, color: Color) -> some View {
-        Image(systemName: icon.replacingOccurrences(of: ".fill", with: ""))
-            .font(.system(size: 17, weight: .regular))
-            .foregroundStyle(EditorTheme.chrome(0.60))
-            .frame(width: 24, height: 28).accessibilityHidden(true)
-    }
-
-    /// 存储位置行
-    private func fileLocationCardRow(
+    private func permissionRow(
         title: String,
-        subtitle: String,
-        icon: String,
-        color: Color,
+        icon: AppLineIcon.Kind,
+        display: PermissionDisplay,
+        pane: String
+    ) -> some View {
+        SettingsRow(icon: icon, title: title) {
+            Group {
+                switch display {
+                case .granted:
+                    HStack(spacing: 5) {
+                        AppLineIcon(kind: .checkCircle, size: 15)
+                            .foregroundStyle(RecorderStyle.positiveInk)
+                        Text(appLocalized("已授权"))
+                            .font(.appUI(size: 12, weight: .medium))
+                            .foregroundStyle(SettingsTheme.textSecondary)
+                    }
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 4)
+                    .background(SettingsTheme.mint.opacity(0.12), in: Capsule(style: .continuous))
+
+                case let .askLater(label):
+                    HStack(spacing: 5) {
+                        Circle().fill(RecorderStyle.chrome.opacity(0.3)).frame(width: 5, height: 5)
+                        Text(label)
+                            .font(.appUI(size: 12, weight: .medium))
+                            .foregroundStyle(SettingsTheme.textSecondary)
+                    }
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 4)
+                    .background(RecorderStyle.chrome.opacity(0.06), in: Capsule(style: .continuous))
+
+                case let .missing(label):
+                    HStack(spacing: 8) {
+                        HStack(spacing: 5) {
+                            Circle().fill(SettingsTheme.recording).frame(width: 5, height: 5)
+                            Text(label)
+                                .font(.appUI(size: 12, weight: .medium))
+                                .foregroundStyle(SettingsTheme.recording)
+                        }
+
+                        Button {
+                            openPrivacySettings(pane)
+                        } label: {
+                            Text(appLocalized("前往授权"))
+                        }
+                        .buttonStyle(SettingsPillButtonStyle())
+                        .accessibilityLabel(String(format: appLocalized("前往授权：%@"), appLocalized(title)))
+                    }
+                }
+            }
+        }
+        .accessibilityLabel(appLocalized(title))
+    }
+
+    // MARK: - 存储位置辅助行
+
+    private func fileLocationRow(
+        title: String,
+        icon: AppLineIcon.Kind,
         url: URL,
         action: @escaping () -> Void
     ) -> some View {
-        HStack(spacing: 12) {
-            settingIconBadge(icon, color: color)
+        SettingsRow(
+            icon: icon,
+            title: title,
+            detail: url.path(percentEncoded: false).replacingOccurrences(of: NSHomeDirectory(), with: "~"),
+            singleLineDetail: true
+        ) {
+            HStack(spacing: 8) {
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                } label: {
+                    AppLineIcon(kind: .folder, size: 15)
+                        .foregroundStyle(SettingsTheme.textSecondary)
+                        .frame(width: 28, height: 28)
+                        .background(RecorderStyle.chrome.opacity(0.06), in: Circle())
+                        .contentShape(Circle())
+                }
+                .buttonStyle(SettingsPressStyle(scale: 0.92))
+                .help("在访达中显示")
+                .accessibilityLabel(String(format: appLocalized("在访达中显示%@"), appLocalized(title)))
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text(appLocalized(title))
-                    .font(EditorTypography.controlLabel)
-                    .foregroundStyle(EditorTheme.primaryText)
-
-                Text(url.path(percentEncoded: false).replacingOccurrences(of: NSHomeDirectory(), with: "~"))
-                    .font(EditorTypography.helper)
-                    .foregroundStyle(EditorTheme.secondaryText)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help(url.path(percentEncoded: false))
+                Button(action: action) {
+                    Text(appLocalized("更改…"))
+                }
+                .buttonStyle(SettingsPillButtonStyle())
+                .accessibilityLabel(String(format: appLocalized("更改%@"), appLocalized(title)))
+                .accessibilityValue(url.path(percentEncoded: false))
             }
-
-            Spacer(minLength: 12)
-
-            Button(action: action) {
-                Text("更改…")
-                    .font(.appUI(size: 12, weight: .medium))
-            }
-            .buttonStyle(.editorQuiet)
-            .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
-            .accessibilityLabel(String(format: appLocalized("更改%@"), appLocalized(title)))
-            .accessibilityValue(url.path(percentEncoded: false))
-            .accessibilityHint(appLocalized(subtitle))
         }
-    }
-
-    /// 权限说明行
-    private func permissionRow(
-        title: String,
-        description: String,
-        icon: String,
-        color: Color,
-        status: String,
-        statusColor: Color
-    ) -> some View {
-        HStack(spacing: 12) {
-            settingIconBadge(icon, color: color)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(appLocalized(title))
-                    .font(EditorTypography.controlLabel)
-                    .foregroundStyle(EditorTheme.primaryText)
-                Text(appLocalized(description))
-                    .font(EditorTypography.helper)
-                    .foregroundStyle(EditorTheme.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Spacer()
-
-            Text(appLocalized(status))
-                .font(.appUI(size: 11, weight: .semibold))
-                .foregroundStyle(statusColor)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 4)
-                .background(
-                    statusColor.opacity(0.12),
-                    in: Capsule()
-                )
-                .accessibilityLabel(String(format: appLocalized("权限状态：%@"), appLocalized(status)))
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(appLocalized(title))
-        .accessibilityValue(appLocalized(status))
-        .accessibilityHint(appLocalized(description))
+        .help(url.path(percentEncoded: false))
     }
 
     // MARK: - 操作方法
 
     private func playSampleSound() {
-        isPlayingSoundPreview = true
+        withAnimation(SettingsMotion.springSnappy) { isPlayingSoundPreview = true }
         NSSound(named: NSSound.Name("Glass"))?.play()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-            isPlayingSoundPreview = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            withAnimation(SettingsMotion.springSnappy) { isPlayingSoundPreview = false }
         }
     }
 
-    private var microphonePreferenceDescription: String {
-        if recordsMicrophoneByDefault {
-            return preferredMicrophoneName.isEmpty
-                ? appLocalized("尚未选择麦克风；进入录制时会自动使用首个可用设备。")
-                : String(format: appLocalized("下次录制将使用：%@。"), preferredMicrophoneName)
-        }
-        return preferredMicrophoneName.isEmpty
-            ? appLocalized("默认不开启麦克风录制。")
-            : String(format: appLocalized("已关闭；重新开启时将优先使用 %@。"), preferredMicrophoneName)
-    }
-
-    private func openPrivacySettings() {
+    private func openPrivacySettings(_ section: String) {
         guard let url = URL(
-            string: "x-apple.systempreferences:com.apple.preference.security?\(privacySettingsSection)"
+            string: "x-apple.systempreferences:com.apple.preference.security?\(section)"
         ) else { return }
         NSWorkspace.shared.open(url)
-    }
-
-    private var privacySettingsSection: String {
-        if !hasScreenRecordingPermission { return "Privacy_ScreenCapture" }
-        if !hasAccessibilityPermission { return "Privacy_Accessibility" }
-        if cameraPermission == .denied || cameraPermission == .restricted {
-            return "Privacy_Camera"
-        }
-        if microphonePermission == .denied || microphonePermission == .restricted {
-            return "Privacy_Microphone"
-        }
-        return "Privacy_ScreenCapture"
-    }
-
-    private var privacySettingsButtonTitle: String {
-        switch privacySettingsSection {
-        case "Privacy_Accessibility": "打开辅助功能设置"
-        case "Privacy_Camera": "打开摄像头设置"
-        case "Privacy_Microphone": "打开麦克风设置"
-        case "Privacy_ScreenCapture": "打开屏幕录制设置"
-        default: "打开系统隐私设置"
-        }
     }
 
     private func refreshPermissionStates() {
@@ -815,15 +566,6 @@ struct AppSettingsView: View {
         microphonePermission = CapturePermissionState(
             authorizationStatus: AVCaptureDevice.authorizationStatus(for: .audio)
         )
-    }
-
-    private func permissionStatusColor(_ state: CapturePermissionState) -> Color {
-        switch state {
-        case .authorized: .green
-        case .notDetermined: .yellow
-        case .restricted: .orange
-        case .denied: .red
-        }
     }
 
     private func chooseProjectsFolder() {

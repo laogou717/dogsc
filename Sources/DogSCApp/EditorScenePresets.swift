@@ -56,13 +56,13 @@ extension EditorView {
             Button { beginSavingScenePreset() } label: {
                 scenePresetLabel(title: appLocalized("保存场景"), compact: compact, showsMenu: false)
             }
-            .buttonStyle(.editorToolbarPress)
+            .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 16))
         } else {
             Button { showsScenePresetPopover.toggle() } label: {
                 scenePresetLabel(title: activeScenePreset?.name ?? appLocalized("场景预设"),
                                  compact: compact, showsMenu: true)
             }
-            .buttonStyle(.editorToolbarPress)
+            .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 16))
             .focusEffectDisabled()
             .editorPopoverKeyboardEntry { showsScenePresetPopover = true }
             .editorPopover(isPresented: $showsScenePresetPopover, arrowEdge: .bottom) {
@@ -158,7 +158,7 @@ extension EditorView {
     private func scenePresetLabel(title: String, compact: Bool, showsMenu: Bool) -> some View {
         EditorToolbarControlSurface(accessibilityTitle: title) {
             HStack(spacing: 6) {
-                Image(systemName: "rectangle.3.group")
+                AppLineIcon(kind: .layers, size: 15)
                 Text(title.count > 14 ? String(title.prefix(13)) + "…" : title)
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
@@ -169,8 +169,7 @@ extension EditorView {
                         .accessibilityLabel("已修改")
                 }
                 if showsMenu {
-                    Image(systemName: "chevron.down")
-                        .font(.appUI(size: 9, weight: .semibold))
+                    AppLineIcon(kind: .chevronDown, size: 10)
                         .foregroundStyle(.secondary)
                 }
             }

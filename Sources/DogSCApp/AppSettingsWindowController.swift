@@ -7,8 +7,8 @@ import SwiftUI
 /// disabled while the editor's AppKit window is key.
 @MainActor
 final class AppSettingsWindowController {
-    private static let contentWidth: CGFloat = 780
-    private static let initialContentHeight: CGFloat = 640
+    private static let contentWidth: CGFloat = 560
+    private static let initialContentHeight: CGFloat = 600
 
     static let windowIdentifier = NSUserInterfaceItemIdentifier(
         "cn.laogou.dogsc.settings-window"
@@ -18,6 +18,46 @@ final class AppSettingsWindowController {
 
     private var controller: NSWindowController?
     private let navigation = AppSettingsNavigation()
+    private var activationObserver: NSObjectProtocol?
+    private var closeObserver: NSObjectProtocol?
+    private var clearsInitialFocus = false
+    private var presentationRequest = 0
+    private var pendingPresentation: Int?
+
+    private init() {
+        closeObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification, object: nil, queue: .main
+        ) { [weak self] notification in
+            let closedWindowID = (notification.object as? NSWindow).map(ObjectIdentifier.init)
+            MainActor.assumeIsolated {
+                guard let self, let window = self.controller?.window,
+                      closedWindowID == ObjectIdentifier(window) else { return }
+                self.pendingPresentation = nil
+            }
+        }
+        activationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: NSApp, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, let request = self.pendingPresentation else { return }
+                self.finishPresentation(request: request)
+            }
+        }
+    }
+
+    private func finishPresentation(request: Int) {
+        // Activation and the menu's dismissal are separate AppKit events.
+        // Finish after both, without a guessed delay or a floating window level.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.pendingPresentation == request, NSApp.isActive,
+                  let window = self.controller?.window else { return }
+            self.pendingPresentation = nil
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            window.makeKeyAndOrderFront(nil)
+            if self.clearsInitialFocus { window.makeFirstResponder(nil) }
+            self.clearsInitialFocus = false
+        }
+    }
 
     func show(section: AppSettingsSection? = nil) {
         if let section { navigation.selectedSection = section }
@@ -25,7 +65,7 @@ final class AppSettingsWindowController {
         let controller = controller ?? makeController()
         let isOpening = controller.window?.isVisible != true
         if let window = controller.window, !window.isVisible, let screen {
-            let height = min(Self.initialContentHeight, max(screen.visibleFrame.height - 100, 400))
+            let height = min(Self.initialContentHeight, max(screen.visibleFrame.height - 100, 420))
             (window.contentViewController as? NSHostingController<AppSettingsView>)?.rootView = AppSettingsView(contentHeight: height, navigation: navigation)
             window.setContentSize(NSSize(width: Self.contentWidth, height: height))
             window.contentView?.layoutSubtreeIfNeeded()
@@ -34,23 +74,19 @@ final class AppSettingsWindowController {
                                           y: bounds.midY - window.frame.height / 2))
         }
         self.controller = controller
-        NSApplication.shared.activate(ignoringOtherApps: true)
+        presentationRequest += 1
+        let request = presentationRequest
+        pendingPresentation = request
+        clearsInitialFocus = isOpening
         controller.showWindow(nil)
         if isOpening { controller.window?.makeFirstResponder(nil) }
-        // A menu command closes its NSMenu after the action returns, and that
-        // dismissal can immediately hand key status back to the recorder bar.
-        // Promote settings on the next main-loop turn so the requested window,
-        // not the tiny source panel, is ready for typing and keyboard control.
-        DispatchQueue.main.async { [weak controller] in
-            guard let window = controller?.window, window.isVisible else { return }
-            window.makeKeyAndOrderFront(nil)
-            // Clear only the opening-time automatic first button proposal.
-            // Reopening an already visible window must preserve text/Tab focus.
-            if isOpening { window.makeFirstResponder(nil) }
-        }
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        finishPresentation(request: request)
+
     }
 
     func hideForFirstLaunchGuide() {
+        pendingPresentation = nil
         controller?.window?.orderOut(nil)
     }
 
@@ -63,7 +99,8 @@ final class AppSettingsWindowController {
                 width: Self.contentWidth,
                 height: Self.initialContentHeight
             ),
-            styleMask: [.titled, .closable, .miniaturizable],
+            // The floating navigation leaves the native window buttons above it.
+            styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
@@ -73,9 +110,11 @@ final class AppSettingsWindowController {
         window.identifier = Self.windowIdentifier
         window.title = "\(applicationName) \(appLocalized("设置"))"
         window.contentViewController = hostingController
-        window.appearance = AppPreferences.appearancePreference.appKitAppearance
-        window.backgroundColor = .windowBackgroundColor
+        window.appearance = nil
+        window.backgroundColor = RecorderStyle.canvasNSColor
+        window.isOpaque = false
         window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
         window.titlebarSeparatorStyle = .none
         window.isReleasedWhenClosed = false
         // Settings is an explicit user action, not a launch-restorable surface.
@@ -86,8 +125,8 @@ final class AppSettingsWindowController {
         // itself above the desktop or other apps when the user switches away.
         window.level = .normal
         window.hidesOnDeactivate = true
-        window.contentMinSize = NSSize(width: Self.contentWidth, height: 400)
-        window.contentMaxSize = NSSize(width: Self.contentWidth, height: 640)
+        window.contentMinSize = NSSize(width: Self.contentWidth, height: 420)
+        window.contentMaxSize = NSSize(width: Self.contentWidth, height: Self.initialContentHeight)
         window.standardWindowButton(.zoomButton)?.isEnabled = false
         window.center()
         return NSWindowController(window: window)

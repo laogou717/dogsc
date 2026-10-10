@@ -20,11 +20,11 @@ fileprivate struct EditorTimelineControlButtonStyle: ButtonStyle {
                     in: RoundedRectangle(cornerRadius: 9, style: .continuous)
                 )
                 .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-                .scaleEffect(configuration.isPressed && isEnabled ? 0.96 : 1.0)
+                .scaleEffect(configuration.isPressed && isEnabled && !RecorderMotion.reduces ? 0.96 : 1.0)
                 .onHover { isHovered = $0 }
-                .animation(SpringMotion.interactive, value: isHovered)
-                .animation(SpringMotion.interactive, value: configuration.isPressed)
-                .animation(SpringMotion.interactive, value: isEnabled)
+                .animation(RecorderMotion.fade, value: isHovered)
+                .animation(RecorderMotion.quick, value: configuration.isPressed)
+                .animation(RecorderMotion.fade, value: isEnabled)
         }
 
         private var backgroundColor: Color {
@@ -131,7 +131,7 @@ extension EditorTimelineView {
         return EditorTimelineControlsLayout(compact: layout.isCompact) {
                 timelineCapsule {
                     Button(action: splitCurrentTimelineSelectionAtPlayhead) {
-                        Image(systemName: "scissors")
+                        AppLineIcon(kind: .scissors, size: 16)
                             .frame(width: 30, height: 30)
                             .contentShape(Rectangle())
                     }
@@ -144,7 +144,7 @@ extension EditorTimelineView {
                     Button {
                         _ = removeCurrentTimelineSelection()
                     } label: {
-                        Image(systemName: "trash")
+                        AppLineIcon(kind: .trash, size: 16)
                             .frame(width: 30, height: 30)
                             .contentShape(Rectangle())
                     }
@@ -161,9 +161,7 @@ extension EditorTimelineView {
                             primaryRetimeDraft = nil
                         }
                     } label: {
-                        Image(systemName: isRestoreCutMode
-                            ? "arrow.uturn.backward.circle.fill"
-                            : "arrow.uturn.backward.circle")
+                        AppLineIcon(kind: .undo, size: 16)
                             .foregroundStyle(isRestoreCutMode ? editorAccent : Color.secondary)
                             .frame(width: 30, height: 30)
                             .background(
@@ -193,23 +191,22 @@ extension EditorTimelineView {
 
             HStack(spacing: layout.compactTimelineControls ? 4 : 10) {
                     Button { stepTimeline(byFrames: -1) } label: {
-                        Image(systemName: "backward.frame.fill").font(.appUI(size: 16))
+                        AppLineIcon(kind: .previousFrame, size: 17)
                             .frame(width: layout.compactTimelineControls ? 34 : 48, height: layout.compactTimelineControls ? 34 : 42)
                     }
                     .buttonStyle(EditorSoftRaisedButtonStyle())
                     .help("上一帧（←；Shift+← 移动 5 帧）")
                     .accessibilityLabel("上一帧")
                     Button { playbackController.togglePlayback() } label: {
-                        Image(systemName: transportIsPlaying ? "pause.fill" : "play.fill")
-                            .font(.appUI(size: 19, weight: .semibold))
+                        AppLineIcon(kind: transportIsPlaying ? .pause : .play, size: 20)
                             .frame(width: layout.compactTimelineControls ? 38 : 52, height: layout.compactTimelineControls ? 34 : 42)
                     }
-                    .buttonStyle(EditorSoftRaisedButtonStyle())
+                    .buttonStyle(EditorSoftRaisedButtonStyle(isPrimary: true))
                     .disabled(!transportCanPlay)
                     .help(appLocalized(transportIsPlaying ? "暂停（空格）" : "播放（空格）"))
                     .accessibilityLabel(appLocalized(transportIsPlaying ? "暂停" : "播放"))
                     Button { stepTimeline(byFrames: 1) } label: {
-                        Image(systemName: "forward.frame.fill").font(.appUI(size: 16))
+                        AppLineIcon(kind: .nextFrame, size: 17)
                             .frame(width: layout.compactTimelineControls ? 34 : 48, height: layout.compactTimelineControls ? 34 : 42)
                     }
                     .buttonStyle(EditorSoftRaisedButtonStyle())
@@ -259,9 +256,9 @@ extension EditorTimelineView {
                     } label: {
                         Group {
                             if layout.iconOnlyTimelineControls {
-                                Image(systemName: isHoverPreviewEnabled ? "eye" : "eye.slash")
+                                AppLineIcon(kind: isHoverPreviewEnabled ? .eye : .eyeOff, size: 15)
                             } else {
-                                Label("预览", systemImage: isHoverPreviewEnabled ? "eye" : "eye.slash")
+                                Label { Text("预览") } icon: { AppLineIcon(kind: isHoverPreviewEnabled ? .eye : .eyeOff, size: 15) }
                             }
                         }
                         .font(.appUI(.caption, weight: .medium))
@@ -291,7 +288,7 @@ extension EditorTimelineView {
                     Button {
                         zoomTimeline(to: 1, pointerViewportX: nil)
                     } label: {
-                        Image(systemName: "arrow.down.right.and.arrow.up.left")
+                        AppLineIcon(kind: .fit, size: 15)
                             .foregroundStyle(timelineZoom > 1.01 ? Color.primary : Color.secondary)
                             .frame(width: 30, height: 30)
                             .contentShape(Rectangle())
@@ -303,7 +300,7 @@ extension EditorTimelineView {
                     .accessibilityIdentifier("editor.timeline.zoom-to-fit")
 
                     Button { zoomTimeline(to: max(timelineZoom / 1.5, 1), pointerViewportX: nil) } label: {
-                        Image(systemName: "minus").frame(width: 28, height: 28)
+                        AppLineIcon(kind: .minus, size: 14).frame(width: 28, height: 28)
                     }
                     .buttonStyle(EditorTimelineControlButtonStyle())
                     .disabled(timelineZoom <= EditorTimelineZoomPolicy.minimum)
@@ -320,7 +317,7 @@ extension EditorTimelineView {
                         .accessibilityLabel("时间线缩放")
                         .accessibilityValue("\(Int((timelineZoom * 100).rounded()))%")
                     Button { zoomTimeline(to: min(timelineZoom * 1.5, maximumTimelineZoom), pointerViewportX: nil) } label: {
-                        Image(systemName: "plus").frame(width: 28, height: 28)
+                        AppLineIcon(kind: .plus, size: 14).frame(width: 28, height: 28)
                     }
                     .buttonStyle(EditorTimelineControlButtonStyle())
                     .disabled(timelineZoom >= maximumTimelineZoom)
@@ -364,10 +361,10 @@ extension EditorTimelineView {
             if gestureOwnership.activeIntent != nil || editorStore.interaction != nil {
                 cancelActiveTimelineGesture()
             }
-            withAnimation(SpringMotion.fluid) { usesWaveformClips = waveform }
+            withAnimation(RecorderMotion.settle) { usesWaveformClips = waveform }
         } label: {
             HStack(spacing: 7) {
-                Image(systemName: symbol).frame(width: 14)
+                AppLineIcon(kind: waveform ? .waveform : .film, size: 14)
                 if !layout.iconOnlyTimelineControls { Text(displayTitle).lineLimit(1).fixedSize() }
             }
                 .font(.appUI(size: 11, weight: .medium))
@@ -377,9 +374,7 @@ extension EditorTimelineView {
                 .background {
                     if selected {
                         RoundedRectangle(cornerRadius: 8)
-                            .fill(EditorTheme.cardElevated)
-                            .overlay(RoundedRectangle(cornerRadius: 8)
-                                .strokeBorder(EditorTheme.hairline, lineWidth: 0.75))
+                            .fill(EditorTheme.selectionWash)
                             .matchedGeometryEffect(id: "display-mode", in: displayModeSelection)
                     }
                 }
@@ -669,7 +664,7 @@ extension EditorTimelineView {
                 }
             }
             if let cutX {
-                Image(systemName: "scissors")
+                AppLineIcon(kind: .scissors, size: 16)
                     .font(.appUI(size: 9, weight: .bold))
                     .foregroundStyle(EditorTheme.onAccent)
                     .frame(width: 18, height: 18)
@@ -1301,7 +1296,7 @@ extension EditorTimelineView {
             .buttonStyle(.editorQuiet)
             .help("画面提前 \(cameraSyncAdjustmentStepMilliseconds)ms，并自动试听")
             Button(role: .destructive) { removeCameraSyncAnchor(id: anchor.id) } label: {
-                Image(systemName: "trash")
+                AppLineIcon(kind: .trash, size: 16)
             }
             .buttonStyle(.editorDestructiveIcon)
             .help("删除同步点")

@@ -3,10 +3,10 @@ import SwiftUI
 
 enum PermissionOnboardingStyle {
     static let size = NSSize(width: 640, height: 460)
-    static let background = NSColor(red: 0.975, green: 0.979, blue: 0.982, alpha: 1)
-    static let ink = Color(red: 0.16, green: 0.18, blue: 0.19)
-    static let muted = Color(red: 0.46, green: 0.49, blue: 0.51)
-    static let line = Color.black.opacity(0.075)
+    static let background = RecorderStyle.canvasNSColor
+    static let ink = RecorderStyle.ink
+    static let muted = RecorderStyle.muted
+    static let line = RecorderStyle.chrome.opacity(0.08)
     static let brandInset = CGPoint(x: 36, y: 34)
     static let brandSize: CGFloat = 32
 }
@@ -29,15 +29,18 @@ struct RequiredRecordingPermissionView: View {
                     .resizable().interpolation(.high)
                     .frame(width: PermissionOnboardingStyle.brandSize, height: PermissionOnboardingStyle.brandSize)
                 Text("DogSC").font(.appUI(size: 15, weight: .semibold))
+                    .foregroundStyle(RecorderStyle.ink)
             }
             .opacity(presentation.isIntroAnimating ? 0 : 1)
 
             VStack(alignment: .leading, spacing: 5) {
                 Text("准备好录制").font(.appUI(size: 26, weight: .semibold))
+                    .foregroundStyle(RecorderStyle.ink)
                 Text("完成以下授权，开始录制")
                     .font(.appUI(size: 14)).foregroundStyle(PermissionOnboardingStyle.muted)
             }
             .padding(.top, 18)
+            .modifier(introReveal(0))
 
             VStack(spacing: 0) {
                 permissionRow(.screenRecording)
@@ -46,15 +49,28 @@ struct RequiredRecordingPermissionView: View {
                 permissionRow(.accessibility)
                     .firstUseTourTarget("permission.pointer", in: .permissions, highlight: .rounded(15, corners: .bottom))
             }
-            .background(.white.opacity(0.58), in: RoundedRectangle(cornerRadius: 15))
+            .background {
+                RoundedRectangle(cornerRadius: 15)
+                    .fill(RecorderStyle.base)
+                    .shadow(color: RecorderStyle.lift.opacity(0.875), radius: 14, y: 6)
+            }
             .overlay {
                 RoundedRectangle(cornerRadius: 15)
-                    .strokeBorder(PermissionOnboardingStyle.line, lineWidth: 0.75)
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [RecorderStyle.edgeTop, RecorderStyle.edgeBottom],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 1
+                    )
                     .allowsHitTesting(false)
             }
             .padding(.top, 22)
+            .modifier(introReveal(1))
 
             permissionNotes.padding(.top, 20)
+                .modifier(introReveal(2))
 
             Spacer(minLength: 18)
             if model.hasRequiredRecordingPermissions {
@@ -73,21 +89,22 @@ struct RequiredRecordingPermissionView: View {
                 .buttonStyle(PermissionActionButtonStyle(primary: true, focused: isEntryButtonFocused))
                 .focused($isEntryButtonFocused).focusEffectDisabled()
                 .firstUseTourTarget("permission.finish", in: .permissions, highlight: .rounded(10))
+                .modifier(introReveal(3))
             }
         }
         .padding(.horizontal, PermissionOnboardingStyle.brandInset.x)
         .padding(.top, PermissionOnboardingStyle.brandInset.y)
         .padding(.bottom, 28)
         .frame(width: PermissionOnboardingStyle.size.width, height: PermissionOnboardingStyle.size.height)
+        .allowsHitTesting(!presentation.isIntroAnimating)
         // The AppKit window uses a full-size content view. Its fixed page
         // already reserves the titlebar in brandInset; applying that safe
         // area again pushes the page below its frame and clips footer space.
         .ignoresSafeArea(.container, edges: .top)
         .foregroundStyle(PermissionOnboardingStyle.ink)
         .background(Color(nsColor: PermissionOnboardingStyle.background))
-        .preferredColorScheme(.light)
         .appControlFocusAppearance()
-        .firstUseTour(.permissions, enabled: presentation.isTourReady && !presentation.isIntroAnimating)
+        .firstUseTour(.permissions)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(RecorderAccessibilityID.permissionGate)
         .onChange(of: model.permissionTourAccess, initial: true) { _, access in
@@ -109,6 +126,11 @@ struct RequiredRecordingPermissionView: View {
                 catch { return }
             }
         }
+    }
+
+    private func introReveal(_ order: Int) -> PermissionIntroReveal {
+        PermissionIntroReveal(isShown: presentation.introStage >= .settling,
+                              animates: presentation.animatesIntro, order: order)
     }
 
     private var permissionNotes: some View {
@@ -141,9 +163,13 @@ struct RequiredRecordingPermissionView: View {
         let granted = permission.isGranted(in: model)
         return HStack(spacing: 14) {
             Image(systemName: permission.systemImage)
-                .font(.appUI(size: 23, weight: .regular)).frame(width: 30)
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(RecorderStyle.ink)
+                .frame(width: 40, height: 40)
+                .background(RecorderStyle.chrome.opacity(0.07), in: RoundedRectangle(cornerRadius: 11))
             VStack(alignment: .leading, spacing: 5) {
                 Text(permission.title).font(.appUI(size: 14, weight: .semibold))
+                    .foregroundStyle(RecorderStyle.ink)
                 Text(permission.purpose).font(.appUI(size: 12))
                     .foregroundStyle(PermissionOnboardingStyle.muted)
             }
@@ -151,8 +177,9 @@ struct RequiredRecordingPermissionView: View {
             if granted {
                 Label("已授权", systemImage: "checkmark.circle.fill")
                     .font(.appUI(size: 12, weight: .medium))
-                    .foregroundStyle(Color(red: 0.19, green: 0.57, blue: 0.41))
+                    .foregroundStyle(RecorderStyle.positiveInk)
                     .frame(width: 92, height: 34)
+                    .transition(.scale(scale: 0.86).combined(with: .opacity))
             } else {
                 Button {
                     focusedPermission = nil
@@ -169,7 +196,25 @@ struct RequiredRecordingPermissionView: View {
             }
         }
         .padding(.horizontal, 18).frame(height: 76)
+        .animation(SpringMotion.fluid, value: granted)
         .accessibilityElement(children: .contain)
+    }
+}
+
+/// Page content waits beneath the opening title, then rises in reading order
+/// as the brand docks into the header. Offsets never change the laid-out
+/// frames that the first-use tour measures.
+private struct PermissionIntroReveal: ViewModifier {
+    let isShown: Bool
+    let animates: Bool
+    let order: Int
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(isShown ? 1 : 0)
+            .offset(y: isShown ? 0 : 16)
+            .animation(animates ? .spring(response: 0.62, dampingFraction: 0.86)
+                .delay(Double(order) * 0.07) : nil, value: isShown)
     }
 }
 
@@ -181,18 +226,18 @@ private struct PermissionActionButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .foregroundStyle(primary ? .white : PermissionOnboardingStyle.ink)
+            .foregroundStyle(primary ? RecorderStyle.onPrimary : RecorderStyle.ink)
             .background(
-                primary ? Color(white: configuration.isPressed ? 0.13 : (hovered ? 0.23 : 0.18))
-                    : Color(white: configuration.isPressed ? 0.91 : (hovered ? 0.95 : 0.985)),
+                primary ? RecorderStyle.primaryFill.opacity(configuration.isPressed ? 0.82 : (hovered ? 1.0 : 0.94))
+                    : RecorderStyle.chrome.opacity(configuration.isPressed ? 0.16 : (hovered ? 0.14 : 0.08)),
                 in: RoundedRectangle(cornerRadius: 10)
             )
             .overlay {
                 RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(focused ? PermissionOnboardingStyle.ink.opacity(0.45) : PermissionOnboardingStyle.line,
+                    .strokeBorder(focused ? RecorderStyle.chrome.opacity(0.6) : (primary ? Color.clear : RecorderStyle.chrome.opacity(0.12)),
                                   lineWidth: focused ? 1.5 : 0.75)
             }
-            .shadow(color: .black.opacity(configuration.isPressed ? 0 : 0.025), radius: 2, y: 1)
+            .shadow(color: .black.opacity(configuration.isPressed ? 0 : 0.2), radius: 3, y: 1)
             .scaleEffect(configuration.isPressed && !reduceMotion ? 0.98 : 1)
             .contentShape(RoundedRectangle(cornerRadius: 10))
             .onHover { hovered = $0 }
@@ -211,11 +256,12 @@ struct PermissionDragAssistantView: View {
         HStack(spacing: 18) {
             DraggableApplicationIcon(applicationURL: applicationURL, onDragEnded: onApplicationDragEnded)
                 .frame(width: 72, height: 72)
-                .background(.white.opacity(hovered ? 1 : 0.64), in: RoundedRectangle(cornerRadius: 15))
-                .shadow(color: .black.opacity(hovered ? 0.08 : 0.04), radius: 6, y: 3)
+                .background(RecorderStyle.chrome.opacity(hovered ? 0.14 : 0.07), in: RoundedRectangle(cornerRadius: 15))
+                .shadow(color: RecorderStyle.lift, radius: 6, y: 3)
                 .onHover { hovered = $0 }
             VStack(alignment: .leading, spacing: 7) {
                 Text("找不到 DogSC？").font(.appUI(size: 15, weight: .semibold))
+                    .foregroundStyle(RecorderStyle.ink)
                 Text(String(format: appLocalized("把图标拖入“%@”列表，再打开开关。"), permission.settingsListName))
                     .font(.appUI(size: 13)).foregroundStyle(PermissionOnboardingStyle.muted)
                     .fixedSize(horizontal: false, vertical: true)
@@ -227,13 +273,13 @@ struct PermissionDragAssistantView: View {
         .foregroundStyle(PermissionOnboardingStyle.ink)
         .background {
             RoundedRectangle(cornerRadius: 18)
-                .fill(Color(nsColor: PermissionOnboardingStyle.background))
+                .fill(RecorderStyle.base)
                 .overlay {
                     RoundedRectangle(cornerRadius: 18)
-                        .strokeBorder(.white.opacity(0.95), lineWidth: 0.75)
+                        .strokeBorder(RecorderStyle.chrome.opacity(0.12), lineWidth: 1)
                 }
+                .shadow(color: RecorderStyle.lift, radius: 10, y: 4)
         }
-        .preferredColorScheme(.light)
         .appControlFocusAppearance()
     }
 }

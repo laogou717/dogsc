@@ -256,11 +256,12 @@ struct EditorInspectorView: View {
                 .scrollIndicators(.hidden)
                 .id(inspectorScrollContext)
                 .transition(.asymmetric(
-                    insertion: .opacity.combined(with: .offset(y: 10)),
-                    removal: .opacity.combined(with: .offset(y: -5))))
+                    insertion: (RecorderMotion.reduces ? AnyTransition.opacity : .opacity.combined(with: .offset(y: 10)))
+                        .animation(RecorderMotion.reduces ? .easeOut(duration: 0.16) : RecorderMotion.settle?.delay(0.06)),
+                    removal: .opacity.animation(.easeOut(duration: 0.12))))
             }
             .clipped()
-            .animation(SpringMotion.fluid, value: inspectorScrollContext)
+            .animation(RecorderMotion.fade, value: inspectorScrollContext)
             if showsFrameInspectorNavigation, selectedFrameInspectorTab == .background,
                editorStore.previewProject.canvas.backgroundSource.usesWallpaperMedia {
                 backgroundBlurSection

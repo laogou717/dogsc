@@ -19,6 +19,7 @@ struct RecorderInputToggleStyle: ToggleStyle {
         var body: some View {
             HStack(spacing: 8) {
                 configuration.label.accessibilityHidden(true)
+                Spacer(minLength: 8)
                 RecorderInputSwitch(isOn: configuration.$isOn, title: title) {
                     hasFocus = $0
                 }

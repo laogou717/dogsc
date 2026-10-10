@@ -4,7 +4,7 @@ import SwiftUI
 /// in Settings. Resolve System through the effective scheme on first click.
 struct EditorAppearanceToggleButton: View {
     @AppStorage(AppPreferences.appearancePreferenceKey)
-    private var preference = AppAppearancePreference.system
+    private var preference = AppAppearancePreference.dark
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reducesMotion
 
@@ -19,10 +19,13 @@ struct EditorAppearanceToggleButton: View {
             AppPreferences.applyAppearancePreferenceToOpenWindows()
         } label: {
             EditorToolbarIconSurface(systemName: isDark ? "moon.stars.fill" : "sun.max.fill")
-                .contentTransition(reducesMotion ? .opacity : .symbolEffect(.replace))
-                .animation(reducesMotion ? nil : .easeInOut(duration: 0.22), value: isDark)
+                .id(isDark)
+                .transition(reducesMotion ? .opacity : .asymmetric(
+                    insertion: .scale(scale: 0.6).combined(with: .opacity),
+                    removal: .scale(scale: 1.3).combined(with: .opacity)))
+                .animation(RecorderMotion.settle ?? .easeOut(duration: 0.18), value: isDark)
         }
-        .buttonStyle(.editorToolbarPress)
+        .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 16))
         .help(actionTitle)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("界面外观")

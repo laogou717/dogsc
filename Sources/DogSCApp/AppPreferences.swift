@@ -268,22 +268,20 @@ enum AppPreferences {
     static var appearancePreference: AppAppearancePreference {
         AppAppearancePreference(
             rawValue: UserDefaults.standard.string(forKey: appearancePreferenceKey) ?? ""
-        ) ?? .system
+        ) ?? .dark
     }
 
     @MainActor
     static func applyAppearancePreferenceToOpenWindows() {
         let appearance = appearancePreference.appKitAppearance
-        let supportedIdentifiers: Set<String> = [
-            "cn.laogou.dogsc.editor-window",
-            "cn.laogou.dogsc.settings-window",
-            "cn.laogou.dogsc.main-window",
-            "dogsc.recording-completion",
-        ]
-        for window in NSApplication.shared.windows where
-            supportedIdentifiers.contains(window.identifier?.rawValue ?? "") {
+        // A single preference governs existing and future windows. Inherit
+        // NSApp for System so macOS changes continue to propagate naturally.
+        let windows = NSApplication.shared.windows
+        for window in windows where window.identifier?.rawValue == "cn.laogou.dogsc.editor-window" {
             WindowAppearanceTransition.apply(appearance, to: window)
         }
+        NSApplication.shared.appearance = appearance
+        for window in windows { window.appearance = nil }
     }
 
     static var isExportCompletionSoundEnabled: Bool {

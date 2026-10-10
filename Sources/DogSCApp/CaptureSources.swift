@@ -6,20 +6,19 @@ import RecorderCore
 import ScreenCaptureKit
 import SwiftUI
 
-let captureSelectionAccent = RecorderStyle.mint
-let captureSelectionAccentNSColor = NSColor(
-    calibratedRed: 0.22,
-    green: 0.70,
-    blue: 0.47,
-    alpha: 1
-)
+// Whatever is being framed for capture is outlined in plain white: it reads on
+// any content and leaves colour to the take itself.
+let captureSelectionAccent = RecorderStyle.ink
+let captureSelectionAccentNSColor = NSColor(calibratedWhite: 1, alpha: 1)
 
-// Capture controls use an opaque silver surface so arbitrary desktop content
-// cannot reduce label contrast. Desktop dimming is a separate overlay.
-let captureSelectionInkNSColor = NSColor(calibratedWhite: 0.20, alpha: 1)
-let captureSelectionSurfaceNSColor = NSColor(calibratedWhite: 0.965, alpha: 1)
-let captureSelectionRaisedNSColor = NSColor(calibratedWhite: 0.995, alpha: 1)
-let captureSelectionPlatinumNSColor = NSColor(calibratedWhite: 0.24, alpha: 1)
+// AppKit-drawn capture controls match the recorder's night glass. Their cards
+// are nearly opaque so arbitrary desktop content cannot reduce label contrast;
+// desktop dimming is a separate overlay.
+let captureSelectionInkNSColor = RecorderStyle.inkNSColor
+let captureSelectionSurfaceNSColor = RecorderStyle.baseNSColor
+let captureSelectionRaisedNSColor = RecorderStyle.chromeNSColor.withAlphaComponent(0.1)
+/// The fill of the action that starts a take.
+let captureSelectionPlatinumNSColor = NSColor(calibratedRed: 1.0, green: 0.27, blue: 0.23, alpha: 1)
 
 /// AppKit-backed capture selectors cannot use SwiftUI ButtonStyle, but they
 /// should still share the same short hover lift and pressed settle as the
@@ -34,7 +33,7 @@ class CaptureSelectionNativeButton: NSButton {
     private var hasNativeFocus = false
     private(set) var isPointerInside = false
 
-    var captureKeyboardFocusColor = NSColor.black.withAlphaComponent(0.40) {
+    var captureKeyboardFocusColor = RecorderStyle.chromeNSColor.withAlphaComponent(0.62) {
         didSet { updateCaptureKeyboardFocusAppearance() }
     }
     var captureKeyboardFocusLineWidth: CGFloat = 1.5 {
@@ -87,6 +86,7 @@ class CaptureSelectionNativeButton: NSButton {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         updateCaptureKeyboardFocusTracking()
+        refreshCapturePointerState()
     }
 
     override func becomeFirstResponder() -> Bool {
@@ -134,6 +134,14 @@ class CaptureSelectionNativeButton: NSButton {
         CATransaction.commit()
     }
 
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            updateCaptureKeyboardFocusAppearance()
+            updateCaptureInteractionAppearance()
+        }
+    }
+
     override func layout() {
         super.layout()
         updateCaptureInteractionShape()
@@ -173,23 +181,51 @@ class CaptureSelectionNativeButton: NSButton {
         )
         addTrackingArea(trackingArea)
         interactionTrackingArea = trackingArea
+        refreshCapturePointerState()
     }
 
     override func mouseEntered(with event: NSEvent) {
         super.mouseEntered(with: event)
-        isPointerInside = true
-        updateCaptureInteractionAppearance()
+        refreshSiblingPointerStates()
     }
 
     override func mouseExited(with event: NSEvent) {
         super.mouseExited(with: event)
-        isPointerInside = false
-        updateCaptureInteractionAppearance()
+        refreshSiblingPointerStates()
     }
 
     override func highlight(_ flag: Bool) {
         super.highlight(flag)
+        refreshSiblingPointerStates()
         updateCaptureInteractionAppearance()
+    }
+
+    /// Moving a toolbar can move a tracking area away from a stationary
+    /// pointer without delivering mouseExited. Read geometry after placement,
+    /// and reconcile siblings on native input instead of retaining old events.
+    func refreshCapturePointerState() {
+        let hovering: Bool
+        if isEnabled, !isHiddenOrHasHiddenAncestor, let window,
+           window.isVisible, !window.ignoresMouseEvents {
+            let point = convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
+            let radius = layer?.cornerRadius ?? 0
+            hovering = NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius).contains(point)
+        } else {
+            hovering = false
+        }
+        guard isPointerInside != hovering else { return }
+        isPointerInside = hovering
+        updateCaptureInteractionAppearance()
+    }
+
+    private func refreshSiblingPointerStates() {
+        guard let superview else {
+            refreshCapturePointerState()
+            return
+        }
+        for case let button as CaptureSelectionNativeButton in superview.subviews {
+            button.refreshCapturePointerState()
+        }
     }
 
     func captureInteractionDidChange(hovering: Bool, pressed: Bool) {}
@@ -204,7 +240,7 @@ class CaptureSelectionNativeButton: NSButton {
             : pressed ? 0.985
             : hovering ? 1.008 : 1
         let targetTransform = CATransform3DMakeScale(scale, scale, 1)
-        let targetShade = NSColor.black.withAlphaComponent(pressed ? 0.075 : hovering ? 0.025 : 0).cgColor
+        let targetShade = RecorderStyle.chromeNSColor.withAlphaComponent(pressed ? 0.1 : hovering ? 0.05 : 0).cgColor
         let currentTransform = layer?.presentation()?.transform ?? layer?.transform ?? CATransform3DIdentity
         let currentShade = interactionShadeLayer.presentation()?.fillColor ?? interactionShadeLayer.fillColor
         let duration = pressed ? 0.09 : 0.15
@@ -239,45 +275,18 @@ class CaptureSelectionNativeButton: NSButton {
 
 struct CaptureSelectionCardSurface: ViewModifier {
     func body(content: Content) -> some View {
-        content
-            .background {
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [.white, RecorderStyle.silver],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .overlay(alignment: .top) {
-                        RoundedRectangle(cornerRadius: 24, style: .continuous)
-                            .stroke(.white.opacity(0.9), lineWidth: 1)
-                            .mask {
-                                LinearGradient(
-                                    colors: [.white, .clear],
-                                    startPoint: .top,
-                                    endPoint: .center
-                                )
-                            }
-                    }
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .stroke(RecorderStyle.line, lineWidth: 0.7)
-            }
-            .shadow(color: RecorderStyle.lift, radius: 18, y: 8)
+        content.recorderSurface(radius: 24, castsShadow: true)
     }
 }
 
+/// Starting a take is the one red action in every source picker.
 struct CaptureSelectionPrimaryButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
     func makeBody(configuration: Configuration) -> some View {
         let pressed = configuration.isPressed && isEnabled
         return configuration.label.foregroundStyle(.white)
-            .background(Color(white: pressed ? 0.16 : 0.24), in: RoundedRectangle(cornerRadius: 12))
-            .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(.white.opacity(0.12), lineWidth: 0.75) }
-            .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 12), color: .white.opacity(0.65))
-            .shadow(color: .black.opacity(0.12), radius: pressed ? 2 : 5, y: 3)
+            .background(RecorderStyle.recording.opacity(pressed ? 0.8 : 1), in: RoundedRectangle(cornerRadius: 12))
+            .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 12), color: RecorderStyle.chrome.opacity(0.65))
             .modifier(RecorderPressFeedback(isPressed: pressed, cornerRadius: 12))
             .opacity(isEnabled ? 1 : 0.4)
     }
@@ -287,11 +296,9 @@ struct CaptureSelectionSecondaryButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
     func makeBody(configuration: Configuration) -> some View {
         let pressed = configuration.isPressed && isEnabled
-        return configuration.label.foregroundStyle(Color(white: 0.25))
-            .background(Color(white: pressed ? 0.92 : 0.99), in: RoundedRectangle(cornerRadius: 12))
-            .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(.black.opacity(0.06), lineWidth: 0.75) }
-            .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 12))
-            .shadow(color: .black.opacity(0.08), radius: pressed ? 1 : 4, y: 2)
+        return configuration.label.foregroundStyle(RecorderStyle.ink)
+            .background(RecorderStyle.well, in: RoundedRectangle(cornerRadius: 12))
+            .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 12), color: RecorderStyle.chrome.opacity(0.65))
             .modifier(RecorderPressFeedback(isPressed: pressed, cornerRadius: 12))
     }
 }

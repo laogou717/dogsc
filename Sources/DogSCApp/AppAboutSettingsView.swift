@@ -1,116 +1,99 @@
 import AppKit
 import SwiftUI
 
-/// App information and update controls share the existing settings window.
+/// App information, updates and voluntary support sharing the recorder appearance.
 struct AppAboutSettingsView: View {
     @ObservedObject private var updateController = AppUpdateController.shared
     @State private var showsSupportSheet = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 16) {
-                Image(nsImage: NSApp.applicationIconImage)
-                    .resizable().scaledToFit()
-                    .frame(width: 64, height: 64)
-                    .accessibilityHidden(true)
+        VStack(spacing: 24) {
+            // Identity gets its own space; update controls share the row below.
+            SettingsCard {
+                HStack(alignment: .top, spacing: 18) {
+                    Image(nsImage: NSApp.applicationIconImage)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 56, height: 56)
+                        .shadow(color: RecorderStyle.lift, radius: 6, y: 3)
+                        .accessibilityHidden(true)
 
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(AppIdentity.displayName)
-                        .font(.appUI(size: 18, weight: .semibold))
-                    Text(updateController.currentVersionDescription)
-                        .font(.appUI(size: 12))
-                        .foregroundStyle(EditorTheme.secondaryText)
-                }
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(AppIdentity.displayName)
+                            .font(.appUI(size: 19, weight: .semibold))
+                            .foregroundStyle(RecorderStyle.ink)
 
-                Spacer(minLength: 16)
+                        Text(updateController.currentVersionDescription)
+                            .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                            .foregroundStyle(SettingsTheme.textSecondary)
 
-                Button {
-                    updateController.checkForUpdates()
-                } label: {
-                    Text("检查更新").frame(height: 34)
-                }
-                .buttonStyle(.editorQuiet)
-                .disabled(!updateController.isFormalRelease || !updateController.isReady)
-                .help(appLocalized(updateController.availabilityDescription))
-                .accessibilityHint("从 GitHub Release 检查并安装 DogSC 新版本")
-            }
-
-            HStack {
-                Text("自动检查更新")
-                    .font(.appUI(size: 13, weight: .medium))
-                Spacer()
-                EditorToggle(isOn: Binding(
-                    get: { updateController.automaticallyChecksForUpdates },
-                    set: { updateController.setAutomaticallyChecksForUpdates($0) }
-                ))
-                .disabled(!updateController.isFormalRelease)
-                .accessibilityLabel("自动检查更新")
-            }
-            .frame(minHeight: 34)
-            .padding(.top, 24)
-            .help("每天检查一次；下载与安装前仍会显示确认界面。")
-
-            sectionDivider
-
-            VStack(spacing: 8) {
-                projectLink("查看源码", icon: "chevron.left.forwardslash.chevron.right",
-                            url: AppProjectLinks.source)
-                projectLink("反馈建议", icon: "bubble.left", url: AppProjectLinks.feedback)
-            }
-
-            sectionDivider
-
-            Button { showsSupportSheet = true } label: {
-                HStack(spacing: 14) {
-                    Image(systemName: "cup.and.saucer")
-                        .font(.system(size: 17)).frame(width: 24)
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("请杯咖啡")
-                            .font(.appUI(size: 13, weight: .medium))
-                        Text("免费开源 · 自愿支持")
-                            .font(EditorTypography.helper)
-                            .foregroundStyle(EditorTheme.secondaryText)
+                        Text("丝滑、优雅的高性能屏幕录制工具")
+                            .font(.appUI(size: 11.5))
+                            .foregroundStyle(SettingsTheme.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    Spacer(minLength: 12)
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 11))
-                        .foregroundStyle(EditorTheme.secondaryText)
+                    Spacer(minLength: 0)
                 }
-                .padding(.horizontal, 8).frame(minHeight: 58)
-                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .padding(.horizontal, 22)
+                .padding(.vertical, 22)
+
+                SettingsDivider()
+
+                SettingsRow(
+                    icon: .refresh,
+                    title: "自动检查更新"
+                ) {
+                    HStack(spacing: 16) {
+                        Button {
+                            updateController.checkForUpdates()
+                        } label: {
+                            Text("检查更新")
+                        }
+                        .buttonStyle(SettingsPillButtonStyle())
+                        .disabled(!updateController.isFormalRelease || !updateController.isReady)
+                        .help(appLocalized(updateController.availabilityDescription))
+                        .accessibilityHint("从 GitHub Release 检查并安装 DogSC 新版本")
+
+                        SettingsToggle(
+                            isOn: Binding(
+                                get: { updateController.automaticallyChecksForUpdates },
+                                set: { updateController.setAutomaticallyChecksForUpdates($0) }
+                            ),
+                            accessibilityLabel: "自动检查更新"
+                        )
+                        .disabled(!updateController.isFormalRelease)
+                    }
+                }
             }
-            .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 8))
-            .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .accessibilityIdentifier("settings.about.support")
-            .accessibilityHint("打开赞赏码")
+
+            // Open Source & Support
+            SettingsCard("开源与支持") {
+                SettingsLinkRow(
+                    icon: .code,
+                    title: "开源仓库 (GitHub)",
+                    action: { NSWorkspace.shared.open(AppProjectLinks.source) }
+                )
+
+                SettingsDivider()
+
+                SettingsLinkRow(
+                    icon: .feedback,
+                    title: "反馈与建议",
+                    action: { NSWorkspace.shared.open(AppProjectLinks.feedback) }
+                )
+
+                SettingsDivider()
+
+                SettingsLinkRow(
+                    icon: .cup,
+                    title: "自愿赞赏支持",
+                    trailingIcon: .chevron,
+                    accessibilityIdentifier: "settings.about.support",
+                    action: { showsSupportSheet = true }
+                )
+            }
         }
-        .foregroundStyle(EditorTheme.primaryText)
         .sheet(isPresented: $showsSupportSheet) { AppSupportSheet() }
-    }
-
-    private var sectionDivider: some View {
-        Rectangle().fill(EditorTheme.hairline).frame(height: 1)
-            .padding(.vertical, 20)
-    }
-
-    private func projectLink(_ title: String, icon: String, url: URL) -> some View {
-        Button { NSWorkspace.shared.open(url) } label: {
-            HStack(spacing: 14) {
-                Image(systemName: icon)
-                    .font(.system(size: 17)).frame(width: 24)
-                Text(appLocalized(title))
-                    .font(.appUI(size: 13, weight: .medium))
-                Spacer(minLength: 12)
-                Image(systemName: "arrow.up.forward.square")
-                    .font(.system(size: 12))
-                    .foregroundStyle(EditorTheme.secondaryText)
-            }
-            .padding(.horizontal, 8).frame(minHeight: 44)
-            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        }
-        .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 8))
-        .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .accessibilityHint("在浏览器中打开")
     }
 }
 

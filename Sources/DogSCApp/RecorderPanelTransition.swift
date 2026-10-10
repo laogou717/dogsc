@@ -8,18 +8,18 @@ final class RecorderPanelTransition {
     private var revision: UInt64 = 0
     private var wantsVisible = false
 
-    func show(_ window: NSWindow, animated: Bool) {
+    func show(_ window: RecorderPanel, animated: Bool) {
         guard !wantsVisible || !window.isVisible else { return }
         revision &+= 1
         wantsVisible = true
-        window.ignoresMouseEvents = false
+        window.setPointerInteractionEnabled(true)
         if !window.isVisible { window.alphaValue = animated ? 0 : 1 }
         window.orderFrontRegardless()
         animate(window, to: 1, animated: animated)
     }
 
-    func hide(_ window: NSWindow, animated: Bool) {
-        window.ignoresMouseEvents = true
+    func hide(_ window: RecorderPanel, animated: Bool) {
+        window.setPointerInteractionEnabled(false)
         guard wantsVisible || !animated else { return }
         revision &+= 1
         wantsVisible = false

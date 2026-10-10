@@ -112,16 +112,19 @@ extension AppModel {
               !isResolvingCompletedRecording,
               !AppDialogPresenter.isPresenting,
               let sessionURL = currentSession?.packageURL else { return false }
+        let decisionOwner = owner ?? NSApp.keyWindow ?? NSApp.mainWindow
+        defer { (decisionOwner as? any RecordingDecisionHosting)?.finishRecordingDecision() }
         let response = await AppDialogPresenter.response(to: AppDialog(
             title: "保留这次录制吗？",
             message: "保存项目以便稍后编辑，或将这次录制移到废纸篓。",
             symbol: "record.circle", itemTitle: project.title,
+            layout: .recordingDecision,
             actions: [
                 .init(id: "cancel", title: "取消", role: .cancel),
                 .init(id: "delete", title: "移到废纸篓", role: .destructive),
                 .init(id: "save", title: "保存项目", role: .primary)
             ]
-        ), relativeTo: owner)
+        ), relativeTo: decisionOwner)
         guard phase == .recordingComplete,
               currentSession?.packageURL == sessionURL,
               !isResolvingCompletedRecording else { return false }
@@ -154,6 +157,7 @@ extension AppModel {
                 title: "保留这次录制吗？",
                 message: "录制已安全保存，还没有进行编辑。保留项目，或将这次录制移到废纸篓。",
                 symbol: "record.circle", itemTitle: project.title,
+                layout: .projectDecision,
                 actions: [
                     .init(id: "cancel", title: "取消", role: .cancel),
                     .init(id: "delete", title: "移到废纸篓", role: .destructive),
@@ -195,6 +199,7 @@ extension AppModel {
             title: "关闭项目前要保存吗？",
             message: "保存为项目，方便继续编辑；也可以将这次录制移到废纸篓。",
             symbol: "folder", itemTitle: project.title,
+            layout: .projectDecision,
             actions: [
                 .init(id: "cancel", title: "取消", role: .cancel),
                 .init(id: "delete", title: "移到废纸篓", role: .destructive),

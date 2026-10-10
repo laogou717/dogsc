@@ -182,8 +182,9 @@ final class RequiredPermissionWindowController: NSObject, NSWindowDelegate {
         window.isReleasedWhenClosed = false
         window.tabbingMode = .disallowed
         window.animationBehavior = .none
-        window.appearance = NSAppearance(named: .aqua)
+        window.appearance = nil
         window.backgroundColor = PermissionOnboardingStyle.background
+        window.isOpaque = false
         hostingController.sizingOptions = []
         window.contentViewController = hostingController
         window.setFrame(NSRect(origin: .zero, size: PermissionOnboardingStyle.size), display: false)
@@ -215,6 +216,7 @@ final class RequiredPermissionWindowController: NSObject, NSWindowDelegate {
             isManualPresentation = false
             configurePage()
         }
+        FirstUseTourController.setPermissionIntroActive(false)
         FirstUseTourController.controller(for: .permissions).suspend()
         introduction.cancel()
         presentation.isTourReady = false
@@ -252,7 +254,7 @@ final class RequiredPermissionWindowController: NSObject, NSWindowDelegate {
         FirstUseTourController.setPermissionPagePresented(true)
         FirstUseTourController.controller(for: .recorder).suspend()
         FirstUseTourController.controller(for: .editor).suspend()
-        FirstUseTourController.controller(for: .permissions).replay()
+        FirstUseTourController.controller(for: .permissions).prepareReplay()
         configurePage()
         positionAtVisualCenter(window)
         hasPositionedWindow = true
@@ -265,15 +267,21 @@ final class RequiredPermissionWindowController: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
         presentation.isTourReady = false
         if playIntroduction {
-            introduction.play(over: window) { [weak self, weak window] in
+            FirstUseTourController.setPermissionIntroActive(true)
+            let leadsIntoTour = FirstUseTourController.controller(for: .permissions).isPending
+            introduction.play(over: window, leadsIntoTour: leadsIntoTour) { [weak self, weak window] in
                 guard let self, let window, window.isVisible else { return }
                 self.clearAutomaticControlFocus(in: window)
                 self.presentation.isTourReady = true
+                FirstUseTourController.setPermissionIntroActive(false)
+                FirstUseTourController.controller(for: .permissions).resumeImmediately(handedOffFromIntro: true)
             }
         } else {
             window.makeKeyAndOrderFront(nil)
             clearAutomaticControlFocus(in: window)
             presentation.isTourReady = true
+            FirstUseTourController.setPermissionIntroActive(false)
+            FirstUseTourController.controller(for: .permissions).resumeImmediately(handedOffFromIntro: false)
         }
     }
 
@@ -386,6 +394,7 @@ final class RequiredPermissionWindowController: NSObject, NSWindowDelegate {
     }
 
     func shutdown() {
+        FirstUseTourController.setPermissionIntroActive(false)
         FirstUseTourController.controller(for: .permissions).suspend()
         introduction.cancel()
         presentation.isTourReady = false
@@ -397,6 +406,7 @@ final class RequiredPermissionWindowController: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         let wasReview = isManualPresentation
+        FirstUseTourController.setPermissionIntroActive(false)
         FirstUseTourController.controller(for: .permissions).suspend()
         introduction.cancel()
         presentation.isTourReady = false
@@ -468,7 +478,7 @@ private final class PermissionDragAssistantWindowController {
             panel.level = .floating
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             panel.tabbingMode = .disallowed
-            panel.appearance = NSAppearance(named: .aqua)
+            panel.appearance = nil
             panel.isOpaque = false
             panel.backgroundColor = .clear
             panel.hasShadow = true

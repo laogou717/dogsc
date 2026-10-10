@@ -23,22 +23,22 @@ final class RecorderPopoverPresenter {
             guard let self, self.identifier == id, let panel = self.panel else { return }
             let newHeight = min(height, maxHeight)
             guard abs(panel.frame.height - newHeight) > 1 else { return }
-            let below = anchorRect.minY - newHeight - 10
-            let y = below >= visible.minY ? below : min(anchorRect.maxY + 10, visible.maxY - newHeight)
+            let below = anchorRect.minY - newHeight - 16
+            let y = below >= visible.minY ? below : min(anchorRect.maxY + 16, visible.maxY - newHeight)
             panel.setFrame(NSRect(x: panel.frame.minX, y: y, width: width, height: newHeight), display: true)
             panel.invalidateShadow()
-        }.preferredColorScheme(.light).appControlFocusAppearance())
+        }.appControlFocusAppearance())
         let height = min(max(host.view.fittingSize.height, 80), maxHeight)
         let x = min(max(anchorRect.midX - width / 2, visible.minX), visible.maxX - width)
-        let below = anchorRect.minY - height - 10
-        let y = below >= visible.minY ? below : min(anchorRect.maxY + 10, visible.maxY - height)
+        let below = anchorRect.minY - height - 16
+        let y = below >= visible.minY ? below : min(anchorRect.maxY + 16, visible.maxY - height)
         let frame = NSRect(x: x, y: y, width: width, height: height)
         let panel = RecorderConfigurationPanel(contentRect: frame, styleMask: [.borderless], backing: .buffered, defer: false)
         panel.setFrame(frame, display: false)
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
-        panel.appearance = NSAppearance(named: .aqua)
+        panel.appearance = nil
         panel.level = NSWindow.Level(rawValue: owner.level.rawValue + 1)
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         panel.isReleasedWhenClosed = false
@@ -111,8 +111,8 @@ private struct RecorderPopoverViewport: View {
         }
         .scrollIndicators(.hidden)
         .frame(width: width, height: min(contentHeight, maxHeight))
-        .background(RecorderStyle.silver)
-        .clipShape(RoundedRectangle(cornerRadius: 20))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .recorderSurface(radius: 18)
     }
 }
 
@@ -186,43 +186,62 @@ private struct RecorderPopoverTrigger: NSViewRepresentable {
 struct RecorderPopoverSurface<Content: View>: View {
     var width: CGFloat = 290
     @ViewBuilder let content: () -> Content
+    @State private var arrived = false
     var body: some View {
-        content().padding(18).frame(width: width)
+        content().padding(10).frame(width: width)
             .foregroundStyle(RecorderStyle.ink)
             .font(.appUI(size: 13))
-            .background(Color.white)
-            .clipShape(RoundedRectangle(cornerRadius: EditorInterfaceRadius.floating, style: .continuous))
-            .overlay { RoundedRectangle(cornerRadius: EditorInterfaceRadius.floating, style: .continuous).strokeBorder(RecorderStyle.line, lineWidth: 0.75).allowsHitTesting(false) }
+            // The panel fades in; its content settles a few points behind it.
+            .opacity(arrived ? 1 : 0)
+            .offset(y: arrived || RecorderMotion.reduces ? 0 : -6)
+            .onAppear { withAnimation(RecorderMotion.settle) { arrived = true } }
     }
 }
 
+/// One line in a list. As an alternative it carries a radio mark; as a menu
+/// action it is plain text, ticked when it is a setting that is on.
 struct RecorderChoiceRow: View {
     let title: String
     var symbol: String? = nil
     var selected = false
     var enabled = true
     var subtitle: String? = nil
+    var isAlternative = false
     let action: () -> Void
     @State private var hovered = false
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 10) {
-                if let symbol { Image(systemName: symbol).font(.appUI(size: 17)).frame(width: 22) }
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(appLocalized(title)).lineLimit(2).multilineTextAlignment(.leading)
-                    if let subtitle { Text(subtitle).font(.appUI(size: 11)).foregroundStyle(RecorderStyle.muted).lineLimit(2) }
+            HStack(spacing: 11) {
+                if isAlternative {
+                    ZStack {
+                        Circle().strokeBorder(selected ? RecorderStyle.ink : RecorderStyle.faint, lineWidth: 1.5)
+                        Circle().fill(RecorderStyle.ink).padding(4)
+                            .scaleEffect(selected ? 1 : 0.01).opacity(selected ? 1 : 0)
+                    }
+                    .frame(width: 15, height: 15)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(appLocalized(title)).font(.appUI(size: 13, weight: selected ? .medium : .regular))
+                        .lineLimit(2).multilineTextAlignment(.leading)
+                        .foregroundStyle(selected || !isAlternative ? RecorderStyle.ink : RecorderStyle.muted)
+                    if let subtitle { Text(subtitle).font(.appUI(size: 11)).foregroundStyle(RecorderStyle.faint).lineLimit(2) }
                 }
                 Spacer(minLength: 4)
-                Image(systemName: "checkmark").font(.appUI(size: 12, weight: .semibold)).foregroundStyle(RecorderStyle.mint).opacity(selected ? 1 : 0)
+                if !isAlternative {
+                    Image(systemName: "checkmark").font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(RecorderStyle.ink)
+                        .opacity(selected ? 1 : 0).scaleEffect(selected ? 1 : 0.4)
+                }
             }
-            .padding(.horizontal, 10).padding(.vertical, 10).frame(maxWidth: .infinity, minHeight: 40)
-            .background(selected ? RecorderStyle.mintWash.opacity(0.6) : hovered ? Color.black.opacity(0.035) : .clear, in: RoundedRectangle(cornerRadius: 10))
+            .padding(.horizontal, 10).padding(.vertical, 7).frame(maxWidth: .infinity, minHeight: 36)
+            .background(hovered ? RecorderStyle.well : .clear, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .contentShape(Rectangle())
         }
-        .buttonStyle(RecorderPlainPressButtonStyle())
+        .buttonStyle(RecorderPlainPressButtonStyle(cornerRadius: 10))
         .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 10))
         .disabled(!enabled).opacity(enabled ? 1 : 0.4)
-        .onHover { value in withAnimation(.easeOut(duration: 0.12)) { hovered = value } }
+        .onHover { value in withAnimation(RecorderMotion.fade) { hovered = value } }
+        .animation(RecorderMotion.quick, value: selected)
         .accessibilityValue(selected ? appLocalized("已选择") : "")
     }
 }
@@ -232,12 +251,13 @@ struct RecorderActionList: View {
     let items: [RecorderMenuItem]
     var body: some View {
         RecorderPopoverSurface {
-            VStack(alignment: .leading, spacing: 5) {
-                Text(appLocalized(title)).font(.appUI(size: 14, weight: .semibold)).padding(.bottom, 8)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(appLocalized(title)).font(.appUI(size: 12, weight: .medium)).foregroundStyle(RecorderStyle.muted)
+                    .padding(.horizontal, 8).padding(.top, 4).padding(.bottom, 6)
                 ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                     switch item.kind {
-                    case .separator: Divider().padding(.vertical, 4)
-                    case .info: Text(item.title).font(.appUI(size: 12)).foregroundStyle(RecorderStyle.muted).fixedSize(horizontal: false, vertical: true).padding(6)
+                    case .separator: Rectangle().fill(RecorderStyle.line).frame(height: 1).padding(.horizontal, 8).padding(.vertical, 5)
+                    case .info: Text(item.title).font(.appUI(size: 12)).foregroundStyle(RecorderStyle.muted).fixedSize(horizontal: false, vertical: true).padding(.horizontal, 8).padding(.vertical, 4)
                     case .action:
                         RecorderChoiceRow(title: item.title, selected: item.isOn, enabled: item.isEnabled) {
                             RecorderPopoverPresenter.shared.dismissAndPerform { item.handler?() }

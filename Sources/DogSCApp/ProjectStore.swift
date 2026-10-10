@@ -1373,7 +1373,7 @@ enum ProjectStore {
         return sanitized.isEmpty ? nil : sanitized
     }
 
-    private static var workingProjectsFolder: URL {
+    static var workingProjectsFolder: URL {
         let applicationSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask

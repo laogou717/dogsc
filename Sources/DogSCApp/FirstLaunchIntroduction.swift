@@ -1,36 +1,66 @@
 import AppKit
+import CoreImage
+import CoreText
 import QuartzCore
 import SwiftUI
+
+/// What the live permission page shows beneath the opening title.
+enum PermissionIntroStage: Int, Comparable {
+    /// The window is an empty sheet; its controls wait out of sight.
+    case blank
+    /// The brand is docking into the header and the controls rise into place.
+    case settling
+    case settled
+
+    static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
+}
 
 @MainActor
 final class PermissionOnboardingPresentation: ObservableObject {
     @Published var isIntroAnimating = false
     @Published var isTourReady = false
+    @Published var introStage: PermissionIntroStage = .settled
+    /// Read while a stage change is being rendered. Resetting, skipping and
+    /// cancelling jump straight to their state instead of animating toward it.
+    var animatesIntro = true
 }
 
-/// A short-lived compositor surface above the real permission window. Only
-/// layer transforms and opacity animate; no full-screen blur pass,
-/// screenshot, per-frame SwiftUI layout, display timer or new desktop Space.
+/// The opening title: one take on a darkened, defocused desktop.
+///
+/// The icon pulls into focus, a hairline ring records one revolution around
+/// it, and the wordmark rises from its baseline. The stage then clears while
+/// the brand docks into the real permission window. Everything is finite
+/// compositor animation scheduled once: no screenshot, display timer, media
+/// decoder or per-frame layout, and no second set of controls.
 @MainActor
 final class FirstLaunchIntroduction {
     static let seenKey = "permissions.soft-light-introduction-seen"
-    private var panel: IntroductionPanel?
-    private var completionTask: Task<Void, Never>?
+    /// Matches the first-use tour's shade so one hands over to the other.
+    private static let tourDim = NSColor(white: 0.04, alpha: 0.48)
+    private static let ink = RecorderStyle.inkNSColor
+    private static let recording = NSColor(red: 1.0, green: 0.31, blue: 0.29, alpha: 1)
+
+    private var glassPanel: NSPanel?
+    private var brandPanel: IntroductionPanel?
+    private var dimPanel: NSPanel?
+    private var sequence: Task<Void, Never>?
     private var resignationObserver: NSObjectProtocol?
     private var screenObserver: NSObjectProtocol?
     private weak var destinationWindow: NSWindow?
     private var completion: (() -> Void)?
-    private var isFinishing = false
     private let presentation: PermissionOnboardingPresentation
 
     init(presentation: PermissionOnboardingPresentation) {
         self.presentation = presentation
     }
 
-    var isPresenting: Bool { panel != nil }
+    private(set) var isPresenting = false
 
-    func play(over destination: NSWindow, completion: @escaping () -> Void) {
-        guard panel == nil else { return }
+    /// - Parameter leadsIntoTour: the step-by-step guide follows immediately,
+    ///   so the stage settles into the guide's dimmer instead of a bare desktop.
+    func play(over destination: NSWindow, leadsIntoTour: Bool, completion: @escaping () -> Void) {
+        guard !isPresenting else { return }
+        closeDim()
         guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
               let screen = destination.screen ?? NSScreen.main else {
             UserDefaults.standard.set(true, forKey: Self.seenKey)
@@ -39,238 +69,459 @@ final class FirstLaunchIntroduction {
             return
         }
 
+        isPresenting = true
+        destinationWindow = destination
+        self.completion = completion
+        presentation.animatesIntro = false
+        presentation.introStage = .blank
+        presentation.isIntroAnimating = true
+
         let screenFrame = screen.frame
         let bounds = NSRect(origin: .zero, size: screenFrame.size)
-        let target = destination.frame.offsetBy(dx: -screen.frame.minX, dy: -screen.frame.minY)
-        let panel = IntroductionPanel(contentRect: screen.frame, styleMask: [.borderless], backing: .buffered, defer: false)
-        panel.level = NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue + 1)
-        panel.collectionBehavior = [.fullScreenAuxiliary]
+        let backing = screen.backingScaleFactor
+        let target = destination.frame.offsetBy(dx: -screenFrame.minX, dy: -screenFrame.minY)
+        let stageLevel = NSWindow.Level.mainMenu.rawValue + 1
+
+        // Defocused desktop. The system material is live, so nothing is captured.
+        let glass = Self.stagePanel(frame: screenFrame, level: stageLevel)
+        let effect = NSVisualEffectView(frame: bounds)
+        effect.material = .fullScreenUI
+        effect.blendingMode = .behindWindow
+        effect.state = .active
+        effect.appearance = NSAppearance(named: .darkAqua)
+        let veil = NSView(frame: bounds)
+        veil.wantsLayer = true
+        let tint = CALayer()
+        tint.frame = bounds
+        tint.backgroundColor = NSColor(white: 0.02, alpha: 0.38).cgColor
+        veil.layer?.addSublayer(tint)
+        let vignette = CAGradientLayer()
+        vignette.type = .radial
+        vignette.frame = bounds
+        vignette.colors = [NSColor.clear.cgColor, NSColor(white: 0, alpha: 0.46).cgColor]
+        vignette.locations = [0.3, 1]
+        vignette.startPoint = CGPoint(x: 0.5, y: 0.5)
+        vignette.endPoint = CGPoint(x: 1.08, y: 1.08)
+        veil.layer?.addSublayer(vignette)
+        effect.addSubview(veil)
+        glass.contentView = effect
+        glass.alphaValue = 0
+        glassPanel = glass
+
+        let brand = IntroductionPanel(contentRect: screenFrame, styleMask: [.borderless], backing: .buffered, defer: false)
+        Self.configure(brand, level: stageLevel + 1)
+        brand.setAccessibilityLabel(appLocalized("DogSC 启动动画，按 Esc 跳过"))
+        brand.onSkip = { [weak self] in self?.finish(activateDestination: true) }
+        let root = CALayer()
+        root.frame = bounds
+        root.contentsScale = backing
+        let view = NSView(frame: bounds)
+        view.layer = root
+        view.wantsLayer = true
+        brand.contentView = view
+        brandPanel = brand
+
+        // MARK: Composition
+
+        let scale = min(max(bounds.height / 1000, 0.86), 1.3)
+        let iconSize = 132 * scale
+        let wordSize = 58 * scale
+        let centre = CGPoint(x: bounds.midX, y: bounds.midY + 26 * scale)
+        let iconCentre = CGPoint(x: centre.x, y: centre.y + 64 * scale)
+        let ringRadius = iconSize * 0.75
+
+        let glow = CAGradientLayer()
+        glow.type = .radial
+        glow.bounds = CGRect(x: 0, y: 0, width: 820 * scale, height: 820 * scale)
+        glow.position = CGPoint(x: centre.x, y: centre.y + 20 * scale)
+        glow.colors = [NSColor(red: 0.86, green: 0.92, blue: 1, alpha: 0.16).cgColor,
+                       NSColor(red: 0.86, green: 0.92, blue: 1, alpha: 0.045).cgColor,
+                       NSColor.clear.cgColor]
+        glow.locations = [0, 0.42, 1]
+        glow.startPoint = CGPoint(x: 0.5, y: 0.5)
+        glow.endPoint = CGPoint(x: 1, y: 1)
+        glow.opacity = 0
+        root.addSublayer(glow)
+
+        let ringSide = ringRadius * 2 + 8 * scale
+        let ringPath = CGMutablePath()
+        ringPath.addArc(center: CGPoint(x: ringSide / 2, y: ringSide / 2), radius: ringRadius,
+                        startAngle: .pi / 2, endAngle: .pi / 2 - 2 * .pi, clockwise: true)
+        let ring = CAShapeLayer()
+        ring.bounds = CGRect(x: 0, y: 0, width: ringSide, height: ringSide)
+        ring.position = iconCentre
+        ring.path = ringPath
+        ring.fillColor = nil
+        ring.strokeColor = NSColor(white: 1, alpha: 0.36).cgColor
+        ring.lineWidth = max(1, 1.25 * scale)
+        ring.lineCap = .round
+        ring.strokeEnd = 0
+        root.addSublayer(ring)
+
+        // Blurred and sharp copies cross-fade: a focus pull without a live filter.
+        let pixels = max(256, (iconSize * backing).rounded(.up))
+        var proposed = CGRect(x: 0, y: 0, width: pixels, height: pixels)
+        let iconImage = NSApplication.shared.applicationIconImage.cgImage(forProposedRect: &proposed, context: nil, hints: nil)
+        let icon = CALayer()
+        icon.bounds = CGRect(x: 0, y: 0, width: iconSize, height: iconSize)
+        icon.position = iconCentre
+        icon.shadowColor = NSColor.black.cgColor
+        icon.shadowOpacity = 0.42
+        icon.shadowRadius = 30 * scale
+        icon.shadowOffset = CGSize(width: 0, height: -16 * scale)
+        icon.opacity = 0
+        let soft = CALayer()
+        let sharp = CALayer()
+        for (layer, image) in [(soft, iconImage.flatMap { Self.defocused($0) } ?? iconImage), (sharp, iconImage)] {
+            layer.frame = icon.bounds
+            layer.contents = image
+            layer.contentsGravity = .resizeAspect
+            layer.contentsScale = backing
+            icon.addSublayer(layer)
+        }
+        sharp.opacity = 0
+        root.addSublayer(icon)
+
+        // The stroke's leading point: the one colour on the stage.
+        let headSize = 7 * scale
+        let head = CALayer()
+        head.bounds = CGRect(x: 0, y: 0, width: headSize, height: headSize)
+        head.cornerRadius = headSize / 2
+        head.backgroundColor = Self.recording.cgColor
+        head.shadowColor = Self.recording.cgColor
+        head.shadowOpacity = 0.95
+        head.shadowRadius = 9 * scale
+        head.shadowOffset = .zero
+        head.position = CGPoint(x: iconCentre.x, y: iconCentre.y + ringRadius)
+        head.opacity = 0
+        root.addSublayer(head)
+        let orbit = CGMutablePath()
+        orbit.addArc(center: iconCentre, radius: ringRadius,
+                     startAngle: .pi / 2, endAngle: .pi / 2 - 2 * .pi, clockwise: true)
+
+        let pulseSide = headSize * 2.2
+        let pulse = CAShapeLayer()
+        pulse.bounds = CGRect(x: 0, y: 0, width: pulseSide, height: pulseSide)
+        pulse.position = head.position
+        pulse.path = CGPath(ellipseIn: pulse.bounds, transform: nil)
+        pulse.fillColor = nil
+        pulse.strokeColor = Self.recording.cgColor
+        pulse.lineWidth = max(1, 1.25 * scale)
+        pulse.opacity = 0
+        root.addSublayer(pulse)
+
+        let word = Self.wordmark("DogSC", size: wordSize, backing: backing)
+        word.container.position = CGPoint(x: centre.x, y: centre.y - 62 * scale)
+        root.addSublayer(word.container)
+
+        let subtitleText = appLocalized("丝滑录屏")
+        let isWideScript = subtitleText.unicodeScalars.contains { $0.value >= 0x2E80 }
+        let subtitle = Self.textLayer(subtitleText, size: 17 * scale, kern: (isWideScript ? 7 : 0.6) * scale,
+                                      color: NSColor(white: 1, alpha: 0.6), backing: backing)
+        let subtitleRest = CGPoint(x: centre.x, y: centre.y - 112 * scale)
+        subtitle.position = subtitleRest
+        subtitle.opacity = 0
+        root.addSublayer(subtitle)
+
+        let skip = Self.textLayer(appLocalized("按 Esc 跳过"), size: 12, kern: 0.4,
+                                  color: NSColor(white: 1, alpha: 0.4), backing: backing)
+        skip.position = CGPoint(x: bounds.midX, y: max(40, bounds.height * 0.06))
+        skip.opacity = 0
+        root.addSublayer(skip)
+
+        // MARK: Timeline
+
+        let start = CACurrentMediaTime() + 0.08
+        let arrive = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)
+        let sweep = CAMediaTimingFunction(controlPoints: 0.62, 0, 0.3, 1)
+        let dock = CAMediaTimingFunction(controlPoints: 0.34, 0, 0.1, 1)
+
+        Self.animate(glow, "opacity", from: 0, to: 1, at: start + 0.1, duration: 1.1)
+
+        Self.animate(icon, "opacity", from: 0, to: 1, at: start + 0.15, duration: 0.4)
+        Self.animate(icon, "transform.scale", from: 1.2, to: 1, at: start + 0.15, duration: 1.0, timing: arrive)
+        Self.animate(sharp, "opacity", from: 0, to: 1, at: start + 0.36, duration: 0.5)
+        Self.animate(soft, "opacity", from: 1, to: 0, at: start + 0.56, duration: 0.42)
+
+        let ringStart = start + 0.4, ringDuration = 0.86
+        Self.animate(ring, "strokeEnd", from: 0, to: 1, at: ringStart, duration: ringDuration, timing: sweep)
+        Self.animate(head, "opacity", from: 0, to: 1, at: ringStart, duration: 0.16)
+        let travel = CAKeyframeAnimation(keyPath: "position")
+        travel.path = orbit
+        travel.calculationMode = .paced
+        travel.beginTime = ringStart
+        travel.duration = ringDuration
+        travel.timingFunction = sweep
+        travel.fillMode = .both
+        travel.isRemovedOnCompletion = false
+        head.add(travel, forKey: "orbit")
+
+        // One revolution completes: the point rings out and the title takes over.
+        let closed = ringStart + ringDuration
+        Self.animate(pulse, "opacity", from: 0.8, to: 0, at: closed, duration: 0.6, key: "pulse.fade")
+        Self.animate(pulse, "transform.scale", from: 1, to: 4.2, at: closed, duration: 0.6, timing: arrive, key: "pulse.grow")
+        Self.animate(head, "opacity", from: 1, to: 0, at: closed + 0.08, duration: 0.36, key: "head.exit")
+        Self.animate(ring, "opacity", from: 1, to: 0, at: closed + 0.04, duration: 0.62, key: "ring.exit")
+        Self.animate(ring, "transform.scale", from: 1, to: 1.08, at: closed + 0.04, duration: 0.62, timing: arrive, key: "ring.grow")
+
+        let lineHeight = word.container.bounds.height
+        for (index, letter) in word.letters.enumerated() {
+            let rest = letter.position
+            Self.animate(letter, "position", from: NSValue(point: CGPoint(x: rest.x, y: rest.y - lineHeight)),
+                         to: NSValue(point: rest), at: start + 0.92 + Double(index) * 0.055, duration: 0.7, timing: arrive)
+        }
+        Self.animate(subtitle, "opacity", from: 0, to: 1, at: start + 1.36, duration: 0.5)
+        Self.animate(subtitle, "position", from: NSValue(point: CGPoint(x: subtitleRest.x, y: subtitleRest.y - 9 * scale)),
+                     to: NSValue(point: subtitleRest), at: start + 1.36, duration: 0.7, timing: arrive)
+        Self.animate(skip, "opacity", from: 0, to: 1, at: start + 0.7, duration: 0.4)
+
+        // Hand-off: the brand docks where the live header will draw it.
+        let settle = start + 2.3
+        let brandSize = PermissionOnboardingStyle.brandSize
+        let brandCentre = CGPoint(x: target.minX + PermissionOnboardingStyle.brandInset.x + brandSize / 2,
+                                  y: target.maxY - PermissionOnboardingStyle.brandInset.y - brandSize / 2)
+        let wordScale = 15 / wordSize
+        let wordCentre = CGPoint(x: target.minX + PermissionOnboardingStyle.brandInset.x + brandSize + 9
+                                    + word.width * wordScale / 2,
+                                 y: brandCentre.y)
+        Self.animate(glow, "opacity", from: 1, to: 0, at: settle, duration: 0.5, key: "glow.exit")
+        Self.animate(subtitle, "opacity", from: 1, to: 0, at: settle, duration: 0.22, key: "subtitle.exit")
+        Self.animate(skip, "opacity", from: 1, to: 0, at: settle, duration: 0.2, key: "skip.exit")
+        Self.animate(icon, "position", from: NSValue(point: icon.position), to: NSValue(point: brandCentre),
+                     at: settle, duration: 0.9, timing: dock)
+        Self.animate(icon, "transform.scale", from: 1, to: brandSize / iconSize, at: settle, duration: 0.9, timing: dock, key: "icon.dock")
+        Self.animate(icon, "shadowOpacity", from: 0.42, to: 0, at: settle, duration: 0.45)
+        Self.animate(word.container, "position", from: NSValue(point: word.container.position), to: NSValue(point: wordCentre),
+                     at: settle + 0.03, duration: 0.9, timing: dock)
+        Self.animate(word.container, "transform.scale", from: 1, to: wordScale, at: settle + 0.03, duration: 0.9, timing: dock)
+        for letter in word.letters {
+            Self.animate(letter, "foregroundColor", from: NSColor.white.cgColor, to: Self.ink.cgColor,
+                         at: settle + 0.22, duration: 0.5)
+        }
+
+        // MARK: Presentation
+
+        NSApp.activate(ignoringOtherApps: true)
+        // Lay out the real page once; it stays invisible until the hand-off.
+        destination.alphaValue = 0
+        destination.orderFront(nil)
+        destination.contentView?.layoutSubtreeIfNeeded()
+        destination.contentView?.displayIfNeeded()
+        glass.orderFront(nil)
+        brand.makeKeyAndOrderFront(nil)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.55
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            glass.animator().alphaValue = 1
+        }
+
+        // No input monitor survives the stage. App switches, display changes
+        // and Esc all remove it and restore the live window.
+        resignationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.finish(activateDestination: false) }
+        }
+        screenObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard !NSScreen.screens.contains(where: { $0.frame == screenFrame }) else { return }
+                self?.finish(activateDestination: false)
+            }
+        }
+        sequence = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(2380))
+                self?.beginHandOff(leadsIntoTour: leadsIntoTour)
+                try await Task.sleep(for: .milliseconds(260))
+                self?.revealPage()
+                try await Task.sleep(for: .milliseconds(740))
+            } catch { return }
+            self?.finish(activateDestination: true, natural: true)
+        }
+    }
+
+    func cancel() {
+        if isPresenting { finish(activateDestination: false) }
+        else { closeDim() }
+    }
+
+    private func beginHandOff(leadsIntoTour: Bool) {
+        guard isPresenting, let destination = destinationWindow else { return }
+        if leadsIntoTour {
+            // A plain dimmer rises beneath the window as the glass clears, so
+            // the guide's own shade can take over without the desktop flashing.
+            let dim = Self.stagePanel(frame: glassPanel?.frame ?? destination.frame, level: destination.level.rawValue)
+            dim.ignoresMouseEvents = true
+            dim.backgroundColor = Self.tourDim
+            dim.alphaValue = 0
+            dim.order(.below, relativeTo: destination.windowNumber)
+            dimPanel = dim
+        }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.78
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            glassPanel?.animator().alphaValue = 0
+            dimPanel?.animator().alphaValue = 1
+        }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.5
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            destination.animator().alphaValue = 1
+        }
+    }
+
+    private func revealPage() {
+        guard isPresenting else { return }
+        presentation.animatesIntro = true
+        presentation.introStage = .settling
+    }
+
+    private func finish(activateDestination: Bool, natural: Bool = false) {
+        guard isPresenting else { return }
+        isPresenting = false
+        sequence?.cancel()
+        sequence = nil
+        if let resignationObserver { NotificationCenter.default.removeObserver(resignationObserver) }
+        if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
+        resignationObserver = nil
+        screenObserver = nil
+        let destination = destinationWindow
+        destinationWindow = nil
+        destination?.alphaValue = 1
+        UserDefaults.standard.set(true, forKey: Self.seenKey)
+
+        presentation.animatesIntro = false
+        presentation.introStage = .settled
+        presentation.isIntroAnimating = false
+
+        let brand = brandPanel, glass = glassPanel
+        brandPanel = nil
+        glassPanel = nil
+        brand?.onSkip = nil
+        let closePanels: @MainActor @Sendable () -> Void = {
+            for panel in [brand, glass] {
+                panel?.orderOut(nil)
+                panel?.contentView = nil
+                panel?.close()
+            }
+        }
+        if natural {
+            // Let the live header repaint beneath its docked copy first.
+            destination?.contentView?.layoutSubtreeIfNeeded()
+            destination?.contentView?.displayIfNeeded()
+            // Fade out the docked brandPanel smoothly so the live SwiftUI header
+            // seamlessly takes over beneath it without any single-frame gap.
+            glass?.orderOut(nil)
+            glass?.contentView = nil
+            glass?.close()
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.16
+                brand?.animator().alphaValue = 0
+            } completionHandler: {
+                MainActor.assumeIsolated {
+                    brand?.orderOut(nil)
+                    brand?.contentView = nil
+                    brand?.close()
+                }
+            }
+        } else {
+            closePanels()
+        }
+        if activateDestination, NSApp.isActive, destination?.isVisible == true {
+            destination?.makeKeyAndOrderFront(nil)
+        }
+
+        let callback = completion
+        completion = nil
+        callback?()
+        closeDim()
+    }
+
+    private func closeDim() {
+        dimPanel?.orderOut(nil)
+        dimPanel?.close()
+        dimPanel = nil
+    }
+
+    // MARK: - Building blocks
+
+    private static func stagePanel(frame: NSRect, level: Int) -> NSPanel {
+        let panel = NSPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        configure(panel, level: level)
+        return panel
+    }
+
+    private static func configure(_ panel: NSPanel, level: Int) {
+        panel.level = NSWindow.Level(rawValue: level)
+        panel.collectionBehavior = [.fullScreenAuxiliary, .ignoresCycle]
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.hasShadow = false
         panel.hidesOnDeactivate = true
         panel.isReleasedWhenClosed = false
         panel.animationBehavior = .none
-        panel.setAccessibilityLabel(appLocalized("DogSC 启动动画，按 Esc 跳过"))
-        panel.onSkip = { [weak self] in self?.finish(activateDestination: true, destination: destination) }
-
-        let view = NSView(frame: bounds)
-        view.wantsLayer = true
-        let root = CALayer()
-        root.frame = bounds
-        root.contentsScale = screen.backingScaleFactor
-        view.layer = root
-        panel.contentView = view
-        self.panel = panel
-        self.destinationWindow = destination
-        self.completion = completion
-        presentation.isIntroAnimating = true
-
-        let surface = CALayer()
-        surface.frame = bounds
-        surface.backgroundColor = NSColor(white: 0.04, alpha: 0.56).cgColor
-        root.addSublayer(surface)
-
-        let scale = min(max(bounds.height / 1000, 0.8), 1.35)
-        let iconSize = 116 * scale
-        let center = CGPoint(x: bounds.midX, y: bounds.midY + 44 * scale)
-        let icon = CALayer()
-        icon.bounds = CGRect(x: 0, y: 0, width: iconSize, height: iconSize)
-        icon.position = CGPoint(x: center.x, y: center.y + 48 * scale)
-        icon.contents = NSApplication.shared.applicationIconImage.cgImage(forProposedRect: nil, context: nil, hints: nil)
-        icon.contentsGravity = .resizeAspect
-        icon.contentsScale = screen.backingScaleFactor
-        icon.shadowColor = NSColor.black.cgColor
-        icon.shadowOpacity = 0.10
-        icon.shadowRadius = 16 * scale
-        icon.shadowOffset = CGSize(width: 0, height: -8 * scale)
-        root.addSublayer(icon)
-
-        _ = Font.appUI(size: 15, weight: .semibold)
-        let titleSize = 54 * scale
-        let title = Self.textLayer("DogSC", size: titleSize, weight: .semibold, color: .white, scale: screen.backingScaleFactor)
-        title.position = CGPoint(x: center.x, y: center.y - 48 * scale)
-        root.addSublayer(title)
-        let subtitle = Self.textLayer(appLocalized("丝滑录屏"), size: 20 * scale, weight: .regular, color: .init(white: 0.87, alpha: 1), scale: screen.backingScaleFactor)
-        subtitle.position = CGPoint(x: center.x, y: center.y - 94 * scale)
-        root.addSublayer(subtitle)
-
-        let start = CACurrentMediaTime() + 0.06
-        let ease = CAMediaTimingFunction(controlPoints: 0.22, 0.72, 0.18, 1)
-        Self.animate(surface, "opacity", from: 0, to: 1, at: start, duration: 0.38)
-        Self.addSilverParticles(to: root, center: center, scale: scale, at: start, backingScale: screen.backingScaleFactor)
-        let skip = Self.textLayer(appLocalized("按 Esc 跳过"), size: 12, weight: .regular,
-                                  color: NSColor(white: 0.9, alpha: 0.65), scale: screen.backingScaleFactor)
-        skip.position = CGPoint(x: bounds.midX, y: max(40, bounds.height * 0.07))
-        root.addSublayer(skip)
-        Self.animate(skip, "opacity", from: 0, to: 1, at: start + 0.45, duration: 0.3)
-        Self.animate(icon, "opacity", from: 0, to: 1, at: start + 0.55, duration: 0.48)
-        Self.animate(title, "opacity", from: 0, to: 1, at: start + 0.72, duration: 0.42)
-        Self.animate(subtitle, "opacity", from: 0, to: 1, at: start + 0.88, duration: 0.4)
-
-        let settle = start + 1.62
-        Self.animate(surface, "opacity", from: 1, to: 0, at: settle + 0.22, duration: 0.7, key: "dim.exit")
-        Self.animate(skip, "opacity", from: 1, to: 0, at: settle, duration: 0.2, key: "skip.exit")
-        Self.animate(title, "foregroundColor", from: NSColor.white.cgColor,
-                     to: NSColor(red: 0.16, green: 0.18, blue: 0.19, alpha: 1).cgColor,
-                     at: settle + 0.25, duration: 0.65)
-        let brandCenter = CGPoint(x: target.minX + PermissionOnboardingStyle.brandInset.x + 16,
-                                  y: target.maxY - PermissionOnboardingStyle.brandInset.y - 16)
-        Self.animate(icon, "position", from: NSValue(point: icon.position), to: NSValue(point: brandCenter), at: settle, duration: 0.96, timing: ease)
-        Self.animate(icon, "transform.scale", from: 1, to: PermissionOnboardingStyle.brandSize / iconSize, at: settle, duration: 0.96, timing: ease)
-        Self.animate(icon, "shadowOpacity", from: 0.10, to: 0, at: settle, duration: 0.5)
-        let wordWidth = Self.font(size: 15, weight: .semibold).width(of: "DogSC")
-        let wordCenter = CGPoint(x: target.minX + PermissionOnboardingStyle.brandInset.x + 32 + 9 + wordWidth / 2,
-                                 y: brandCenter.y)
-        Self.animate(title, "position", from: NSValue(point: title.position), to: NSValue(point: wordCenter), at: settle, duration: 0.96, timing: ease)
-        Self.animate(title, "transform.scale", from: 1, to: 15 / titleSize, at: settle, duration: 0.96, timing: ease)
-        Self.animate(subtitle, "opacity", from: 1, to: 0, at: settle, duration: 0.25, key: "subtitle.exit")
-
-        NSApp.activate(ignoringOtherApps: true)
-        panel.makeKeyAndOrderFront(nil)
-        // Lay out the real permission page once; reveal it only at the handoff.
-        // The desktop behind the transparent dimmer stays live throughout.
-        destination.alphaValue = 0
-        destination.order(.below, relativeTo: panel.windowNumber)
-        destination.contentView?.layoutSubtreeIfNeeded()
-        destination.contentView?.displayIfNeeded()
-
-        // No input monitor survives the temporary panel. App switches, display
-        // changes and Esc all remove the overlay and restore the live window.
-        resignationObserver = NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self, weak destination] _ in
-            MainActor.assumeIsolated { self?.finish(activateDestination: false, destination: destination) }
-        }
-        screenObserver = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self, weak destination] _ in
-            MainActor.assumeIsolated {
-                guard !NSScreen.screens.contains(where: { $0.frame == screenFrame }) else { return }
-                self?.finish(activateDestination: false, destination: destination)
-            }
-        }
-        completionTask = Task { @MainActor [weak self, weak destination] in
-            do {
-                try await Task.sleep(for: .seconds(1.85))
-                guard !Task.isCancelled else { return }
-                NSAnimationContext.runAnimationGroup({ context in
-                    context.duration = 0.55
-                    context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                    destination?.animator().alphaValue = 1
-                }, completionHandler: nil)
-                try await Task.sleep(for: .seconds(0.93))
-            } catch { return }
-            self?.finish(activateDestination: true, destination: destination)
-        }
     }
 
-    func cancel() { finish(activateDestination: false, destination: destinationWindow) }
-
-    private func finish(activateDestination: Bool, destination: NSWindow?) {
-        guard let panel, !isFinishing else { return }
-        isFinishing = true
-        completionTask?.cancel()
-        completionTask = nil
-        if let resignationObserver { NotificationCenter.default.removeObserver(resignationObserver) }
-        if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
-        resignationObserver = nil
-        screenObserver = nil
-        destination?.alphaValue = 1
-        presentation.isIntroAnimating = false
-        panel.onSkip = nil
-        UserDefaults.standard.set(true, forKey: Self.seenKey)
-        let dismiss: @MainActor @Sendable () -> Void = { [weak self, weak destination] in
-            guard let self else { return }
-            destination?.contentView?.layoutSubtreeIfNeeded()
-            destination?.contentView?.displayIfNeeded()
-            panel.orderOut(nil)
-            panel.contentView = nil
-            panel.close()
-            self.panel = nil
-            self.destinationWindow = nil
-            self.isFinishing = false
-            let callback = self.completion
-            self.completion = nil
-            callback?()
-            if activateDestination, NSApp.isActive, destination?.isVisible == true {
-                destination?.makeKeyAndOrderFront(nil)
-            }
-        }
-        // Let the live brand repaint beneath its settled compositor copy.
-        // Cancellation removes the input surface immediately instead.
-        if activateDestination { DispatchQueue.main.async(execute: dismiss) }
-        else { dismiss() }
-    }
-
-    /// Deterministic, finite compositor paths: silver dust converges around the
-    /// brand while the user's live desktop remains visible through the dimmer.
-    /// No screenshot, frame timer, media decoder or persistent emitter is used.
-    private static func addSilverParticles(to root: CALayer, center: CGPoint, scale: CGFloat,
-                                            at start: CFTimeInterval, backingScale: CGFloat) {
-        let cloud = CALayer()
-        cloud.frame = root.bounds
-        root.addSublayer(cloud)
-        var seed: UInt64 = 0xD065C
-        func random() -> CGFloat {
-            seed = seed &* 6364136223846793005 &+ 1442695040888963407
-            return CGFloat(seed >> 33) / CGFloat(UInt64.max >> 33)
-        }
-        for index in 0..<760 {
-            let side: CGFloat = index.isMultiple(of: 2) ? -1 : 1
-            let spread = random()
-            let band = random() - 0.5
-            let x = (130 + spread * 500) * scale * side
-            let y = sin(spread * .pi * 2 + side * 0.7) * 60 * scale + band * 92 * scale
-            let end = CGPoint(x: center.x + x * 0.72, y: center.y - 38 * scale + y)
-            let initial = CGPoint(x: center.x + x * 1.8, y: center.y + y * 2.0)
-            let radius = (index < 28 ? 3 + random() * 3 : 0.6 + random() * 1.2) * scale
-            let particle = CALayer()
-            particle.bounds = CGRect(x: 0, y: 0, width: radius * 2, height: radius * 2)
-            particle.position = end
-            particle.cornerRadius = radius
-            particle.backgroundColor = NSColor(white: 0.9 + random() * 0.1, alpha: 1).cgColor
-            particle.contentsScale = backingScale
-            particle.opacity = 0
-            cloud.addSublayer(particle)
-            let delay = random() * 0.32
-            let path = CGMutablePath()
-            path.move(to: initial)
-            path.addCurve(to: end,
-                          control1: CGPoint(x: initial.x * 0.6 + end.x * 0.4, y: initial.y + side * 100 * scale),
-                          control2: CGPoint(x: end.x + side * 80 * scale, y: end.y - side * 32 * scale))
-            let movement = CAKeyframeAnimation(keyPath: "position")
-            movement.path = path
-            movement.beginTime = start + delay
-            movement.duration = 1.65
-            movement.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 0.58, 0.24, 1)
-            movement.fillMode = .both
-            movement.isRemovedOnCompletion = false
-            particle.add(movement, forKey: "gather")
-            let visibility = CAKeyframeAnimation(keyPath: "opacity")
-            let peak = index < 28 ? 0.12 : 0.2 + random() * 0.55
-            visibility.values = [0, peak, peak * 0.8, 0]
-            visibility.keyTimes = [0, 0.25, 0.67, 1]
-            visibility.beginTime = start + delay
-            visibility.duration = 2.05
-            visibility.fillMode = .both
-            visibility.isRemovedOnCompletion = false
-            particle.add(visibility, forKey: "dust")
-        }
+    private static func defocused(_ image: CGImage) -> CGImage? {
+        let source = CIImage(cgImage: image)
+        let blurred = source.clampedToExtent()
+            .applyingGaussianBlur(sigma: Double(image.width) * 0.05)
+            .cropped(to: source.extent)
+        return CIContext(options: [.cacheIntermediates: false]).createCGImage(blurred, from: source.extent)
     }
 
     private static func font(size: CGFloat, weight: NSFont.Weight) -> NSFont {
+        // Registers the bundled faces before AppKit looks them up by name.
+        _ = Font.appUI(size: size, weight: .semibold)
         let face = weight == .semibold ? "75_SemiBold" : "55_Regular"
         return NSFont(name: "AlibabaPuHuiTi_3_\(face)", size: size) ?? NSFont.systemFont(ofSize: size, weight: weight)
     }
 
-    private static func textLayer(_ text: String, size: CGFloat, weight: NSFont.Weight, color: NSColor, scale: CGFloat) -> CATextLayer {
-        let font = font(size: size, weight: weight)
-        let attributed = NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: color])
+    /// Each glyph is its own layer at the position Core Text gives it in the
+    /// whole word, inside a clipping line box it can rise into.
+    private static func wordmark(_ text: String, size: CGFloat, backing: CGFloat)
+        -> (container: CALayer, letters: [CATextLayer], width: CGFloat) {
+        let font = font(size: size, weight: .semibold)
+        let attributes: [NSAttributedString.Key: Any] = [.font: font]
+        let measured = (text as NSString).size(withAttributes: attributes)
+        let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attributes))
+        let container = CALayer()
+        container.bounds = CGRect(x: 0, y: 0, width: ceil(measured.width), height: ceil(measured.height))
+        container.masksToBounds = true
+        var letters: [CATextLayer] = []
+        let units = Array(text.utf16)
+        for index in units.indices {
+            let glyph = String(utf16CodeUnits: [units[index]], count: 1)
+            let layer = CATextLayer()
+            layer.string = glyph
+            layer.font = font
+            layer.fontSize = size
+            layer.foregroundColor = NSColor.white.cgColor
+            layer.contentsScale = backing
+            layer.alignmentMode = .left
+            layer.anchorPoint = .zero
+            layer.bounds = CGRect(x: 0, y: 0,
+                                  width: ceil((glyph as NSString).size(withAttributes: attributes).width) + 2,
+                                  height: container.bounds.height)
+            layer.position = CGPoint(x: CTLineGetOffsetForStringIndex(line, index, nil), y: 0)
+            container.addSublayer(layer)
+            letters.append(layer)
+        }
+        return (container, letters, measured.width)
+    }
+
+    private static func textLayer(_ text: String, size: CGFloat, kern: CGFloat, color: NSColor, backing: CGFloat) -> CATextLayer {
+        let font = font(size: size, weight: .regular)
+        let attributed = NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: color, .kern: kern])
         let layer = CATextLayer()
-        layer.string = text
-        layer.font = font
-        layer.fontSize = size
-        layer.foregroundColor = color.cgColor
-        layer.bounds = CGRect(x: 0, y: 0, width: ceil(attributed.size().width) + 2, height: ceil(attributed.size().height) + 2)
-        layer.alignmentMode = .center
-        layer.contentsScale = scale
+        layer.string = attributed
+        // Kerning trails the last glyph too; trimming it keeps the word centred.
+        layer.bounds = CGRect(x: 0, y: 0, width: ceil(attributed.size().width - kern) + 2,
+                              height: ceil(attributed.size().height) + 2)
+        layer.alignmentMode = .left
+        layer.contentsScale = backing
         return layer
     }
 
@@ -282,15 +533,11 @@ final class FirstLaunchIntroduction {
         animation.beginTime = time
         animation.duration = duration
         animation.timingFunction = timing
+        // A property's first animation also holds its starting value; later
+        // ones on the same property only take over once they begin.
         animation.fillMode = key == nil ? .both : .forwards
         animation.isRemovedOnCompletion = false
         layer.add(animation, forKey: key ?? path)
-    }
-}
-
-private extension NSFont {
-    func width(of string: String) -> CGFloat {
-        (string as NSString).size(withAttributes: [.font: self]).width
     }
 }
 

@@ -1116,6 +1116,20 @@
 "开发版不会替换正式版；发布后的 DogSC 才会连接 GitHub 更新源。" = "This development build does not replace the release app. Release builds use GitHub updates.";
 "每天自动检查 GitHub Release；发现新版后可直接下载、替换并重新打开。" = "Check GitHub Releases daily. Available updates can be downloaded, installed and reopened.";
 "自动检查已关闭；仍可随时手动检查并直接安装新版。" = "Automatic checks are off. You can check manually and install an update at any time.";
+"在访达中显示" = "Show in Finder";
+"在访达中显示%@" = "Show %@ in Finder";
+"前往授权" = "Authorize…";
+"前往授权：%@" = "Authorize %@…";
+"录制所需权限已就绪" = "Permissions Ready";
+"还有权限需要处理" = "Action Required";
+"屏幕录制与辅助功能均已授权；摄像头和麦克风会在需要时询问。" = "Screen recording and accessibility are authorized; camera and microphone will prompt when needed.";
+"屏幕录制或辅助功能尚未授权，录制可能黑屏或缺少光标轨道。" = "Screen recording or accessibility is not authorized; recordings may be blank or lack cursor movement.";
+"社区与源码" = "Community & Source";
+"在 GitHub 浏览完整的开源代码仓库" = "Browse open-source repository on GitHub";
+"提交 Issue、Bug 反馈或新功能想法" = "Submit issues, bug reports, or feature ideas";
+"支持与赞赏" = "Support & Donate";
+"社区与开源" = "Community & Open Source";
+"丝滑、优雅的高性能屏幕录制工具" = "Silky, elegant, high-performance screen recording";
 
 /* Product UI labels and dynamic color/preview descriptions. */
 "正在保存项目…" = "Saving Project…";
@@ -1350,7 +1364,7 @@
 "这次录制尚未进入编辑器，请先完成录制后的处理。" = "Choose what to do with the completed recording before opening it in the editor.";
 "请先选择显示器、窗口、区域或设备。" = "Choose a display, window, area, or device before recording.";
 "摄像头正在建立实时画面并确认分辨率与帧率，请稍候再开始录制。" = "The camera preview is checking its resolution and frame rate. Wait a moment before recording.";
-"磁盘空间不足，无法保证 30 分钟录制安全完成。请先释放空间。" = "There is not enough disk space for a 30-minute recording. Free up space before recording.";
+"开始录制需预留约 1 分钟的空间（%@），当前可用 %@。请再释放约 %@ 后重试。" = "Starting a recording requires about 1 minute of space (%@); %@ is available. Free up about %@ more and try again.";
 "录制文件没有可播放的视频轨道，已保留临时项目供恢复。" = "The recording has no playable video track. The temporary project has been kept for recovery.";
 "时间线尚未准备完成，暂时无法导出选区。" = "Wait for the timeline to load before exporting a selection.";
 "请先选择一个或多个主片段，再按 ⌥X 导出选区。" = "Select one or more video clips, then press ⌥X to export the selection.";
@@ -1708,3 +1722,9 @@
 "赞赏码" = "Support QR code";
 "使用手机扫描图片中的赞赏码" = "Scan this support code with your phone";
 "赞赏码暂时无法显示" = "Support code is unavailable";
+
+"编辑器外观" = "Editor appearance";
+
+"返回录制结果" = "Back to Recording";
+
+"取消关闭项目" = "Cancel closing project";

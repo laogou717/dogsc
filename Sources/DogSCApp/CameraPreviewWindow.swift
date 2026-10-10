@@ -295,17 +295,19 @@ final class CameraPreviewWindowController {
 
     private func applyPreferredShape(to panel: CameraPreviewPanel) {
         let shape = AppPreferences.recordingCameraPreviewShape
-        let size: CGSize
+        let bubble: CGSize
         switch shape {
         case .circle, .roundedSquare:
-            size = CGSize(width: 240, height: 240)
+            bubble = CGSize(width: 240, height: 240)
         case .sourceAspect:
             let longEdge: CGFloat = 288
             let aspect = max(sourceAspectRatio ?? 16 / 9, 0.01)
-            size = aspect >= 1
+            bubble = aspect >= 1
                 ? CGSize(width: longEdge, height: longEdge / aspect)
                 : CGSize(width: longEdge * aspect, height: longEdge)
         }
+        let margin = CameraPreviewSurface.margin
+        let size = CGSize(width: bubble.width + margin * 2, height: bubble.height + margin * 2)
         if abs(panel.frame.width - size.width) > 0.5
             || abs(panel.frame.height - size.height) > 0.5 {
             panel.setContentSize(size)
@@ -362,6 +364,12 @@ private final class CameraPreviewSurface: NSView {
     private var sourceSize: CGSize?
     private let apertureMaskLayer = CAShapeLayer()
     private let apertureBorderLayer = CAShapeLayer()
+    /// The compositor draws video outside an arbitrary path mask, which left a
+    /// circular bubble with four flat sides. A corner radius on the video's
+    /// own container is honoured exactly.
+    private let videoClipLayer = CALayer()
+    /// Clear space the window keeps around the bubble on every side.
+    static let margin: CGFloat = 12
 
     init(
         frame frameRect: NSRect,
@@ -374,7 +382,9 @@ private final class CameraPreviewSurface: NSView {
         super.init(frame: frameRect)
         wantsLayer = true
         layer = CALayer()
-        layer?.backgroundColor = NSColor.clear.cgColor
+        // Opaque inside the aperture: wherever the picture does not reach, the
+        // bubble is still a whole shape instead of a clipped one.
+        layer?.backgroundColor = NSColor.black.cgColor
         layer?.mask = apertureMaskLayer
         apertureMaskLayer.fillColor = NSColor.black.cgColor
         apertureBorderLayer.fillColor = NSColor.clear.cgColor
@@ -383,31 +393,41 @@ private final class CameraPreviewSurface: NSView {
         layer?.addSublayer(apertureBorderLayer)
         previewLayer.videoGravity = .resizeAspectFill
         frameSink.attach(previewLayer.sampleBufferRenderer)
-        layer?.insertSublayer(previewLayer, below: apertureBorderLayer)
+        videoClipLayer.masksToBounds = true
+        videoClipLayer.cornerCurve = .circular
+        videoClipLayer.addSublayer(previewLayer)
+        layer?.insertSublayer(videoClipLayer, below: apertureBorderLayer)
 
         statusView.wantsLayer = true
-        statusView.layer?.backgroundColor = NSColor(
-            calibratedWhite: 0.055,
-            alpha: 0.94
-        ).cgColor
+        statusView.layer?.backgroundColor = RecorderStyle.baseNSColor.withAlphaComponent(0.94).cgColor
         statusView.isHidden = true
         addSubview(statusView)
 
         statusSpinner.style = .spinning
         statusSpinner.controlSize = .small
-        statusSpinner.appearance = NSAppearance(named: .darkAqua)
+        statusSpinner.appearance = nil
         statusView.addSubview(statusSpinner)
 
         statusTitle.alignment = .center
         statusTitle.font = .systemFont(ofSize: 15, weight: .semibold)
-        statusTitle.textColor = .white
+        statusTitle.textColor = RecorderStyle.inkNSColor
         statusView.addSubview(statusTitle)
 
         statusDeviceName.alignment = .center
         statusDeviceName.font = .systemFont(ofSize: 11, weight: .medium)
-        statusDeviceName.textColor = NSColor.white.withAlphaComponent(0.58)
+        statusDeviceName.textColor = RecorderStyle.inkNSColor.withAlphaComponent(0.58)
         statusDeviceName.lineBreakMode = .byTruncatingMiddle
         statusView.addSubview(statusDeviceName)
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            statusView.layer?.backgroundColor = RecorderStyle.baseNSColor.withAlphaComponent(0.94).cgColor
+            CATransaction.commit()
+        }
     }
 
     func releaseResources() {
@@ -462,11 +482,18 @@ private final class CameraPreviewSurface: NSView {
 
     override func layout() {
         super.layout()
+        // The window carries a clear margin around the bubble, so the shape
+        // is never drawn against the window's own edge.
+        let aperture = bounds.insetBy(dx: Self.margin, dy: Self.margin)
         let aperturePath = Self.aperturePath(
             shape: previewShape,
-            bounds: bounds
+            bounds: aperture
         )
-        let viewport = bounds.insetBy(dx: 1, dy: 1)
+        // The picture overscans the aperture. A camera that delivers a frame
+        // slightly short of its buffer otherwise leaves the circle with flat,
+        // empty edges.
+        let viewport = CGRect(origin: .zero, size: aperture.size)
+        let overscan: CGFloat = 1.1
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         apertureMaskLayer.frame = bounds
@@ -474,8 +501,14 @@ private final class CameraPreviewSurface: NSView {
         apertureBorderLayer.frame = bounds
         apertureBorderLayer.path = Self.aperturePath(
             shape: previewShape,
-            bounds: bounds.insetBy(dx: 0.5, dy: 0.5)
+            bounds: aperture.insetBy(dx: 0.5, dy: 0.5)
         )
+        videoClipLayer.frame = aperture
+        switch previewShape {
+        case .circle: videoClipLayer.cornerRadius = min(aperture.width, aperture.height) / 2
+        case .roundedSquare: videoClipLayer.cornerRadius = 42
+        case .sourceAspect: videoClipLayer.cornerRadius = min(28, min(aperture.width, aperture.height) * 0.16)
+        }
         previewLayer.videoGravity = .resizeAspectFill
         previewLayer.bounds = CGRect(origin: .zero, size: viewport.size)
         previewLayer.position = CGPoint(x: viewport.midX, y: viewport.midY)
@@ -486,23 +519,23 @@ private final class CameraPreviewSurface: NSView {
             sourceHeight: sourceHeight
         )
         previewLayer.setAffineTransform(
-            CGAffineTransform(scaleX: mirrored ? -fillScale : fillScale, y: fillScale)
+            CGAffineTransform(scaleX: (mirrored ? -fillScale : fillScale) * overscan, y: fillScale * overscan)
         )
         CATransaction.commit()
 
-        statusView.frame = bounds
+        statusView.frame = aperture
         statusView.layer?.cornerRadius = 0
-        let centerY = bounds.midY
+        let centerY = aperture.height / 2
         if statusSpinner.isHidden {
             statusTitle.frame = CGRect(
                 x: 22,
                 y: centerY - 4,
-                width: bounds.width - 44,
+                width: aperture.width - 44,
                 height: 22
             )
         } else {
             statusSpinner.frame = CGRect(
-                x: bounds.midX - 9,
+                x: aperture.width / 2 - 9,
                 y: centerY + 24,
                 width: 18,
                 height: 18
@@ -510,14 +543,14 @@ private final class CameraPreviewSurface: NSView {
             statusTitle.frame = CGRect(
                 x: 22,
                 y: centerY - 8,
-                width: bounds.width - 44,
+                width: aperture.width - 44,
                 height: 22
             )
         }
         statusDeviceName.frame = CGRect(
             x: 30,
             y: centerY - 31,
-            width: bounds.width - 60,
+            width: aperture.width - 60,
             height: 18
         )
     }

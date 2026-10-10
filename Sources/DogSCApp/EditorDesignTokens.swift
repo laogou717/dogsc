@@ -8,24 +8,25 @@ public enum EditorTheme {
     // selected Aqua appearance. Dynamic NSColor providers also update panels
     // already on screen when the user changes appearance in Settings.
     public static let backgroundDeep = adaptive(
-        light: NSColor(calibratedRed: 0.952, green: 0.960, blue: 0.963, alpha: 1),
-        dark: NSColor(calibratedRed: 0.045, green: 0.047, blue: 0.051, alpha: 1)
+        light: NSColor(calibratedRed: 0.925, green: 0.929, blue: 0.937, alpha: 1),
+        dark: NSColor(calibratedRed: 0.028, green: 0.029, blue: 0.033, alpha: 1)
     )
     public static let panelSurface = adaptive(
-        light: NSColor(calibratedRed: 0.980, green: 0.984, blue: 0.986, alpha: 1),
-        dark: NSColor(calibratedRed: 0.071, green: 0.074, blue: 0.079, alpha: 1)
+        light: NSColor(calibratedRed: 0.992, green: 0.992, blue: 0.996, alpha: 1),
+        dark: NSColor(calibratedRed: 0.063, green: 0.065, blue: 0.072, alpha: 1)
     )
     public static let sleepingMonitor = adaptive(
         light: NSColor(calibratedWhite: 0.79, alpha: 1),
         dark: NSColor(calibratedWhite: 0.24, alpha: 1)
     )
     public static let panelRaised = adaptive(
-        light: NSColor(calibratedWhite: 0.953, alpha: 1),
-        dark: NSColor(calibratedRed: 0.092, green: 0.095, blue: 0.101, alpha: 1)
+        light: NSColor(calibratedRed: 0.952, green: 0.954, blue: 0.960, alpha: 1),
+        dark: NSColor(calibratedRed: 0.096, green: 0.098, blue: 0.106, alpha: 1)
     )
+    /// The island: every floating tool surface shares the recorder's base.
     public static let cardElevated = adaptive(
-        light: NSColor(calibratedWhite: 0.998, alpha: 1),
-        dark: NSColor(calibratedRed: 0.112, green: 0.115, blue: 0.122, alpha: 1)
+        light: NSColor(calibratedRed: 0.992, green: 0.992, blue: 0.996, alpha: 1),
+        dark: NSColor(calibratedRed: 0.063, green: 0.065, blue: 0.072, alpha: 1)
     )
     public static let timelineClipTop = adaptive(
         light: NSColor(calibratedWhite: 0.88, alpha: 1),
@@ -43,12 +44,12 @@ public enum EditorTheme {
     public static let mediaAccent = Color(red: 0.949, green: 0.941, blue: 0.918)
 
     public static let platinumAccent = adaptive(
-        light: NSColor(calibratedWhite: 0.16, alpha: 1),
-        dark: NSColor(calibratedRed: 0.949, green: 0.941, blue: 0.918, alpha: 1)
+        light: NSColor(calibratedWhite: 0.10, alpha: 1),
+        dark: NSColor(calibratedWhite: 0.96, alpha: 1)
     )
     public static let platinumMuted = adaptive(
-        light: NSColor(calibratedWhite: 0.34, alpha: 1),
-        dark: NSColor(calibratedRed: 0.72, green: 0.71, blue: 0.68, alpha: 1)
+        light: NSColor(calibratedWhite: 0.40, alpha: 1),
+        dark: NSColor(calibratedWhite: 0.56, alpha: 1)
     )
     /// Foreground paired with solid accent fills in both workspace themes.
     public static let onAccent = adaptive(
@@ -56,36 +57,46 @@ public enum EditorTheme {
         dark: NSColor(calibratedWhite: 0.08, alpha: 1)
     )
     public static let controlWell = adaptive(
-        light: NSColor(calibratedWhite: 0.90, alpha: 1),
-        dark: NSColor(calibratedWhite: 0.055, alpha: 1)
+        light: NSColor(calibratedWhite: 0.0, alpha: 0.05),
+        dark: NSColor(calibratedWhite: 1.0, alpha: 0.06)
     )
-    public static let amberAccent = Color(red: 0.93, green: 0.65, blue: 0.28)
-    public static let success = Color(red: 0.37, green: 0.80, blue: 0.57)
-    public static let recording = Color(red: 1.0, green: 0.31, blue: 0.29)
+    public static let amberAccent = Color(red: 0.95, green: 0.68, blue: 0.28)
+    /// Same mint as the recorder: something is live or on.
+    public static let success = Color(red: 0.30, green: 0.85, blue: 0.55)
+    public static let recording = Color(red: 1.0, green: 0.27, blue: 0.23)
 
     public static let selectionTint = platinumAccent
+    /// Current choice in a navigation group: the recorder's neutral 14% lift.
     public static let railSelectionWash = adaptive(
-        light: NSColor(calibratedRed: 0.86, green: 0.95, blue: 0.90, alpha: 1),
-        dark: NSColor(calibratedRed: 0.14, green: 0.24, blue: 0.19, alpha: 1)
+        light: NSColor(calibratedWhite: 0.0, alpha: 0.075),
+        dark: NSColor(calibratedWhite: 1.0, alpha: 0.14)
     )
     public static let selectionWash = adaptive(
-        light: NSColor(calibratedWhite: 0.92, alpha: 1),
-        dark: NSColor(calibratedWhite: 0.20, alpha: 1)
+        light: NSColor(calibratedWhite: 0.0, alpha: 0.075),
+        dark: NSColor(calibratedWhite: 1.0, alpha: 0.14)
     )
-    public static let hairline = chrome(0.055)
+    public static let hairline = chrome(0.06)
     static let controlBorder = chrome(0.085)
-    static let groupSurface = chrome(0.028)
+    static let groupSurface = chrome(0.035)
     // Native popovers own their brighter backdrop, including the arrow. Keep
     // selection relative to that surface and small helper copy fully legible.
-    static let popoverSelectionSurface = selectionWash.opacity(0.32)
+    static let popoverSelectionSurface = selectionWash.opacity(0.6)
     static let popoverSecondaryText = adaptive(
         light: NSColor(calibratedWhite: 0.32, alpha: 1),
         dark: NSColor(calibratedWhite: 0.86, alpha: 1)
     )
-    public static let topHighlight = chrome(0.16)
+    /// The machined top edge of an island, fading toward the bottom.
+    public static let topHighlight = adaptive(
+        light: NSColor(calibratedWhite: 1.0, alpha: 1.0),
+        dark: NSColor(calibratedWhite: 1.0, alpha: 0.17)
+    )
+    static let islandEdgeLow = adaptive(
+        light: NSColor(calibratedWhite: 0.0, alpha: 0.07),
+        dark: NSColor(calibratedWhite: 1.0, alpha: 0.04)
+    )
     public static let softShadow = adaptive(
-        light: NSColor.black.withAlphaComponent(0.07),
-        dark: NSColor.black.withAlphaComponent(0.22)
+        light: NSColor(calibratedRed: 0.10, green: 0.12, blue: 0.18, alpha: 0.12),
+        dark: NSColor.black.withAlphaComponent(0.42)
     )
 
     /// Text roles stay readable on the neutral control and panel surfaces.
@@ -155,14 +166,15 @@ public enum SpringMotion {
         NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     }
 
-    /// Short, tactile springs are used for controls; larger panels use a more
-    /// settled spring. Reduce Motion still removes spatial transitions.
+    /// Controls settle quickly with almost no overshoot; a visible bounce on
+    /// every hover and press reads as a toy. Larger panels take a slower,
+    /// fully settled spring. Reduce Motion still removes spatial transitions.
     public static var interactive: Animation? {
-        reducesMotion ? nil : .spring(response: 0.22, dampingFraction: 0.72)
+        reducesMotion ? nil : .spring(response: 0.24, dampingFraction: 0.86)
     }
 
     public static var fluid: Animation? {
-        reducesMotion ? nil : .spring(response: 0.38, dampingFraction: 0.82)
+        reducesMotion ? nil : .spring(response: 0.4, dampingFraction: 0.9)
     }
 
     /// Text changes fade briefly without scaling glyphs or moving their baseline.
@@ -171,10 +183,10 @@ public enum SpringMotion {
     }
 
     public static var snappy: Animation? {
-        reducesMotion ? nil : .spring(response: 0.18, dampingFraction: 0.68)
+        reducesMotion ? nil : .spring(response: 0.2, dampingFraction: 0.84)
     }
 
     public static var gentle: Animation? {
-        reducesMotion ? nil : .spring(response: 0.52, dampingFraction: 0.88)
+        reducesMotion ? nil : .spring(response: 0.54, dampingFraction: 0.92)
     }
 }

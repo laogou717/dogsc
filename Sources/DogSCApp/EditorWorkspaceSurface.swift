@@ -1,8 +1,9 @@
 import SwiftUI
 import RecorderCore
 
-/// Shared material for the three independent tools surrounding the video.
-/// A single outer surface supplies depth; individual parameter groups stay flat.
+/// Shared material for the independent tools surrounding the video: the
+/// recorder's island. One solid shape, a machined top edge that fades toward
+/// the bottom, and a soft cast shadow. Parameter groups inside stay flat.
 struct EditorFloatingSurface: ViewModifier {
     var cornerRadius: CGFloat = EditorInterfaceRadius.floating
 
@@ -11,15 +12,35 @@ struct EditorFloatingSurface: ViewModifier {
             .background(EditorTheme.cardElevated)
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(
-                        EditorTheme.hairline,
-                        lineWidth: 0.75
-                    )
-                    .allowsHitTesting(false)
+                EditorIslandEdge(shape: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             }
-            .shadow(color: EditorTheme.softShadow.opacity(0.65), radius: 14, y: 5)
+            .shadow(color: EditorTheme.softShadow, radius: 22, y: 10)
     }
+}
+
+/// The recorder's top-lit rim, shared by every island shape in the editor.
+struct EditorIslandEdge<S: InsettableShape>: View {
+    let shape: S
+    var body: some View {
+        shape
+            .strokeBorder(LinearGradient(colors: [EditorTheme.topHighlight, EditorTheme.islandEdgeLow],
+                                         startPoint: .top, endPoint: .bottom), lineWidth: 1)
+            .allowsHitTesting(false)
+    }
+}
+
+/// A capsule island for compact toolbars floating over the workspace.
+struct EditorCapsuleIsland: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .background(EditorTheme.cardElevated, in: Capsule(style: .continuous))
+            .overlay { EditorIslandEdge(shape: Capsule(style: .continuous)) }
+            .shadow(color: EditorTheme.softShadow.opacity(0.8), radius: 16, y: 6)
+    }
+}
+
+extension View {
+    func editorCapsuleIsland() -> some View { modifier(EditorCapsuleIsland()) }
 }
 
 /// A static workspace grid, outside the rendered video. Never enters export
@@ -36,7 +57,7 @@ struct EditorWorkspaceGrid: View {
                 }
             }
             context.fill(dots, with: .color(
-                colorScheme == .light ? .black.opacity(0.19) : .white.opacity(0.16)
+                colorScheme == .light ? .black.opacity(0.13) : .white.opacity(0.09)
             ))
         }
         .allowsHitTesting(false)
@@ -68,7 +89,8 @@ struct EditorWorkspaceToolRail: View {
         }
         .frame(width: 72)
         // Keep the surface on the viewport while the buttons scroll inside it.
-        .modifier(EditorFloatingSurface())
+        // 8 pt inset + 18 pt selection radius keeps the corners concentric.
+        .modifier(EditorFloatingSurface(cornerRadius: 26))
         .disabled(isCropping)
         .opacity(isCropping ? 0.45 : 1)
         
@@ -79,34 +101,37 @@ struct EditorWorkspaceToolRail: View {
         return VStack(spacing: spacing) {
             ForEach(InspectorTab.allCases) { tab in
                 let selected = selection == tab
-                Button {
+                AppChoiceButton(isSelected: selected) {
                     selectTab(tab)
                 } label: {
                     VStack(spacing: compact ? 2 : 4) {
-                        Image(systemName: tab.icon)
-                            .font(.appUI(size: compact ? 17 : 19, weight: .regular))
+                        // The recorder's hand-drawn 18 pt family; selection
+                        // brightens ink and lifts the neutral pill behind it.
+                        AppLineIcon(kind: tab.lineIcon, size: compact ? 17 : 19)
+                            .modifier(AppChoiceIconFeedback())
                         Text(tab.localizedLabel)
-                            .font(.appUI(size: compact ? 11 : 12, weight: selected ? .medium : .regular))
+                            .font(.appUI(size: compact ? 10.5 : 11, weight: selected ? .semibold : .medium))
                             .lineLimit(1)
                             .minimumScaleFactor(0.85)
                     }
-                    .foregroundStyle(selected ? EditorTheme.primaryText : EditorTheme.secondaryText)
+                    .modifier(AppChoiceContentFeedback())
+                    .foregroundStyle(selected ? EditorTheme.primaryText
+                                     : hoveredTab == tab ? EditorTheme.chrome(0.78) : EditorTheme.chrome(0.5))
                     .frame(width: 56, height: buttonHeight)
                     .background {
                         if selected {
-                            RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous)
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
                                 .fill(EditorTheme.railSelectionWash)
                                 .matchedGeometryEffect(id: "toolSelection", in: selectionNamespace)
                         } else if hoveredTab == tab {
-                            RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous)
-                                .fill(EditorTheme.chrome(0.045))
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .fill(EditorTheme.chrome(0.05))
                         }
                     }
-                    .contentShape(RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous))
+                    .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                 }
-                .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: EditorInterfaceRadius.group, showsHover: false))
                 .appButtonKeyboardFocus(
-                    in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous)
+                    in: RoundedRectangle(cornerRadius: 18, style: .continuous)
                 )
                 .disabled(!isAvailable(tab))
                 .opacity(isAvailable(tab) ? 1 : 0.38)
@@ -114,17 +139,9 @@ struct EditorWorkspaceToolRail: View {
                 .accessibilityLabel(tab.localizedLabel)
                 .accessibilityIdentifier("editor.workspace.tool.\(tab.id)")
                 .accessibilityAddTraits(selected ? .isSelected : [])
-                .onKeyPress(keys: [.return], phases: .down) { press in
-                    guard isEnabled, !isCropping, isAvailable(tab),
-                          press.modifiers.intersection([.command, .control, .option, .shift]).isEmpty else {
-                        return .ignored
-                    }
-                    selectTab(tab)
-                    return .handled
-                }
                 .onHover { hovering in
-                    withAnimation(SpringMotion.interactive) {
-                        hoveredTab = hovering ? tab : nil
+                    withAnimation(RecorderMotion.fade) {
+                        if hovering { hoveredTab = tab } else if hoveredTab == tab { hoveredTab = nil }
                     }
                 }
             }
@@ -134,7 +151,8 @@ struct EditorWorkspaceToolRail: View {
     }
 
     private func selectTab(_ tab: InspectorTab) {
-        withAnimation(SpringMotion.fluid) { selection = tab }
+        // The pill travels on the recorder's settle spring.
+        withAnimation(RecorderMotion.settle) { selection = tab }
     }
 
     private func isAvailable(_ tab: InspectorTab) -> Bool {
@@ -157,6 +175,20 @@ struct EditorWorkspaceToolRail: View {
     }
 }
 
+extension InspectorTab {
+    /// Hand-drawn counterpart of `icon`, sharing the recorder's stroke.
+    var lineIcon: AppLineIcon.Kind {
+        switch self {
+        case .frame: .scene
+        case .opening: .opening
+        case .zoom: .zoom
+        case .cursor: .cursorMotion
+        case .camera: .camera
+        case .audio: .speaker
+        }
+    }
+}
+
 /// Chrome and preview use the same ratio, so unused letterboxing never
 /// separates the tools from the visible canvas on a wide display.
 enum EditorWorkspaceGeometry {
@@ -169,38 +201,36 @@ enum EditorWorkspaceGeometry {
     }
 }
 
+/// A quiet transport capsule; playback alone carries the primary ink fill.
 struct EditorSoftRaisedButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View { Surface(configuration: configuration) }
+    var isPrimary = false
+    func makeBody(configuration: Configuration) -> some View {
+        Surface(configuration: configuration, isPrimary: isPrimary)
+    }
 
     private struct Surface: View {
         @Environment(\.isEnabled) private var isEnabled
         @State private var isHovered = false
         let configuration: ButtonStyleConfiguration
+        let isPrimary: Bool
 
         var body: some View {
+            let pressed = configuration.isPressed && isEnabled
             configuration.label
-                .foregroundStyle(EditorTheme.chrome(isEnabled ? 0.88 : 0.28))
-                .contentShape(RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
-                .background {
-                    RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous)
-                        .fill(configuration.isPressed && isEnabled
-                            ? EditorTheme.panelRaised : EditorTheme.cardElevated)
-                        .overlay {
-                            RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous)
-                                .fill(EditorTheme.chrome(isHovered && isEnabled ? 0.045 : 0))
-                        }
-                        .overlay {
-                            RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous)
-                                .strokeBorder(EditorTheme.chrome(isHovered && isEnabled ? 0.14 : 0.085), lineWidth: 0.75)
-                        }
-                        .allowsHitTesting(false)
-                }
-                .shadow(color: EditorTheme.softShadow.opacity(isHovered && isEnabled ? 0.35 : 0.2), radius: 2, y: 1)
-                .scaleEffect(configuration.isPressed && isEnabled ? 0.97 : 1)
+                .foregroundStyle(isPrimary ? EditorTheme.onAccent : EditorTheme.primaryText)
+                .background(
+                    isPrimary ? EditorTheme.platinumAccent.opacity(pressed ? 0.78 : isHovered ? 0.9 : 1)
+                        : EditorTheme.chrome(pressed ? 0.14 : isHovered ? 0.10 : 0.055),
+                    in: Capsule()
+                )
+                .contentShape(Capsule())
+                .appKeyboardFocus(in: Capsule(), color: isPrimary ? EditorTheme.onAccent.opacity(0.65) : EditorTheme.chrome(0.40))
+                .scaleEffect(pressed && !RecorderMotion.reduces ? 0.96 : 1)
+                .opacity(isEnabled ? 1 : 0.38)
                 .onHover { isHovered = $0 }
                 .onChange(of: isEnabled) { _, enabled in if !enabled { isHovered = false } }
-                .animation(SpringMotion.interactive, value: isHovered)
-                .animation(SpringMotion.interactive, value: configuration.isPressed)
+                .animation(RecorderMotion.fade, value: isHovered)
+                .animation(RecorderMotion.quick, value: pressed)
         }
     }
 }

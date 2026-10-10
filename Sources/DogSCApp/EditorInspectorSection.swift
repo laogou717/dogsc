@@ -23,8 +23,13 @@ struct EditorInspectorSection<Content: View>: View {
             if showsTitle {
                 HStack(spacing: 6) {
                     if let icon {
-                        Image(systemName: icon)
-                            .font(.appUI(size: 13, weight: .semibold))
+                        Group {
+                            if let kind = EditorToolbarIconSurface.lineIcon(for: icon) {
+                                AppLineIcon(kind: kind, size: 15)
+                            } else {
+                                Image(systemName: icon).font(.appUI(size: 13, weight: .regular))
+                            }
+                        }
                             .foregroundStyle(EditorTheme.secondaryText)
                     }
                     Text(appLocalized(title))
@@ -96,10 +101,6 @@ struct EditorInspectorEmptyState: View {
             RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous)
                 .fill(EditorTheme.groupSurface)
         }
-        .overlay {
-            RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous)
-                .strokeBorder(EditorTheme.hairline, lineWidth: 0.75)
-        }
         .accessibilityElement(children: .contain)
     }
 }
@@ -111,38 +112,50 @@ struct EditorSegmentedControl<Option: Hashable>: View {
     let title: (Option) -> String
     var icon: (Option) -> String? = { _ in nil }
     var accessibilityTitle: ((Option) -> String)? = nil
+    var optionHelp: ((Option) -> String)? = nil
     @Binding var selection: Option
     @Namespace private var segmentNamespace
+    @State private var hoveredOption: Option?
 
     var body: some View {
         HStack(spacing: 2) {
             ForEach(options, id: \.self) { option in
                 let isSelected = selection == option
                 let localizedTitle = appLocalized(title(option))
-                Button {
-                    withAnimation(SpringMotion.fluid) {
+                AppChoiceButton(isSelected: isSelected) {
+                    withAnimation(RecorderMotion.settle) {
                         selection = option
                     }
                 } label: {
                     ZStack {
+                        RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous)
+                            .fill(hoveredOption == option && !isSelected ? EditorTheme.chrome(0.055) : .clear)
                         if isSelected {
+                            // The recorder's flat neutral lift: no outline, no shadow.
                             RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous)
-                                .fill(EditorTheme.cardElevated)
-                                .overlay {
-                                    RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous)
-                                        .strokeBorder(EditorTheme.controlBorder, lineWidth: 0.75)
-                                }
-                                .shadow(color: EditorTheme.softShadow.opacity(0.35), radius: 2, y: 1)
+                                .fill(EditorTheme.selectionWash)
                                 .matchedGeometryEffect(id: "segmentActiveIndicator", in: segmentNamespace)
                         }
                         Group {
                             if let systemName = icon(option) {
-                                Label(localizedTitle, systemImage: systemName)
+                                HStack(spacing: 6) {
+                                    Group {
+                                        if let kind = EditorToolbarIconSurface.lineIcon(for: systemName) {
+                                            AppLineIcon(kind: kind, size: 15)
+                                        } else {
+                                            Image(systemName: systemName)
+                                        }
+                                    }
+                                    .modifier(AppChoiceIconFeedback())
+                                    Text(localizedTitle)
+                                }
                             } else {
                                 Text(localizedTitle)
+                                    .modifier(AppChoiceIconFeedback())
                             }
                         }
-                        .font(.appUI(size: 12, weight: isSelected ? .medium : .regular))
+                        .modifier(AppChoiceContentFeedback())
+                        .font(.appUI(size: 12, weight: .medium))
                         .foregroundStyle(
                             isSelected ? EditorTheme.primaryText : EditorTheme.secondaryText
                         )
@@ -153,11 +166,18 @@ struct EditorSegmentedControl<Option: Hashable>: View {
                     .frame(maxWidth: .infinity)
                     .frame(height: EditorInterfaceHeight.selection)
                 }
-                .buttonStyle(EditorSegmentedOptionButtonStyle(isSelected: isSelected))
+
                 .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous))
                 .frame(maxWidth: .infinity)
                 .frame(height: EditorInterfaceHeight.selection)
                 .contentShape(Rectangle())
+                .onHover { hovering in
+                    withAnimation(RecorderMotion.fade) {
+                        if hovering { hoveredOption = option }
+                        else if hoveredOption == option { hoveredOption = nil }
+                    }
+                }
+                .help(appLocalized(optionHelp?(option) ?? title(option)))
                 .accessibilityLabel(accessibilityTitle.map { appLocalized($0(option)) } ?? localizedTitle)
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
             }
@@ -167,45 +187,8 @@ struct EditorSegmentedControl<Option: Hashable>: View {
             EditorTheme.groupSurface,
             in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous)
         )
-        .overlay(
-            RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous)
-                .strokeBorder(EditorTheme.hairline, lineWidth: 0.75)
-        )
-    }
-}
-
-private struct EditorSegmentedOptionButtonStyle: ButtonStyle {
-    let isSelected: Bool
-
-    func makeBody(configuration: Configuration) -> Body {
-        Body(configuration: configuration, isSelected: isSelected)
-    }
-
-    struct Body: View {
-        @Environment(\.isEnabled) private var isEnabled
-        let configuration: Configuration
-        let isSelected: Bool
-        @State private var isHovered = false
-
-        var body: some View {
-            configuration.label
-                .background(
-                    !isSelected && isHovered && isEnabled
-                        ? EditorTheme.chrome(0.055)
-                        : .clear,
-                    in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous)
-                )
-                .scaleEffect(
-                    configuration.isPressed && isEnabled ? 0.98 : 1
-                )
-                .opacity(isEnabled ? 1 : 0.42)
-                .onHover { hovering in
-                    withAnimation(SpringMotion.interactive) {
-                        isHovered = hovering
-                    }
-                }
-                .animation(SpringMotion.interactive, value: configuration.isPressed)
-        }
+        .onChange(of: selection) { _, _ in hoveredOption = nil }
+        .onDisappear { hoveredOption = nil }
     }
 }
 
@@ -230,7 +213,7 @@ struct EditorTileSelector<Option: Hashable>: View {
                     isSelected: selection == option,
                     namespace: tileNamespace
                 ) {
-                    withAnimation(SpringMotion.fluid) {
+                    withAnimation(RecorderMotion.settle) {
                         selection = option
                     }
                 }
@@ -241,10 +224,6 @@ struct EditorTileSelector<Option: Hashable>: View {
             EditorTheme.groupSurface,
             in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous)
         )
-        .overlay {
-            RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous)
-                .strokeBorder(EditorTheme.hairline, lineWidth: 0.75)
-        }
         .accessibilityElement(children: .contain)
     }
 }
@@ -308,15 +287,23 @@ private struct EditorTileSelectorButton: View {
     @State private var isHovered = false
 
     var body: some View {
-        Button(action: action) {
+        AppChoiceButton(isSelected: isSelected, action: action) {
             HStack(spacing: 6) {
-                Image(systemName: icon)
-                    .font(.appUI(size: 12, weight: .semibold))
+                Group {
+                    if let kind = EditorToolbarIconSurface.lineIcon(for: icon) {
+                        AppLineIcon(kind: kind, size: 15)
+                    } else {
+                        Image(systemName: icon).font(.appUI(size: 12, weight: .regular))
+                    }
+                }
+                .modifier(AppChoiceIconFeedback())
                 Text(appLocalized(title))
-                    .font(.appUI(size: 12, weight: isSelected ? .medium : .regular))
+                    .modifier(AppChoiceContentFeedback())
+                        .font(.appUI(size: 12, weight: .medium))
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
             }
+            .modifier(AppChoiceContentFeedback())
             .foregroundStyle(
                 EditorTheme.chrome(isSelected ? 0.88 : isHovered ? 0.82 : 0.62)
             )
@@ -325,11 +312,7 @@ private struct EditorTileSelectorButton: View {
             .background {
                 if isSelected {
                     RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous)
-                        .fill(EditorTheme.cardElevated)
-                        .overlay {
-                            RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous)
-                                .strokeBorder(EditorTheme.controlBorder, lineWidth: 0.75)
-                        }
+                        .fill(EditorTheme.selectionWash)
                         .matchedGeometryEffect(id: "activeTileSelector", in: namespace)
                 } else if isHovered {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -338,13 +321,14 @@ private struct EditorTileSelectorButton: View {
             }
             .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
-        .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 8, showsHover: false))
+
         .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .onHover { hovering in
-            withAnimation(SpringMotion.interactive) {
+            withAnimation(RecorderMotion.fade) {
                 isHovered = hovering
             }
         }
+        .onChange(of: isSelected) { _, _ in isHovered = false }
         .help(appLocalized(title))
         .accessibilityLabel(appLocalized(title))
         .accessibilityAddTraits(isSelected ? .isSelected : [])

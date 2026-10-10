@@ -87,7 +87,7 @@ final class RecorderMenuButtonNSView: NSButton {
 
     private func configureKeyboardFocusCue() {
         keyboardFocusLayer.fillColor = NSColor.clear.cgColor
-        keyboardFocusLayer.strokeColor = NSColor.black.withAlphaComponent(0.40).cgColor
+        keyboardFocusLayer.strokeColor = RecorderStyle.chromeNSColor.withAlphaComponent(0.62).cgColor
         keyboardFocusLayer.lineWidth = 1.5
         keyboardFocusLayer.opacity = 0
         layer?.addSublayer(keyboardFocusLayer)
@@ -142,6 +142,14 @@ final class RecorderMenuButtonNSView: NSButton {
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            keyboardFocusLayer.strokeColor = RecorderStyle.chromeNSColor.withAlphaComponent(0.62).cgColor
+            refreshHoverState()
+        }
+    }
+
     override func layout() {
         super.layout()
         updateHoverShape()
@@ -188,17 +196,41 @@ final class RecorderMenuButtonNSView: NSButton {
         super.viewDidMoveToWindow()
         updateKeyboardFocusTracking()
         window?.acceptsMouseMovedEvents = true
+        if window == nil, let hoverObservation {
+            NotificationCenter.default.removeObserver(hoverObservation)
+            self.hoverObservation = nil
+        } else if window != nil {
+            observeSharedHover()
+        }
         DispatchQueue.main.async { [weak self] in
             self?.refreshHoverState()
         }
     }
 
+    /// A missed exit event must not leave a control lit. Whenever the pointer
+    /// crosses any of these controls, all of them re-read where it really is.
+    private static let hoverDidChange = Notification.Name("cn.laogou.dogsc.recorder-hover-changed")
+    private var hoverObservation: NSObjectProtocol?
+
     override func mouseEntered(with event: NSEvent) {
+        observeSharedHover()
         setHoverAppearance(true)
+        NotificationCenter.default.post(name: Self.hoverDidChange, object: self)
     }
 
     override func mouseExited(with event: NSEvent) {
         setHoverAppearance(false)
+        NotificationCenter.default.post(name: Self.hoverDidChange, object: self)
+    }
+
+    private func observeSharedHover() {
+        guard hoverObservation == nil else { return }
+        hoverObservation = NotificationCenter.default.addObserver(
+            forName: Self.hoverDidChange, object: nil, queue: .main
+        ) { [weak self] _ in
+            // Re-reading the pointer is idempotent, so the sender may join in.
+            MainActor.assumeIsolated { self?.refreshHoverState() }
+        }
     }
 
     func refreshHoverState() {
@@ -214,7 +246,9 @@ final class RecorderMenuButtonNSView: NSButton {
 
     private func setHoverAppearance(_ hovering: Bool) {
         let targetColor = hovering && isEnabled
-            ? NSColor.black.withAlphaComponent(hoverHighlightOpacity).cgColor
+            // The hover wash is light on the dark glass, and a little stronger
+            // than it was on white so it reads at the same strength.
+            ? RecorderStyle.chromeNSColor.withAlphaComponent(hoverHighlightOpacity * 1.6).cgColor
             : NSColor.clear.cgColor
         guard layer?.backgroundColor != targetColor else { return }
 

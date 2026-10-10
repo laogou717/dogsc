@@ -94,50 +94,115 @@ final class FirstLaunchGuideAccess: ObservableObject {
 /// Phase-pinned content hosted by `RecorderPanelController`. The controller
 /// swaps this root in the same non-animated transaction that changes panel size,
 /// so SwiftUI never negotiates an intermediate recorder width.
+/// One island for the whole take. The window is a fixed transparent canvas;
+/// a single solid shape inside it stretches to fit whatever the phase needs,
+/// and each phase's content dissolves in once the shape is underway.
 struct RecorderMainWindowRoot: View {
     @ObservedObject var model: AppModel
     let phase: AppPhase
     var onRecordingWidthChange: (CGFloat) -> Void = { _ in }
+    @State private var islandSize = CGSize.zero
 
     var body: some View {
-        Group {
-            switch phase {
-            case .setup:
-                SetupView(model: model)
-            case .preparing:
-                RecorderPhaseProgressView(
-                    title: model.recorderTransitionStage.title,
-                    phase: .preparing,
-                    accessibilityIdentifier: RecorderAccessibilityID.phasePreparing
-                )
-            case .recording:
-                RecordingBar(model: model, onContentWidthChange: onRecordingWidthChange)
-            case .finishing:
-                RecorderPhaseProgressView(
-                    title: model.recorderTransitionStage.title,
-                    phase: .finishing,
-                    accessibilityIdentifier: RecorderAccessibilityID.phaseFinishing
-                )
-            case .editor, .recordingComplete:
-                // The panel is already ordered out for this phase; a compact root
-                // remains available only to keep the generic host type stable.
-                RecorderPhaseProgressView(
-                    title: appLocalized("正在打开编辑器…"),
-                    phase: .editor,
-                    accessibilityIdentifier: "recorder.phase.editor-transition"
-                )
+        ZStack {
+            RecorderSurfaceShape(radius: islandSize.height / 2, castsShadow: true)
+                .frame(width: islandSize.width, height: islandSize.height)
+                .allowsHitTesting(false)
+            Group {
+                switch phase {
+                case .setup:
+                    island { SetupView(model: model) }
+                case .preparing:
+                    island {
+                        RecorderPhaseProgressView(
+                            title: model.recorderTransitionStage.title,
+                            phase: .preparing,
+                            accessibilityIdentifier: RecorderAccessibilityID.phasePreparing
+                        )
+                    }
+                case .recording:
+                    island { RecordingBar(model: model) }
+                case .finishing:
+                    island {
+                        RecorderPhaseProgressView(
+                            title: model.recorderTransitionStage.title,
+                            phase: .finishing,
+                            accessibilityIdentifier: RecorderAccessibilityID.phaseFinishing
+                        )
+                    }
+                case .editor, .recordingComplete:
+                    // The panel is already ordered out for this phase; a compact
+                    // root remains only to keep the generic host type stable.
+                    island {
+                        RecorderPhaseProgressView(
+                            title: appLocalized("正在打开编辑器…"),
+                            phase: .editor,
+                            accessibilityIdentifier: "recorder.phase.editor-transition"
+                        )
+                    }
+                }
             }
         }
+        .background {
+            RecorderIslandInteractionRegion()
+                .frame(width: islandSize.width, height: islandSize.height)
+                .allowsHitTesting(false)
+        }
+        .contentShape(Capsule())
+        .modifier(RecorderSystemWindowDragModifier())
+        .frame(width: RecorderPanelPolicy.canvasSize.width, height: RecorderPanelPolicy.canvasSize.height)
+        .animation(RecorderMotion.morph, value: islandSize)
+        .animation(RecorderMotion.morph, value: phase)
         .font(.appUI(.body))
         .appControlFocusAppearance()
-        .modifier(RecorderSystemWindowDragModifier())
-        .preferredColorScheme(.light)
+    }
+
+    private func island<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        content()
+            .fixedSize()
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
+                guard size.width > 0, size.height > 0 else { return }
+                if islandSize == .zero {
+                    // Establish the first complete island before the window
+                    // fades in. Animating an invented initial size also starts
+                    // descendant insertion transitions during launch layout.
+                    var initialLayout = Transaction(animation: nil)
+                    initialLayout.disablesAnimations = true
+                    withTransaction(initialLayout) { islandSize = size }
+                } else {
+                    islandSize = size
+                }
+            }
+            .transition(.recorderContent)
     }
 }
 
-/// SwiftUI fills the complete borderless recorder window, so the official
-/// window gesture is its one drag owner on current macOS. It delegates the
-/// drag to the system and contains no coordinate, screen or frame logic.
+/// Content leaves quickly and soft, and arrives a beat after the surface has
+/// started to move, pulling into focus as it settles.
+private struct RecorderContentPhase: ViewModifier {
+    let hidden: Bool
+    func body(content: Content) -> some View {
+        content
+            .opacity(hidden ? 0 : 1)
+            .scaleEffect(hidden ? 0.94 : 1)
+            .blur(radius: hidden ? 6 : 0)
+    }
+}
+
+extension AnyTransition {
+    static var recorderContent: AnyTransition {
+        guard !RecorderMotion.reduces else { return .opacity }
+        return .asymmetric(
+            insertion: .modifier(active: RecorderContentPhase(hidden: true), identity: RecorderContentPhase(hidden: false))
+                .animation(.easeOut(duration: 0.3).delay(0.14)),
+            removal: .modifier(active: RecorderContentPhase(hidden: true), identity: RecorderContentPhase(hidden: false))
+                .animation(.easeIn(duration: 0.12))
+        )
+    }
+}
+
+/// Only the island owns the official window gesture. Its transparent shadow
+/// canvas is drawing space, never a drag target.
 private struct RecorderSystemWindowDragModifier: ViewModifier {
     @ViewBuilder
     func body(content: Content) -> some View {
@@ -157,18 +222,13 @@ struct RecorderPhaseProgressView: View {
     var body: some View {
         HStack(spacing: 10) {
             ProgressView().controlSize(.small)
-            Text(title).font(.appUI(.callout, weight: .medium))
+            Text(title).font(.appUI(size: 13, weight: .medium))
+                .contentTransition(.opacity)
         }
         .foregroundStyle(RecorderStyle.ink)
-        .frame(width: 320, height: 46)
-        .background(
-            Capsule().fill(LinearGradient(colors: [.white, RecorderStyle.silver], startPoint: .top, endPoint: .bottom))
-        )
-        .overlay {
-            Capsule()
-                .strokeBorder(.white.opacity(0.9), lineWidth: 0.75)
-                .allowsHitTesting(false)
-        }
+        .padding(.horizontal, 20)
+        .frame(height: 44)
+        .animation(RecorderMotion.fade, value: title)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(accessibilityIdentifier)
     }
@@ -305,7 +365,13 @@ enum WindowCoordinator {
                 showEditor(model: editor)
             }
         } else if phase == .editor {
-            showEditor(model: model)
+            // Permission/readiness refreshes also arrive after app activation.
+            // Updating an already-present editor must not reorder it above an
+            // explicitly requested Settings window. Dock/Finder requests keep
+            // their separate bringToFront / preferred-display paths.
+            if !editorWindowController.isShowing(model: model) || pendingExternalProjectVisibleFrame != nil {
+                showEditor(model: model)
+            }
         } else {
             editorWindowController.closeForPhaseChange()
         }

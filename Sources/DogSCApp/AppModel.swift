@@ -422,8 +422,8 @@ final class AppModel: ObservableObject {
             errorMessage = appErrorDescription(error)
             return
         }
-        guard captureReadiness.hasSufficientDisk else {
-            errorMessage = "磁盘空间不足，无法保证 30 分钟录制安全完成。请先释放空间。"
+        if let message = captureReadiness.insufficientDiskMessage {
+            errorMessage = message
             return
         }
         guard hasRequiredRecordingPermissions else {

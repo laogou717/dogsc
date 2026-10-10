@@ -50,6 +50,7 @@ final class DogSCApplicationDelegate: NSObject,
     )
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        AppPreferences.applyAppearancePreferenceToOpenWindows()
         NSApplication.shared.setActivationPolicy(.regular)
         // APP-001 / UX-024 / APP-004: 应用图标为单一品牌资产（Info.plist
         // CFBundleIconFile -> AppIcon.icns），Dock、切换器与编辑器工具栏
@@ -571,8 +572,14 @@ final class DogSCApplicationDelegate: NSObject,
 /// prevents title-bar chrome from appearing between phases.
 enum RecorderPanelPolicy {
     static let styleMask: NSWindow.StyleMask = [.borderless]
-    static let setupSize = NSSize(width: setupWindowWidth(), height: 80)
-    static let progressSize = NSSize(width: 320, height: 46)
+    /// The panel is a fixed transparent canvas with room for the island's
+    /// shadow; the island inside it changes shape, the window never resizes.
+    /// A 56 pt island needs more than the old 46 pt vertical margin: its
+    /// 22 pt shadow blur is offset downward by 10 pt. Keep 92 pt on each side
+    /// so the shadow reaches transparency before the window clips it.
+    static let canvasSize = NSSize(width: 720, height: 240)
+    static let setupSize = canvasSize
+    static let progressSize = canvasSize
     static let savedFrameKey = "recorder.panel.last-frame"
 
     static func contentSize(
@@ -585,10 +592,7 @@ enum RecorderPanelPolicy {
         case .preparing, .finishing:
             progressSize
         case .recording:
-            NSSize(
-                width: recordingWindowWidth(recordsMicrophone: recordsMicrophone),
-                height: 52
-            )
+            canvasSize
         case .editor, .recordingComplete:
             nil
         }
@@ -677,9 +681,12 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
     }
 
     private func resizeRecordingContent(to width: CGFloat) {
+        // The island resizes inside a fixed canvas, so this is never reached
+        // by the current views; the canvas width keeps it inert if it is.
         guard currentPhase == .recording, width.isFinite,
               width >= 200, width <= 640,
-              abs(panel.frame.width - width) >= 1 else { return }
+              abs(panel.frame.width - width) >= 1,
+              width > RecorderPanelPolicy.canvasSize.width else { return }
         let size = NSSize(width: width, height: 52)
         panel.contentMinSize = size
         panel.contentMaxSize = size
@@ -856,6 +863,7 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
     func shutdown() {
         RecorderPopoverPresenter.shared.dismiss()
         transition.hide(panel, animated: false)
+        panel.setIslandInteractionView(nil)
         panel.contentViewController = nil
         panel.close()
     }
@@ -864,10 +872,11 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
         panel.identifier = recorderMainWindowIdentifier
         panel.presentedPhase = currentPhase
         panel.contentViewController = hostingController
-        panel.appearance = NSAppearance(named: .aqua)
+        panel.appearance = nil
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.hasShadow = true
+        // The island draws its own shadow so it can follow the morph.
+        panel.hasShadow = false
         hostingController.view.wantsLayer = true
         hostingController.view.layer?.backgroundColor = NSColor.clear.cgColor
         panel.animationBehavior = .none
@@ -905,6 +914,7 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
 
     func windowDidMove(_ notification: Notification) {
         guard hasPositionedPanel, notification.object as? NSWindow === panel else { return }
+        panel.refreshPointerInteraction()
         UserDefaults.standard.set(
             NSStringFromRect(panel.frame),
             forKey: RecorderPanelPolicy.savedFrameKey
@@ -914,6 +924,19 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
 
 final class RecorderPanel: NSPanel {
     var presentedPhase: AppPhase = .setup
+    private lazy var pointerRegion = RecorderPanelPointerRegion(window: self)
+
+    func setPointerInteractionEnabled(_ enabled: Bool) {
+        pointerRegion.setEnabled(enabled)
+    }
+
+    func setIslandInteractionView(_ view: NSView?) {
+        pointerRegion.setIslandView(view)
+    }
+
+    func refreshPointerInteraction() {
+        pointerRegion.refresh()
+    }
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }

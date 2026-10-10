@@ -17,10 +17,13 @@ struct CaptureWindowInfo: Identifiable, Equatable, Sendable {
     }
 
     @MainActor
-    static func available(onScreenOnly: Bool = true) async throws -> [CaptureWindowInfo] {
+    static func available() async throws -> [CaptureWindowInfo] {
         let content = try await SCShareableContent.excludingDesktopWindows(
             true,
-            onScreenWindowsOnly: onScreenOnly
+            // Full-screen windows live in separate Spaces. Keep their exact
+            // identities in the catalog; CGWindowList still restricts hover
+            // and clicks to the frontmost visible window under the pointer.
+            onScreenWindowsOnly: false
         )
         let ignoredSystemApplications: Set<String> = [
             "com.apple.dock",
@@ -105,7 +108,6 @@ final class CaptureWindowSelector {
         trackedGeometry = nil
         createOverlayPanels(token: token)
         installSelectionKeyMonitor(token: token)
-        NSApplication.shared.activate(ignoringOtherApps: true)
         makePointerScreenOverlayKey()
         pollingTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -271,9 +273,7 @@ final class CaptureWindowSelector {
         }
         if windows.isEmpty || refreshCounter % 8 == 0 || pendingSelectionClick != nil {
             let pendingClickAtRefresh = pendingSelectionClick
-            let refreshedWindows = try? await CaptureWindowInfo.available(
-                onScreenOnly: !CommandLine.arguments.contains("--design-review")
-            )
+            let refreshedWindows = try? await CaptureWindowInfo.available()
             guard activeToken == token, !Task.isCancelled else { return }
             // A successful empty catalog means the window disappeared. A
             // transient ScreenCaptureKit error must not impersonate that state.
@@ -558,19 +558,19 @@ private final class WindowSelectionPanel: NSPanel {
     init(screen: NSScreen) {
         super.init(
             contentRect: screen.frame,
-            styleMask: [.borderless],
+            styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
         setFrame(screen.frame, display: false)
         identifier = windowSelectionOverlayIdentifier
-        appearance = NSAppearance(named: .aqua)
+        appearance = nil
         isOpaque = false
         backgroundColor = .clear
         hasShadow = false
         level = CaptureWindowLevelPolicy.level(for: .selectionOverlay)
         hidesOnDeactivate = false
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .canJoinAllApplications, .ignoresCycle]
         sharingType = .readOnly
         selectionView.frame = CGRect(origin: .zero, size: screen.frame.size)
         selectionView.autoresizingMask = [.width, .height]
@@ -586,7 +586,7 @@ private final class WindowSelectionPanel: NSPanel {
     }
 
     override var canBecomeKey: Bool { !retiring && !recordingGuide }
-    override var canBecomeMain: Bool { !retiring && !recordingGuide }
+    override var canBecomeMain: Bool { false }
 
     func prepareForRetirement() {
         retiring = true
@@ -663,24 +663,25 @@ private final class WindowSelectionOverlayView: NSView {
         layer?.addSublayer(outlineLayer)
         card.wantsLayer = true
         card.layer?.backgroundColor = captureSelectionSurfaceNSColor.cgColor
-        card.layer?.cornerRadius = 20
-        card.layer?.borderColor = NSColor.white.withAlphaComponent(0.9).cgColor
+        card.layer?.cornerRadius = 30
+        card.layer?.cornerCurve = .continuous
+        card.layer?.borderColor = RecorderStyle.chromeNSColor.withAlphaComponent(0.12).cgColor
         card.layer?.borderWidth = 1
-        card.layer?.shadowColor = NSColor(calibratedRed: 0.17, green: 0.23, blue: 0.27, alpha: 1).cgColor
-        card.layer?.shadowOpacity = 0.12
-        card.layer?.shadowRadius = 18
-        card.layer?.shadowOffset = CGSize(width: 0, height: -8)
+        card.layer?.shadowColor = NSColor.black.cgColor
+        card.layer?.shadowOpacity = 0.38
+        card.layer?.shadowRadius = 30
+        card.layer?.shadowOffset = CGSize(width: 0, height: -14)
         addSubview(card)
         card.isHidden = true
         iconView.imageScaling = .scaleProportionallyUpOrDown
         iconView.wantsLayer = true
-        iconView.layer?.cornerRadius = 8
+        iconView.layer?.cornerRadius = 7
         iconView.layer?.masksToBounds = true
-        titleLabel.font = .systemFont(ofSize: 15, weight: .medium)
+        titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
         titleLabel.textColor = captureSelectionInkNSColor
         titleLabel.lineBreakMode = .byTruncatingTail
         detailLabel.font = .systemFont(ofSize: 11)
-        detailLabel.textColor = captureSelectionInkNSColor.withAlphaComponent(0.6)
+        detailLabel.textColor = captureSelectionInkNSColor.withAlphaComponent(0.56)
         detailLabel.lineBreakMode = .byTruncatingTail
         checkmark.image = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: "已选择")
         checkmark.contentTintColor = captureSelectionAccentNSColor
@@ -690,25 +691,50 @@ private final class WindowSelectionOverlayView: NSView {
         for button in [cancelButton, startButton] {
             button.isBordered = false
             button.focusRingType = .none
-            button.font = .systemFont(ofSize: 12, weight: .medium)
+            button.font = .systemFont(ofSize: 13, weight: .semibold)
             button.wantsLayer = true
-            button.layer?.cornerRadius = 11
-            button.layer?.borderColor = NSColor.black.withAlphaComponent(0.065).cgColor
-            button.layer?.borderWidth = 0.75
-            button.layer?.shadowColor = NSColor.black.cgColor
-            button.layer?.shadowOpacity = 0.07
-            button.layer?.shadowRadius = 4
-            button.layer?.shadowOffset = CGSize(width: 0, height: -2)
+            button.layer?.cornerRadius = 22
             button.target = self
         }
         cancelButton.title = "取消"
         cancelButton.contentTintColor = captureSelectionInkNSColor
-        cancelButton.layer?.backgroundColor = NSColor.white.cgColor
+        cancelButton.layer?.backgroundColor = NSColor.clear.cgColor
+        // Locking is shown by the frame and by the action lighting up.
+        checkmark.isHidden = true
+        separator.isHidden = true
         cancelButton.action = #selector(cancelSelection(_:))
         startButton.contentTintColor = .white
-        startButton.captureKeyboardFocusColor = NSColor.white.withAlphaComponent(0.65)
+        startButton.captureKeyboardFocusColor = RecorderStyle.chromeNSColor.withAlphaComponent(0.65)
         startButton.layer?.backgroundColor = captureSelectionPlatinumNSColor.cgColor
         startButton.action = #selector(startRecording(_:))
+    }
+
+    private func updateStartAppearance() {
+        startButton.layer?.backgroundColor = (selectionLocked
+            ? captureSelectionPlatinumNSColor : RecorderStyle.chromeNSColor.withAlphaComponent(0.1)).cgColor
+        let startTitle = NSMutableAttributedString(string: selectionLocked ? "●  开始录制" : "单击窗口以锁定", attributes: [
+            .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
+            .foregroundColor: selectionLocked ? NSColor.white : captureSelectionInkNSColor.withAlphaComponent(0.56)])
+        if selectionLocked {
+            startTitle.append(NSAttributedString(string: "  ⌘R", attributes: [
+                .font: NSFont.systemFont(ofSize: 10.5, weight: .semibold),
+                .foregroundColor: NSColor.white.withAlphaComponent(0.62)]))
+        }
+        startButton.attributedTitle = startTitle
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            card.layer?.backgroundColor = captureSelectionSurfaceNSColor.cgColor
+            card.layer?.borderColor = RecorderStyle.chromeNSColor.withAlphaComponent(0.12).cgColor
+            card.layer?.shadowOpacity = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? 0.38 : 0.16
+            separator.layer?.backgroundColor = captureSelectionInkNSColor.withAlphaComponent(0.08).cgColor
+            updateStartAppearance()
+            CATransaction.commit()
+        }
     }
 
     func update(cutoutFrame: CGRect?, windowIdentity: UInt32?, appName: String?, windowTitle: String?,
@@ -724,25 +750,19 @@ private final class WindowSelectionOverlayView: NSView {
         self.recordingHighlight = recordingHighlight
         if self.showsControls {
             titleLabel.stringValue = appName ?? ""
-            detailLabel.stringValue = windowTitle?.isEmpty == false ? windowTitle! : windowSize.map { "\(Int($0.width)) × \(Int($0.height))" } ?? ""
+            // A window titled after its own app says nothing new; show its size.
+            let size = windowSize.map { "\(Int($0.width)) × \(Int($0.height))" } ?? ""
+            if let windowTitle, !windowTitle.isEmpty, windowTitle != appName { detailLabel.stringValue = windowTitle }
+            else { detailLabel.stringValue = size }
         }
-        checkmark.isHidden = !selectionLocked
         cancelButton.isEnabled = self.showsControls
         startButton.isEnabled = selectionLocked && self.showsControls
-        startButton.alphaValue = selectionLocked ? 1 : 0.5
-        startButton.attributedTitle = NSAttributedString(string: selectionLocked ? "开始录制   ⌘R" : "单击窗口以锁定", attributes: [
-            .font: NSFont.systemFont(ofSize: 12, weight: .medium), .foregroundColor: NSColor.white])
+        startButton.alphaValue = 1
+        updateStartAppearance()
         if targetChanged {
             thumbnailTask?.cancel()
         }
         if (targetChanged || firstLock), self.showsControls { iconView.image = appIcon }
-        if (targetChanged || firstLock), selectionLocked, let windowIdentity {
-            thumbnailTask = Task { [weak self] in
-                let image = await RecorderSourceThumbnail.image(windowID: windowIdentity)
-                guard !Task.isCancelled, let self, self.windowIdentity == windowIdentity, let image else { return }
-                self.iconView.image = image
-            }
-        }
         if recordingHighlight { thumbnailTask?.cancel() }
         needsLayout = true
         needsDisplay = true
@@ -796,13 +816,11 @@ private final class WindowSelectionOverlayView: NSView {
             return
         }
         cardTransition.show(card, at: confirmationCardFrame(for: target))
-        iconView.frame = CGRect(x: 18, y: 101, width: 70, height: 50)
-        titleLabel.frame = CGRect(x: 101, y: 126, width: 205, height: 20)
-        detailLabel.frame = CGRect(x: 101, y: 106, width: 205, height: 16)
-        checkmark.frame = CGRect(x: 312, y: 119, width: 18, height: 18)
-        separator.frame = CGRect(x: 18, y: 75, width: card.bounds.width - 36, height: 1)
-        cancelButton.frame = CGRect(x: 18, y: 22, width: 74, height: 36)
-        startButton.frame = CGRect(x: card.bounds.width - 160, y: 22, width: 142, height: 36)
+        iconView.frame = CGRect(x: 16, y: 15, width: 30, height: 30)
+        titleLabel.frame = CGRect(x: 56, y: 31, width: 150, height: 17)
+        detailLabel.frame = CGRect(x: 56, y: 14, width: 150, height: 15)
+        cancelButton.frame = CGRect(x: 214, y: 8, width: 62, height: 44)
+        startButton.frame = CGRect(x: card.bounds.width - 152, y: 8, width: 144, height: 44)
     }
     @objc private func startRecording(_ sender: Any?) {
         guard acceptsSelectionInput, showsControls, selectionLocked else { return }
@@ -828,6 +846,11 @@ private final class WindowSelectionOverlayView: NSView {
             borderPath = CGPath(roundedRect: target.insetBy(dx: 1.5, dy: 1.5),
                                 cornerWidth: 9, cornerHeight: 9, transform: nil)
         }
+        let reducesMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let previousMask = dimmingLayer.presentation()?.path ?? dimmingLayer.path
+        let previousBorder = outlineLayer.presentation()?.path ?? outlineLayer.path
+        let lineWidth: CGFloat = recordingHighlight ? 3 : (selectionLocked ? 3 : 2)
+        let lockedNow = selectionLocked && outlineLayer.lineWidth < 3 && borderPath != nil
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         dimmingLayer.frame = bounds
@@ -835,15 +858,59 @@ private final class WindowSelectionOverlayView: NSView {
         dimmingLayer.fillColor = NSColor.black.withAlphaComponent(recordingHighlight ? 0.58 : 0.42).cgColor
         outlineLayer.frame = bounds
         outlineLayer.path = borderPath
-        outlineLayer.lineWidth = recordingHighlight ? 3 : (selectionLocked ? 3 : 2)
+        outlineLayer.lineWidth = lineWidth
         CATransaction.commit()
+        guard !reducesMotion, !recordingHighlight else { return }
+        // The frame glides from one window to the next instead of jumping,
+        // and the hole in the dimmer travels with it.
+        if let previousBorder, let borderPath, previousBorder != borderPath,
+           let previousMask, previousBorder.boundingBox != borderPath.boundingBox {
+            for (layer, from, to) in [(dimmingLayer, previousMask, maskPath as CGPath), (outlineLayer, previousBorder, borderPath)] {
+                let glide = CABasicAnimation(keyPath: "path")
+                glide.fromValue = from
+                glide.toValue = to
+                glide.duration = 0.26
+                glide.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.2, 1)
+                layer.add(glide, forKey: "glide")
+            }
+        } else if previousBorder == nil, borderPath != nil {
+            let arrive = CABasicAnimation(keyPath: "opacity")
+            arrive.fromValue = 0
+            arrive.toValue = 1
+            arrive.duration = 0.18
+            outlineLayer.add(arrive, forKey: "arrive")
+        }
+        // Locking a window rings once around its frame.
+        if lockedNow, let borderPath {
+            let ring = CAShapeLayer()
+            ring.frame = bounds
+            ring.path = borderPath
+            ring.fillColor = nil
+            ring.strokeColor = NSColor.white.cgColor
+            ring.opacity = 0
+            layer?.addSublayer(ring)
+            let widen = CABasicAnimation(keyPath: "lineWidth")
+            widen.fromValue = 3
+            widen.toValue = 16
+            let fade = CABasicAnimation(keyPath: "opacity")
+            fade.fromValue = 0.55
+            fade.toValue = 0
+            let group = CAAnimationGroup()
+            group.animations = [widen, fade]
+            group.duration = 0.5
+            group.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)
+            CATransaction.begin()
+            CATransaction.setCompletionBlock { ring.removeFromSuperlayer() }
+            ring.add(group, forKey: "lock")
+            CATransaction.commit()
+        }
     }
 
     private func confirmationCardFrame(for target: CGRect) -> CGRect {
-        let size = CGSize(width: 350, height: 178)
+        let size = CGSize(width: 436, height: 60)
         let centerX = min(max(target.midX, size.width / 2 + 20), bounds.maxX - size.width / 2 - 20)
-        let above = target.maxY + 16
-        let below = target.minY - size.height - 16
+        let above = target.maxY + 14
+        let below = target.minY - size.height - 14
         let y: CGFloat
         if below >= bounds.minY + 20 { y = below }
         else if above + size.height <= bounds.maxY - 20 { y = above }

@@ -38,7 +38,9 @@ struct EditorSlider: View {
                     Circle().fill(EditorTheme.cardElevated)
                         .overlay { Circle().strokeBorder(EditorTheme.chrome(isFocused ? 0.35 : 0.10), lineWidth: 0.75) }
                         .shadow(color: EditorTheme.softShadow, radius: 3, y: 2)
-                        .frame(width: 18, height: 18).scaleEffect(isDragging ? 1.12 : 1)
+                        .frame(width: 18, height: 18)
+                        .scaleEffect(isDragging && !RecorderMotion.reduces ? 1.12 : 1)
+                        .animation(RecorderMotion.quick, value: isDragging)
                         .offset(x: center - 9)
                 }
                 .frame(height: 32)
@@ -171,7 +173,7 @@ struct EditorInspectorParameterReadout: View {
                 readout
             }
         }
-        .animation(SpringMotion.interactive, value: isActive)
+        .animation(RecorderMotion.quick, value: isActive)
         .onDisappear {
             guard isTextEditing, let editConfiguration else { return }
             cancelTextEditing(editConfiguration)
@@ -262,7 +264,7 @@ struct EditorInspectorParameterReadout: View {
             .buttonStyle(.plain)
             .appButtonKeyboardFocus(in: Capsule(style: .continuous))
             .onHover { hovering in
-                withAnimation(SpringMotion.interactive) {
+                withAnimation(RecorderMotion.fade) {
                     isValueHovered = hovering
                 }
             }
@@ -287,7 +289,7 @@ struct EditorInspectorParameterReadout: View {
             .stroke(
                 isActive
                     ? EditorTheme.platinumAccent.opacity(0.34)
-                    : EditorTheme.chrome(0.065),
+                    : Color.clear,
                 lineWidth: isEmbedded ? 0 : 0.75
             )
     }
@@ -422,7 +424,7 @@ struct EditorPairedParameterReadouts: View {
 
 // MARK: - Toggle
 
-/// 编辑器统一胶囊开关，使用铂金开启态和清晰的弹性位移反馈。
+/// 编辑器与设置共享语义：绿色表示开启，白色滑块跟随状态。
 struct EditorToggle: View {
     @FocusState private var hasFocus: Bool
     @Binding var isOn: Bool
@@ -432,7 +434,7 @@ struct EditorToggle: View {
     var body: some View {
         if let title {
             Button {
-                withAnimation(SpringMotion.interactive) {
+                withAnimation(RecorderMotion.quick) {
                     isOn.toggle()
                 }
             } label: {
@@ -448,7 +450,7 @@ struct EditorToggle: View {
             .accessibilityAddTraits(.isToggle)
         } else {
             Button {
-                withAnimation(SpringMotion.interactive) {
+                withAnimation(RecorderMotion.quick) {
                     isOn.toggle()
                 }
             } label: {
@@ -500,65 +502,21 @@ private struct EditorToggleButtonStyle: ButtonStyle {
         private var toggleIndicator: some View {
             ZStack(alignment: isOn ? .trailing : .leading) {
                 Capsule(style: .continuous)
-                    .fill(
-                        isOn
-                            ? LinearGradient(
-                                colors: [EditorTheme.selectionTint, EditorTheme.selectionTint],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                            : LinearGradient(
-                                colors: [EditorTheme.chrome(0.12), EditorTheme.chrome(0.08)],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                    )
-                    .overlay(
-                        Capsule(style: .continuous)
-                            .stroke(
-                                EditorTheme.chrome(
-                                    isOn ? (showsHover ? 0.55 : 0.35)
-                                        : (showsHover ? 0.18 : 0.08)
-                                ),
-                                lineWidth: 0.75
-                            )
-                    )
+                    .fill(isOn ? EditorTheme.success : EditorTheme.chrome(showsHover ? 0.18 : 0.12))
                 Circle()
-                    .fill(
-                        isOn
-                            ? LinearGradient(
-                                colors: [EditorTheme.onAccent, EditorTheme.onAccent],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                            : LinearGradient(
-                                colors: [Color.white, Color(white: 0.92)],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                    )
-                    .shadow(color: EditorTheme.softShadow, radius: 2, y: 1)
+                    .fill(.white)
+                    .shadow(color: .black.opacity(0.16), radius: 2, y: 1)
                     .padding(2)
             }
             .frame(width: 40, height: 22)
             .overlay {
-                Capsule(style: .continuous)
-                    .fill(EditorTheme.chrome(isPressed ? 0.12 : 0))
-                    .allowsHitTesting(false)
+                Capsule().fill(.black.opacity(isPressed ? 0.10 : 0)).allowsHitTesting(false)
             }
-            .appKeyboardFocus(
-                in: Capsule(style: .continuous),
-                color: isOn ? EditorTheme.onAccent.opacity(0.65) : EditorTheme.chrome(0.40),
-                isFocused: isFocused
-            )
-            .scaleEffect(isPressed ? 0.97 : 1)
-            .shadow(
-                color: EditorTheme.chrome(showsHover && isOn ? 0.14 : 0),
-                radius: 4
-            )
-            .animation(SpringMotion.interactive, value: isOn)
-            .animation(SpringMotion.interactive, value: showsHover)
-            .animation(SpringMotion.snappy, value: isPressed)
+            .appKeyboardFocus(in: Capsule(), color: EditorTheme.chrome(0.40), isFocused: isFocused)
+            .scaleEffect(isPressed && !RecorderMotion.reduces ? 0.97 : 1)
+            .animation(RecorderMotion.settle, value: isOn)
+            .animation(RecorderMotion.fade, value: showsHover)
+            .animation(RecorderMotion.quick, value: isPressed)
         }
     }
 }
@@ -662,7 +620,7 @@ struct EditorNumericStepControl: View {
         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .opacity(isEnabled ? 1 : 0.55)
         .onHover { hovering in
-            withAnimation(SpringMotion.interactive) {
+            withAnimation(RecorderMotion.quick) {
                 isHovered = hovering
             }
         }
@@ -772,29 +730,22 @@ private struct EditorStepButtonStyle: ButtonStyle {
                     ),
                     in: RoundedRectangle(cornerRadius: 7, style: .continuous)
                 )
-                .overlay {
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .stroke(
-                            EditorTheme.chrome(isHovered && isEnabled ? 0.16 : 0.06),
-                            lineWidth: 0.75
-                        )
-                }
                 .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                 .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                .scaleEffect(configuration.isPressed && isEnabled ? 0.90 : 1)
+                .scaleEffect(configuration.isPressed && isEnabled && !RecorderMotion.reduces ? 0.90 : 1)
                 .onHover { hovering in
-                    withAnimation(SpringMotion.interactive) {
+                    withAnimation(RecorderMotion.fade) {
                         isHovered = hovering
                     }
                 }
-                .animation(SpringMotion.interactive, value: configuration.isPressed)
+                .animation(RecorderMotion.quick, value: configuration.isPressed)
         }
     }
 }
 
 // MARK: - Button Styles
 
-/// 次级按钮：轻描边、悬停提亮和按压反馈。
+/// 次级动作与录制条同源：实心中性胶囊，悬停提亮，按压轻收。
 struct EditorQuietButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> Body {
         Body(configuration: configuration)
@@ -816,29 +767,22 @@ struct EditorQuietButtonStyle: ButtonStyle {
                 .padding(.horizontal, 10)
                 .frame(minHeight: EditorInterfaceHeight.compact)
                 .background(
-                    RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous)
+                    Capsule(style: .continuous)
                         .fill(
                             EditorTheme.chrome(
                                 !isEnabled ? 0.02
-                                    : configuration.isPressed ? 0.09
-                                    : isHovered ? 0.05 : 0.025
+                                    : configuration.isPressed ? 0.16
+                                    : isHovered ? 0.11 : 0.065
                             )
                         )
                 )
-                .overlay(
-                    RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous)
-                        .strokeBorder(
-                            EditorTheme.chrome(isHovered && isEnabled ? 0.14 : 0.085),
-                            lineWidth: 0.75
-                        )
-                )
-                .contentShape(RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
-                .appKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
-                .scaleEffect(configuration.isPressed && isEnabled ? 0.98 : 1.0)
+                .contentShape(Capsule(style: .continuous))
+                .appKeyboardFocus(in: Capsule(style: .continuous))
+                .scaleEffect(configuration.isPressed && isEnabled && !RecorderMotion.reduces ? 0.96 : 1.0)
                 .opacity(isEnabled ? 1 : 0.46)
                 .onHover { isHovered = $0 }
-                .animation(SpringMotion.interactive, value: isHovered)
-                .animation(SpringMotion.interactive, value: configuration.isPressed)
+                .animation(RecorderMotion.fade, value: isHovered)
+                .animation(RecorderMotion.quick, value: configuration.isPressed)
         }
     }
 }
@@ -864,24 +808,24 @@ struct EditorPrimaryButtonStyle: ButtonStyle {
                 .padding(.horizontal, 13)
                 .frame(minHeight: minHeight)
                 .background(
-                    RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous)
+                    Capsule(style: .continuous)
                         .fill(EditorTheme.platinumAccent)
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous)
+                    Capsule(style: .continuous)
                         .fill(EditorTheme.onAccent.opacity(
                             !isEnabled ? 0 : configuration.isPressed ? 0.16 : isHovered ? 0.08 : 0
                         ))
                         .allowsHitTesting(false)
                 )
                 .shadow(color: EditorTheme.softShadow.opacity(0.4), radius: 3, y: 1)
-                .contentShape(RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
-                .appKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous), color: EditorTheme.onAccent.opacity(0.65))
-                .scaleEffect(configuration.isPressed && isEnabled ? 0.98 : 1.0)
+                .contentShape(Capsule(style: .continuous))
+                .appKeyboardFocus(in: Capsule(style: .continuous), color: EditorTheme.onAccent.opacity(0.65))
+                .scaleEffect(configuration.isPressed && isEnabled && !RecorderMotion.reduces ? 0.96 : 1.0)
                 .opacity(isEnabled ? 1 : 0.4)
                 .onHover { isHovered = $0 }
-                .animation(SpringMotion.interactive, value: isHovered)
-                .animation(SpringMotion.interactive, value: configuration.isPressed)
+                .animation(RecorderMotion.fade, value: isHovered)
+                .animation(RecorderMotion.quick, value: configuration.isPressed)
         }
     }
 }
@@ -916,11 +860,11 @@ struct EditorGhostButtonStyle: ButtonStyle {
                 )
                 .contentShape(RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous))
                 .appKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous))
-                .scaleEffect(configuration.isPressed && isEnabled ? 0.97 : 1.0)
+                .scaleEffect(configuration.isPressed && isEnabled && !RecorderMotion.reduces ? 0.97 : 1.0)
                 .opacity(isEnabled ? 1 : 0.44)
                 .onHover { isHovered = $0 }
-                .animation(SpringMotion.interactive, value: isHovered)
-                .animation(SpringMotion.interactive, value: configuration.isPressed)
+                .animation(RecorderMotion.fade, value: isHovered)
+                .animation(RecorderMotion.quick, value: configuration.isPressed)
         }
     }
 }
@@ -950,11 +894,11 @@ struct EditorToolbarPressButtonStyle: ButtonStyle {
                         .fill(EditorTheme.chrome(isEnabled ? (configuration.isPressed ? 0.12 : hovered && showsHover ? 0.065 : 0) : 0))
                         .allowsHitTesting(false)
                 }
-                .scaleEffect(configuration.isPressed && isEnabled ? 0.97 : 1)
+                .scaleEffect(configuration.isPressed && isEnabled && !RecorderMotion.reduces ? 0.97 : 1)
                 .opacity(isEnabled ? 1 : 0.48)
                 .onHover { hovered = $0 }
-                .animation(SpringMotion.interactive, value: hovered)
-                .animation(SpringMotion.snappy, value: configuration.isPressed)
+                .animation(RecorderMotion.fade, value: hovered)
+                .animation(RecorderMotion.quick, value: configuration.isPressed)
         }
     }
 }
@@ -993,26 +937,19 @@ struct EditorDismissIconButtonStyle: ButtonStyle {
                             )
                         )
                 )
-                .overlay {
-                    Circle()
-                        .stroke(
-                            EditorTheme.chrome(isHovered && isEnabled ? 0.18 : 0.07),
-                            lineWidth: 0.75
-                        )
-                }
                 .contentShape(Circle())
                 .appKeyboardFocus(in: Circle())
                 .scaleEffect(
-                    !isEnabled ? 1
+                    !isEnabled || RecorderMotion.reduces ? 1
                         : configuration.isPressed ? 0.88
-                        : isHovered ? 1.04 : 1
+                        : 1
                 )
                 .onHover { hovering in
-                    withAnimation(SpringMotion.interactive) {
+                    withAnimation(RecorderMotion.fade) {
                         isHovered = hovering
                     }
                 }
-                .animation(SpringMotion.interactive, value: configuration.isPressed)
+                .animation(RecorderMotion.quick, value: configuration.isPressed)
         }
     }
 }
@@ -1066,11 +1003,11 @@ struct EditorWarningButtonStyle: ButtonStyle {
                         : isHovered ? 1.02 : 1
                 )
                 .onHover { hovering in
-                    withAnimation(SpringMotion.interactive) {
+                    withAnimation(RecorderMotion.fade) {
                         isHovered = hovering
                     }
                 }
-                .animation(SpringMotion.interactive, value: configuration.isPressed)
+                .animation(RecorderMotion.quick, value: configuration.isPressed)
         }
     }
 }
@@ -1102,11 +1039,11 @@ struct EditorInlineActionButtonStyle: ButtonStyle {
                         : isHovered ? 1.08 : 1
                 )
                 .onHover { hovering in
-                    withAnimation(SpringMotion.snappy) {
+                    withAnimation(RecorderMotion.fade) {
                         isHovered = hovering
                     }
                 }
-                .animation(SpringMotion.snappy, value: configuration.isPressed)
+                .animation(RecorderMotion.quick, value: configuration.isPressed)
         }
     }
 }
@@ -1153,13 +1090,13 @@ struct EditorDestructiveButtonStyle: ButtonStyle {
                 )
                 .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                 .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                .scaleEffect(configuration.isPressed && isEnabled ? 0.985 : 1)
+                .scaleEffect(configuration.isPressed && isEnabled && !RecorderMotion.reduces ? 0.985 : 1)
                 .onHover { hovering in
-                    withAnimation(SpringMotion.interactive) {
+                    withAnimation(RecorderMotion.fade) {
                         isHovered = hovering
                     }
                 }
-                .animation(SpringMotion.interactive, value: configuration.isPressed)
+                .animation(RecorderMotion.quick, value: configuration.isPressed)
         }
     }
 }
@@ -1207,13 +1144,13 @@ struct EditorDestructiveIconButtonStyle: ButtonStyle {
                 )
                 .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                 .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                .scaleEffect(configuration.isPressed && isEnabled ? 0.93 : 1)
+                .scaleEffect(configuration.isPressed && isEnabled && !RecorderMotion.reduces ? 0.93 : 1)
                 .onHover { hovering in
-                    withAnimation(SpringMotion.interactive) {
+                    withAnimation(RecorderMotion.fade) {
                         isHovered = hovering
                     }
                 }
-                .animation(SpringMotion.interactive, value: configuration.isPressed)
+                .animation(RecorderMotion.quick, value: configuration.isPressed)
         }
     }
 }
@@ -1247,11 +1184,11 @@ struct EditorThumbnailButtonStyle: ButtonStyle {
                 .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                 .opacity(isEnabled ? 1 : 0.44)
                 .onHover { hovering in
-                    withAnimation(SpringMotion.interactive) {
+                    withAnimation(RecorderMotion.fade) {
                         isHovered = hovering
                     }
                 }
-                .animation(SpringMotion.interactive, value: configuration.isPressed)
+                .animation(RecorderMotion.quick, value: configuration.isPressed)
         }
     }
 }
@@ -1283,11 +1220,11 @@ struct EditorSwatchButtonStyle: ButtonStyle {
                 .contentShape(Rectangle())
                 .opacity(isEnabled ? 1 : 0.44)
                 .onHover { hovering in
-                    withAnimation(SpringMotion.snappy) {
+                    withAnimation(RecorderMotion.fade) {
                         isHovered = hovering
                     }
                 }
-                .animation(SpringMotion.snappy, value: configuration.isPressed)
+                .animation(RecorderMotion.quick, value: configuration.isPressed)
         }
     }
 }
@@ -1398,7 +1335,7 @@ struct EditorCameraLayoutPresetButton: View {
         .buttonStyle(.editorToolbarPress)
         .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         .onHover { isHovered = $0 }
-        .animation(SpringMotion.interactive, value: isHovered)
+        .animation(RecorderMotion.fade, value: isHovered)
     }
 }
 
@@ -1443,7 +1380,7 @@ struct EditorDisclosure<Content: View>: View {
         let isExpanded = expansion.wrappedValue
         VStack(alignment: .leading, spacing: 0) {
             Button {
-                withAnimation(SpringMotion.fluid) {
+                withAnimation(RecorderMotion.settle) {
                     expansion.wrappedValue.toggle()
                 }
             } label: {
@@ -1480,14 +1417,13 @@ struct EditorDisclosure<Content: View>: View {
                         }
                     }
                     Spacer(minLength: 4)
-                    Image(systemName: "chevron.right")
-                        .font(.appUI(size: 9, weight: .bold))
+                    AppLineIcon(kind: .chevron, size: 12)
                         .foregroundStyle(
                             EditorTheme.chrome(isExpanded ? 0.86 : 0.46)
                         )
                         .frame(width: 24, height: 24)
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                        .animation(SpringMotion.fluid, value: isExpanded)
+                        .animation(RecorderMotion.settle, value: isExpanded)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
@@ -1505,11 +1441,11 @@ struct EditorDisclosure<Content: View>: View {
             }
             .buttonStyle(.editorToolbarPress)
             .onHover { hovering in
-                withAnimation(SpringMotion.interactive) {
+                withAnimation(RecorderMotion.quick) {
                     isHovered = hovering
                 }
             }
-            .animation(SpringMotion.interactive, value: isHovered)
+            .animation(RecorderMotion.fade, value: isHovered)
             .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(appLocalized(title))
@@ -1531,9 +1467,7 @@ struct EditorDisclosure<Content: View>: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 12)
                     .transition(
-                        .opacity.combined(
-                            with: .scale(scale: 0.985, anchor: .top)
-                        )
+                        .opacity
                     )
             }
         }
@@ -1541,13 +1475,6 @@ struct EditorDisclosure<Content: View>: View {
             RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous)
                 .fill(EditorTheme.groupSurface)
         }
-        .overlay {
-            RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous)
-                .strokeBorder(
-                    EditorTheme.chrome(isExpanded ? 0.10 : 0.055),
-                    lineWidth: 0.75
-                )
-        }
-        .animation(SpringMotion.fluid, value: isExpanded)
+        .animation(RecorderMotion.settle, value: isExpanded)
     }
 }

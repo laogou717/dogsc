@@ -108,12 +108,20 @@ final class FirstUseTourController {
     // permission-page visit needs a stronger gate, including its opening film
     // and System Settings round trip, even for an already-authorized install.
     private static var permissionPageIsPresented = false
+    private static var permissionIntroIsActive = false
     private static var appDialogIsPresented = false
     static func setAppDialogPresented(_ presented: Bool) {
         appDialogIsPresented = presented
         for controller in controllers.values {
             if presented { controller.suspend() }
             else { controller.resume() }
+        }
+    }
+    static func setPermissionIntroActive(_ active: Bool) {
+        guard permissionIntroIsActive != active else { return }
+        permissionIntroIsActive = active
+        if active {
+            controllers[.permissions]?.suspend()
         }
     }
     static func setPermissionPagePresented(_ presented: Bool) {
@@ -157,9 +165,16 @@ final class FirstUseTourController {
     private var permissionReturnTask: Task<Void, Never>?
     private var lastTarget = CGRect.null
     private var lastCardIndex = -1
+    private var needsEntrance = false
+    private var isHandedOffFromIntro = false
+    /// The guide has not been finished or skipped, so it will present itself
+    /// as soon as its page allows.
+    var isPending: Bool { !completed }
     private var preferenceKey: String { "onboarding.tour.\(kind.rawValue).completed" }
     private var isBlockedByModalSurface: Bool {
-        Self.appDialogIsPresented || (kind != .permissions && Self.permissionPageIsPresented)
+        Self.appDialogIsPresented
+            || (kind != .permissions && Self.permissionPageIsPresented)
+            || (kind == .permissions && Self.permissionIntroIsActive)
     }
 
     private init(kind: FirstUseTourKind) {
@@ -243,6 +258,17 @@ final class FirstUseTourController {
         }
         isSuspended = false
         requestUpdate()
+    }
+    func resumeImmediately(handedOffFromIntro: Bool = false) {
+        guard !isDismissing, !completed, !isBlockedByModalSurface else { return }
+        if kind == .permissions, permissionFlow?.settingsStep != nil {
+            refreshPermissionsOnReturn()
+            return
+        }
+        isSuspended = false
+        updatePending = false
+        isHandedOffFromIntro = handedOffFromIntro
+        update()
     }
 
     fileprivate func attach(_ view: FirstUseTourAnchorView) {
@@ -336,18 +362,24 @@ final class FirstUseTourController {
         let screenBounds = screen.frame
         let visible = screen.visibleFrame.insetBy(dx: 14, dy: 14)
         if cardPanel == nil {
-            guard startTask == nil else { return }
-            startTask = Task { @MainActor [weak self] in
-                do { try await Task.sleep(for: .milliseconds(350)) } catch { return }
-                guard let self else { return }
-                self.startTask = nil
-                guard !self.isSuspended, !self.isBlockedByModalSurface,
-                      self.host?.enabled == true, self.owner?.isVisible == true, NSApp.isActive,
-                      NSApp.keyWindow == nil || NSApp.keyWindow === self.owner else { return }
-                self.makePanels()
-                self.requestUpdate()
+            if kind == .permissions {
+                // The permission window has already settled into place during the introduction handoff.
+                // Create panels immediately without the 350ms delay to eliminate the dimmer gap.
+                makePanels()
+            } else {
+                guard startTask == nil else { return }
+                startTask = Task { @MainActor [weak self] in
+                    do { try await Task.sleep(for: .milliseconds(350)) } catch { return }
+                    guard let self else { return }
+                    self.startTask = nil
+                    guard !self.isSuspended, !self.isBlockedByModalSurface,
+                          self.host?.enabled == true, self.owner?.isVisible == true, NSApp.isActive,
+                          NSApp.keyWindow == nil || NSApp.keyWindow === self.owner else { return }
+                    self.makePanels()
+                    self.requestUpdate()
+                }
+                return
             }
-            return
         }
         guard let shadePanel, let cardPanel else { return }
         let cardWidth = min(320, visible.width)
@@ -359,31 +391,63 @@ final class FirstUseTourController {
                                           onSkip: { [weak self] in self?.finish() },
                                           primaryTitle: permissionPrimaryTitle,
                                           showsPrevious: permissionFlow?.isReview ?? true)
-            cardPanel.contentView = NSHostingView(rootView: content.frame(width: cardWidth).preferredColorScheme(.light).appControlFocusAppearance())
+            cardPanel.contentView = NSHostingView(rootView: content.frame(width: cardWidth).appControlFocusAppearance())
             lastCardIndex = index
         }
         let height = max(160, cardPanel.contentView?.fittingSize.height ?? 190)
         let cardFrame = Self.cardFrame(target: target, size: CGSize(width: cardWidth, height: height), visible: visible, side: step.side)
         let maskFrame = kind == .editor ? owner.frame : screenBounds
         shadePanel.setFrame(maskFrame, display: false)
+        shadePanel.contentView?.layoutSubtreeIfNeeded()
+        let reducesMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         if let shade = shadePanel.contentView as? FirstUseTourShadeView {
-            shade.target = target.offsetBy(dx: -maskFrame.minX, dy: -maskFrame.minY)
-            shade.highlight = anchor.highlight
-            shade.card = cardFrame.offsetBy(dx: -maskFrame.minX, dy: -maskFrame.minY)
-            shade.needsDisplay = true
+            // Between steps the spotlight glides to its next control; window
+            // moves and layout changes still track the live target exactly.
+            shade.show(target: target.offsetBy(dx: -maskFrame.minX, dy: -maskFrame.minY),
+                       highlight: anchor.highlight, glides: changedStep && !reducesMotion)
         }
         // Keep the real target aligned during window movement. Only a step
         // change gives the compact callout a short opacity transition.
         cardPanel.setFrame(cardFrame, display: true)
-        if changedStep, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+        cardPanel.contentView?.layoutSubtreeIfNeeded()
+        if changedStep, !reducesMotion {
+            // The callout lets the spotlight lead, then settles beside it.
             cardPanel.alphaValue = 0
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.14
+                context.duration = 0.3
+                context.timingFunction = CAMediaTimingFunction(controlPoints: 0.6, 0, 0.3, 1)
                 cardPanel.animator().alphaValue = 1
             }
         }
         shadePanel.orderFront(nil)
         cardPanel.orderFront(nil)
+        if isHandedOffFromIntro {
+            isHandedOffFromIntro = false
+            needsEntrance = false
+            if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                cardPanel.alphaValue = 1
+            } else {
+                cardPanel.alphaValue = 0
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.25
+                    context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                    cardPanel.animator().alphaValue = 1
+                }
+            }
+        } else if needsEntrance {
+            needsEntrance = false
+            if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                shadePanel.alphaValue = 1
+                cardPanel.alphaValue = 1
+            } else {
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.3
+                    context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                    shadePanel.animator().alphaValue = 1
+                    cardPanel.animator().alphaValue = 1
+                }
+            }
+        }
         if lastTarget != target {
             cardPanel.invalidateShadow()
             lastTarget = target
@@ -392,10 +456,13 @@ final class FirstUseTourController {
 
     private func makePanels() {
         guard let owner else { return }
-        let shade = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        let screen = owner.screen ?? NSScreen.main
+        let screenBounds = screen?.frame ?? owner.frame
+        let maskFrame = kind == .editor ? owner.frame : screenBounds
+        let shade = NSPanel(contentRect: maskFrame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         shade.ignoresMouseEvents = true
         shade.hasShadow = false
-        shade.contentView = FirstUseTourShadeView()
+        shade.contentView = FirstUseTourShadeView(frame: NSRect(origin: .zero, size: maskFrame.size))
         let card = FirstUseTourPanel(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
         card.hasShadow = true
         for (offset, panel) in [(2, shade), (3, card)] {
@@ -408,6 +475,15 @@ final class FirstUseTourController {
             panel.collectionBehavior = [.fullScreenAuxiliary, .ignoresCycle]
             panel.animationBehavior = .none
             owner.addChildWindow(panel, ordered: .above)
+        }
+        if isHandedOffFromIntro {
+            shade.alphaValue = 1
+            card.alphaValue = 0
+            needsEntrance = false
+        } else {
+            shade.alphaValue = 0
+            card.alphaValue = 0
+            needsEntrance = true
         }
         shadePanel = shade; cardPanel = card
         card.onSkip = { [weak self] in self?.finish() }
@@ -481,6 +557,7 @@ final class FirstUseTourController {
         }
         cardPanel = nil; shadePanel = nil
         lastCardIndex = -1; lastTarget = .null
+        isHandedOffFromIntro = false
     }
 
     static func cardFrame(target: CGRect, size: CGSize, visible: CGRect, side: FirstUseTourStep.Side) -> CGRect {
@@ -514,33 +591,57 @@ private final class FirstUseTourPanel: NSPanel {
 
 /// The dimmer never receives input, even inside its opaque region. The live
 /// permission button remains clickable; there is no synthetic forwarded click.
+/// Two shape layers draw the shade and the spotlight's edge, so moving between
+/// steps is a compositor animation rather than a full-screen redraw.
 final class FirstUseTourShadeView: NSView {
-    var target = CGRect.zero
-    var card = CGRect.zero
-    var highlight = FirstUseTourHighlight.rounded(0)
-    override func draw(_ dirtyRect: NSRect) {
-        guard let context = NSGraphicsContext.current?.cgContext else { return }
+    private let shade = CAShapeLayer()
+    private let edge = CAShapeLayer()
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        shade.fillRule = .evenOdd
+        shade.fillColor = NSColor(white: 0.04, alpha: 0.48).cgColor
+        edge.fillColor = nil
+        edge.strokeColor = NSColor.white.withAlphaComponent(0.86).cgColor
+        edge.lineWidth = 1.5
+        layer?.addSublayer(shade)
+        layer?.addSublayer(edge)
+        shade.frame = bounds
+        edge.frame = bounds
+    }
+    @available(*, unavailable) required init?(coder: NSCoder) { nil }
+
+    override func layout() {
+        super.layout()
+        shade.frame = bounds
+        edge.frame = bounds
+    }
+
+    func show(target: CGRect, highlight: FirstUseTourHighlight, glides: Bool) {
+        let viewBounds = bounds.isEmpty ? CGRect(origin: .zero, size: window?.frame.size ?? .zero) : bounds
+        guard !viewBounds.isEmpty else { return }
         let outline = highlight.path(in: target)
-        context.saveGState()
-        context.addRect(bounds)
-        context.addPath(outline)
-        context.setFillColor(NSColor(white: 0.04, alpha: 0.48).cgColor)
-        context.drawPath(using: .eoFill)
-        context.addPath(outline)
-        context.setStrokeColor(NSColor.white.withAlphaComponent(0.7).cgColor)
-        context.setLineWidth(1)
-        context.strokePath()
-        context.restoreGState()
-        NSColor.white.withAlphaComponent(0.7).setStroke()
-        let point = CGPoint(x: min(max(card.midX, target.minX + 8), target.maxX - 8),
-                            y: card.midY < target.midY ? target.minY : target.maxY)
-        let end = CGPoint(x: min(max(point.x, card.minX + 16), card.maxX - 16),
-                          y: card.midY < target.midY ? card.maxY : card.minY)
-        if !target.intersects(card), abs(end.y - point.y) < 70 {
-            let connector = NSBezierPath()
-            connector.move(to: point); connector.line(to: end)
-            connector.lineWidth = 1; connector.stroke()
+        let cover = CGMutablePath()
+        cover.addRect(viewBounds)
+        cover.addPath(outline)
+        if glides, let previousCover = shade.path, let previousOutline = edge.path {
+            for (layer, from, to) in [(shade, previousCover, cover as CGPath), (edge, previousOutline, outline)] {
+                let glide = CABasicAnimation(keyPath: "path")
+                glide.fromValue = layer.presentation()?.path ?? from
+                glide.toValue = to
+                glide.duration = 0.36
+                glide.timingFunction = CAMediaTimingFunction(controlPoints: 0.3, 0, 0.1, 1)
+                layer.add(glide, forKey: "glide")
+            }
         }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        shade.frame = viewBounds
+        edge.frame = viewBounds
+        shade.path = cover
+        edge.path = outline
+        CATransaction.commit()
     }
 }
 
@@ -555,41 +656,58 @@ struct FirstUseTourCard: View {
     var showsPrevious = true
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 10) {
-                Image(systemName: step.symbol).font(.appUI(size: 17))
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 11) {
+                Image(systemName: step.symbol)
+                    .font(.system(size: 14, weight: .medium))
+                    .frame(width: 30, height: 30)
+                    .background(RecorderStyle.chrome.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
                 Text(appLocalized(step.title)).font(.appUI(size: 15, weight: .semibold))
             }
             Text(appLocalized(step.detail))
-                .font(.appUI(size: 13)).foregroundStyle(Color(white: 0.38))
-                .fixedSize(horizontal: false, vertical: true).lineSpacing(3)
-            Rectangle().fill(Color.black.opacity(0.08)).frame(height: 0.5)
+                .font(.appUI(size: 13)).foregroundStyle(RecorderStyle.chrome.opacity(0.68))
+                .fixedSize(horizontal: false, vertical: true).lineSpacing(4)
+                .padding(.top, 12)
             HStack(spacing: 8) {
-                Text("\(index + 1) / \(count)").font(.appUI(size: 11)).foregroundStyle(Color(white: 0.5))
-                    .accessibilityLabel(String(format: appLocalized("第 %d 步，共 %d 步"), index + 1, count))
+                progress
                 Spacer(minLength: 0)
-                Button(action: onSkip) { Text("跳过引导").font(.appUI(size: 11)).padding(.horizontal, 5).frame(height: 30) }
+                Button(action: onSkip) { Text("跳过引导").font(.appUI(size: 11)).padding(.horizontal, 6).frame(height: 30) }
                     .buttonStyle(FirstUseTourButtonStyle())
                 if showsPrevious, index > 0 {
-                    Button(action: onPrevious) { Image(systemName: "chevron.left").frame(width: 26, height: 30) }
+                    Button(action: onPrevious) { Image(systemName: "chevron.left").font(.system(size: 11, weight: .semibold)).frame(width: 28, height: 30) }
                         .buttonStyle(FirstUseTourButtonStyle()).accessibilityLabel("上一步")
                 }
                 Button(action: onNext) {
                     HStack(spacing: 6) {
                         Text(primaryTitle ?? (index == count - 1 ? appLocalized("知道了") : appLocalized("下一步")))
                         Image(systemName: index == count - 1 ? "checkmark" : "arrow.right")
+                            .font(.system(size: 10, weight: .semibold))
                     }
-                    .font(.appUI(size: 12, weight: .medium)).padding(.horizontal, 11).frame(height: 30)
+                    .font(.appUI(size: 12, weight: .medium)).padding(.horizontal, 12).frame(height: 30)
                 }
                 .buttonStyle(FirstUseTourButtonStyle(primary: true))
             }
+            .padding(.top, 18)
         }
-        .padding(20)
-        .foregroundStyle(Color(white: 0.17))
-        .background(Color(white: 0.99), in: RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.black.opacity(0.08), lineWidth: 0.75))
+        .padding(18)
+        .foregroundStyle(RecorderStyle.chrome.opacity(0.96))
+        // The guide card follows the same appearance as its owning controls.
+        .recorderSurface(radius: 16)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("首次使用引导")
+    }
+
+    /// The current step is the long mark; the count stays readable to VoiceOver.
+    private var progress: some View {
+        HStack(spacing: 5) {
+            ForEach(0..<count, id: \.self) { position in
+                Capsule()
+                    .fill(RecorderStyle.chrome.opacity(position == index ? 0.95 : 0.24))
+                    .frame(width: position == index ? 16 : 5, height: 5)
+            }
+        }
+        .accessibilityElement()
+        .accessibilityLabel(String(format: appLocalized("第 %d 步，共 %d 步"), index + 1, count))
     }
 }
 
@@ -599,12 +717,13 @@ private struct FirstUseTourButtonStyle: ButtonStyle {
     @FocusState private var focused: Bool
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .foregroundStyle(primary ? .white : Color(white: 0.4))
-            .background(primary ? Color(white: configuration.isPressed ? 0.12 : hovered ? 0.26 : 0.19)
-                        : .black.opacity(configuration.isPressed ? 0.08 : hovered ? 0.04 : 0), in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.primary.opacity(focused ? 0.4 : 0), lineWidth: 1))
-            .contentShape(RoundedRectangle(cornerRadius: 8))
+            .foregroundStyle(primary ? RecorderStyle.onPrimary : RecorderStyle.chrome.opacity(0.72))
+            .background(primary ? RecorderStyle.primaryFill.opacity(configuration.isPressed ? 0.8 : hovered ? 1 : 0.94)
+                        : RecorderStyle.chrome.opacity(configuration.isPressed ? 0.16 : hovered ? 0.1 : 0), in: RoundedRectangle(cornerRadius: 9))
+            .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(RecorderStyle.chrome.opacity(focused ? 0.7 : 0), lineWidth: 1.5))
+            .contentShape(RoundedRectangle(cornerRadius: 9))
             .onHover { hovered = $0 }
+            .animation(.easeOut(duration: 0.12), value: hovered)
             .focused($focused).focusEffectDisabled()
     }
 }
