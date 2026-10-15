@@ -26,11 +26,12 @@ public struct MediaTimelinePlacement: Equatable, Sendable {
             availableEnd
         )
         let unavailableLead = max(effectiveSourceStart - requestedSourceStart, 0)
-        let effectiveTimelineStart = Self.nonnegative(reference.startOffset) + unavailableLead
         let safeTimelineDuration = Self.nonnegative(timelineDuration)
         let requestedScale = reference.sourceTimeScale ?? 1
         let safeScale = requestedScale.isFinite && requestedScale > 0
             ? requestedScale : 1
+        let effectiveTimelineStart = Self.nonnegative(reference.startOffset)
+            + unavailableLead / safeScale
 
         sourceStart = effectiveSourceStart
         timelineStart = min(effectiveTimelineStart, safeTimelineDuration)
