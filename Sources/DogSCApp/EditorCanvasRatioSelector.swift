@@ -92,36 +92,75 @@ struct EditorCanvasRatioSelector: View {
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 8) {
                 ForEach(presets) { ratio in presetButton(ratio) }
             }
-            if editingCustom {
-                HStack(spacing: 8) {
-                    HStack(spacing: 6) {
-                        customRatioField("宽", text: $widthText, field: .width)
-                        Text(":").foregroundStyle(.secondary)
-                        customRatioField("高", text: $heightText, field: .height)
-                    }
-                    .padding(.horizontal, 6)
-                    .background(EditorChoiceStyle.track,
-                                in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous))
-                    Button("应用") {
-                        guard let value = customValue else { return }
-                        var updated = canvas
-                        updated.customAspectRatio = value
-                        updated.aspectRatio = .custom
-                        withAnimation(SpringMotion.fluid) { canvas = updated }
-                    }.buttonStyle(.editorQuiet).disabled(customValue == nil)
-                }
-                Text("输入宽高比例，例如 3:2（支持 1:10 至 10:1）")
-                    .font(.appUI(size: 11)).foregroundStyle(EditorTheme.popoverSecondaryText)
-            } else if selectedPreset != .adaptive && selectedPreset != .square {
-                HStack(spacing: 4) {
-                    orientationButton("横向", symbol: "rectangle", isPortrait: false)
-                    orientationButton("竖向", symbol: "rectangle.portrait", isPortrait: true)
-                }
-                .padding(2)
-                .background(EditorChoiceStyle.track,
-                            in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
-            }
+            auxiliaryControls
         }
+    }
+
+    /// Only presets that really have two orientations offer the switch; adapt
+    /// and square are orientation-free by definition.
+    private var showsOrientationControls: Bool {
+        !editingCustom && selectedPreset != .adaptive && selectedPreset != .square
+    }
+
+    /// The custom fields and the orientation switch trade places inside one
+    /// slot, and the slot always measures the taller of the two.
+    ///
+    /// Swapping them used to resize the presented popover, because only the
+    /// active branch was laid out. A presented popover animates its window on
+    /// every content resize, and that animation landed in
+    /// `NSPopover -_setContentView:size:canAnimate:` while the ratio highlight
+    /// was still travelling; AppKit then dereferenced a null pointer inside
+    /// `NSMoveHelper -_doAnimation` and the app died with EXC_BAD_ACCESS.
+    /// Reproduced on 0.1.2 and 0.1.6 alike, always after picking a preset that
+    /// adds the orientation row. Keeping both branches laid out holds the
+    /// height constant, so the resize never happens.
+    private var auxiliaryControls: some View {
+        ZStack(alignment: .topLeading) {
+            // Disabled rather than merely transparent: a hidden TextField would
+            // otherwise stay in the keyboard loop.
+            customRatioControls
+                .opacity(editingCustom ? 1 : 0)
+                .disabled(!editingCustom)
+                .accessibilityHidden(!editingCustom)
+            orientationControls
+                .opacity(showsOrientationControls ? 1 : 0)
+                .disabled(!showsOrientationControls)
+                .accessibilityHidden(!showsOrientationControls)
+        }
+    }
+
+    private var customRatioControls: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                HStack(spacing: 6) {
+                    customRatioField("宽", text: $widthText, field: .width)
+                    Text(":").foregroundStyle(.secondary)
+                    customRatioField("高", text: $heightText, field: .height)
+                }
+                .padding(.horizontal, 6)
+                .background(EditorChoiceStyle.track,
+                            in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous))
+                Button("应用") {
+                    guard let value = customValue else { return }
+                    var updated = canvas
+                    updated.customAspectRatio = value
+                    updated.aspectRatio = .custom
+                    withAnimation(SpringMotion.fluid) { canvas = updated }
+                }.buttonStyle(.editorQuiet).disabled(customValue == nil)
+            }
+            Text("输入宽高比例，例如 3:2（支持 1:10 至 10:1）")
+                .font(.appUI(size: 11)).foregroundStyle(EditorTheme.popoverSecondaryText)
+        }
+    }
+
+    private var orientationControls: some View {
+        HStack(spacing: 4) {
+            orientationButton("横向", symbol: "rectangle", isPortrait: false)
+            orientationButton("竖向", symbol: "rectangle.portrait", isPortrait: true)
+        }
+        .padding(2)
+        .background(EditorChoiceStyle.track,
+                    in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
     }
 
     private func customRatioField(_ title: LocalizedStringKey, text: Binding<String>, field: CustomField) -> some View {
