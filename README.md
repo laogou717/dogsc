@@ -71,6 +71,7 @@
 
 - 录制时按 <kbd>⌃</kbd><kbd>⌥</kbd><kbd>M</kbd> 留下剪辑标记，之后在时间线上找回口误或重点。
 - 悬浮备忘录可以当提词器用，它不会被录进画面。
+- 在缩放、屏幕 3D 或摄像运动轨道上，用 <kbd>Shift</kbd> 单击连续选择，<kbd>⌘</kbd> 单击增减选择，<kbd>⌘</kbd><kbd>A</kbd> 全选当前运镜轨道；按 <kbd>Delete</kbd> 或 <kbd>D</kbd> 批量删除，<kbd>⌘</kbd><kbd>Z</kbd> 一次撤销。
 - 在时间线上用 <kbd>⌘</kbd><kbd>C</kbd>／<kbd>⌘</kbd><kbd>V</kbd> 复制效果片段，<kbd>⌘</kbd><kbd>⇧</kbd><kbd>V</kbd> 只粘贴属性。
 - 完整快捷键见菜单栏「显示 → 快捷键速查」。
 

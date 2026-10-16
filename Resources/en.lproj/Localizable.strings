@@ -1931,3 +1931,7 @@
 "编辑中" = "Editing";
 "项目已自动保存" = "Project Saved";
 "正在编辑项目" = "Editing Project";
+
+/* Motion multi-selection */
+"批量删除运镜" = "Delete Selected Motion Clips";
+"单击选中；Shift 连选；Command 多选；Delete 批量删除" = "Click to select; Shift-click for a range; Command-click to toggle; Delete to remove selected clips";

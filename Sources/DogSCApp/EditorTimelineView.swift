@@ -882,6 +882,7 @@ struct EditorTimelineView: View {
     @StateObject var timelineSnap = EditorTimelineMagneticSnap()
     @State var gestureOwnership = EditorTimelineGestureOwnership()
     @State var deleteKeyMonitor: Any?
+    @State var handledMotionSelectionClick = false
     @State var clipboardContextTime: TimeInterval?
     @State var clipPasteTask: Task<Void, Never>?
     @State var systemWaveform: EditorTimelineWaveformData?
@@ -1027,7 +1028,7 @@ struct EditorTimelineView: View {
     func activateTimelineSelection(_ selection: EditorSelection) {
         primaryTrimDraft = nil
         primaryRetimeDraft = nil
-        editorStore.selection = selection
+        editorStore.selectTimelineMotion(selection)
         guard let revealTime = EditorTimelineSelectionReveal.time(
             for: selection,
             in: editorStore.project,
