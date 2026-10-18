@@ -118,6 +118,7 @@ extension EditorTimelineView {
     }
 
     func cancelActiveTimelineGesture() {
+        handledMotionSelectionClick = false
         if gestureOwnership.activeIntent?.seeksDuringDrag == true {
             playbackController.endScrubbing()
         }

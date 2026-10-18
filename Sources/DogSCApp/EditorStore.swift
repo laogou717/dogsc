@@ -721,7 +721,15 @@ final class EditorStore: ObservableObject {
 
     private let document: ProjectDocument
     var project: RecorderProject { document.project }
+    @Published var motionSelections: Set<EditorSelection> = []
+    var motionSelectionAnchor: EditorSelection?
     @Published var selection: EditorSelection? {
+        didSet {
+            if selection != oldValue || selection?.isMotionClip != true {
+                motionSelections = []
+                motionSelectionAnchor = nil
+            }
+        }
         willSet {
             guard newValue != selection, interaction != nil else { return }
             resolveInteractionBeforeReplacement()
@@ -1301,11 +1309,15 @@ final class EditorStore: ObservableObject {
         actionName: String,
         registersUndo: Bool,
         restoresSelection: Bool = false,
-        restoredSelection: EditorSelection? = nil
+        restoredSelection: EditorSelection? = nil,
+        restoredMotionSelections: Set<EditorSelection> = [],
+        restoredMotionAnchor: EditorSelection? = nil
     ) throws {
         // Crop is a transient tool, not a restorable document selection.
         // Undoing its command must return to screen settings without leaving
         // a stale crop header or hiding the frame subnavigation.
+        let motionSelectionsBeforeApply = motionSelections
+        let motionAnchorBeforeApply = motionSelectionAnchor
         let selectionBeforeApply: EditorSelection? = selection == .crop ? .screen : selection
         var appliedCommand = command
         var nextProject = project
@@ -1367,7 +1379,11 @@ final class EditorStore: ObservableObject {
         revision &+= 1
         if restoresSelection {
             selection = restoredSelection
+            motionSelections = restoredMotionSelections
+            motionSelectionAnchor = restoredMotionAnchor
         }
+
+        reconcileMotionSelections()
 
         guard registersUndo, let undoManager else { return }
         let inverse = appliedCommand.inverse
@@ -1375,7 +1391,9 @@ final class EditorStore: ObservableObject {
             store.performFromUndo(
                 inverse,
                 actionName: actionName,
-                restoredSelection: selectionBeforeApply
+                restoredSelection: selectionBeforeApply,
+                restoredMotionSelections: motionSelectionsBeforeApply,
+                restoredMotionAnchor: motionAnchorBeforeApply
             )
         }
         undoManager.setActionName(actionName)
@@ -1384,7 +1402,9 @@ final class EditorStore: ObservableObject {
     private func performFromUndo(
         _ command: ProjectCommand,
         actionName: String,
-        restoredSelection: EditorSelection?
+        restoredSelection: EditorSelection?,
+        restoredMotionSelections: Set<EditorSelection>,
+        restoredMotionAnchor: EditorSelection?
     ) {
         do {
             try apply(
@@ -1392,7 +1412,9 @@ final class EditorStore: ObservableObject {
                 actionName: actionName,
                 registersUndo: true,
                 restoresSelection: true,
-                restoredSelection: restoredSelection
+                restoredSelection: restoredSelection,
+                restoredMotionSelections: restoredMotionSelections,
+                restoredMotionAnchor: restoredMotionAnchor
             )
         } catch {
             assertionFailure("Undo command failed: \(error)")

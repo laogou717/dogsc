@@ -125,7 +125,7 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
                     Button(role: .destructive) {
                         removeMotionClip(clip)
                     } label: {
-                        EditorSymbolLabel("删除动画", systemImage: "trash")
+                        EditorSymbolLabel(editorStore.motionSelections.contains(clip.track == .screen ? .screenMotion(clip.id) : .cameraMotion(clip.id)) && editorStore.motionSelections.count > 1 ? "批量删除运镜" : "删除动画", systemImage: "trash")
                     }
                 }
                 .onHover { hovering in
@@ -137,7 +137,7 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
                     }
                 }
                 .accessibilityElement(children: .ignore)
-                .help("单击选中；拖动移动过渡；拖两端调整时长；右键可删除")
+                .help("单击选中；Shift 连选；Command 多选；Delete 批量删除")
                 .accessibilityLabel(String(format: appLocalized(track == .screen ? "屏幕 3D %d" : "摄像运动 %d"), index + 1))
                 .accessibilityValue(
                     String(format: appLocalized("%@ 至 %@"),
@@ -250,8 +250,8 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
 
     func isMotionClipSelected(_ clip: EditorMotionTimelineClip) -> Bool {
         switch clip.track {
-        case .screen: return selectedScreenMotionID == clip.id
-        case .camera: return selectedCameraMotionID == clip.id
+        case .screen: return editorStore.isTimelineMotionSelected(.screenMotion(clip.id))
+        case .camera: return editorStore.isTimelineMotionSelected(.cameraMotion(clip.id))
         }
     }
 
@@ -284,6 +284,7 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
                 EditorDragFrameCoalescer.shared.submit {
+                guard !handledMotionSelectionClick else { return }
                 if motionTrackDrag == nil {
                     beginMotionTrackDrag(
                         at: value.startLocation,
@@ -357,6 +358,10 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
 }
             .onEnded { value in
                 EditorDragFrameCoalescer.shared.flush()
+                if handledMotionSelectionClick {
+                    handledMotionSelectionClick = false
+                    return
+                }
                 let drag = motionTrackDrag
                 let create = motionCreateDrag
                 let origin = motionGestureOrigin
@@ -433,6 +438,17 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
             trackHeight: Double(motionTimelineHeight),
             itemsAreOrdered: true
         )
+        if !NSEvent.modifierFlags.intersection([.shift, .command]).isEmpty {
+            switch zone {
+            case let .move(id), let .resize(id, _):
+                editorStore.selectTimelineMotion(
+                    track == .screen ? .screenMotion(id) : .cameraMotion(id),
+                    modifiers: NSEvent.modifierFlags)
+                handledMotionSelectionClick = true
+                return
+            case .empty: break
+            }
+        }
         // Alt+单击快捷裁剪：切分运动片段（与主片段同一快捷逻辑），不进入拖拽。
         if NSEvent.modifierFlags.contains(.option) {
             switch zone {
@@ -867,9 +883,9 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
         primaryRetimeDraft = nil
         switch clip.track {
         case .screen:
-            editorStore.selection = .screenMotion(clip.id)
+            editorStore.selectTimelineMotion(.screenMotion(clip.id))
         case .camera:
-            editorStore.selection = .cameraMotion(clip.id)
+            editorStore.selectTimelineMotion(.cameraMotion(clip.id))
         }
     }
 
@@ -1005,6 +1021,11 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
     }
 
     func removeMotionClip(_ clip: EditorMotionTimelineClip) {
+        let item: EditorSelection = clip.track == .screen ? .screenMotion(clip.id) : .cameraMotion(clip.id)
+        if editorStore.motionSelections.contains(item) {
+            do { try editorStore.removeSelectedMotions() } catch { onError(error.localizedDescription) }
+            return
+        }
         editorStore.cancelInteraction()
         motionGestureOrigin = nil
         do {

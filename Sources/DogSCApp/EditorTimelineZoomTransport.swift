@@ -47,9 +47,9 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                     timelineTimestamp(segment.startTime), timelineTimestamp(segment.endTime),
                     EditorSliderValueFormat.compact(segment.scale, digits: 1), originTitle
                 )
-                let accessibilityTraits: AccessibilityTraits = selectedZoomID == segment.id
+                let accessibilityTraits: AccessibilityTraits = editorStore.isTimelineMotionSelected(.zoom(segment.id))
                     ? [.isButton, .isSelected] : .isButton
-                let isSelected = selectedZoomID == segment.id
+                let isSelected = editorStore.isTimelineMotionSelected(.zoom(segment.id))
                 let isHovered = hoveredZoomID == segment.id
                 let emphasis = EditorTimelineClipEmphasis.resolve(
                     isEditing: isZoomClipEditing(segment.id),
@@ -103,14 +103,14 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                     Button(role: .destructive) {
                         removeZoomAnimation(id: segment.id)
                     } label: {
-                        EditorSymbolLabel("删除缩放动画", systemImage: "trash")
+                        EditorSymbolLabel(editorStore.motionSelections.contains(.zoom(segment.id)) && editorStore.motionSelections.count > 1 ? "批量删除运镜" : "删除缩放动画", systemImage: "trash")
                     }
                 }
                 .onHover { hovering in
                     hoveredZoomID = hovering ? segment.id : (hoveredZoomID == segment.id ? nil : hoveredZoomID)
                 }
                 .accessibilityElement(children: .ignore)
-                .help("单击选中；拖动移动；拖两端调整保持时间；右键可删除")
+                .help("单击选中；Shift 连选；Command 多选；Delete 批量删除")
                 .accessibilityLabel(String(format: appLocalized("缩放动画 %d"), index + 1))
                 .accessibilityValue(accessibilityValue)
                 .accessibilityAddTraits(accessibilityTraits)
@@ -226,6 +226,7 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
                 EditorDragFrameCoalescer.shared.submit {
+                guard !handledMotionSelectionClick else { return }
                 if zoomTrackDrag == nil {
                     beginZoomTrackDrag(at: value.startLocation, width: width, duration: duration)
                 }
@@ -288,6 +289,10 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
 }
             .onEnded { value in
                 EditorDragFrameCoalescer.shared.flush()
+                if handledMotionSelectionClick {
+                    handledMotionSelectionClick = false
+                    return
+                }
                 let drag = zoomTrackDrag
                 let origin = zoomGestureOrigin
                 let createStart = manualZoomDragStart
@@ -372,6 +377,15 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
             barHeight: Double(zoomBarHeight),
             segmentsAreOrdered: true
         )
+        if !NSEvent.modifierFlags.intersection([.shift, .command]).isEmpty {
+            switch zone {
+            case let .move(id), let .resize(id, _):
+                editorStore.selectTimelineMotion(.zoom(id), modifiers: NSEvent.modifierFlags)
+                handledMotionSelectionClick = true
+                return
+            case .empty: break
+            }
+        }
         switch zone {
         case .empty:
             prepareEmptyTimelineClick()
@@ -461,10 +475,14 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
     func beginSelectingZoom(_ segment: TimelineZoomSegment) {
         primaryTrimDraft = nil
         primaryRetimeDraft = nil
-        selectedZoomID = segment.id
+        editorStore.selectTimelineMotion(.zoom(segment.id))
     }
 
     func removeZoomAnimation(id: UUID) {
+        if editorStore.motionSelections.contains(.zoom(id)) {
+            do { try editorStore.removeSelectedMotions() } catch { onError(error.localizedDescription) }
+            return
+        }
         guard zoomAnimation(id: id) != nil else { return }
         editorStore.cancelInteraction()
         do {
@@ -511,6 +529,11 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
             }
             let clipboardModifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
             if !event.isARepeat {
+                if event.keyCode == 0, clipboardModifiers == [.command],
+                   let selected = editorStore.selection, selected.isMotionClip {
+                    editorStore.motionSelections = Set(editorStore.orderedMotionSelections(for: selected))
+                    return nil
+                }
                 if event.keyCode == 8, clipboardModifiers == [.command],
                    EditorClipClipboard.isClip(editorStore.selection) {
                     copyTimelineClip(editorStore.selection)
@@ -574,6 +597,7 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
     }
 
     var currentTimelineDeleteAccessibilityLabel: String {
+        if editorStore.motionSelections.count > 1 { return "批量删除运镜" }
         if selectedCameraSyncAnchorID != nil { return "删除选中的摄像头同步点" }
         switch EditorTimelineDeleteTarget(selection: editorStore.selection) {
         case .primarySegment: return "删除选中的主片段"
@@ -588,6 +612,10 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
 
     @discardableResult
     func removeCurrentTimelineSelection() -> Bool {
+        if !editorStore.motionSelections.isEmpty {
+            do { try editorStore.removeSelectedMotions() } catch { onError(error.localizedDescription) }
+            return true
+        }
         if let selectedCameraSyncAnchorID {
             Task { @MainActor in
                 removeCameraSyncAnchor(id: selectedCameraSyncAnchorID)
