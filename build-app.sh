@@ -20,7 +20,7 @@ if [[ ! "$signing_identity" =~ ^[[:xdigit:]]{40}$ ]]; then
   echo "List available identities with: security find-identity -v -p codesigning" >&2
   exit 1
 fi
-if ! security find-identity -v -p codesigning | grep -F "$signing_identity" >/dev/null; then
+if ! security find-identity -v -p codesigning | grep -Fi "$signing_identity" >/dev/null; then
   echo "The specified signing identity is not available in your keychain." >&2
   exit 1
 fi
