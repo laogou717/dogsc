@@ -43,6 +43,7 @@ public partial class MainWindow : Window
     private readonly StringBuilder _recordingLog = new();
     private bool _cameraPreviewCaptureInProgress;
     private Process? _cameraPreviewProcess;
+    private bool _syncExportFormatChecks;
     private bool _previewCaptureInProgress;
     private const int Srccopy = 0x00CC0020;
     private const int CaptureBlt = 0x40000000;
@@ -233,19 +234,53 @@ public partial class MainWindow : Window
 
     private void ExportFormatCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        if (ExportFormatCombo is null)
+            return;
+
+        var audioOnly = string.Equals((ExportFormatCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString(), "M4A",
+            StringComparison.OrdinalIgnoreCase);
+        _syncExportFormatChecks = true;
+        if (ExportMp4CheckBox is not null)
+            ExportMp4CheckBox.IsChecked = !audioOnly;
+        if (ExportM4aCheckBox is not null)
+            ExportM4aCheckBox.IsChecked = audioOnly;
+        _syncExportFormatChecks = false;
+
         if (ExportOutputPathTextBox is null || string.IsNullOrWhiteSpace(ExportOutputPathTextBox.Text))
             return;
 
-        var extension = string.Equals((ExportFormatCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString(), "M4A",
-            StringComparison.OrdinalIgnoreCase) ? ".m4a" : ".mp4";
         try
         {
-            ExportOutputPathTextBox.Text = Path.ChangeExtension(ExportOutputPathTextBox.Text, extension);
+            ExportOutputPathTextBox.Text = Path.ChangeExtension(ExportOutputPathTextBox.Text, audioOnly ? ".m4a" : ".mp4");
         }
         catch
         {
             // Keep the editable path unchanged until the user chooses a valid path.
         }
+    }
+
+    private void ExportMp4CheckBox_Checked(object sender, RoutedEventArgs e)
+    {
+        if (!_syncExportFormatChecks && ExportFormatCombo is not null)
+            ExportFormatCombo.SelectedIndex = 0;
+    }
+
+    private void ExportM4aCheckBox_Checked(object sender, RoutedEventArgs e)
+    {
+        if (!_syncExportFormatChecks && ExportFormatCombo is not null)
+            ExportFormatCombo.SelectedIndex = 1;
+    }
+
+    private void ExportMp4CheckBox_Unchecked(object sender, RoutedEventArgs e)
+    {
+        if (!_syncExportFormatChecks && ExportFormatCombo?.SelectedIndex == 0 && ExportMp4CheckBox is not null)
+            ExportMp4CheckBox.IsChecked = true;
+    }
+
+    private void ExportM4aCheckBox_Unchecked(object sender, RoutedEventArgs e)
+    {
+        if (!_syncExportFormatChecks && ExportFormatCombo?.SelectedIndex == 1 && ExportM4aCheckBox is not null)
+            ExportM4aCheckBox.IsChecked = true;
     }
 
     private void BrowseExportPath_Click(object sender, RoutedEventArgs e)

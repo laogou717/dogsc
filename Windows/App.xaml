@@ -35,9 +35,9 @@
             <Setter Property="Foreground" Value="#26364F" />
             <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
             <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="Padding" Value="13,8" />
+            <Setter Property="Padding" Value="12,7" />
             <Setter Property="Margin" Value="3" />
-            <Setter Property="MinHeight" Value="36" />
+            <Setter Property="MinHeight" Value="34" />
             <Setter Property="FontWeight" Value="Medium" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="FocusVisualStyle" Value="{x:Null}" />
@@ -95,29 +95,29 @@
             <Setter Property="Background" Value="Transparent" />
             <Setter Property="BorderBrush" Value="Transparent" />
             <Setter Property="HorizontalContentAlignment" Value="Left" />
-            <Setter Property="Padding" Value="14,10" />
-            <Setter Property="Margin" Value="0,4" />
-            <Setter Property="MinHeight" Value="46" />
-            <Setter Property="FontSize" Value="15" />
+            <Setter Property="Padding" Value="12,9" />
+            <Setter Property="Margin" Value="0,3" />
+            <Setter Property="MinHeight" Value="44" />
+            <Setter Property="FontSize" Value="14" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="{x:Type Button}">
-                        <Border x:Name="NavBorder" Background="{TemplateBinding Background}"
-                                CornerRadius="10" Padding="{TemplateBinding Padding}">
-                            <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center" />
-                        </Border>
+                        <Grid>
+                            <Border x:Name="NavBorder" Background="{TemplateBinding Background}" CornerRadius="9" Padding="{TemplateBinding Padding}">
+                                <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center" />
+                            </Border>
+                            <Border x:Name="NavIndicator" Width="3" HorizontalAlignment="Left" Margin="0,8,0,8"
+                                    CornerRadius="2" Background="{StaticResource AccentBrush}" Visibility="Collapsed" />
+                        </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="Tag" Value="Selected">
                                 <Setter TargetName="NavBorder" Property="Background" Value="{StaticResource AccentSoftBrush}" />
+                                <Setter TargetName="NavIndicator" Property="Visibility" Value="Visible" />
                                 <Setter Property="Foreground" Value="{StaticResource AccentBrush}" />
                                 <Setter Property="FontWeight" Value="SemiBold" />
                             </Trigger>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="NavBorder" Property="Background" Value="#EDF4FF" />
-                            </Trigger>
-                            <Trigger Property="IsEnabled" Value="False">
-                                <Setter TargetName="NavBorder" Property="Opacity" Value="0.5" />
-                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="NavBorder" Property="Background" Value="#EDF4FF" /></Trigger>
+                            <Trigger Property="IsEnabled" Value="False"><Setter TargetName="NavBorder" Property="Opacity" Value="0.5" /></Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
@@ -128,21 +128,21 @@
             <Setter Property="Background" Value="{StaticResource PanelBrush}" />
             <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
             <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="15" />
-            <Setter Property="Padding" Value="17" />
+            <Setter Property="CornerRadius" Value="13" />
+            <Setter Property="Padding" Value="14" />
         </Style>
 
         <Style x:Key="SectionTitle" TargetType="{x:Type TextBlock}">
-            <Setter Property="FontSize" Value="17" />
+            <Setter Property="FontSize" Value="16" />
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
-            <Setter Property="Margin" Value="0,0,0,13" />
+            <Setter Property="Margin" Value="0,0,0,10" />
         </Style>
 
         <Style x:Key="FieldLabel" TargetType="{x:Type TextBlock}">
             <Setter Property="FontSize" Value="12" />
             <Setter Property="Foreground" Value="{StaticResource MutedTextBrush}" />
-            <Setter Property="Margin" Value="2,7,2,4" />
+            <Setter Property="Margin" Value="0,5,0,3" />
         </Style>
 
         <Style TargetType="{x:Type TextBox}">
@@ -180,9 +180,46 @@
             <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
             <Setter Property="BorderBrush" Value="#D9E2EF" />
             <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="Padding" Value="8,5" />
+            <Setter Property="Padding" Value="9,5" />
             <Setter Property="Margin" Value="0,2,0,4" />
-            <Setter Property="MinHeight" Value="36" />
+            <Setter Property="MinHeight" Value="32" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ComboBox}">
+                        <Grid>
+                            <Border x:Name="ComboBorder" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="8">
+                                <Grid>
+                                    <ContentPresenter IsHitTestVisible="False" Content="{TemplateBinding SelectionBoxItem}"
+                                                      ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                                      ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
+                                                      Margin="9,0,30,0" VerticalAlignment="Center" HorizontalAlignment="Left" />
+                                    <ToggleButton x:Name="DropDownToggle" Focusable="False" ClickMode="Press"
+                                                  IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
+                                                  Background="Transparent" BorderThickness="0" HorizontalAlignment="Right" Width="28">
+                                        <ToggleButton.Template>
+                                            <ControlTemplate TargetType="{x:Type ToggleButton}">
+                                                <Border Background="Transparent"><Path Data="M 0,0 L 4,4 L 8,0" Stroke="#64748B" StrokeThickness="1.4" HorizontalAlignment="Center" VerticalAlignment="Center" /></Border>
+                                            </ControlTemplate>
+                                        </ToggleButton.Template>
+                                    </ToggleButton>
+                                </Grid>
+                            </Border>
+                            <Popup x:Name="PART_Popup" Placement="Bottom" IsOpen="{TemplateBinding IsDropDownOpen}" AllowsTransparency="True" Focusable="False" PopupAnimation="Fade">
+                                <Border Background="#FFFFFF" BorderBrush="#D9E2EF" BorderThickness="1" CornerRadius="8" MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}">
+                                    <ScrollViewer CanContentScroll="True" MaxHeight="{TemplateBinding MaxDropDownHeight}">
+                                        <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained" />
+                                    </ScrollViewer>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="ComboBorder" Property="BorderBrush" Value="{StaticResource AccentBrush}" /></Trigger>
+                            <Trigger Property="IsEnabled" Value="False"><Setter TargetName="ComboBorder" Property="Opacity" Value="0.5" /></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
 
         <Style TargetType="{x:Type CheckBox}">
@@ -217,6 +254,32 @@
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter TargetName="ToggleTrack" Property="Opacity" Value="0.5" />
                             </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="ExportOptionCheckBox" TargetType="{x:Type CheckBox}" BasedOn="{StaticResource {x:Type CheckBox}}">
+            <Setter Property="Margin" Value="0,2,12,2" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type CheckBox}">
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <Border x:Name="CheckBoxBorder" Width="16" Height="16" CornerRadius="3" BorderBrush="#B9C7D9" BorderThickness="1" Background="#FFFFFF" VerticalAlignment="Center">
+                                <Path x:Name="CheckMark" Data="M 3,8 L 6,11 L 13,3" Stroke="#FFFFFF" StrokeThickness="2" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Visibility="Collapsed" />
+                            </Border>
+                            <ContentPresenter Margin="7,0,0,0" VerticalAlignment="Center" RecognizesAccessKey="True" />
+                        </StackPanel>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="CheckBoxBorder" Property="Background" Value="{StaticResource AccentBrush}" />
+                                <Setter TargetName="CheckBoxBorder" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                                <Setter TargetName="CheckMark" Property="Visibility" Value="Visible" />
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="CheckBoxBorder" Property="BorderBrush" Value="{StaticResource AccentBrush}" /></Trigger>
+                            <Trigger Property="IsEnabled" Value="False"><Setter TargetName="CheckBoxBorder" Property="Opacity" Value="0.5" /></Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
