@@ -127,7 +127,11 @@ jobs:
           if ($installedBytes -lt 20000000) { throw "Installed bundle size is unexpectedly small." }
           $appProcess = Start-Process -FilePath $appExe -PassThru
           Start-Sleep -Seconds 4
-          if ($appProcess.HasExited) { throw "DogSC exited during startup from the installed bundle." }
+          if ($appProcess.HasExited) {
+            $startupLog = Join-Path $env:LOCALAPPDATA "DogSC/logs/startup.log"
+            if (Test-Path -LiteralPath $startupLog) { Get-Content -LiteralPath $startupLog }
+            throw "DogSC exited during startup with exit code $($appProcess.ExitCode)."
+          }
           Stop-Process -Id $appProcess.Id -Force
           Wait-Process -Id $appProcess.Id -ErrorAction SilentlyContinue
           $uninstaller = Join-Path $installDir "unins000.exe"
