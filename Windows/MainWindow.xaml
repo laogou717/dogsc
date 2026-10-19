@@ -129,6 +129,7 @@
                         <Button Content="保存项目" Click="SaveProject_Click" />
                         <Button x:Name="UndoButton" Content="撤销" Click="Undo_Click" IsEnabled="False" />
                         <Button x:Name="RedoButton" Content="重做" Click="Redo_Click" IsEnabled="False" />
+                        <Button Content="分割片段" Click="SplitClip_Click" />
                         <Button Content="删除片段" Click="RemoveClip_Click" />
                         <Button Content="上移" Click="MoveClipUp_Click" />
                         <Button Content="下移" Click="MoveClipDown_Click" />

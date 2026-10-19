@@ -594,6 +594,40 @@ public partial class MainWindow : Window
         }
     }
 
+    private void SplitClip_Click(object sender, RoutedEventArgs e)
+    {
+        if (ClipsGrid.SelectedItem is not ClipItem clip || _previewElement?.Source is null)
+        {
+            EditorStatusText.Text = "请先选择一个片段并打开预览。";
+            return;
+        }
+
+        _previewTimer.Stop();
+        _previewElement.Pause();
+        _previewPlaying = false;
+        PreviewPlayButton.Content = "播放预览";
+
+        var splitAt = _previewElement.Position.TotalSeconds;
+        if (splitAt <= clip.StartSeconds + 0.05 || splitAt >= clip.EndSeconds - 0.05)
+        {
+            EditorStatusText.Text = "分割位置必须位于片段入点和出点之间，并与边界至少相隔 0.05 秒。";
+            return;
+        }
+
+        SaveUndoState();
+        var originalEnd = clip.EndSeconds;
+        clip.EndSeconds = splitAt;
+        _clips.Insert(ClipsGrid.SelectedIndex + 1, new ClipItem
+        {
+            FilePath = clip.FilePath,
+            StartSeconds = splitAt,
+            EndSeconds = originalEnd,
+            Speed = clip.Speed
+        });
+        ClipsGrid.Items.Refresh();
+        EditorStatusText.Text = $"已在 {splitAt:F2} 秒处分割片段。可使用撤销/重做恢复操作。";
+    }
+
     private void RemoveClip_Click(object sender, RoutedEventArgs e)
     {
         if (ClipsGrid.SelectedItem is not ClipItem clip)
