@@ -357,7 +357,7 @@ public sealed class RecordingService : IDisposable
             Add(args, "-thread_queue_size", "1024", "-f", "dshow", "-i", "audio=" + options.MicrophoneDevice);
         }
 
-        if (options.CaptureCamera)
+        if (options.CaptureCamera && !string.IsNullOrWhiteSpace(options.CameraDevice))
         {
             cameraInput = nextInput++;
             // Many webcams only expose stable DirectShow modes at 30 FPS. The screen
