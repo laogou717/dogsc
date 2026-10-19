@@ -19,6 +19,7 @@ public partial class MainWindow : Window
     private bool _previewPlaying;
     private bool _closingAfterStop;
     private double _previewStartSeconds;
+    private MediaElement? _previewElement;
 
     public MainWindow()
     {
@@ -39,8 +40,20 @@ public partial class MainWindow : Window
                 Dispatcher.BeginInvoke(new Action(() => RecordingStatusText.Text = message));
         };
 
-        RefreshWindows();
-        Loaded += async (_, _) => await LoadMicrophoneDevicesAsync();
+        // Defer native display enumeration until the WPF window is loaded. Some
+        // virtualized Windows runners have no interactive desktop at process start.
+        Loaded += async (_, _) =>
+        {
+            await LoadMicrophoneDevicesAsync();
+            try
+            {
+                RefreshWindows();
+            }
+            catch (Exception exception)
+            {
+                RecordingStatusText.Text = "无法枚举窗口源：" + exception.Message;
+            }
+        };
     }
 
     private void CaptureModeCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -210,20 +223,52 @@ public partial class MainWindow : Window
         _previewStartSeconds = clip.StartSeconds;
         _previewPlaying = false;
         PreviewPlayButton.Content = "播放预览";
-        PreviewElement.Stop();
-        PreviewElement.Source = new Uri(Path.GetFullPath(clip.FilePath));
+        try
+        {
+            var preview = EnsurePreviewElement();
+            preview.Stop();
+            preview.Source = new Uri(Path.GetFullPath(clip.FilePath));
+        }
+        catch (Exception exception)
+        {
+            EditorStatusText.Text = "无法初始化媒体预览：" + exception.Message;
+        }
+    }
+
+    private MediaElement EnsurePreviewElement()
+    {
+        if (_previewElement is not null)
+            return _previewElement;
+
+        var preview = new MediaElement
+        {
+            LoadedBehavior = MediaState.Manual,
+            UnloadedBehavior = MediaState.Manual,
+            Stretch = System.Windows.Media.Stretch.Uniform,
+            ScrubbingEnabled = true
+        };
+        preview.MediaOpened += PreviewElement_MediaOpened;
+        preview.MediaEnded += PreviewElement_MediaEnded;
+        PreviewHost.Content = preview;
+        _previewElement = preview;
+        return preview;
     }
 
     private void PreviewElement_MediaOpened(object sender, RoutedEventArgs e)
     {
+        if (sender is not MediaElement preview)
+            return;
         try
         {
-            PreviewElement.Position = TimeSpan.FromSeconds(Math.Max(0, _previewStartSeconds));
-            PreviewElement.Pause();
+            preview.Position = TimeSpan.FromSeconds(Math.Max(0, _previewStartSeconds));
+            preview.Pause();
             _previewPlaying = false;
             PreviewPlayButton.Content = "播放预览";
         }
-        catch { }
+        catch (Exception exception)
+        {
+            EditorStatusText.Text = "媒体预览定位失败：" + exception.Message;
+        }
     }
 
     private void PreviewElement_MediaEnded(object sender, RoutedEventArgs e)
@@ -234,22 +279,31 @@ public partial class MainWindow : Window
 
     private void TogglePreview_Click(object sender, RoutedEventArgs e)
     {
-        if (PreviewElement.Source is null)
+        if (_previewElement?.Source is null)
         {
             EditorStatusText.Text = "请先导入并选择一个视频片段。";
             return;
         }
-        if (_previewPlaying)
+        try
         {
-            PreviewElement.Pause();
+            if (_previewPlaying)
+            {
+                _previewElement.Pause();
+                _previewPlaying = false;
+                PreviewPlayButton.Content = "播放预览";
+            }
+            else
+            {
+                _previewElement.Play();
+                _previewPlaying = true;
+                PreviewPlayButton.Content = "暂停预览";
+            }
+        }
+        catch (Exception exception)
+        {
+            EditorStatusText.Text = "无法播放预览：" + exception.Message;
             _previewPlaying = false;
             PreviewPlayButton.Content = "播放预览";
-        }
-        else
-        {
-            PreviewElement.Play();
-            _previewPlaying = true;
-            PreviewPlayButton.Content = "暂停预览";
         }
     }
 
@@ -295,8 +349,9 @@ public partial class MainWindow : Window
             ClipsGrid.SelectedIndex = Math.Min(index, _clips.Count - 1);
         else
         {
-            PreviewElement.Stop();
-            PreviewElement.Source = null;
+            _previewElement?.Stop();
+            if (_previewElement is not null)
+                _previewElement.Source = null;
         }
         EditorStatusText.Text = $"时间线上剩余 {_clips.Count} 个片段。";
     }

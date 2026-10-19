@@ -125,9 +125,7 @@
                         <StackPanel VerticalAlignment="Bottom"><Button x:Name="PreviewPlayButton" Content="播放预览" Click="TogglePreview_Click" /></StackPanel>
                     </WrapPanel>
                     <Border Grid.Row="3" Background="#101318" CornerRadius="6" Padding="4">
-                        <MediaElement x:Name="PreviewElement" LoadedBehavior="Manual" UnloadedBehavior="Manual"
-                                      Stretch="Uniform" ScrubbingEnabled="True" MediaOpened="PreviewElement_MediaOpened"
-                                      MediaEnded="PreviewElement_MediaEnded" />
+                        <ContentControl x:Name="PreviewHost" />
                     </Border>
                     <DockPanel Grid.Row="4" Margin="0,8,0,0">
                         <Button DockPanel.Dock="Right" x:Name="ExportButton" Content="导出" MinWidth="100" Click="Export_Click" />
