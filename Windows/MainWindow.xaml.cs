@@ -12,6 +12,7 @@ using System.Windows.Controls.Primitives;
 using DogSC.Windows.Models;
 using DogSC.Windows.Services;
 using Microsoft.Win32;
+using CaptureMode = DogSC.Windows.Models.CaptureMode;
 
 namespace DogSC.Windows;
 
