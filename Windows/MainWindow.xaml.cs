@@ -747,6 +747,26 @@ public partial class MainWindow : Window
             Redo_Click(this, new RoutedEventArgs());
             e.Handled = true;
         }
+        else if (!textInputFocused && control && e.Key == Key.B)
+        {
+            SplitClip_Click(this, new RoutedEventArgs());
+            e.Handled = true;
+        }
+        else if (!textInputFocused && control && e.Key == Key.D)
+        {
+            DuplicateClip_Click(this, new RoutedEventArgs());
+            e.Handled = true;
+        }
+        else if (!textInputFocused && !control && !shift && e.Key == Key.I)
+        {
+            SetClipInPoint_Click(this, new RoutedEventArgs());
+            e.Handled = true;
+        }
+        else if (!textInputFocused && !control && !shift && e.Key == Key.O)
+        {
+            SetClipOutPoint_Click(this, new RoutedEventArgs());
+            e.Handled = true;
+        }
         else if (!textInputFocused && e.Key == Key.Delete)
         {
             RemoveClip_Click(this, new RoutedEventArgs());
@@ -1459,6 +1479,77 @@ public partial class MainWindow : Window
         });
         ClipsGrid.Items.Refresh();
         EditorStatusText.Text = $"已在 {splitAt:F2} 秒处分割片段。可使用撤销/重做恢复操作。";
+    }
+
+    private void DuplicateClip_Click(object sender, RoutedEventArgs e)
+    {
+        if (ClipsGrid.SelectedItem is not ClipItem clip)
+        {
+            EditorStatusText.Text = "请先选择要复制的片段。";
+            return;
+        }
+
+        var insertIndex = ClipsGrid.SelectedIndex + 1;
+        SaveUndoState();
+        var duplicate = new ClipItem
+        {
+            FilePath = clip.FilePath,
+            StartSeconds = clip.StartSeconds,
+            EndSeconds = clip.EndSeconds,
+            Speed = clip.Speed,
+            ThumbnailPath = clip.ThumbnailPath
+        };
+        _clips.Insert(insertIndex, duplicate);
+        ClipsGrid.SelectedIndex = insertIndex;
+        EditorStatusText.Text = $"已复制片段“{clip.FileName}”。可继续独立调整入点、出点和速度。";
+    }
+
+    private async void SetClipInPoint_Click(object sender, RoutedEventArgs e)
+    {
+        if (ClipsGrid.SelectedItem is not ClipItem clip || _previewElement?.Source is null)
+        {
+            EditorStatusText.Text = "请先选择片段并打开预览，再定位入点。";
+            return;
+        }
+
+        var position = _previewElement.Position.TotalSeconds;
+        if (position <= clip.StartSeconds + 0.05 || position >= clip.EndSeconds - 0.05)
+        {
+            EditorStatusText.Text = "新的入点必须位于当前片段内部，并与出点至少相隔 0.05 秒。";
+            return;
+        }
+
+        var thumbnail = await CreateClipThumbnailAsync(clip.FilePath, position);
+        SaveUndoState();
+        clip.StartSeconds = position;
+        if (!string.IsNullOrWhiteSpace(thumbnail))
+            clip.ThumbnailPath = thumbnail;
+        ClipStartTextBox.Text = position.ToString("0.##", CultureInfo.InvariantCulture);
+        _previewStartSeconds = position;
+        ClipsGrid.Items.Refresh();
+        EditorStatusText.Text = $"入点已设置为 {position:F2} 秒。";
+    }
+
+    private void SetClipOutPoint_Click(object sender, RoutedEventArgs e)
+    {
+        if (ClipsGrid.SelectedItem is not ClipItem clip || _previewElement?.Source is null)
+        {
+            EditorStatusText.Text = "请先选择片段并打开预览，再定位出点。";
+            return;
+        }
+
+        var position = _previewElement.Position.TotalSeconds;
+        if (position <= clip.StartSeconds + 0.05 || position >= clip.EndSeconds - 0.05)
+        {
+            EditorStatusText.Text = "新的出点必须位于当前片段内部，并与入点至少相隔 0.05 秒。";
+            return;
+        }
+
+        SaveUndoState();
+        clip.EndSeconds = position;
+        ClipEndTextBox.Text = position.ToString("0.##", CultureInfo.InvariantCulture);
+        ClipsGrid.Items.Refresh();
+        EditorStatusText.Text = $"出点已设置为 {position:F2} 秒。";
     }
 
     private void RemoveClip_Click(object sender, RoutedEventArgs e)
