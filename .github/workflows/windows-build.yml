@@ -198,11 +198,11 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/windows-v') || (github.ref == 'refs/heads/windows-port' && contains(github.event.head_commit.message, '[publish-release]'))
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/windows-v') && github.ref_name || 'windows-v0.1.17' }}
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/windows-v') && github.ref_name || 'windows-v0.1.18' }}
           target_commitish: ${{ github.sha }}
-          name: ${{ startsWith(github.ref, 'refs/tags/windows-v') && format('DogSC Windows Preview {0}', github.ref_name) || 'DogSC Windows Preview v0.1.17' }}
+          name: ${{ startsWith(github.ref, 'refs/tags/windows-v') && format('DogSC Windows Preview {0}', github.ref_name) || 'DogSC Windows Preview v0.1.18' }}
           body: |
-            DogSC for Windows — recording and UI reliability preview v0.1.12.
+            DogSC for Windows — Chinese UI rendering and layout refinement preview v0.1.18.
 
             This release fixes Chinese DirectShow device names by decoding FFmpeg output as UTF-8 when valid and falling back to the active Windows ANSI code page, and separates Fluent icon glyphs from Chinese button text across recording, preview, import, and export controls to prevent tofu/garbled labels. It removes excess content from the recording options card to keep the marker row visible, tightens the device and action panel proportions, and retains the design-matched editor/export layout and recording compatibility fixes.
 
