@@ -13,6 +13,7 @@ on:
   pull_request:
     paths:
       - "Windows/**"
+      - "Windows.SmokeTests/**"
       - ".github/workflows/windows-build.yml"
   workflow_dispatch:
 
@@ -134,11 +135,23 @@ jobs:
           }
           $installedBytes = (Get-ChildItem -LiteralPath $installDir -Recurse -File | Measure-Object -Property Length -Sum).Sum
           if ($installedBytes -lt 20000000) { throw "Installed bundle size is unexpectedly small." }
-          $appProcess = Start-Process -FilePath $appExe -PassThru
+          $dumpDir = Join-Path $env:RUNNER_TEMP "DogSC-CrashDumps"
+          New-Item -ItemType Directory -Force -Path $dumpDir | Out-Null
+          $dumpKey = "HKCU:\Software\Microsoft\Windows\Windows Error Reporting\LocalDumps\DogSC.Windows.exe"
+          New-Item -Path $dumpKey -Force | Out-Null
+          New-ItemProperty -Path $dumpKey -Name DumpFolder -Value $dumpDir -PropertyType ExpandString -Force | Out-Null
+          New-ItemProperty -Path $dumpKey -Name DumpType -Value 2 -PropertyType DWord -Force | Out-Null
+          $appProcess = Start-Process -FilePath $appExe -WorkingDirectory $installDir -PassThru
           Start-Sleep -Seconds 4
           if ($appProcess.HasExited) {
             $startupLog = Join-Path $env:LOCALAPPDATA "DogSC/logs/startup.log"
             if (Test-Path -LiteralPath $startupLog) { Get-Content -LiteralPath $startupLog }
+            Write-Host "Recent Windows application crash events:"
+            Get-WinEvent -FilterHashtable @{ LogName = "Application"; StartTime = (Get-Date).AddMinutes(-5) } -ErrorAction SilentlyContinue |
+              Where-Object { $_.ProviderName -in @("Application Error", ".NET Runtime", "Windows Error Reporting") -or $_.Message -match "DogSC" } |
+              Select-Object -First 12 TimeCreated, ProviderName, Id, Message |
+              Format-List | Out-String | Write-Host
+            Get-ChildItem -LiteralPath $dumpDir -Force -ErrorAction SilentlyContinue | Format-List | Out-String | Write-Host
             throw "DogSC exited during startup with exit code $($appProcess.ExitCode)."
           }
           Stop-Process -Id $appProcess.Id -Force
