@@ -400,20 +400,20 @@
                     </WrapPanel>
                     <DataGrid x:Name="ClipsGrid" Grid.Row="2" AutoGenerateColumns="False" CanUserAddRows="False"
                               IsReadOnly="True" SelectionMode="Single" SelectionChanged="ClipsGrid_SelectionChanged"
-                              HeadersVisibility="Column" GridLinesVisibility="Horizontal" RowHeight="48" MinHeight="130">
+                              HeadersVisibility="Column" GridLinesVisibility="Horizontal" RowHeight="68" MinHeight="130">
                         <DataGrid.Columns>
                             <DataGridTemplateColumn Header="片段" Width="*">
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
-                                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="2">
-                                            <Border Width="72" Height="40" Background="#E5EFFA" CornerRadius="5" ClipToBounds="True">
-                                                <Image Source="{Binding ThumbnailPath}" Stretch="UniformToFill" />
-                                            </Border>
-                                            <StackPanel VerticalAlignment="Center" Margin="8,0,0,0">
-                                                <TextBlock Text="{Binding FileName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
-                                                <TextBlock Text="{Binding DisplayLabel}" Foreground="#73819A" FontSize="10" TextTrimming="CharacterEllipsis" />
-                                            </StackPanel>
-                                        </StackPanel>
+                                        <Grid VerticalAlignment="Center" Margin="2">
+                                                <Grid.ColumnDefinitions><ColumnDefinition Width="72" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                                <Grid.RowDefinitions><RowDefinition Height="40" /><RowDefinition Height="22" /></Grid.RowDefinitions>
+                                                <Border Grid.Row="0" Grid.RowSpan="2" Width="72" Height="62" Background="#E5EFFA" CornerRadius="5" ClipToBounds="True" VerticalAlignment="Center">
+                                                    <Image Source="{Binding ThumbnailPath}" Stretch="UniformToFill" />
+                                                </Border>
+                                                <TextBlock Grid.Column="1" Grid.Row="0" Text="{Binding FileName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Margin="8,0,0,0" />
+                                                <Image Grid.Column="1" Grid.Row="1" Source="{Binding AudioWaveformPath}" Stretch="Fill" Height="20" Margin="8,0,4,0" VerticalAlignment="Center" ToolTip="音频波形预览" />
+                                            </Grid>
                                     </DataTemplate>
                                 </DataGridTemplateColumn.CellTemplate>
                             </DataGridTemplateColumn>
