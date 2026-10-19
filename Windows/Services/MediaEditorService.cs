@@ -79,6 +79,8 @@ public sealed class MediaEditorService
             throw new InvalidOperationException("时间线上没有可导出的片段。");
         if (framesPerSecond is not (30 or 60))
             throw new InvalidOperationException("导出帧率仅支持 30 或 60 FPS。");
+        if (!audioOnly && outputHeight is not (1080 or 1440 or 2160))
+            throw new InvalidOperationException("视频导出分辨率仅支持 1080p、1440p 或 4K。");
         if (outputHeight is not (1080 or 1440 or 2160))
             throw new InvalidOperationException("导出分辨率仅支持 1080p、1440p 或 4K。");
         if (audioOnly && !string.Equals(Path.GetExtension(outputPath), ".m4a", StringComparison.OrdinalIgnoreCase))
@@ -213,11 +215,11 @@ public sealed class MediaEditorService
             {
                 var atempo = BuildAtempo(clip.Speed);
                 var audioFilters = string.IsNullOrEmpty(atempo) ? string.Empty : "," + atempo;
-                filters.Add($"[{i}:a:0]atrim=start={start}:end={end},asetpts=PTS-STARTPTS{audioFilters},aresample=48000[a{i}]");
+                filters.Add($"[{i}:a:0]atrim=start={start}:end={end},asetpts=PTS-STARTPTS{audioFilters},aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a{i}]");
             }
             else
             {
-                filters.Add($"anullsrc=channel_layout=stereo:sample_rate=48000,atrim=duration={duration},asetpts=PTS-STARTPTS[a{i}]");
+                filters.Add($"anullsrc=channel_layout=stereo:sample_rate=48000,atrim=duration={duration},asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a{i}]");
             }
         }
 

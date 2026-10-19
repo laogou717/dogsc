@@ -32,8 +32,10 @@ public sealed class RecordingOptions
         if (Mode == CaptureMode.Window && string.IsNullOrWhiteSpace(WindowTitle))
             throw new InvalidOperationException("请选择要录制的窗口。");
 
-        if (Mode == CaptureMode.Region && (RegionX < 0 || RegionY < 0 || RegionWidth < 16 || RegionHeight < 16))
-            throw new InvalidOperationException("区域坐标必须非负，宽和高至少为 16 像素。");
+        // Negative offsets are valid on Windows virtual desktops when a secondary
+        // monitor is positioned left of or above the primary monitor.
+        if (Mode == CaptureMode.Region && (RegionWidth < 16 || RegionHeight < 16))
+            throw new InvalidOperationException("区域宽和高至少为 16 像素。");
 
         if (CaptureMicrophone && string.IsNullOrWhiteSpace(MicrophoneDevice))
             throw new InvalidOperationException("已启用麦克风录制，但没有选择麦克风设备。");
