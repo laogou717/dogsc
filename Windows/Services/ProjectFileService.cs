@@ -22,7 +22,9 @@ public sealed class ProjectFileService
                 Volume = clip.Volume,
                 FadeInSeconds = clip.FadeInSeconds,
                 FadeOutSeconds = clip.FadeOutSeconds,
-                RotationDegrees = clip.RotationDegrees
+                RotationDegrees = clip.RotationDegrees,
+                ZoomStart = clip.ZoomStart,
+                ZoomEnd = clip.ZoomEnd
             }).ToList()
         };
 
@@ -61,7 +63,9 @@ public sealed class ProjectFileService
                 Volume = item.Volume,
                 FadeInSeconds = item.FadeInSeconds,
                 FadeOutSeconds = item.FadeOutSeconds,
-                RotationDegrees = item.RotationDegrees
+                RotationDegrees = item.RotationDegrees,
+                ZoomStart = item.ZoomStart,
+                ZoomEnd = item.ZoomEnd
             });
         }
 
@@ -84,5 +88,7 @@ public sealed class ProjectFileService
         public double FadeInSeconds { get; set; }
         public double FadeOutSeconds { get; set; }
         public int RotationDegrees { get; set; }
+        public double ZoomStart { get; set; } = 1.0;
+        public double ZoomEnd { get; set; } = 1.0;
     }
 }
