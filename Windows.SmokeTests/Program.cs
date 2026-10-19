@@ -43,6 +43,8 @@ try
     var source = Path.Combine(root, "source.mp4");
     var output = Path.Combine(root, "edited.mp4");
     var audio = Path.Combine(root, "audio.m4a");
+    var portrait = Path.Combine(root, "portrait.mp4");
+    var square = Path.Combine(root, "square.mp4");
     var projectPath = Path.Combine(root, "roundtrip.dogscproj");
 
     Console.WriteLine("1/5 Generating a deterministic video+audio source.");
@@ -88,7 +90,19 @@ try
     Require(exportedInfo.DurationSeconds > 1.7 && exportedInfo.DurationSeconds < 2.3,
         $"MP4 export has unexpected duration {exportedInfo.DurationSeconds.ToString(CultureInfo.InvariantCulture)}.");
 
-    Console.WriteLine("5/5 Exporting M4A audio.");
+    Console.WriteLine("5/7 Exporting a portrait canvas with fit padding.");
+    await editor.ExportAsync(reopened, portrait, 1080, 30, false, null, "9:16", "fit", "dark");
+    var portraitInfo = await editor.ProbeAsync(portrait);
+    Require(portraitInfo.Width == 1080 && portraitInfo.Height == 1920,
+        $"Portrait export has unexpected resolution {portraitInfo.Width}x{portraitInfo.Height}.");
+
+    Console.WriteLine("6/7 Exporting a square canvas with fill/crop.");
+    await editor.ExportAsync(reopened, square, 1080, 30, false, null, "1:1", "fill", "blue");
+    var squareInfo = await editor.ProbeAsync(square);
+    Require(squareInfo.Width == 1080 && squareInfo.Height == 1080,
+        $"Square export has unexpected resolution {squareInfo.Width}x{squareInfo.Height}.");
+
+    Console.WriteLine("7/7 Exporting M4A audio.");
     await editor.ExportAsync(reopened, audio, 1080, 30, true);
     var audioInfo = await editor.ProbeAsync(audio);
     Require(audioInfo.HasAudio && !audioInfo.HasVideo, "M4A export must contain audio only.");

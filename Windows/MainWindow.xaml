@@ -149,6 +149,26 @@
                                 <ComboBoxItem Content="30 FPS" Tag="30" />
                                 <ComboBoxItem Content="60 FPS" Tag="60" />
                             </ComboBox>
+                            <TextBlock VerticalAlignment="Center" Text="画面比例" />
+                            <ComboBox x:Name="ExportAspectRatioCombo" Width="115">
+                                <ComboBoxItem Content="16:9 横屏" Tag="16:9" />
+                                <ComboBoxItem Content="9:16 竖屏" Tag="9:16" />
+                                <ComboBoxItem Content="1:1 方形" Tag="1:1" />
+                                <ComboBoxItem Content="4:3" Tag="4:3" />
+                                <ComboBoxItem Content="3:2" Tag="3:2" />
+                            </ComboBox>
+                            <TextBlock VerticalAlignment="Center" Text="适配" />
+                            <ComboBox x:Name="ExportFitModeCombo" Width="145">
+                                <ComboBoxItem Content="完整显示" Tag="fit" />
+                                <ComboBoxItem Content="填满并裁切" Tag="fill" />
+                            </ComboBox>
+                            <TextBlock VerticalAlignment="Center" Text="背景" />
+                            <ComboBox x:Name="ExportBackgroundCombo" Width="105">
+                                <ComboBoxItem Content="黑色" Tag="black" />
+                                <ComboBoxItem Content="深灰蓝" Tag="dark" />
+                                <ComboBoxItem Content="白色" Tag="white" />
+                                <ComboBoxItem Content="蓝色" Tag="blue" />
+                            </ComboBox>
                         </WrapPanel>
                     </DockPanel>
                     <ListBox x:Name="RecordingMarkersList" Grid.Row="5" Margin="3,8,3,0"

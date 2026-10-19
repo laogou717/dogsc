@@ -48,6 +48,9 @@ public partial class MainWindow : Window
         ExportFormatCombo.SelectedIndex = 0;
         ExportResolutionCombo.SelectedIndex = 0;
         ExportFrameRateCombo.SelectedIndex = 0;
+        ExportAspectRatioCombo.SelectedIndex = 0;
+        ExportFitModeCombo.SelectedIndex = 0;
+        ExportBackgroundCombo.SelectedIndex = 0;
         ClipSpeedCombo.SelectedIndex = 2;
         var videos = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
         OutputPathTextBox.Text = Path.Combine(videos, "DogSC", $"DogSC-{DateTime.Now:yyyyMMdd-HHmmss}.mp4");
@@ -547,7 +550,10 @@ public partial class MainWindow : Window
         {
             var progress = new Progress<string>(message => EditorStatusText.Text = message);
             await _mediaEditorService.ExportAsync(_clips.ToArray(), dialog.FileName,
-                ReadTagInt(ExportResolutionCombo, 1080), ReadTagInt(ExportFrameRateCombo, 30), audioOnly, progress);
+                ReadTagInt(ExportResolutionCombo, 1080), ReadTagInt(ExportFrameRateCombo, 30), audioOnly, progress,
+                ReadTagString(ExportAspectRatioCombo, "16:9"),
+                ReadTagString(ExportFitModeCombo, "fit"),
+                ReadTagString(ExportBackgroundCombo, "black"));
             EditorStatusText.Text = "导出完成：" + dialog.FileName;
             MessageBox.Show(this, "导出完成：" + dialog.FileName, "DogSC", MessageBoxButton.OK, MessageBoxImage.Information);
         }
@@ -585,6 +591,9 @@ public partial class MainWindow : Window
         var tag = (comboBox.SelectedItem as ComboBoxItem)?.Tag?.ToString();
         return int.TryParse(tag, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) ? value : fallback;
     }
+
+    private static string ReadTagString(ComboBox comboBox, string fallback) =>
+        (comboBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? fallback;
 
     private static double ReadTagDouble(ComboBoxItem? item, double fallback)
     {
