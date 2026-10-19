@@ -587,7 +587,13 @@ public partial class MainWindow : Window
             if (Math.Abs(clip.StartSeconds - start) > 0.0001 ||
                 Math.Abs(clip.EndSeconds - end) > 0.0001 ||
                 Math.Abs(clip.Speed - speed) > 0.0001)
+            {
+                _previewTimer.Stop();
+                _previewElement?.Pause();
+                _previewPlaying = false;
+                PreviewPlayButton.Content = "播放预览";
                 SaveUndoState();
+            }
             clip.StartSeconds = start;
             clip.EndSeconds = end;
             clip.Speed = speed;
@@ -812,8 +818,12 @@ public partial class MainWindow : Window
     private void ReplaceClips(IEnumerable<ClipItem> clips, int selectedIndex)
     {
         _restoringHistory = true;
+        _previewTimer.Stop();
+        _previewPlaying = false;
+        _previewClip = null;
         try
         {
+            ClipsGrid.SelectedIndex = -1;
             _clips.Clear();
             foreach (var clip in clips)
             {
