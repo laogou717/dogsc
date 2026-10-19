@@ -84,6 +84,18 @@ public sealed class MediaEditorService
             throw new InvalidOperationException("导出帧率仅支持 30 或 60 FPS。");
         if (!audioOnly && outputHeight is not (1080 or 1440 or 2160))
             throw new InvalidOperationException("视频导出分辨率仅支持 1080p、1440p 或 4K。");
+        if (aspectRatio is not ("16:9" or "9:16" or "1:1" or "4:3" or "3:2"))
+            throw new InvalidOperationException("画面比例不受支持。");
+        if (fitMode is not ("fit" or "fill"))
+            throw new InvalidOperationException("画面适配模式不受支持。");
+        backgroundColor = backgroundColor switch
+        {
+            "black" => "black",
+            "white" => "white",
+            "dark" => "0x1E293B",
+            "blue" => "0x1D4ED8",
+            _ => throw new InvalidOperationException("背景颜色不受支持。")
+        };
         if (audioOnly && !string.Equals(Path.GetExtension(outputPath), ".m4a", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("音频导出文件必须使用 .m4a 扩展名。");
         if (!audioOnly && !string.Equals(Path.GetExtension(outputPath), ".mp4", StringComparison.OrdinalIgnoreCase))
