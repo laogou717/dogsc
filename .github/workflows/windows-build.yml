@@ -8,6 +8,7 @@ on:
       - "windows-v*"
     paths:
       - "Windows/**"
+      - "Windows.SmokeTests/**"
       - ".github/workflows/windows-build.yml"
   pull_request:
     paths:
@@ -86,6 +87,14 @@ jobs:
           Set-Content -LiteralPath (Join-Path $toolsDir "FFmpeg-BUILD.txt") -Value ($version + [Environment]::NewLine + "Build configuration:" + [Environment]::NewLine + $buildConfig) -Encoding utf8
           Copy-Item -LiteralPath "Windows/THIRD-PARTY-NOTICES.txt" -Destination (Join-Path $publishDir "THIRD-PARTY-NOTICES.txt")
           Copy-Item -LiteralPath "Windows/COPYING.LGPLv2.1.txt" -Destination (Join-Path $publishDir "COPYING.LGPLv2.1.txt")
+
+      - name: Run Windows media and project integration tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:DOGSC_FFMPEG_PATH = Join-Path $env:GITHUB_WORKSPACE "artifacts/publish/tools/ffmpeg.exe"
+          dotnet run --project Windows.SmokeTests/DogSC.Windows.SmokeTests.csproj --configuration Release --runtime win-x64
+          if ($LASTEXITCODE -ne 0) { throw "Windows media/project integration tests failed with exit code $LASTEXITCODE" }
 
       - name: Install Inno Setup
         shell: pwsh
