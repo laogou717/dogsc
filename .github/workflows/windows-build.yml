@@ -1,0 +1,212 @@
+name: Windows build and installer
+
+on:
+  push:
+    branches:
+      - windows-port
+    tags:
+      - "windows-v*"
+    paths:
+      - "Windows/**"
+      - "Windows.SmokeTests/**"
+      - ".github/workflows/windows-build.yml"
+  pull_request:
+    paths:
+      - "Windows/**"
+      - "Windows.SmokeTests/**"
+      - ".github/workflows/windows-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate UTF-8 Chinese UI resources
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $utf8 = [System.Text.UTF8Encoding]::new($false, $true)
+          $paths = @(
+            "Windows/App.xaml",
+            "Windows/MainWindow.xaml",
+            "Windows/MainWindow.xaml.cs",
+            "Windows/RegionSelectionWindow.cs"
+          )
+          foreach ($relativePath in $paths) {
+            $path = Join-Path $env:GITHUB_WORKSPACE $relativePath
+            $content = [System.IO.File]::ReadAllText($path, $utf8)
+            if ($content.Contains([char]0xFFFD)) {
+              throw "Replacement character found in UI source: $relativePath"
+            }
+          }
+          $ui = [System.IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE "Windows/MainWindow.xaml"), $utf8)
+          foreach ($label in @("录制模式", "片段预览", "导出设置", "设置与帮助", "Microsoft YaHei UI")) {
+            if (!$ui.Contains($label)) { throw "Expected Chinese UI label or font setting missing: $label" }
+          }
+          Write-Host "UI resources are valid UTF-8 and expected Chinese labels are present."
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore Windows/DogSC.Windows.csproj --runtime win-x64
+
+      - name: Build Release
+        run: dotnet build Windows/DogSC.Windows.csproj --configuration Release --runtime win-x64 --no-restore
+
+      - name: Publish self-contained win-x64 application
+        run: dotnet publish Windows/DogSC.Windows.csproj --configuration Release --runtime win-x64 --self-contained true --no-restore --output artifacts/publish
+
+      - name: Download pinned LGPL FFmpeg build and run media smoke test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $archive = Join-Path $env:RUNNER_TEMP "ffmpeg-win64-lgpl.zip"
+          $extractRoot = Join-Path $env:RUNNER_TEMP "ffmpeg-extracted"
+          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-17-20-51/ffmpeg-n9.0.2-28-g669f5ab083-win64-lgpl-shared-9.0.zip"
+          $expectedSha256 = "00ab3bc8fe02554bd0fffac9968bba498d1ab7e899a4871b85fbba828a50bfcc"
+          Invoke-WebRequest -Uri $url -OutFile $archive
+          $actualSha256 = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualSha256 -ne $expectedSha256) {
+            throw "FFmpeg archive SHA-256 mismatch. Expected $expectedSha256, got $actualSha256"
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath $extractRoot -Force
+          $ffmpeg = Get-ChildItem -LiteralPath $extractRoot -Filter "ffmpeg.exe" -Recurse | Select-Object -First 1
+          if ($null -eq $ffmpeg) { throw "ffmpeg.exe not found in the verified archive." }
+          $ffprobe = Join-Path $ffmpeg.Directory.FullName "ffprobe.exe"
+          if (!(Test-Path -LiteralPath $ffprobe)) { throw "ffprobe.exe not found next to ffmpeg.exe." }
+
+          $devices = (& $ffmpeg.FullName -hide_banner -devices 2>&1 | Out-String)
+          foreach ($device in @("gdigrab", "dshow")) {
+            if ($devices -notmatch [regex]::Escape($device)) { throw "FFmpeg build is missing required device: $device" }
+          }
+          $encoders = (& $ffmpeg.FullName -hide_banner -encoders 2>&1 | Out-String)
+          if ($encoders -notmatch "\bh264_mf\b") { throw "FFmpeg build is missing the Windows Media Foundation H.264 encoder (h264_mf)." }
+          if ($encoders -notmatch "\baac\b") { throw "FFmpeg build is missing the AAC encoder." }
+
+          $smokeFile = Join-Path $env:RUNNER_TEMP "dogsc-ffmpeg-smoke.mp4"
+          & $ffmpeg.FullName -hide_banner -loglevel error -f lavfi -i "testsrc2=size=320x240:rate=30" -f lavfi -i "sine=frequency=1000:sample_rate=48000" -t 1 -c:v h264_mf -b:v 500k -pix_fmt nv12 -c:a aac -b:a 96k -shortest $smokeFile
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path -LiteralPath $smokeFile)) { throw "FFmpeg encode smoke test failed." }
+          $probe = (& $ffprobe -v error -show_entries stream=codec_type -of json $smokeFile | ConvertFrom-Json)
+          if (@($probe.streams | Where-Object codec_type -eq "video").Count -eq 0 -or @($probe.streams | Where-Object codec_type -eq "audio").Count -eq 0) {
+            throw "FFmpeg smoke output does not contain both video and audio streams."
+          }
+
+          $publishDir = Join-Path $env:GITHUB_WORKSPACE "artifacts/publish"
+          $toolsDir = Join-Path $publishDir "tools"
+          New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
+          Copy-Item -Path (Join-Path $ffmpeg.Directory.FullName "*") -Destination $toolsDir -Recurse -Force
+          $version = (& $ffmpeg.FullName -hide_banner -version 2>&1 | Out-String)
+          $buildConfig = (& $ffmpeg.FullName -hide_banner -buildconf 2>&1 | Out-String)
+          if ($buildConfig -match "--enable-gpl|--enable-nonfree") {
+            throw "The bundled FFmpeg build must remain LGPL and must not enable GPL/nonfree components."
+          }
+          Set-Content -LiteralPath (Join-Path $toolsDir "FFmpeg-BUILD.txt") -Value ($version + [Environment]::NewLine + "Build configuration:" + [Environment]::NewLine + $buildConfig) -Encoding utf8
+          Copy-Item -LiteralPath "Windows/THIRD-PARTY-NOTICES.txt" -Destination (Join-Path $publishDir "THIRD-PARTY-NOTICES.txt")
+          Copy-Item -LiteralPath "Windows/COPYING.LGPLv2.1.txt" -Destination (Join-Path $publishDir "COPYING.LGPLv2.1.txt")
+
+      - name: Run Windows media and project integration tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:DOGSC_FFMPEG_PATH = Join-Path $env:GITHUB_WORKSPACE "artifacts/publish/tools/ffmpeg.exe"
+          dotnet run --project Windows.SmokeTests/DogSC.Windows.SmokeTests.csproj --configuration Release --runtime win-x64
+          if ($LASTEXITCODE -ne 0) { throw "Windows media/project integration tests failed with exit code $LASTEXITCODE" }
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+
+      - name: Build single-file installer
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (!(Test-Path -LiteralPath $iscc)) { $iscc = (Get-Command ISCC.exe -ErrorAction Stop).Source }
+          & $iscc "Windows/installer.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
+
+      - name: Validate installed bundle
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installer = Join-Path $env:GITHUB_WORKSPACE "artifacts/installer/DogSC-Setup-win-x64.exe"
+          if (!(Test-Path -LiteralPath $installer)) { throw "Installer artifact was not generated." }
+          $installDir = Join-Path $env:RUNNER_TEMP "DogSC-Install-Smoke"
+          $installProcess = Start-Process -FilePath $installer -ArgumentList @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=$installDir") -Wait -PassThru
+          if ($installProcess.ExitCode -ne 0) { throw "Silent installation failed with exit code $($installProcess.ExitCode)" }
+          $appExe = Join-Path $installDir "DogSC.Windows.exe"
+          $ffmpegExe = Join-Path $installDir "tools/ffmpeg.exe"
+          $ffprobeExe = Join-Path $installDir "tools/ffprobe.exe"
+          foreach ($requiredFile in @($appExe, $ffmpegExe, $ffprobeExe)) {
+            if (!(Test-Path -LiteralPath $requiredFile)) { throw "Installed file missing: $requiredFile" }
+          }
+          & $ffmpegExe -hide_banner -version 2>&1 | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Packaged ffmpeg.exe could not start from the installed directory." }
+          & $ffprobeExe -hide_banner -version 2>&1 | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Packaged ffprobe.exe could not start from the installed directory." }
+          $notice = Join-Path $installDir "THIRD-PARTY-NOTICES.txt"
+          $license = Join-Path $installDir "COPYING.LGPLv2.1.txt"
+          if (!(Test-Path -LiteralPath $notice) -or !(Test-Path -LiteralPath $license)) {
+            throw "Third-party license notices were not included in the installation."
+          }
+          $installedBytes = (Get-ChildItem -LiteralPath $installDir -Recurse -File | Measure-Object -Property Length -Sum).Sum
+          if ($installedBytes -lt 20000000) { throw "Installed bundle size is unexpectedly small." }
+          $dumpDir = Join-Path $env:RUNNER_TEMP "DogSC-CrashDumps"
+          New-Item -ItemType Directory -Force -Path $dumpDir | Out-Null
+          $dumpKey = "HKCU:\Software\Microsoft\Windows\Windows Error Reporting\LocalDumps\DogSC.Windows.exe"
+          New-Item -Path $dumpKey -Force | Out-Null
+          New-ItemProperty -Path $dumpKey -Name DumpFolder -Value $dumpDir -PropertyType ExpandString -Force | Out-Null
+          New-ItemProperty -Path $dumpKey -Name DumpType -Value 2 -PropertyType DWord -Force | Out-Null
+          $appProcess = Start-Process -FilePath $appExe -WorkingDirectory $installDir -PassThru
+          Start-Sleep -Seconds 4
+          if ($appProcess.HasExited) {
+            $startupLog = Join-Path $env:LOCALAPPDATA "DogSC/logs/startup.log"
+            if (Test-Path -LiteralPath $startupLog) { Get-Content -LiteralPath $startupLog }
+            Write-Host "Recent Windows application crash events:"
+            Get-WinEvent -FilterHashtable @{ LogName = "Application"; StartTime = (Get-Date).AddMinutes(-5) } -ErrorAction SilentlyContinue |
+              Where-Object { $_.ProviderName -in @("Application Error", ".NET Runtime", "Windows Error Reporting") -or $_.Message -match "DogSC" } |
+              Select-Object -First 12 TimeCreated, ProviderName, Id, Message |
+              Format-List | Out-String | Write-Host
+            Get-ChildItem -LiteralPath $dumpDir -Force -ErrorAction SilentlyContinue | Format-List | Out-String | Write-Host
+            throw "DogSC exited during startup with exit code $($appProcess.ExitCode)."
+          }
+          Stop-Process -Id $appProcess.Id -Force
+          Wait-Process -Id $appProcess.Id -ErrorAction SilentlyContinue
+          $uninstaller = Join-Path $installDir "unins000.exe"
+          if (Test-Path -LiteralPath $uninstaller) {
+            $uninstallProcess = Start-Process -FilePath $uninstaller -ArgumentList @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART") -Wait -PassThru
+            if ($uninstallProcess.ExitCode -ne 0) { throw "Silent uninstall failed with exit code $($uninstallProcess.ExitCode)" }
+          }
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: DogSC-Windows-Installer
+          path: artifacts/installer/DogSC-Setup-win-x64.exe
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish tagged Windows preview release
+        if: startsWith(github.ref, 'refs/tags/windows-v') || (github.ref == 'refs/heads/windows-port' && contains(github.event.head_commit.message, '[publish-release]'))
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/windows-v') && github.ref_name || 'windows-v0.1.21' }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ startsWith(github.ref, 'refs/tags/windows-v') && format('DogSC Windows Preview {0}', github.ref_name) || 'DogSC Windows Preview v0.1.21' }}
+          body: |
+            DogSC for Windows — video editing workflow preview v0.1.21.
+
+            This preview expands the Windows editor with drag-and-drop clip ordering, clip duplication and splitting, in/out point controls, audio waveform previews, rotation, volume, fade-in/fade-out, basic start/end zoom keyframes, SRT subtitle burn-in, and project autosave/recovery. It retains screen recording, webcam fallback, project import/export, and configurable output settings.
+
+            Includes the self-contained Windows x64 installer and bundled LGPL FFmpeg tools. This is a preview build; hardware-dependent capture, advanced multi-track editing, and broader device compatibility should be validated on target Windows systems.
+          files: artifacts/installer/DogSC-Setup-win-x64.exe
+          prerelease: true
+          generate_release_notes: true

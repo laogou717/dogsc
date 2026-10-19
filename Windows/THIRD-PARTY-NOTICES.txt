@@ -1,0 +1,40 @@
+DogSC for Windows - third-party notices
+
+FFmpeg
+------
+The Windows installer bundles the FFmpeg shared-library build from:
+https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-10-17-20-51
+
+Pinned archive:
+ffmpeg-n9.0.2-28-g669f5ab083-win64-lgpl-shared-9.0.zip
+SHA-256:
+00ab3bc8fe02554bd0fffac9968bba498d1ab7e899a4871b85fbba828a50bfcc
+
+This is the LGPL shared variant. The installer includes the FFmpeg binaries and their adjacent shared libraries, the LGPL 2.1 license text, and FFmpeg build configuration. FFmpeg and its bundled libraries remain subject to their own licenses; see the build configuration and upstream source/build repositories for the exact component list and corresponding source:
+https://ffmpeg.org/
+https://git.ffmpeg.org/ffmpeg.git
+https://github.com/BtbN/FFmpeg-Builds
+
+The FFmpeg binaries are invoked as separate processes. DogSC does not modify FFmpeg and does not claim ownership of FFmpeg or its bundled libraries.
+
+NAudio
+------
+The Windows app uses NAudio 2.2.1 for WASAPI loopback audio capture.
+Source: https://github.com/naudio/NAudio
+License: MIT
+
+Copyright 2008-2026 Mark Heath
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+.NET
+----
+The installer publishes the application self-contained for win-x64 using the .NET 8 runtime. See:
+https://dotnet.microsoft.com/
+https://github.com/dotnet/runtime
+
+The DogSC application source is licensed under the repository's MIT License.

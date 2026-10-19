@@ -1,0 +1,593 @@
+<Window x:Class="DogSC.Windows.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="DogSC" Height="960" Width="1600" MinHeight="820" MinWidth="1280"
+        WindowStartupLocation="CenterScreen" Closing="MainWindow_Closing" PreviewKeyDown="MainWindow_PreviewKeyDown"
+        FontFamily="Microsoft YaHei UI" Language="zh-CN" Background="#F2F6FC">
+    <Border Margin="8" Background="#FFFFFF" BorderBrush="#DDE6F2" BorderThickness="1" CornerRadius="16">
+        <Grid>
+            <Grid.RowDefinitions><RowDefinition Height="68" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+            <Border Grid.Row="0" Background="#FFFFFF" BorderBrush="#E8EDF5" BorderThickness="0,0,0,1"
+                    CornerRadius="16,16,0,0" Padding="18,0">
+                <DockPanel LastChildFill="False" VerticalAlignment="Center">
+                    <Border DockPanel.Dock="Left" Width="42" Height="42" CornerRadius="12" Background="#1769F5" Margin="0,0,12,0">
+                        <Canvas Width="28" Height="26">
+                            <Border Canvas.Left="2" Canvas.Top="6" Width="18" Height="14" Background="#FFFFFF" CornerRadius="3" />
+                            <Polygon Canvas.Left="17" Canvas.Top="8" Points="0,0 8,4 0,10" Fill="#FFFFFF" />
+                        </Canvas>
+                    </Border>
+                    <StackPanel VerticalAlignment="Center">
+                        <TextBlock Text="DogSC" FontSize="21" FontWeight="Bold" />
+                        <TextBlock Text="Windows 预览版" FontSize="12" Foreground="#73819A" Margin="0,2,0,0" />
+                    </StackPanel>
+                    <Border DockPanel.Dock="Right" Background="#F3F7FE" BorderBrush="#E3ECFA" BorderThickness="1" CornerRadius="9" Padding="11,6" VerticalAlignment="Center">
+                        <StackPanel Orientation="Horizontal"><Ellipse Width="7" Height="7" Fill="#18A874" VerticalAlignment="Center" Margin="0,0,7,0" /><TextBlock Text="本地运行" Foreground="#52647E" FontSize="12" /></StackPanel>
+                    </Border>
+                </DockPanel>
+            </Border>
+            <Grid Grid.Row="1">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="178" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                <Border Grid.Column="0" Background="#F8FAFE" BorderBrush="#E8EDF5" BorderThickness="0,0,1,0" CornerRadius="0,0,0,16" Padding="12,15">
+                    <Grid>
+                        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                        <Button x:Name="NavRecordButton" Grid.Row="0" Style="{StaticResource NavButton}" Tag="Selected" Click="NavRecord_Click"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE768;" FontFamily="Segoe MDL2 Assets" FontSize="18" Width="29" VerticalAlignment="Center" /><TextBlock Text="录制" VerticalAlignment="Center" /></StackPanel></Button>
+                        <Button x:Name="NavEditButton" Grid.Row="1" Style="{StaticResource NavButton}" Click="NavEdit_Click"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8C6;" FontFamily="Segoe MDL2 Assets" FontSize="18" Width="29" VerticalAlignment="Center" /><TextBlock Text="编辑与导出" VerticalAlignment="Center" /></StackPanel></Button>
+                        <Button x:Name="NavExportButton" Grid.Row="2" Visibility="Collapsed" Style="{StaticResource NavButton}" Click="NavExport_Click"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE74E;" FontFamily="Segoe MDL2 Assets" FontSize="18" Width="29" VerticalAlignment="Center" /><TextBlock Text="导出" VerticalAlignment="Center" /></StackPanel></Button>
+                        <Button x:Name="NavSettingsButton" Grid.Row="3" Style="{StaticResource NavButton}" Click="NavSettings_Click"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="18" Width="29" VerticalAlignment="Center" /><TextBlock Text="设置与帮助" VerticalAlignment="Center" /></StackPanel></Button>
+                        <StackPanel Grid.Row="5" Margin="2,10,2,6">
+                            <Canvas Width="112" Height="102" HorizontalAlignment="Center">
+                                <Path Data="M 22,48 C 8,50 7,65 15,68 C 23,70 27,62 31,60" Fill="Transparent" Stroke="#B8CDEA" StrokeThickness="3" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
+                                <Path Data="M 39,48 C 28,50 25,65 31,78 C 36,85 47,83 54,79 L 72,79 C 82,83 91,77 88,68 C 86,59 80,54 72,51" Fill="#FFFFFF" Stroke="#B8CDEA" StrokeThickness="3" StrokeLineJoin="Round" />
+                                <Path Data="M 36,19 C 25,10 20,21 24,32 C 27,39 32,42 37,38" Fill="#D9E8FB" Stroke="#B8CDEA" StrokeThickness="3" StrokeLineJoin="Round" />
+                                <Path Data="M 69,18 C 79,8 89,18 85,31 C 83,37 78,41 72,38" Fill="#D9E8FB" Stroke="#B8CDEA" StrokeThickness="3" StrokeLineJoin="Round" />
+                                <Ellipse Canvas.Left="32" Canvas.Top="9" Width="45" Height="43" Fill="#FFFFFF" Stroke="#B8CDEA" StrokeThickness="3" />
+                                <Ellipse Canvas.Left="43" Canvas.Top="27" Width="4" Height="5" Fill="#52647E" /><Ellipse Canvas.Left="61" Canvas.Top="27" Width="4" Height="5" Fill="#52647E" /><Ellipse Canvas.Left="52" Canvas.Top="34" Width="5" Height="4" Fill="#52647E" />
+                                <Path Data="M 49,39 Q 55,44 60,39" Fill="Transparent" Stroke="#B8CDEA" StrokeThickness="2" StrokeStartLineCap="Round" />
+                                <Path Data="M 42,48 C 42,60 40,69 44,78 M 67,50 C 70,61 73,70 72,78" Fill="Transparent" Stroke="#B8CDEA" StrokeThickness="3" StrokeStartLineCap="Round" />
+                                <Path Data="M 76,66 C 84,66 85,73 80,77" Fill="Transparent" Stroke="#B8CDEA" StrokeThickness="3" StrokeStartLineCap="Round" />
+                            </Canvas>
+                            <TextBlock Text="让灵感&#x0a;被更好地记录" FontSize="13" Foreground="#71829B" Margin="3,0,0,8" />
+                            <Separator Background="#DCE6F5" Margin="3,0,3,8" />
+                            <TextBlock Text="DogSC" FontSize="12" FontWeight="SemiBold" Margin="3,0,0,0" />
+                            <TextBlock Text="v0.1.21  ·  预览版" FontSize="11" Foreground="#7C8AA2" Margin="3,3,0,0" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
+                <TabControl x:Name="MainTabs" Grid.Column="1" Margin="12" Background="Transparent" BorderThickness="0" Padding="0" SelectedIndex="0">
+                    <TabControl.Template><ControlTemplate TargetType="{x:Type TabControl}"><Grid ClipToBounds="True"><ContentPresenter x:Name="PART_SelectedContentHost" ContentSource="SelectedContent" /></Grid></ControlTemplate></TabControl.Template>
+                    <TabItem Header="录制">
+    <Grid>
+        <Grid.RowDefinitions><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+        <Grid Grid.Row="0">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="0.82*" /><ColumnDefinition Width="1.18*" /></Grid.ColumnDefinitions>
+            <Grid Grid.Column="0" Margin="0,0,8,0">
+                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                <Border Grid.Row="0" Style="{StaticResource CardStyle}" Padding="14" Margin="0,0,0,10">
+                    <StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                            <TextBlock Text="&#xE7F4;" FontFamily="Segoe MDL2 Assets" FontSize="18" Foreground="#1769F5" VerticalAlignment="Center" />
+                            <TextBlock Style="{StaticResource SectionTitle}" Text="录制模式" Margin="9,0,0,0" />
+                        </StackPanel>
+                        
+                        <ComboBox x:Name="CaptureModeCombo" Visibility="Collapsed" SelectionChanged="CaptureModeCombo_SelectionChanged">
+                            <ComboBoxItem Content="整个桌面" Tag="Desktop" />
+                            <ComboBoxItem Content="指定窗口" Tag="Window" />
+                            <ComboBoxItem Content="指定区域" Tag="Region" />
+                        </ComboBox>
+                        <Grid>
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                            <Button x:Name="CaptureDesktopButton" Grid.Column="0" Click="CaptureDesktop_Click" Margin="0,0,5,0" MinHeight="42" Padding="8,7">
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                    <TextBlock Text="&#xE7F4;" FontFamily="Segoe MDL2 Assets" FontSize="16" Margin="0,0,8,0" VerticalAlignment="Center" />
+                                    <TextBlock Text="全屏" VerticalAlignment="Center" />
+                                </StackPanel>
+                            </Button>
+                            <Button x:Name="CaptureWindowButton" Grid.Column="1" Click="CaptureWindow_Click" Margin="2,0" MinHeight="42" Padding="8,7">
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                    <TextBlock Text="&#xE8A7;" FontFamily="Segoe MDL2 Assets" FontSize="16" Margin="0,0,8,0" VerticalAlignment="Center" />
+                                    <TextBlock Text="窗口" VerticalAlignment="Center" />
+                                </StackPanel>
+                            </Button>
+                            <Button x:Name="CaptureRegionButton" Grid.Column="2" Click="CaptureRegion_Click" Margin="5,0,0,0" MinHeight="42" Padding="8,7">
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                    <TextBlock Text="&#xE7C3;" FontFamily="Segoe MDL2 Assets" FontSize="16" Margin="0,0,8,0" VerticalAlignment="Center" />
+                                    <TextBlock Text="区域" VerticalAlignment="Center" />
+                                </StackPanel>
+                            </Button>
+                        </Grid>
+                        <StackPanel x:Name="WindowSelectionPanel" Visibility="Collapsed" Margin="0,8,0,0">
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="要录制的窗口" />
+                            <DockPanel>
+                                <Button DockPanel.Dock="Right" Content="刷新" Click="RefreshWindows_Click" Margin="6,2,0,4" />
+                                <ComboBox x:Name="WindowCombo" DisplayMemberPath="Title" />
+                            </DockPanel>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Row="1" Style="{StaticResource CardStyle}" Padding="14" Margin="0,0,0,10">
+                    <Grid>
+                        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                            <TextBlock Text="&#xE767;" FontFamily="Segoe MDL2 Assets" FontSize="18" Foreground="#1769F5" VerticalAlignment="Center" />
+                            <TextBlock Style="{StaticResource SectionTitle}" Text="录制选项" Margin="9,0,0,0" />
+                        </StackPanel>
+                        <StackPanel Grid.Row="1">
+                            <Grid Height="35">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="28" /><ColumnDefinition Width="*" /><ColumnDefinition Width="48" /></Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="&#xE767;" FontFamily="Segoe MDL2 Assets" FontSize="19" Foreground="#27364D" VerticalAlignment="Center" />
+                                <TextBlock Grid.Column="1" Text="系统声音" VerticalAlignment="Center" />
+                                <CheckBox x:Name="SystemAudioCheckBox" Grid.Column="2" Content="" IsChecked="True" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0" Width="44" />
+                            </Grid>
+                            <Border Height="1" Background="#EDF1F7" />
+                            <Grid Height="35">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="28" /><ColumnDefinition Width="*" /><ColumnDefinition Width="48" /></Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="&#xE720;" FontFamily="Segoe MDL2 Assets" FontSize="19" Foreground="#27364D" VerticalAlignment="Center" />
+                                <TextBlock Grid.Column="1" Text="麦克风" VerticalAlignment="Center" />
+                                <CheckBox x:Name="MicrophoneCheckBox" Grid.Column="2" Content="" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0" Width="44" />
+                            </Grid>
+                            <Border Height="1" Background="#EDF1F7" />
+                            <Grid Height="35">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="28" /><ColumnDefinition Width="*" /><ColumnDefinition Width="48" /></Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="&#xE714;" FontFamily="Segoe MDL2 Assets" FontSize="19" Foreground="#27364D" VerticalAlignment="Center" />
+                                <TextBlock Grid.Column="1" Text="摄像头叠加" VerticalAlignment="Center" />
+                                <CheckBox x:Name="CameraOverlayCheckBox" Grid.Column="2" Content="" ToolTip="需要检测到摄像头设备后才能启用叠加" Checked="CameraOverlayCheckBox_Checked" Unchecked="CameraOverlayCheckBox_Unchecked" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0" Width="44" />
+                            </Grid>
+                            <Grid Margin="28,0,0,3">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0" Margin="0,0,8,0">
+                                    <TextBlock Style="{StaticResource FieldLabel}" Text="位置" Margin="0,3,0,2" />
+                                    <ComboBox x:Name="CameraPositionCombo" SelectionChanged="CameraOverlayPlacement_SelectionChanged" MinHeight="32">
+                                        <ComboBoxItem Content="右下" Tag="bottom-right" /><ComboBoxItem Content="左下" Tag="bottom-left" />
+                                        <ComboBoxItem Content="右上" Tag="top-right" /><ComboBoxItem Content="左上" Tag="top-left" /><ComboBoxItem Content="居中" Tag="center" />
+                                    </ComboBox>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1">
+                                    <TextBlock Style="{StaticResource FieldLabel}" Text="大小" Margin="0,3,0,2" />
+                                    <ComboBox x:Name="CameraSizeCombo" SelectionChanged="CameraOverlayPlacement_SelectionChanged" MinHeight="32">
+                                        <ComboBoxItem Content="小" Tag="small" /><ComboBoxItem Content="中" Tag="medium" /><ComboBoxItem Content="大" Tag="large" />
+                                    </ComboBox>
+                                </StackPanel>
+                            </Grid>
+                            <Border Height="1" Background="#EDF1F7" Margin="0,1,0,0" />
+                            <Grid Height="35">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="28" /><ColumnDefinition Width="*" /><ColumnDefinition Width="48" /></Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="&#xE962;" FontFamily="Segoe MDL2 Assets" FontSize="19" Foreground="#27364D" VerticalAlignment="Center" />
+                                <TextBlock Grid.Column="1" Text="显示鼠标光标" VerticalAlignment="Center" />
+                                <CheckBox x:Name="ShowCursorCheckBox" Grid.Column="2" Content="" IsChecked="True" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0" Width="44" />
+                            </Grid>
+                            <Border Height="1" Background="#EDF1F7" />
+                            <Grid Height="35">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="28" /><ColumnDefinition Width="*" /><ColumnDefinition Width="48" /></Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="&#xE734;" FontFamily="Segoe MDL2 Assets" FontSize="19" Foreground="#27364D" VerticalAlignment="Center" />
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                    <TextBlock Text="录制标记" VerticalAlignment="Center" />
+                                    <TextBlock Text="&#xE946;" FontFamily="Segoe MDL2 Assets" FontSize="13" Foreground="#8292AA" Margin="7,0,0,0" VerticalAlignment="Center" ToolTip="Ctrl+Alt+M 添加标记" />
+                                </StackPanel>
+                                <CheckBox x:Name="RecordMarkerCheckBox" Grid.Column="2" Content="" IsChecked="True" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0" Width="44" />
+                            </Grid>
+                            
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
+                <Border Grid.Row="2" Style="{StaticResource CardStyle}" Padding="14">
+                    <StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                            <TextBlock Text="&#xE7C3;" FontFamily="Segoe MDL2 Assets" FontSize="18" Foreground="#1769F5" VerticalAlignment="Center" />
+                            <TextBlock Style="{StaticResource SectionTitle}" Text="区域设置" Margin="9,0,0,0" />
+                        </StackPanel>
+                        <UniformGrid Columns="4">
+                            <StackPanel Margin="0,0,7,0"><TextBlock Style="{StaticResource FieldLabel}" Text="X" Margin="0,0,0,3" /><TextBox x:Name="RegionXTextBox" Text="320" TextChanged="RegionCoordinates_TextChanged" /></StackPanel>
+                            <StackPanel Margin="0,0,7,0"><TextBlock Style="{StaticResource FieldLabel}" Text="Y" Margin="0,0,0,3" /><TextBox x:Name="RegionYTextBox" Text="200" TextChanged="RegionCoordinates_TextChanged" /></StackPanel>
+                            <StackPanel Margin="0,0,7,0"><TextBlock Style="{StaticResource FieldLabel}" Text="宽度" Margin="0,0,0,3" /><TextBox x:Name="RegionWidthTextBox" Text="1280" TextChanged="RegionCoordinates_TextChanged" /></StackPanel>
+                            <StackPanel><TextBlock Style="{StaticResource FieldLabel}" Text="高度" Margin="0,0,0,3" /><TextBox x:Name="RegionHeightTextBox" Text="720" TextChanged="RegionCoordinates_TextChanged" /></StackPanel>
+                        </UniformGrid>
+                        <Button Click="SelectRegion_Click" Margin="0,8,0,0" HorizontalAlignment="Stretch"
+                                Background="#D7E8FF" Foreground="#1769F5" BorderBrush="#D7E8FF" MinHeight="38" ToolTip="按住鼠标左键拖动选择屏幕区域">
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                <Rectangle Width="15" Height="15" Stroke="#1769F5" StrokeThickness="2" StrokeDashArray="2,2" Margin="0,0,8,0" VerticalAlignment="Center" />
+                                <TextBlock Text="拖动选择区域..." VerticalAlignment="Center" />
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
+                </Border>
+            </Grid>
+
+            <Grid Grid.Column="1" Margin="8,0,0,0">
+                <Grid.RowDefinitions><RowDefinition Height="*" /><RowDefinition Height="176" /></Grid.RowDefinitions>
+                <Border Grid.Row="0" Style="{StaticResource CardStyle}" Padding="14" Margin="0,0,0,10">
+                    <Grid>
+                        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                        <DockPanel Grid.Row="0" Margin="0,0,0,10">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE7F4;" FontFamily="Segoe MDL2 Assets" FontSize="18" Foreground="#1769F5" VerticalAlignment="Center" />
+                                <TextBlock Style="{StaticResource SectionTitle}" Text="实时预览" Margin="9,0,0,0" />
+                            </StackPanel>
+                            <ComboBox x:Name="PreviewScaleCombo" Width="125" SelectedIndex="0" DockPanel.Dock="Right" SelectionChanged="PreviewScaleCombo_SelectionChanged">
+                                <ComboBoxItem Content="适应窗口" Tag="fit" /><ComboBoxItem Content="填充窗口" Tag="fill" />
+                            </ComboBox>
+                        </DockPanel>
+                        <Border Grid.Row="1" Background="#E5EFFA" CornerRadius="10" ClipToBounds="True" MinHeight="220">
+                            <Grid>
+                                <Image x:Name="LivePreviewImage" Stretch="Uniform" SnapsToDevicePixels="True" />
+                                <Border x:Name="CameraPreviewFrame" Width="150" Height="84" HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                                        Margin="12" Background="#101827" BorderBrush="#FFFFFF" BorderThickness="2" CornerRadius="8"
+                                        ClipToBounds="True" Visibility="Collapsed">
+                                    <Image x:Name="CameraPreviewImage" Stretch="UniformToFill" />
+                                </Border>
+                                <StackPanel x:Name="LivePreviewPlaceholder" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                    <Border Width="62" Height="62" Background="#DCEAFF" CornerRadius="18" HorizontalAlignment="Center">
+                                        <TextBlock Text="&#xE714;" FontFamily="Segoe MDL2 Assets" FontSize="30" Foreground="#1769F5" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                    </Border>
+                                    <TextBlock Text="正在等待预览画面" FontSize="16" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,12,0,4" />
+                                    <TextBlock Text="预览会随录制模式自动更新" TextWrapping="Wrap" TextAlignment="Center" Foreground="#6B7A91" FontSize="12" MaxWidth="300" />
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+                        <Border Grid.Row="2" Background="#F1F6FE" CornerRadius="9" Padding="10" Margin="0,8,0,0">
+                            <DockPanel>
+                                <TextBlock Text="&#xE946;" FontFamily="Segoe MDL2 Assets" FontSize="16" Foreground="#1769F5" VerticalAlignment="Center" Margin="0,0,9,0" />
+                                <TextBlock x:Name="LivePreviewStatusText" Text="预览用于确认采集范围；最终录制画面以导出视频为准。" Foreground="#64748B" FontSize="12" TextWrapping="Wrap" VerticalAlignment="Center" />
+                            </DockPanel>
+                        </Border>
+                    </Grid>
+                </Border>
+
+                <Border Grid.Row="1" Style="{StaticResource CardStyle}" Padding="14">
+                    <StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                            <TextBlock Text="&#xE8D7;" FontFamily="Segoe MDL2 Assets" FontSize="18" Foreground="#1769F5" VerticalAlignment="Center" />
+                            <TextBlock Style="{StaticResource SectionTitle}" Text="设备设置" Margin="9,0,0,0" />
+                        </StackPanel>
+                        <Grid>
+                            <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="25" /><ColumnDefinition Width="110" /><ColumnDefinition Width="*" /><ColumnDefinition Width="42" /></Grid.ColumnDefinitions>
+                            <TextBlock Grid.Row="0" Grid.Column="0" Text="&#xE720;" FontFamily="Segoe MDL2 Assets" FontSize="18" VerticalAlignment="Center" />
+                            <TextBlock Grid.Row="0" Grid.Column="1" Text="麦克风设备" VerticalAlignment="Center" />
+                            <ComboBox x:Name="MicrophoneCombo" Grid.Row="0" Grid.Column="2" Margin="0,2,5,4" />
+                            <Button Grid.Row="0" Grid.Column="3" Content="&#xE72C;" FontFamily="Segoe MDL2 Assets" ToolTip="刷新麦克风设备" Click="RefreshAudioDevices_Click" Padding="7,4" Margin="0,2,0,4" />
+                            <TextBlock Grid.Row="1" Grid.Column="0" Text="&#xE714;" FontFamily="Segoe MDL2 Assets" FontSize="18" VerticalAlignment="Center" />
+                            <TextBlock Grid.Row="1" Grid.Column="1" Text="摄像头设备" VerticalAlignment="Center" />
+                            <ComboBox x:Name="CameraCombo" Grid.Row="1" Grid.Column="2" Margin="0,2,5,4" SelectionChanged="CameraCombo_SelectionChanged" />
+                            <Button Grid.Row="1" Grid.Column="3" Content="&#xE72C;" FontFamily="Segoe MDL2 Assets" ToolTip="刷新摄像头设备" Click="RefreshCameraDevices_Click" Padding="7,4" Margin="0,2,0,4" />
+                            <TextBlock x:Name="CameraDeviceStatusText" Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="3"
+                                       Text="正在检测摄像头设备..." FontSize="11" Foreground="#74839A"
+                                       Margin="0,3,0,0" TextWrapping="Wrap" Visibility="Collapsed" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </Grid>
+        <Border Grid.Row="1" Style="{StaticResource CardStyle}" Padding="8" Margin="0,10,0,0">
+                <Grid>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                    <Grid Grid.Row="0">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="1.2*" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="4,0,8,0">
+                            <Ellipse x:Name="RecordingStatusDot" Width="8" Height="8" Fill="{StaticResource SuccessBrush}" VerticalAlignment="Top" Margin="0,5,8,0" />
+                            <StackPanel>
+                                <TextBlock Text="录制状态" FontWeight="SemiBold" FontSize="12" />
+                                <TextBlock x:Name="RecordingStatusText" Text="就绪。请选择录制范围与设备。" Foreground="#6B7A91" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,0" />
+                                <Button x:Name="RecordingLogToggleButton" Content="查看详细日志" Click="ToggleLogExpander_Click"
+                                        HorizontalAlignment="Left" Background="Transparent" BorderBrush="Transparent" Padding="0" Margin="0,2,0,0" MinHeight="18" FontSize="11" />
+                            </StackPanel>
+                        </StackPanel>
+                        <Border Grid.Column="1" Background="#F3F7FE" BorderBrush="#E4ECF8" BorderThickness="1" CornerRadius="8" Padding="10,7" Margin="5,0" VerticalAlignment="Center">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE765;" FontFamily="Segoe MDL2 Assets" Foreground="#6A7B95" VerticalAlignment="Center" Margin="0,0,7,0" />
+                                <TextBlock Text="Ctrl+Alt+M  添加录制标记" Foreground="#52647E" FontSize="11" VerticalAlignment="Center" />
+                            </StackPanel>
+                        </Border>
+                        <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="6,0,0,0">
+                            <Button x:Name="StartRecordingButton" Style="{StaticResource PrimaryButton}" MinWidth="132" MinHeight="42" Click="StartRecording_Click" Margin="3,0">
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center"><Ellipse Width="17" Height="17" Stroke="#FFFFFF" StrokeThickness="2" Margin="0,0,8,0" VerticalAlignment="Center" /><TextBlock Text="开始录制" VerticalAlignment="Center" /></StackPanel>
+                            </Button>
+                            <Button x:Name="PauseRecordingButton" MinWidth="84" MinHeight="42" IsEnabled="False" ToolTip="当前录制引擎暂不支持无损暂停" Margin="3,0"><StackPanel Orientation="Horizontal" HorizontalAlignment="Center"><StackPanel Orientation="Horizontal" Margin="0,0,7,0" VerticalAlignment="Center"><Rectangle Width="3" Height="13" Fill="#8A98AC" Margin="0,0,3,0" /><Rectangle Width="3" Height="13" Fill="#8A98AC" /></StackPanel><TextBlock Text="暂停" VerticalAlignment="Center" /></StackPanel></Button>
+                            <Button x:Name="StopRecordingButton" MinWidth="82" MinHeight="42" IsEnabled="False" Click="StopRecording_Click" Margin="3,0"><StackPanel Orientation="Horizontal" HorizontalAlignment="Center"><Rectangle Width="12" Height="12" Fill="#8A98AC" Margin="0,0,7,0" VerticalAlignment="Center" /><TextBlock Text="停止" VerticalAlignment="Center" /></StackPanel></Button>
+                            <Button x:Name="AddMarkerButton" Content="&#xE7C3;  添加标记" MinWidth="110" MinHeight="42" IsEnabled="False" Click="AddRecordingMarker_Click" Visibility="Collapsed" />
+                        </StackPanel>
+                    </Grid>
+                    <Expander x:Name="RecordingLogExpander" Grid.Row="1" Header="查看详细日志" IsExpanded="True" Visibility="Collapsed" MaxHeight="170" Margin="4,5,4,0" FontSize="11">
+                        <TextBox x:Name="RecordingLogTextBox" Height="125" IsReadOnly="True" AcceptsReturn="True"
+                                 TextWrapping="NoWrap" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                                 FontFamily="Consolas" FontSize="11" BorderThickness="0" Background="#F7F9FD" />
+                    </Expander>
+                </Grid>
+            </Border></Grid>
+</TabItem>
+                    <TabItem Header="编辑与导出">
+    <Grid>
+        <Grid.ColumnDefinitions><ColumnDefinition Width="2.35*" /><ColumnDefinition Width="0.9*" /></Grid.ColumnDefinitions>
+        <Grid Grid.Column="0" Margin="0,0,8,0">
+            <Grid.RowDefinitions><RowDefinition Height="1.75*" /><RowDefinition Height="Auto" /><RowDefinition Height="0.95*" /></Grid.RowDefinitions>
+            <Border Grid.Row="0" Style="{StaticResource CardStyle}" Padding="14" Margin="0,0,0,10">
+                <Grid>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                    <DockPanel Grid.Row="0" Margin="0,0,0,8">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE8A7;" FontFamily="Segoe MDL2 Assets" FontSize="18" Foreground="#1769F5" VerticalAlignment="Center" />
+                            <TextBlock Style="{StaticResource SectionTitle}" Text="片段预览" Margin="9,0,0,0" />
+                        </StackPanel>
+                        <TextBlock Text="预览 / 裁剪 / 变速" Foreground="#73819A" FontSize="11" DockPanel.Dock="Right" VerticalAlignment="Center" />
+                    </DockPanel>
+                    <Border Grid.Row="1" Background="#101827" CornerRadius="9" Padding="4" MinHeight="240">
+                        <ContentControl x:Name="PreviewHost" />
+                    </Border>
+                    <DockPanel Grid.Row="2" Margin="0,7,0,0">
+                        <Button x:Name="PreviewPlayButton" Style="{StaticResource PrimaryButton}" Click="TogglePreview_Click" MinWidth="128" MinHeight="36" Margin="0,0,8,0"><StackPanel Orientation="Horizontal" HorizontalAlignment="Center"><TextBlock Text="▶" FontFamily="Segoe UI Symbol" Margin="0,0,7,0" VerticalAlignment="Center" /><TextBlock Text="播放预览" VerticalAlignment="Center" /></StackPanel></Button>
+                        <TextBlock Text="空格：播放 / 暂停" Foreground="#7B879B" FontSize="11" VerticalAlignment="Center" />
+                    </DockPanel>
+                </Grid>
+            </Border>
+            <Border Grid.Row="1" Style="{StaticResource CardStyle}" Padding="14" Margin="0,0,0,10">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                        <TextBlock Text="&#xE9D9;" FontFamily="Segoe MDL2 Assets" FontSize="18" Foreground="#1769F5" VerticalAlignment="Center" />
+                        <TextBlock Style="{StaticResource SectionTitle}" Text="片段属性" Margin="9,0,0,0" />
+                    </StackPanel>
+                    <Grid>
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /><ColumnDefinition Width="0.8*" /></Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" Margin="0,0,8,0">
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="开始时间（秒）" Margin="0,0,0,3" /><TextBox x:Name="ClipStartTextBox" Text="0" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Margin="0,0,8,0">
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="结束时间（秒）" Margin="0,0,0,3" /><TextBox x:Name="ClipEndTextBox" Text="0" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="2">
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="播放速度" Margin="0,0,0,3" />
+                            <ComboBox x:Name="ClipSpeedCombo">
+                                <ComboBoxItem Content="0.50x" Tag="0.5" /><ComboBoxItem Content="0.75x" Tag="0.75" /><ComboBoxItem Content="1.00x" Tag="1" />
+                                <ComboBoxItem Content="1.25x" Tag="1.25" /><ComboBoxItem Content="1.50x" Tag="1.5" /><ComboBoxItem Content="2.00x" Tag="2" />
+                            </ComboBox>
+                        </StackPanel>
+                    </Grid>
+                    <Grid Margin="0,8,0,0">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" Margin="0,0,6,0">
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="音量（0-200%）" Margin="0,0,0,3" />
+                            <TextBox x:Name="ClipVolumeTextBox" Text="1" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Margin="0,0,6,0">
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="淡入（秒）" Margin="0,0,0,3" />
+                            <TextBox x:Name="ClipFadeInTextBox" Text="0" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="2" Margin="0,0,6,0">
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="淡出（秒）" Margin="0,0,0,3" />
+                            <TextBox x:Name="ClipFadeOutTextBox" Text="0" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="3" Margin="0,0,6,0">
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="旋转" Margin="0,0,0,3" />
+                            <ComboBox x:Name="ClipRotationCombo">
+                                <ComboBoxItem Content="0°" Tag="0" /><ComboBoxItem Content="90°" Tag="90" />
+                                <ComboBoxItem Content="180°" Tag="180" /><ComboBoxItem Content="270°" Tag="270" />
+                            </ComboBox>
+                        </StackPanel>
+                        <TextBlock Grid.Column="4" Text="支持画面旋转、音量与淡入淡出" Foreground="#7B879B" FontSize="10" TextWrapping="Wrap" VerticalAlignment="Center" Margin="4,8,0,0" />
+                    </Grid>
+                    <Grid Margin="0,7,0,0">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /><ColumnDefinition Width="2*" /></Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" Margin="0,0,6,0">
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="关键帧缩放：起始（1-2×）" Margin="0,0,0,3" />
+                            <TextBox x:Name="ClipZoomStartTextBox" Text="1" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Margin="0,0,6,0">
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="关键帧缩放：结束（1-2×）" Margin="0,0,0,3" />
+                            <TextBox x:Name="ClipZoomEndTextBox" Text="1" />
+                        </StackPanel>
+                        <TextBlock Grid.Column="2" Text="起止缩放值会在片段播放期间平滑变化，可制作简单推近或拉远效果。" Foreground="#7B879B" FontSize="10" TextWrapping="Wrap" VerticalAlignment="Center" Margin="5,6,0,0" />
+                    </Grid>
+                    <DockPanel Margin="0,6,0,0">
+                        <Button DockPanel.Dock="Right" Content="应用修改" Style="{StaticResource PrimaryButton}" Click="ApplyClipEdits_Click" Margin="0" />
+                        <TextBlock Text="支持 0.5× 至 2× 速度" Foreground="#7B879B" FontSize="11" VerticalAlignment="Center" />
+                    </DockPanel>
+                </StackPanel>
+            </Border>
+            <Border Grid.Row="2" Style="{StaticResource CardStyle}" Padding="12">
+                <Grid>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                    <DockPanel Grid.Row="0" Margin="0,0,0,8">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE9D9;" FontFamily="Segoe MDL2 Assets" FontSize="18" Foreground="#1769F5" VerticalAlignment="Center" />
+                            <TextBlock Style="{StaticResource SectionTitle}" Text="时间线" Margin="9,0,0,0" />
+                        </StackPanel>
+                        <Button DockPanel.Dock="Right" Content="快捷键" Click="ShowShortcuts_Click" Margin="0" MinHeight="30" Padding="9,5" />
+                    </DockPanel>
+                    <WrapPanel Grid.Row="1" Margin="0,0,0,6">
+                        <Button Style="{StaticResource PrimaryButton}" Click="AddClips_Click" Margin="0,0,6,0" MinHeight="32" Padding="10,5"><StackPanel Orientation="Horizontal"><TextBlock Text="+" FontSize="17" Margin="0,0,6,0" VerticalAlignment="Center" /><TextBlock Text="导入片段" VerticalAlignment="Center" /></StackPanel></Button>
+                        <Button Content="打开项目" Click="LoadProject_Click" Margin="0,0,6,0" MinHeight="32" Padding="10,5" />
+                        <Button Content="保存项目" Click="SaveProject_Click" Margin="0" MinHeight="32" Padding="10,5" />
+                    </WrapPanel>
+                    <DataGrid x:Name="ClipsGrid" Grid.Row="2" AutoGenerateColumns="False" CanUserAddRows="False"
+                              IsReadOnly="True" SelectionMode="Single" SelectionChanged="ClipsGrid_SelectionChanged"
+                              AllowDrop="True" PreviewMouseLeftButtonDown="ClipsGrid_PreviewMouseLeftButtonDown"
+                              PreviewMouseMove="ClipsGrid_PreviewMouseMove" Drop="ClipsGrid_Drop"
+                              HeadersVisibility="Column" GridLinesVisibility="Horizontal" RowHeight="68" MinHeight="130"
+                              ToolTip="可拖动片段行调整顺序；入点、出点和速度可在上方调整">
+                        <DataGrid.Columns>
+                            <DataGridTemplateColumn Header="片段" Width="*">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Grid VerticalAlignment="Center" Margin="2">
+                                                <Grid.ColumnDefinitions><ColumnDefinition Width="72" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                                <Grid.RowDefinitions><RowDefinition Height="40" /><RowDefinition Height="22" /></Grid.RowDefinitions>
+                                                <Border Grid.Row="0" Grid.RowSpan="2" Width="72" Height="62" Background="#E5EFFA" CornerRadius="5" ClipToBounds="True" VerticalAlignment="Center">
+                                                    <Image Source="{Binding ThumbnailPath}" Stretch="UniformToFill" />
+                                                </Border>
+                                                <TextBlock Grid.Column="1" Grid.Row="0" Text="{Binding FileName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Margin="8,0,0,0" />
+                                                <Image Grid.Column="1" Grid.Row="1" Source="{Binding AudioWaveformPath}" Stretch="Fill" Height="20" Margin="8,0,4,0" VerticalAlignment="Center" ToolTip="音频波形预览" />
+                                            </Grid>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTextColumn Header="入点" Binding="{Binding StartSeconds, StringFormat=F2}" Width="55" />
+                            <DataGridTextColumn Header="出点" Binding="{Binding EndSeconds, StringFormat=F2}" Width="55" />
+                            <DataGridTextColumn Header="速度" Binding="{Binding Speed, StringFormat=F2}" Width="50" />
+                            <DataGridTextColumn Header="时长" Binding="{Binding DurationSeconds, StringFormat=F2}" Width="55" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                    <WrapPanel Grid.Row="3" Margin="0,6,0,0">
+                        <Button Content="分割片段" Click="SplitClip_Click" Margin="0,0,5,0" MinHeight="30" Padding="8,4" ToolTip="在预览播放头位置拆分片段（Ctrl+B）" />
+                        <Button Content="复制片段" Click="DuplicateClip_Click" Margin="0,0,5,0" MinHeight="30" Padding="8,4" ToolTip="复制所选片段（Ctrl+D）" />
+                        <Button Content="设为入点" Click="SetClipInPoint_Click" Margin="0,0,5,0" MinHeight="30" Padding="8,4" ToolTip="将当前预览位置设为片段入点（I）" />
+                        <Button Content="设为出点" Click="SetClipOutPoint_Click" Margin="0,0,5,0" MinHeight="30" Padding="8,4" ToolTip="将当前预览位置设为片段出点（O）" />
+                        <Button Content="删除片段" Click="RemoveClip_Click" Margin="0,0,5,0" MinHeight="30" Padding="8,4" />
+                        <Button Content="上移" Click="MoveClipUp_Click" Margin="0,0,5,0" MinHeight="30" Padding="8,4" />
+                        <Button Content="下移" Click="MoveClipDown_Click" Margin="0,0,5,0" MinHeight="30" Padding="8,4" />
+                        <Button x:Name="UndoButton" Content="撤销" Click="Undo_Click" IsEnabled="False" Margin="0,0,5,0" MinHeight="30" Padding="8,4" />
+                        <Button x:Name="RedoButton" Content="重做" Click="Redo_Click" IsEnabled="False" Margin="0" MinHeight="30" Padding="8,4" />
+                    </WrapPanel>
+                    <DockPanel Grid.Row="4" Margin="0,5,0,0">
+                        <TextBlock Text="录制标记" Style="{StaticResource FieldLabel}" Margin="0,0,8,0" VerticalAlignment="Center" />
+                        <ListBox x:Name="RecordingMarkersList" Height="40" SelectionChanged="RecordingMarkersList_SelectionChanged"
+                                 DisplayMemberPath="DisplayLabel" BorderBrush="#E2E9F3" BorderThickness="1" VerticalContentAlignment="Center" />
+                    </DockPanel>
+                </Grid>
+            </Border>
+        </Grid>
+        <Grid Grid.Column="1" Margin="8,0,0,0">
+            <Grid.RowDefinitions><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+            <Border Grid.Row="0" Style="{StaticResource CardStyle}" Padding="13" Margin="0,0,0,10">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                        <TextBlock Text="&#xE8E5;" FontFamily="Segoe MDL2 Assets" FontSize="18" Foreground="#1769F5" VerticalAlignment="Center" />
+                        <TextBlock Style="{StaticResource SectionTitle}" Text="导出设置" Margin="9,0,0,0" />
+                    </StackPanel>
+                    <TextBlock Style="{StaticResource FieldLabel}" Text="导出文件位置" Margin="0,3,0,2" />
+                    <DockPanel>
+                        <Button DockPanel.Dock="Right" Content="浏览..." Click="BrowseExportPath_Click" Margin="6,0,0,0" MinHeight="32" Padding="8,5" />
+                        <TextBox x:Name="ExportOutputPathTextBox" MinHeight="32" />
+                    </DockPanel>
+                    <TextBlock Style="{StaticResource FieldLabel}" Text="画布比例" Margin="0,6,0,2" />
+                    <ComboBox x:Name="ExportAspectRatioCombo" MinHeight="32">
+                        <ComboBoxItem Content="16:9 横屏" Tag="16:9" /><ComboBoxItem Content="9:16 竖屏" Tag="9:16" /><ComboBoxItem Content="1:1 方形" Tag="1:1" />
+                        <ComboBoxItem Content="4:3" Tag="4:3" /><ComboBoxItem Content="3:2" Tag="3:2" />
+                    </ComboBox>
+                    <TextBlock Style="{StaticResource FieldLabel}" Text="画面适配" Margin="0,6,0,2" />
+                    <ComboBox x:Name="ExportFitModeCombo" MinHeight="32">
+                        <ComboBoxItem Content="完整显示（留边）" Tag="fit" /><ComboBoxItem Content="填满画布并裁切" Tag="fill" />
+                    </ComboBox>
+                    <TextBlock Style="{StaticResource FieldLabel}" Text="背景颜色" Margin="0,6,0,2" />
+                    <ComboBox x:Name="ExportBackgroundCombo" MinHeight="32">
+                        <ComboBoxItem Content="黑色" Tag="black" /><ComboBoxItem Content="深灰蓝" Tag="dark" /><ComboBoxItem Content="白色" Tag="white" /><ComboBoxItem Content="蓝色" Tag="blue" />
+                    </ComboBox>
+                    <TextBlock Style="{StaticResource FieldLabel}" Text="字幕文件（可选，SRT）" Margin="0,6,0,2" />
+                    <DockPanel>
+                        <Button DockPanel.Dock="Right" Content="清除" Click="ClearSubtitle_Click" Margin="5,0,0,0" MinHeight="32" Padding="7,5" />
+                        <Button DockPanel.Dock="Right" Content="浏览..." Click="BrowseSubtitle_Click" Margin="5,0,0,0" MinHeight="32" Padding="7,5" />
+                        <TextBox x:Name="ExportSubtitleTextBox" IsReadOnly="True" MinHeight="32" ToolTip="导出时将 SRT 字幕烧录到视频画面" />
+                    </DockPanel>
+                    <TextBlock Style="{StaticResource FieldLabel}" Text="自定义背景图片（可选）" Margin="0,6,0,2" />
+                    <DockPanel>
+                        <Button DockPanel.Dock="Right" Content="清除" Click="ClearBackgroundImage_Click" Margin="5,0,0,0" MinHeight="32" Padding="7,5" />
+                        <Button DockPanel.Dock="Right" Content="浏览..." Click="BrowseBackgroundImage_Click" Margin="5,0,0,0" MinHeight="32" Padding="7,5" />
+                        <TextBox x:Name="ExportBackgroundImageTextBox" IsReadOnly="True" MinHeight="32" />
+                    </DockPanel>
+                    <Separator Margin="0,9,0,7" Background="#E7EDF5" />
+                    <TextBlock Style="{StaticResource SectionTitle}" Text="导出选项" Margin="0,0,0,6" />
+                    <TextBlock Style="{StaticResource FieldLabel}" Text="分辨率高度" Margin="0,2,0,2" />
+                    <ComboBox x:Name="ExportResolutionCombo" MinHeight="32">
+                        <ComboBoxItem Content="1080p（推荐）" Tag="1080" /><ComboBoxItem Content="1440p" Tag="1440" /><ComboBoxItem Content="4K" Tag="2160" />
+                    </ComboBox>
+                    <TextBlock Style="{StaticResource FieldLabel}" Text="帧率" Margin="0,5,0,2" />
+                    <ComboBox x:Name="ExportFrameRateCombo" MinHeight="32">
+                        <ComboBoxItem Content="30 FPS" Tag="30" /><ComboBoxItem Content="60 FPS" Tag="60" />
+                    </ComboBox>
+                    <TextBlock Style="{StaticResource FieldLabel}" Text="导出格式" Margin="0,5,0,2" />
+                    <ComboBox x:Name="ExportFormatCombo" Visibility="Collapsed" SelectionChanged="ExportFormatCombo_SelectionChanged">
+                        <ComboBoxItem Content="MP4 视频" Tag="MP4" /><ComboBoxItem Content="M4A 音频" Tag="M4A" />
+                    </ComboBox>
+                    <StackPanel Orientation="Horizontal" Margin="0,1,0,0">
+                        <CheckBox x:Name="ExportMp4CheckBox" Content="导出 MP4（视频）" Style="{StaticResource ExportOptionCheckBox}" Checked="ExportMp4CheckBox_Checked" Unchecked="ExportMp4CheckBox_Unchecked" IsChecked="True" />
+                        <CheckBox x:Name="ExportM4aCheckBox" Content="导出 M4A（音频）" Style="{StaticResource ExportOptionCheckBox}" Checked="ExportM4aCheckBox_Checked" Unchecked="ExportM4aCheckBox_Unchecked" />
+                    </StackPanel>
+                    <Expander Header="高级设置" FontSize="12" Margin="0,5,0,0">
+                        <TextBlock Text="输出采用兼容的 H.264 / AAC 编码参数；失败时可查看日志诊断。" Foreground="#6B7A91" FontSize="11" TextWrapping="Wrap" Margin="0,7,0,4" />
+                    </Expander>
+                    <Button x:Name="ExportButton" Style="{StaticResource PrimaryButton}" MinHeight="42" Margin="0,9,0,0" Click="Export_Click"><StackPanel Orientation="Horizontal" HorizontalAlignment="Center"><TextBlock Text="↗" FontFamily="Segoe UI Symbol" FontSize="16" Margin="0,0,8,0" VerticalAlignment="Center" /><TextBlock Text="开始导出" VerticalAlignment="Center" /></StackPanel></Button>
+                    <TextBlock x:Name="EditorStatusText" Text="导入视频后即可编辑并导出。" Foreground="#6B7A91" FontSize="11" TextWrapping="Wrap" Margin="2,6,2,0" />
+                </StackPanel>
+            </Border>
+            <Border Grid.Row="1" Background="#EDF4FF" BorderBrush="#DCE9FF" BorderThickness="1" CornerRadius="12" Padding="12">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
+                        <TextBlock Text="&#xE765;" FontFamily="Segoe MDL2 Assets" Foreground="#1769F5" FontSize="15" Margin="0,0,7,0" />
+                        <TextBlock Text="快捷键提示" FontWeight="SemiBold" FontSize="12" />
+                    </StackPanel>
+                    <TextBlock Text="Ctrl+O 导入视频    Ctrl+S 保存项目" Foreground="#586B87" FontSize="11" Margin="0,2" />
+                    <TextBlock Text="Ctrl+E 导出    Ctrl+Z 撤销    Ctrl+Y 重做" Foreground="#586B87" FontSize="11" Margin="0,2" TextWrapping="Wrap" />
+                </StackPanel>
+            </Border>
+        </Grid>
+    </Grid>
+</TabItem>
+                    <TabItem Header="设置与帮助">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <StackPanel Margin="0,0,4,0">
+                                <TextBlock Text="设置与帮助" FontSize="25" FontWeight="Bold" Margin="0,0,0,5" />
+                                <TextBlock Text="管理设备、查看快捷键，并诊断本机录制环境。" Foreground="#6B7A91" Margin="0,0,0,20" />
+                                <Border Style="{StaticResource CardStyle}" Margin="0,0,0,13" Padding="14">
+                                    <StackPanel>
+                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,9">
+                                            <TextBlock Text="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="17" Foreground="#1769F5" VerticalAlignment="Center" />
+                                            <TextBlock Style="{StaticResource SectionTitle}" Text="录制偏好" Margin="9,0,0,0" />
+                                        </StackPanel>
+                                        <TextBlock Style="{StaticResource FieldLabel}" Text="录制帧率" />
+                                        <ComboBox x:Name="FrameRateCombo">
+                                            <ComboBoxItem Content="30 FPS" Tag="30" />
+                                            <ComboBoxItem Content="60 FPS" Tag="60" />
+                                        </ComboBox>
+                                        <TextBlock Style="{StaticResource FieldLabel}" Text="默认输出文件" />
+                                        <DockPanel>
+                                            <Button DockPanel.Dock="Right" Content="浏览..." Click="BrowseOutput_Click" Margin="6,2,0,4" />
+                                            <TextBox x:Name="OutputPathTextBox" />
+                                        </DockPanel>
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Style="{StaticResource CardStyle}" Margin="0,0,0,13">
+                                    <StackPanel>
+                                        <TextBlock Style="{StaticResource SectionTitle}" Text="设备检测" />
+                                        <TextBlock Text="设备列表由当前 Windows 驱动和 FFmpeg 枚举提供。" Foreground="#6B7A91" TextWrapping="Wrap" />
+                                        <WrapPanel Margin="0,12,0,0">
+                                            <Button Content="刷新窗口列表" Click="RefreshWindows_Click" />
+                                            <Button Content="检测麦克风" Click="RefreshAudioDevices_Click" />
+                                            <Button Content="检测摄像头" Click="RefreshCameraDevices_Click" />
+                                        </WrapPanel>
+                                    </StackPanel>
+                                </Border>
+                                <Border Style="{StaticResource CardStyle}" Margin="0,0,0,13">
+                                    <StackPanel>
+                                        <TextBlock Style="{StaticResource SectionTitle}" Text="快捷键" />
+                                        <Grid>
+                                            <Grid.ColumnDefinitions><ColumnDefinition Width="190" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="34" /><RowDefinition Height="34" /><RowDefinition Height="34" /><RowDefinition Height="34" /><RowDefinition Height="34" /><RowDefinition Height="34" />
+                                            </Grid.RowDefinitions>
+                                            <TextBlock Grid.Row="0" Text="Ctrl + O" FontWeight="SemiBold" VerticalAlignment="Center" /><TextBlock Grid.Row="0" Grid.Column="1" Text="导入视频" Foreground="#65738B" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="1" Text="Ctrl + S" FontWeight="SemiBold" VerticalAlignment="Center" /><TextBlock Grid.Row="1" Grid.Column="1" Text="保存项目" Foreground="#65738B" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="2" Text="Ctrl + E" FontWeight="SemiBold" VerticalAlignment="Center" /><TextBlock Grid.Row="2" Grid.Column="1" Text="导出媒体" Foreground="#65738B" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="3" Text="Ctrl + Z" FontWeight="SemiBold" VerticalAlignment="Center" /><TextBlock Grid.Row="3" Grid.Column="1" Text="撤销" Foreground="#65738B" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="4" Text="Ctrl + Y / Ctrl + Shift + Z" FontWeight="SemiBold" VerticalAlignment="Center" /><TextBlock Grid.Row="4" Grid.Column="1" Text="重做" Foreground="#65738B" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Row="5" Text="Ctrl + Alt + M" FontWeight="SemiBold" VerticalAlignment="Center" /><TextBlock Grid.Row="5" Grid.Column="1" Text="录制时添加标记" Foreground="#65738B" VerticalAlignment="Center" />
+                                        </Grid>
+                                        <Button Content="打开快捷键完整说明" HorizontalAlignment="Left" Margin="0,14,0,0" Click="ShowShortcuts_Click" />
+                                    </StackPanel>
+                                </Border>
+                                <Border Style="{StaticResource CardStyle}">
+                                    <StackPanel>
+                                        <TextBlock Style="{StaticResource SectionTitle}" Text="关于 DogSC" />
+                                        <TextBlock Text="DogSC Windows 预览版" FontWeight="SemiBold" />
+                                        <TextBlock Text="此版本提供基础屏幕录制、片段剪辑、项目保存与媒体导出。部分 macOS 高级视觉效果尚未移植。" Foreground="#6B7A91" TextWrapping="Wrap" Margin="0,7,0,0" />
+                                        <TextBlock Text="日志位置：%LOCALAPPDATA%\DogSC\logs\startup.log" Foreground="#6B7A91" TextWrapping="Wrap" Margin="0,7,0,0" />
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </TabItem>
+
+                </TabControl>
+            </Grid>
+        </Grid>
+    </Border>
+</Window>
