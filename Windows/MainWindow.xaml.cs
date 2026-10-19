@@ -2,8 +2,10 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Globalization;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Interop;
 using DogSC.Windows.Models;
 using DogSC.Windows.Services;
 using Microsoft.Win32;
@@ -20,6 +22,19 @@ public partial class MainWindow : Window
     private bool _closingAfterStop;
     private double _previewStartSeconds;
     private MediaElement? _previewElement;
+    private const int MarkerHotKeyId = 0xD05C;
+    private const int WmHotKey = 0x0312;
+    private const uint ModAlt = 0x0001;
+    private const uint ModControl = 0x0002;
+    private const uint VirtualKeyM = 0x4D;
+    private HwndSource? _windowSource;
+    private bool _markerHotKeyRegistered;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint modifiers, uint virtualKey);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
 
     public MainWindow()
     {
@@ -50,6 +65,42 @@ public partial class MainWindow : Window
             await LoadMicrophoneDevicesAsync();
             App.WriteDiagnostic("Audio device discovery finished");
         };
+    }
+
+    protected override void OnSourceInitialized(EventArgs e)
+    {
+        base.OnSourceInitialized(e);
+
+        var handle = new WindowInteropHelper(this).Handle;
+        _windowSource = HwndSource.FromHwnd(handle);
+        _windowSource?.AddHook(WindowMessageHook);
+        _markerHotKeyRegistered = RegisterHotKey(handle, MarkerHotKeyId, ModControl | ModAlt, VirtualKeyM);
+        App.WriteDiagnostic(_markerHotKeyRegistered
+            ? "Global marker shortcut Ctrl+Alt+M registered"
+            : $"Global marker shortcut registration failed: {Marshal.GetLastWin32Error()}");
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        var handle = new WindowInteropHelper(this).Handle;
+        if (_markerHotKeyRegistered)
+            _ = UnregisterHotKey(handle, MarkerHotKeyId);
+        _windowSource?.RemoveHook(WindowMessageHook);
+        _windowSource = null;
+        base.OnClosed(e);
+    }
+
+    private IntPtr WindowMessageHook(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (message == WmHotKey && wParam.ToInt32() == MarkerHotKeyId)
+        {
+            var marker = _recordingService.AddMarker();
+            if (marker is not null)
+                RecordingStatusText.Text = $"已添加剪辑标记 #{marker.Index}，时间 {marker.TimeSeconds:F2} 秒。";
+            handled = true;
+        }
+
+        return IntPtr.Zero;
     }
 
     private void CaptureModeCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
