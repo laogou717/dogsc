@@ -268,6 +268,9 @@ public sealed class MediaEditorService
                 270 => ",transpose=2",
                 _ => string.Empty
             };
+            var zoomFilter = Math.Abs(clip.ZoomStart - clip.ZoomEnd) > 0.001
+                ? $",zoompan=z='{F(clip.ZoomStart)}+({F(clip.ZoomEnd)}-{F(clip.ZoomStart)})*on/{F(Math.Max(1, clip.DurationSeconds * framesPerSecond))}':d=1:s={Math.Max(2, probes[i].Width)}x{Math.Max(2, probes[i].Height)}:fps={framesPerSecond}"
+                : string.Empty;
 
             if (!audioOnly)
             {
@@ -282,7 +285,7 @@ public sealed class MediaEditorService
                     : $",crop={width}:{height}";
                 if (hasBackgroundImage)
                 {
-                    filters.Add($"[{i}:v:0]trim=start={start}:end={end},setpts=(PTS-STARTPTS)/{speed}{rotationFilter}," +
+                    filters.Add($"[{i}:v:0]trim=start={start}:end={end},setpts=(PTS-STARTPTS)/{speed}{zoomFilter}{rotationFilter}," +
                         $"scale={width}:{height}:force_original_aspect_ratio={scaleMode}{fitFilters}," +
                         $"setsar=1,fps={framesPerSecond}{videoFadeFilters},format=nv12[fg{i}]");
                     var x = fitMode == "fit" ? "(W-w)/2" : "0";
