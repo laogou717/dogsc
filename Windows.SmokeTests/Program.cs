@@ -56,6 +56,22 @@ Require(windowCaptureArgs.IndexOf("-offset_y") >= 0 && windowCaptureArgs[windowC
 Require(windowCaptureArgs.IndexOf("-video_size") >= 0 && windowCaptureArgs[windowCaptureArgs.IndexOf("-video_size") + 1] == "1280x720",
     "window capture crop dimensions were not applied.");
 
+Console.WriteLine("Camera-unavailable regression check: recording continues without a camera device.");
+var noCameraOptions = new RecordingOptions
+{
+    OutputPath = Path.Combine(Path.GetTempPath(), "dogsc-no-camera-regression.mp4"),
+    CaptureCamera = true,
+    CameraDevice = null
+};
+noCameraOptions.Validate();
+var noCameraArgs = new List<string>();
+RecordingService.BuildArguments(noCameraOptions, noCameraArgs, "h264_mf");
+Require(noCameraArgs.Contains("desktop"), "no-camera recording must keep the desktop video input.");
+Require(!noCameraArgs.Any(argument => argument.StartsWith("video=", StringComparison.OrdinalIgnoreCase)),
+    "no-camera recording must not add an invalid DirectShow video input.");
+Require(!noCameraArgs.Contains("-filter_complex"),
+    "no-camera recording must use the regular screen-video filter, not a camera overlay graph.");
+
 var ffmpeg = FfmpegLocator.FindFfmpegPath()
     ?? throw new InvalidOperationException("Set DOGSC_FFMPEG_PATH to the bundled ffmpeg.exe before running tests.");
 var root = Path.Combine(Path.GetTempPath(), "DogSC-Integration-" + Guid.NewGuid().ToString("N"));
@@ -184,7 +200,7 @@ try
     Require(audioInfo.DurationSeconds > 1.7 && audioInfo.DurationSeconds < 2.3,
         $"M4A export has unexpected duration {audioInfo.DurationSeconds.ToString(CultureInfo.InvariantCulture)}.");
 
-    Console.WriteLine("PASS: odd-sized capture padding, H.264 and MPEG-4 capture encoders, webcam overlay, media probing, project round-trip, edited MP4, portrait fit, square fill/crop, custom image background, and M4A export.");
+    Console.WriteLine("PASS: window-capture arguments, no-camera recording fallback, odd-sized capture padding, H.264 and MPEG-4 encoders, webcam overlay filter, media probing, project round-trip, edited MP4, portrait fit, square fill/crop, custom background, and M4A export.");
 }
 finally
 {
