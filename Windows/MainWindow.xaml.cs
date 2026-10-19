@@ -100,6 +100,7 @@ public partial class MainWindow : Window
 
     protected override void OnClosed(EventArgs e)
     {
+        _previewTimer.Stop();
         var handle = new WindowInteropHelper(this).Handle;
         if (_markerHotKeyRegistered)
             _ = UnregisterHotKey(handle, MarkerHotKeyId);
@@ -604,9 +605,13 @@ public partial class MainWindow : Window
             ClipsGrid.SelectedIndex = Math.Min(index, _clips.Count - 1);
         else
         {
+            _previewTimer.Stop();
+            _previewPlaying = false;
+            _previewClip = null;
             _previewElement?.Stop();
             if (_previewElement is not null)
                 _previewElement.Source = null;
+            RecordingMarkersList.ItemsSource = Array.Empty<RecordingMarker>();
         }
         EditorStatusText.Text = $"时间线上剩余 {_clips.Count} 个片段。";
     }
@@ -783,6 +788,7 @@ public partial class MainWindow : Window
         {
             _previewTimer.Stop();
             _previewPlaying = false;
+            _previewClip = null;
             _previewElement?.Stop();
             if (_previewElement is not null)
                 _previewElement.Source = null;
