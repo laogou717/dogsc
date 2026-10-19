@@ -68,7 +68,7 @@
                             <TextBlock Text="&#xE7F4;" FontFamily="Segoe MDL2 Assets" FontSize="18" Foreground="#1769F5" VerticalAlignment="Center" />
                             <TextBlock Style="{StaticResource SectionTitle}" Text="录制模式" Margin="9,0,0,0" />
                         </StackPanel>
-                        <TextBlock Style="{StaticResource FieldLabel}" Text="选择要捕获的屏幕范围" Margin="0,0,0,6" />
+                        
                         <ComboBox x:Name="CaptureModeCombo" Visibility="Collapsed" SelectionChanged="CaptureModeCombo_SelectionChanged">
                             <ComboBoxItem Content="整个桌面" Tag="Desktop" />
                             <ComboBoxItem Content="指定窗口" Tag="Window" />
@@ -160,10 +160,13 @@
                             <Grid Height="40">
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="28" /><ColumnDefinition Width="*" /><ColumnDefinition Width="48" /></Grid.ColumnDefinitions>
                                 <TextBlock Grid.Column="0" Text="&#xE734;" FontFamily="Segoe MDL2 Assets" FontSize="19" Foreground="#27364D" VerticalAlignment="Center" />
-                                <TextBlock Grid.Column="1" Text="录制标记" VerticalAlignment="Center" />
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                    <TextBlock Text="录制标记" VerticalAlignment="Center" />
+                                    <TextBlock Text="&#xE946;" FontFamily="Segoe MDL2 Assets" FontSize="13" Foreground="#8292AA" Margin="7,0,0,0" VerticalAlignment="Center" ToolTip="Ctrl+Alt+M 添加标记" />
+                                </StackPanel>
                                 <CheckBox x:Name="RecordMarkerCheckBox" Grid.Column="2" Content="" IsChecked="True" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0" Width="44" />
                             </Grid>
-                            <TextBlock Text="Ctrl+Alt+M 添加标记，标记保存在视频旁的 .markers.json 文件中。" FontSize="11" Foreground="#7A879C" Margin="28,0,0,0" TextWrapping="Wrap" />
+                            
                         </StackPanel>
                     </Grid>
                 </Border>
@@ -204,7 +207,7 @@
                             <Grid>
                                 <Image x:Name="LivePreviewImage" Stretch="Uniform" SnapsToDevicePixels="True" />
                                 <Border x:Name="CameraPreviewFrame" Width="150" Height="84" HorizontalAlignment="Right" VerticalAlignment="Bottom"
-                                        Margin="12,12,12,28" Background="#101827" BorderBrush="#FFFFFF" BorderThickness="2" CornerRadius="8"
+                                        Margin="12" Background="#101827" BorderBrush="#FFFFFF" BorderThickness="2" CornerRadius="8"
                                         ClipToBounds="True" Visibility="Collapsed">
                                     <Image x:Name="CameraPreviewImage" Stretch="UniformToFill" />
                                 </Border>
@@ -215,9 +218,6 @@
                                     <TextBlock Text="正在等待预览画面" FontSize="16" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,12,0,4" />
                                     <TextBlock Text="预览会随录制模式自动更新" TextWrapping="Wrap" TextAlignment="Center" Foreground="#6B7A91" FontSize="12" MaxWidth="300" />
                                 </StackPanel>
-                                <Border VerticalAlignment="Bottom" Background="#CC17243A" Padding="9,5">
-                                    <TextBlock Text="实时采集预览 · 每 0.6 秒刷新" Foreground="#FFFFFF" FontSize="11" />
-                                </Border>
                             </Grid>
                         </Border>
                         <Border Grid.Row="2" Background="#F1F6FE" CornerRadius="9" Padding="10" Margin="0,8,0,0">
@@ -251,39 +251,40 @@
                 </Border>
             </Grid>
         </Grid>
-        <Border Grid.Row="1" Style="{StaticResource CardStyle}" Padding="10" Margin="0,10,0,0">
-            <StackPanel>
+        <Border Grid.Row="1" Style="{StaticResource CardStyle}" Padding="8" Margin="0,10,0,0">
                 <Grid>
-                    <Grid.ColumnDefinitions><ColumnDefinition Width="1.1*" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                    <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="4,0,8,0">
-                        <Ellipse x:Name="RecordingStatusDot" Width="8" Height="8" Fill="{StaticResource SuccessBrush}" VerticalAlignment="Center" Margin="0,0,8,0" />
-                        <StackPanel>
-                            <TextBlock Text="录制状态" FontWeight="SemiBold" FontSize="12" />
-                            <TextBlock x:Name="RecordingStatusText" Text="就绪。请选择录制范围与设备。" Foreground="#6B7A91" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,0" />
+                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                    <Grid Grid.Row="0">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="1.2*" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center" Margin="4,0,8,0">
+                            <Ellipse x:Name="RecordingStatusDot" Width="8" Height="8" Fill="{StaticResource SuccessBrush}" VerticalAlignment="Top" Margin="0,5,8,0" />
+                            <StackPanel>
+                                <TextBlock Text="录制状态" FontWeight="SemiBold" FontSize="12" />
+                                <TextBlock x:Name="RecordingStatusText" Text="就绪。请选择录制范围与设备。" Foreground="#6B7A91" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,0" />
+                                <Button x:Name="RecordingLogToggleButton" Content="&#xE9CE;  查看详细日志" FontFamily="Segoe MDL2 Assets" Click="ToggleLogExpander_Click"
+                                        HorizontalAlignment="Left" Background="Transparent" BorderBrush="Transparent" Padding="0" Margin="0,2,0,0" MinHeight="18" FontSize="11" />
+                            </StackPanel>
                         </StackPanel>
-                    </StackPanel>
-                    <Button Grid.Column="1" Content="&#xE8B7; 保存位置" FontFamily="Segoe MDL2 Assets" Click="BrowseOutput_Click" Margin="3,0" MinHeight="38" />
-                    <Border Grid.Column="2" Background="#F3F7FE" BorderBrush="#E4ECF8" BorderThickness="1" CornerRadius="8" Padding="10,7" Margin="5,0" VerticalAlignment="Center">
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="&#xE765;" FontFamily="Segoe MDL2 Assets" Foreground="#6A7B95" VerticalAlignment="Center" Margin="0,0,7,0" />
-                            <TextBlock Text="Ctrl+Alt+M  添加录制标记" Foreground="#52647E" FontSize="11" VerticalAlignment="Center" />
+                        <Border Grid.Column="1" Background="#F3F7FE" BorderBrush="#E4ECF8" BorderThickness="1" CornerRadius="8" Padding="10,7" Margin="5,0" VerticalAlignment="Center">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="&#xE765;" FontFamily="Segoe MDL2 Assets" Foreground="#6A7B95" VerticalAlignment="Center" Margin="0,0,7,0" />
+                                <TextBlock Text="Ctrl+Alt+M  添加录制标记" Foreground="#52647E" FontSize="11" VerticalAlignment="Center" />
+                            </StackPanel>
+                        </Border>
+                        <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="6,0,0,0">
+                            <Button x:Name="StartRecordingButton" Content="&#xE768;  开始录制" FontFamily="Segoe MDL2 Assets" Style="{StaticResource PrimaryButton}" MinWidth="132" MinHeight="42" Click="StartRecording_Click" Margin="3,0" />
+                            <Button x:Name="PauseRecordingButton" Content="&#xE769;  暂停" FontFamily="Segoe MDL2 Assets" MinWidth="84" MinHeight="42" IsEnabled="False" ToolTip="当前录制引擎暂不支持无损暂停" Margin="3,0" />
+                            <Button x:Name="StopRecordingButton" Content="&#xE71A;  停止" FontFamily="Segoe MDL2 Assets" MinWidth="82" MinHeight="42" IsEnabled="False" Click="StopRecording_Click" Margin="3,0" />
+                            <Button x:Name="AddMarkerButton" Content="&#xE7C3;  添加标记" MinWidth="110" MinHeight="42" IsEnabled="False" Click="AddRecordingMarker_Click" Visibility="Collapsed" />
                         </StackPanel>
-                    </Border>
-                    <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center" Margin="6,0,0,0">
-                        <Button x:Name="StartRecordingButton" Content="&#xE768;  开始录制" FontFamily="Segoe MDL2 Assets" Style="{StaticResource PrimaryButton}" MinWidth="132" MinHeight="42" Click="StartRecording_Click" Margin="3,0" />
-                        <Button x:Name="PauseRecordingButton" Content="&#xE769;  暂停" FontFamily="Segoe MDL2 Assets" MinWidth="84" MinHeight="42" IsEnabled="False" ToolTip="当前录制引擎暂不支持无损暂停" Margin="3,0" />
-                        <Button x:Name="StopRecordingButton" Content="&#xE71A;  停止" FontFamily="Segoe MDL2 Assets" MinWidth="82" MinHeight="42" IsEnabled="False" Click="StopRecording_Click" Margin="3,0" />
-                        <Button x:Name="AddMarkerButton" Content="&#xE7C3;  添加标记" MinWidth="110" MinHeight="42" IsEnabled="False" Click="AddRecordingMarker_Click" Visibility="Collapsed" />
-                    </StackPanel>
+                    </Grid>
+                    <Expander x:Name="RecordingLogExpander" Grid.Row="1" Header="查看详细日志" IsExpanded="True" Visibility="Collapsed" MaxHeight="170" Margin="4,5,4,0" FontSize="11">
+                        <TextBox x:Name="RecordingLogTextBox" Height="125" IsReadOnly="True" AcceptsReturn="True"
+                                 TextWrapping="NoWrap" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                                 FontFamily="Consolas" FontSize="11" BorderThickness="0" Background="#F7F9FD" />
+                    </Expander>
                 </Grid>
-                <Expander Header="查看详细日志" MaxHeight="170" Margin="4,5,4,0" FontSize="11">
-                    <TextBox x:Name="RecordingLogTextBox" Height="125" IsReadOnly="True" AcceptsReturn="True"
-                             TextWrapping="NoWrap" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
-                             FontFamily="Consolas" FontSize="11" BorderThickness="0" Background="#F7F9FD" />
-                </Expander>
-            </StackPanel>
-        </Border>
-    </Grid>
+            </Border></Grid>
 </TabItem>
                     <TabItem Header="编辑与导出">
     <Grid>

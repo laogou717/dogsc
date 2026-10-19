@@ -198,9 +198,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/windows-v') || (github.ref == 'refs/heads/windows-port' && contains(github.event.head_commit.message, '[publish-release]'))
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/windows-v') && github.ref_name || 'windows-v0.1.13' }}
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/windows-v') && github.ref_name || 'windows-v0.1.14' }}
           target_commitish: ${{ github.sha }}
-          name: ${{ startsWith(github.ref, 'refs/tags/windows-v') && format('DogSC Windows Preview {0}', github.ref_name) || 'DogSC Windows Preview v0.1.13' }}
+          name: ${{ startsWith(github.ref, 'refs/tags/windows-v') && format('DogSC Windows Preview {0}', github.ref_name) || 'DogSC Windows Preview v0.1.14' }}
           body: |
             DogSC for Windows — recording and UI reliability preview v0.1.12.
 

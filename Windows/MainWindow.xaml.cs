@@ -454,6 +454,15 @@ public partial class MainWindow : Window
         }
     }
 
+    private void ToggleLogExpander_Click(object sender, RoutedEventArgs e)
+    {
+        var show = RecordingLogExpander.Visibility != Visibility.Visible;
+        RecordingLogExpander.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        RecordingLogToggleButton.Content = show ? "收起详细日志" : "查看详细日志";
+        if (show)
+            RecordingLogTextBox.ScrollToEnd();
+    }
+
     private void HandleRecordingStatusChanged(string message)
     {
         if (Dispatcher.HasShutdownStarted)
