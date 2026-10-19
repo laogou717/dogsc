@@ -452,8 +452,17 @@
                     <ComboBox x:Name="ExportFitModeCombo" MinHeight="32">
                         <ComboBoxItem Content="完整显示（留边）" Tag="fit" /><ComboBoxItem Content="填满画布并裁切" Tag="fill" />
                     </ComboBox>
+                    <TextBlock Style="{StaticResource FieldLabel}" Text="字幕文件（可选，SRT）" Margin="0,6,0,2" />
+                    <DockPanel>
+                        <Button DockPanel.Dock="Right" Content="清除" Click="ClearSubtitle_Click" Margin="5,0,0,0" MinHeight="32" Padding="7,5" />
+                        <Button DockPanel.Dock="Right" Content="浏览..." Click="BrowseSubtitle_Click" Margin="5,0,0,0" MinHeight="32" Padding="7,5" />
+                        <TextBox x:Name="ExportSubtitleTextBox" IsReadOnly="True" MinHeight="32" ToolTip="导出时将 SRT 字幕烧录到视频画面" />
+                    </DockPanel>
+                    <ComboBox x:Name="ExportBackgroundCombo" MinHeight="32" Visibility="Collapsed">
+                        <ComboBoxItem Content="黑色" Tag="black" /><ComboBoxItem Content="深灰蓝" Tag="dark" /><ComboBoxItem Content="白色" Tag="white" /><ComboBoxItem Content="蓝色" Tag="blue" />
+                    </ComboBox>
                     <TextBlock Style="{StaticResource FieldLabel}" Text="背景颜色" Margin="0,6,0,2" />
-                    <ComboBox x:Name="ExportBackgroundCombo" MinHeight="32">
+                    <ComboBox x:Name="ExportBackgroundComboUnused" MinHeight="32">
                         <ComboBoxItem Content="黑色" Tag="black" /><ComboBoxItem Content="深灰蓝" Tag="dark" /><ComboBoxItem Content="白色" Tag="white" /><ComboBoxItem Content="蓝色" Tag="blue" />
                     </ComboBox>
                     <TextBlock Style="{StaticResource FieldLabel}" Text="自定义背景图片（可选）" Margin="0,6,0,2" />
