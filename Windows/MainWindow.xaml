@@ -1,7 +1,7 @@
 <Window x:Class="DogSC.Windows.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="DogSC" Height="900" Width="1480" MinHeight="820" MinWidth="1180"
+        Title="DogSC" Height="960" Width="1600" MinHeight="820" MinWidth="1280"
         WindowStartupLocation="CenterScreen" Closing="MainWindow_Closing" PreviewKeyDown="MainWindow_PreviewKeyDown"
         FontFamily="Microsoft YaHei UI" Language="zh-CN" Background="#F2F6FC">
     <Border Margin="8" Background="#FFFFFF" BorderBrush="#DDE6F2" BorderThickness="1" CornerRadius="16">
@@ -31,8 +31,8 @@
                     <Grid>
                         <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
                         <Button x:Name="NavRecordButton" Grid.Row="0" Style="{StaticResource NavButton}" Tag="Selected" Click="NavRecord_Click"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE768;" FontFamily="Segoe MDL2 Assets" FontSize="18" Width="29" VerticalAlignment="Center" /><TextBlock Text="录制" VerticalAlignment="Center" /></StackPanel></Button>
-                        <Button x:Name="NavEditButton" Grid.Row="1" Style="{StaticResource NavButton}" Click="NavEdit_Click"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8C6;" FontFamily="Segoe MDL2 Assets" FontSize="18" Width="29" VerticalAlignment="Center" /><TextBlock Text="编辑" VerticalAlignment="Center" /></StackPanel></Button>
-                        <Button x:Name="NavExportButton" Grid.Row="2" Style="{StaticResource NavButton}" Click="NavExport_Click"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE74E;" FontFamily="Segoe MDL2 Assets" FontSize="18" Width="29" VerticalAlignment="Center" /><TextBlock Text="导出" VerticalAlignment="Center" /></StackPanel></Button>
+                        <Button x:Name="NavEditButton" Grid.Row="1" Style="{StaticResource NavButton}" Click="NavEdit_Click"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8C6;" FontFamily="Segoe MDL2 Assets" FontSize="18" Width="29" VerticalAlignment="Center" /><TextBlock Text="编辑与导出" VerticalAlignment="Center" /></StackPanel></Button>
+                        <Button x:Name="NavExportButton" Grid.Row="2" Visibility="Collapsed" Style="{StaticResource NavButton}" Click="NavExport_Click"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE74E;" FontFamily="Segoe MDL2 Assets" FontSize="18" Width="29" VerticalAlignment="Center" /><TextBlock Text="导出" VerticalAlignment="Center" /></StackPanel></Button>
                         <Button x:Name="NavSettingsButton" Grid.Row="3" Style="{StaticResource NavButton}" Click="NavSettings_Click"><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="18" Width="29" VerticalAlignment="Center" /><TextBlock Text="设置与帮助" VerticalAlignment="Center" /></StackPanel></Button>
                         <StackPanel Grid.Row="5" Margin="2,10,2,6">
                             <Canvas Width="112" Height="102" HorizontalAlignment="Center">
@@ -298,9 +298,9 @@
 </TabItem>
                     <TabItem Header="编辑与导出">
     <Grid>
-        <Grid.ColumnDefinitions><ColumnDefinition Width="1.7*" /><ColumnDefinition Width="0.95*" /></Grid.ColumnDefinitions>
+        <Grid.ColumnDefinitions><ColumnDefinition Width="2.35*" /><ColumnDefinition Width="0.9*" /></Grid.ColumnDefinitions>
         <Grid Grid.Column="0" Margin="0,0,8,0">
-            <Grid.RowDefinitions><RowDefinition Height="1.0*" /><RowDefinition Height="Auto" /><RowDefinition Height="1.22*" /></Grid.RowDefinitions>
+            <Grid.RowDefinitions><RowDefinition Height="1.75*" /><RowDefinition Height="Auto" /><RowDefinition Height="0.95*" /></Grid.RowDefinitions>
             <Border Grid.Row="0" Style="{StaticResource CardStyle}" Padding="14" Margin="0,0,0,10">
                 <Grid>
                     <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
@@ -311,7 +311,7 @@
                         </StackPanel>
                         <TextBlock Text="预览 / 裁剪 / 变速" Foreground="#73819A" FontSize="11" DockPanel.Dock="Right" VerticalAlignment="Center" />
                     </DockPanel>
-                    <Border Grid.Row="1" Background="#101827" CornerRadius="9" Padding="4" MinHeight="170">
+                    <Border Grid.Row="1" Background="#101827" CornerRadius="9" Padding="4" MinHeight="240">
                         <ContentControl x:Name="PreviewHost" />
                     </Border>
                     <DockPanel Grid.Row="2" Margin="0,7,0,0">
