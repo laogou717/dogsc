@@ -23,7 +23,9 @@ public partial class MainWindow : Window
 
     public MainWindow()
     {
+        App.WriteDiagnostic("MainWindow constructor entered");
         InitializeComponent();
+        App.WriteDiagnostic("MainWindow InitializeComponent completed");
         ClipsGrid.ItemsSource = _clips;
         CaptureModeCombo.SelectedIndex = 0;
         FrameRateCombo.SelectedIndex = 0;
@@ -40,19 +42,13 @@ public partial class MainWindow : Window
                 Dispatcher.BeginInvoke(new Action(() => RecordingStatusText.Text = message));
         };
 
-        // Defer native display enumeration until the WPF window is loaded. Some
-        // virtualized Windows runners have no interactive desktop at process start.
+        // Do not enumerate native top-level windows during startup. On Windows,
+        // display enumeration is an explicit user action and is refreshed on demand.
         Loaded += async (_, _) =>
         {
+            App.WriteDiagnostic("MainWindow loaded; starting audio device discovery");
             await LoadMicrophoneDevicesAsync();
-            try
-            {
-                RefreshWindows();
-            }
-            catch (Exception exception)
-            {
-                RecordingStatusText.Text = "无法枚举窗口源：" + exception.Message;
-            }
+            App.WriteDiagnostic("Audio device discovery finished");
         };
     }
 

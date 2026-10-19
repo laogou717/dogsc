@@ -8,6 +8,7 @@ public partial class App : Application
 {
     public App()
     {
+        WriteStartupMessage("App.ctor", "Application constructor entered");
         DispatcherUnhandledException += (_, e) => WriteStartupError("DispatcherUnhandledException", e.Exception);
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
         {
@@ -22,6 +23,8 @@ public partial class App : Application
             e.SetObserved();
         };
     }
+
+    public static void WriteDiagnostic(string message) => WriteStartupMessage("Diagnostic", message);
 
     private static void WriteStartupError(string source, Exception exception) =>
         WriteStartupMessage(source, exception.ToString());
