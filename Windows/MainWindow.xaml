@@ -150,7 +150,11 @@
                             </ComboBox>
                         </WrapPanel>
                     </DockPanel>
-                    <TextBlock Grid.Row="5" x:Name="EditorStatusText" Margin="4,8,4,0"
+                    <ListBox x:Name="RecordingMarkersList" Grid.Row="5" Margin="3,8,3,0"
+                             SelectionChanged="RecordingMarkersList_SelectionChanged"
+                             ToolTip="录制时保存的剪辑标记；选择标记可跳转到对应时间。"
+                             DisplayMemberPath="DisplayLabel" />
+                    <TextBlock Grid.Row="6" x:Name="EditorStatusText" Margin="4,8,4,0"
                                Foreground="#5B6472" TextWrapping="Wrap"
                                Text="导入视频后可裁剪、排序、变速、保存项目并导出 MP4/M4A。" />
                 </Grid>
