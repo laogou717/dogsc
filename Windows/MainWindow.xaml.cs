@@ -633,7 +633,7 @@ public partial class MainWindow : Window
         _undoStack.Push(CaptureClips());
         while (_undoStack.Count > 100)
         {
-            var keep = _undoStack.Reverse().Take(100).Reverse().ToArray();
+            var keep = _undoStack.Take(100).Reverse().ToArray();
             _undoStack.Clear();
             foreach (var snapshot in keep)
                 _undoStack.Push(snapshot);
