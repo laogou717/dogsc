@@ -137,7 +137,6 @@ public sealed class RegionSelectionWindow : Window, IDisposable
 
         SelectedRegion = new Rect(left, top, width, height);
         DialogResult = true;
-        Close();
         e.Handled = true;
     }
 
@@ -148,7 +147,6 @@ public sealed class RegionSelectionWindow : Window, IDisposable
 
         SelectedRegion = null;
         DialogResult = false;
-        Close();
         e.Handled = true;
     }
 
