@@ -91,7 +91,11 @@ public sealed class ClipItem : INotifyPropertyChanged
     public int RotationDegrees
     {
         get => _rotationDegrees;
-        set => SetField(ref _rotationDegrees, ((value % 360) + 360) % 360 is var normalized && normalized % 90 == 0 ? normalized : 0);
+        set
+        {
+            var normalized = ((value % 360) + 360) % 360;
+            SetField(ref _rotationDegrees, normalized % 90 == 0 ? normalized : 0);
+        }
     }
 
     [JsonIgnore]
