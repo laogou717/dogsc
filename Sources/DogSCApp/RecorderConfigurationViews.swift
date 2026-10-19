@@ -33,6 +33,11 @@ struct RecorderInputPopover: View {
                     .toggleStyle(RecorderInputToggleStyle(title: appLocalized(title)))
                     .font(.appUI(size: 15, weight: .semibold))
                     .padding(.horizontal, 10).frame(height: 40)
+                    // Enabling camera capture without a real device used to
+                    // leave an invalid "camera on" configuration that failed
+                    // only after the user pressed Record. Keep the toggle
+                    // available for turning an already-enabled camera off.
+                    .disabled(kind == .camera && model.availableCameras.isEmpty && !isOn)
                 switch kind {
                 case .microphone: microphone
                 case .camera: camera
