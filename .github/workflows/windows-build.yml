@@ -198,13 +198,13 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/windows-v') || (github.ref == 'refs/heads/windows-port' && contains(github.event.head_commit.message, '[publish-release]'))
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/windows-v') && github.ref_name || 'windows-v0.1.19' }}
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/windows-v') && github.ref_name || 'windows-v0.1.20' }}
           target_commitish: ${{ github.sha }}
-          name: ${{ startsWith(github.ref, 'refs/tags/windows-v') && format('DogSC Windows Preview {0}', github.ref_name) || 'DogSC Windows Preview v0.1.19' }}
+          name: ${{ startsWith(github.ref, 'refs/tags/windows-v') && format('DogSC Windows Preview {0}', github.ref_name) || 'DogSC Windows Preview v0.1.20' }}
           body: |
-            DogSC for Windows — black GPU-window capture fix and recording layout refinement preview v0.1.19.
+            DogSC for Windows — missing-camera recording fallback and recording UI refinement preview v0.1.20.
 
-            This release fixes black recordings of GPU-accelerated application windows by capturing the selected window's visible desktop rectangle instead of FFmpeg gdigrab title=, minimizes DogSC while window recording runs to avoid covering the target, adds Ctrl+Alt+Shift+S as a global stop shortcut, widens the live-preview column, and replaces the broken region-picker glyph with a vector selection icon. Chinese DirectShow device names retain UTF-8/Windows-code-page decoding fallback.
+            This release allows recording to continue when no webcam is connected: camera overlay controls are disabled with a clear status message, startup automatically skips camera capture when no device is selected, and the FFmpeg argument builder never adds an invalid video= input. It adds a regression test for the no-camera path and refines the device card status UI. The GPU-window black-frame workaround, wider preview column, vector region-selection icon, and Chinese DirectShow device-name decoding fallback are retained.
 
             Includes the self-contained Windows x64 application and bundled LGPL FFmpeg tools. Hardware-dependent capture and remaining macOS feature parity still require additional validation.
           files: artifacts/installer/DogSC-Setup-win-x64.exe
