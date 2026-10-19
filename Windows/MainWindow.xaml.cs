@@ -37,6 +37,8 @@ public partial class MainWindow : Window
     private MediaElement? _previewElement;
     private ClipItem? _previewClip;
     private readonly DispatcherTimer _previewTimer = new() { Interval = TimeSpan.FromMilliseconds(50) };
+    private readonly DispatcherTimer _autosaveTimer = new() { Interval = TimeSpan.FromSeconds(10) };
+    private bool _autosaveInProgress;
     private readonly DispatcherTimer _livePreviewTimer = new() { Interval = TimeSpan.FromMilliseconds(600) };
     private readonly DispatcherTimer _cameraPreviewTimer = new() { Interval = TimeSpan.FromSeconds(2) };
     private readonly SemaphoreSlim _cameraPreviewGate = new(1, 1);
@@ -137,6 +139,7 @@ public partial class MainWindow : Window
         InitializeComponent();
         App.WriteDiagnostic("MainWindow InitializeComponent completed");
         _previewTimer.Tick += PreviewTimer_Tick;
+        _autosaveTimer.Tick += async (_, _) => await AutoSaveProjectAsync();
         _livePreviewTimer.Tick += LivePreviewTimer_Tick;
         _cameraPreviewTimer.Tick += CameraPreviewTimer_Tick;
         ClipsGrid.ItemsSource = _clips;
@@ -167,6 +170,8 @@ public partial class MainWindow : Window
             _cameraPreviewTimer.Start();
             await LoadMicrophoneDevicesAsync();
             await LoadCameraDevicesAsync();
+            await RecoverAutosaveAsync();
+            _autosaveTimer.Start();
             App.WriteDiagnostic("Audio/video device discovery finished");
         };
     }
@@ -192,6 +197,8 @@ public partial class MainWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         _previewTimer.Stop();
+        _autosaveTimer.Stop();
+        _ = AutoSaveProjectAsync();
         _livePreviewTimer.Stop();
         _cameraPreviewTimer.Stop();
         if (_cameraPreviewProcess is { HasExited: false })
@@ -1726,6 +1733,8 @@ public partial class MainWindow : Window
     {
         if (!_recordingService.IsRecording || _closingAfterStop)
         {
+            _autosaveTimer.Stop();
+            _ = AutoSaveProjectAsync();
             _recordingService.Dispose();
             return;
         }
@@ -1738,6 +1747,68 @@ public partial class MainWindow : Window
     {
         await StopRecordingAsync();
         Close();
+    }
+
+    private string AutosavePath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "DogSC", "recovery", "autosave.dogscproj");
+
+    private async Task AutoSaveProjectAsync()
+    {
+        if (_autosaveInProgress)
+            return;
+
+        _autosaveInProgress = true;
+        try
+        {
+            var path = AutosavePath;
+            if (_clips.Count == 0)
+            {
+                if (File.Exists(path))
+                    File.Delete(path);
+                return;
+            }
+
+            await _projectFileService.SaveAsync(path, _clips.ToArray());
+            EditorStatusText.Text = $"自动保存已更新 · {DateTime.Now:HH:mm:ss}";
+        }
+        catch (Exception exception)
+        {
+            App.WriteDiagnostic("Editor autosave failed: " + exception);
+        }
+        finally
+        {
+            _autosaveInProgress = false;
+        }
+    }
+
+    private async Task RecoverAutosaveAsync()
+    {
+        var path = AutosavePath;
+        if (!File.Exists(path))
+            return;
+
+        try
+        {
+            if (MessageBox.Show(this,
+                    "发现上次编辑的自动恢复项目。是否恢复未保存的剪辑？",
+                    "恢复编辑项目", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+            {
+                File.Delete(path);
+                return;
+            }
+
+            var recovered = await _projectFileService.LoadAsync(path);
+            foreach (var clip in recovered)
+                clip.ThumbnailPath = await CreateClipThumbnailAsync(clip.FilePath, clip.StartSeconds);
+            ReplaceClips(recovered, 0);
+            EditorStatusText.Text = $"已恢复 {recovered.Count} 个片段。请另存为正式项目。";
+        }
+        catch (Exception exception)
+        {
+            EditorStatusText.Text = "自动恢复失败：" + exception.Message;
+            App.WriteDiagnostic("Editor autosave recovery failed: " + exception);
+        }
     }
 
     private void SaveUndoState()
