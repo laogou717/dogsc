@@ -1256,6 +1256,8 @@ public partial class MainWindow : Window
         ClipFadeOutTextBox.Text = clip.FadeOutSeconds.ToString("0.##", CultureInfo.InvariantCulture);
         ClipRotationCombo.SelectedItem = ClipRotationCombo.Items.OfType<ComboBoxItem>()
             .FirstOrDefault(item => int.TryParse(item.Tag?.ToString(), out var rotationTag) && rotationTag == clip.RotationDegrees);
+        ClipZoomStartTextBox.Text = clip.ZoomStart.ToString("0.##", CultureInfo.InvariantCulture);
+        ClipZoomEndTextBox.Text = clip.ZoomEnd.ToString("0.##", CultureInfo.InvariantCulture);
         _previewTimer.Stop();
         _previewClip = clip;
         _previewStartSeconds = clip.StartSeconds;
@@ -1432,9 +1434,11 @@ public partial class MainWindow : Window
             !TryReadDouble(ClipEndTextBox.Text, out var end) || start < 0 || end <= start ||
             !TryReadDouble(ClipVolumeTextBox.Text, out var volume) || volume < 0 || volume > 2 ||
             !TryReadDouble(ClipFadeInTextBox.Text, out var fadeIn) || fadeIn < 0 ||
-            !TryReadDouble(ClipFadeOutTextBox.Text, out var fadeOut) || fadeOut < 0)
+            !TryReadDouble(ClipFadeOutTextBox.Text, out var fadeOut) || fadeOut < 0 ||
+            !TryReadDouble(ClipZoomStartTextBox.Text, out var zoomStart) || zoomStart < 1 || zoomStart > 2 ||
+            !TryReadDouble(ClipZoomEndTextBox.Text, out var zoomEnd) || zoomEnd < 1 || zoomEnd > 2)
         {
-            MessageBox.Show(this, "请检查入出点、音量（0-2）和淡入淡出时长。", "片段设置无效",
+            MessageBox.Show(this, "请检查入出点、音量、淡入淡出时长和缩放关键帧（1-2×）。", "片段设置无效",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
@@ -1454,7 +1458,9 @@ public partial class MainWindow : Window
                 Math.Abs(clip.Volume - volume) > 0.0001 ||
                 Math.Abs(clip.FadeInSeconds - fadeIn) > 0.0001 ||
                 Math.Abs(clip.FadeOutSeconds - fadeOut) > 0.0001 ||
-                clip.RotationDegrees != rotation)
+                clip.RotationDegrees != rotation ||
+                Math.Abs(clip.ZoomStart - zoomStart) > 0.0001 ||
+                Math.Abs(clip.ZoomEnd - zoomEnd) > 0.0001)
             {
                 _previewTimer.Stop();
                 _previewElement?.Pause();
@@ -1470,6 +1476,8 @@ public partial class MainWindow : Window
             clip.FadeInSeconds = fadeIn;
             clip.FadeOutSeconds = fadeOut;
             clip.RotationDegrees = rotation;
+            clip.ZoomStart = zoomStart;
+            clip.ZoomEnd = zoomEnd;
             if (startChanged)
                 clip.ThumbnailPath = await CreateClipThumbnailAsync(clip.FilePath, start) ?? clip.ThumbnailPath;
             _previewClip = clip;
@@ -1523,6 +1531,8 @@ public partial class MainWindow : Window
             FadeInSeconds = clip.FadeInSeconds,
             FadeOutSeconds = clip.FadeOutSeconds,
             RotationDegrees = clip.RotationDegrees,
+            ZoomStart = clip.ZoomStart,
+            ZoomEnd = clip.ZoomEnd,
             ThumbnailPath = splitThumbnail ?? clip.ThumbnailPath
         });
         ClipsGrid.Items.Refresh();
