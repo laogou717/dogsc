@@ -26,13 +26,15 @@ Developers can override FFmpeg discovery with DOGSC_FFMPEG_PATH. Ordinary users 
 ## Windows foundation implemented
 
 - Desktop, window-title, and drag-selected coordinate-region capture at 30/60 FPS with a configurable cursor visibility toggle.
+- Live preview of the selected desktop/window/region, with fit/fill preview scaling and an explicit note that final recording output is authoritative.
+- Odd capture dimensions are padded to even dimensions and converted to an encoder-compatible pixel format; failed Media Foundation H.264 startup retries with the MPEG-4 compatibility encoder.
 - WASAPI system-audio loopback through NAudio and DirectShow microphone capture, including post-recording audio mixing.
 - Static webcam overlay recording through DirectShow, with small/medium/large sizing and five placement presets.
-- Video import and preview, clip ordering, in/out trimming, split-at-playhead, undo/redo history, keyboard shortcuts, and 0.5x–2x playback speed.
+- Video import and preview, clip ordering, in/out trimming, split-at-playhead, undo/redo history, keyboard shortcuts, generated timeline thumbnails, and 0.5x–2x playback speed.
 - Versioned .dogscproj project save/load.
 - Recording markers via a button and Ctrl+Alt+M global shortcut; timestamps are saved to a companion .markers.json file and can be selected in the editor to seek the preview.
 - MP4 export at 1080p/1440p/4K and 30/60 FPS, with 16:9, 9:16, 1:1, 4:3 and 3:2 canvas ratios, fit/fill modes and selectable backgrounds; plus M4A audio export.
-- Redesigned Chinese WPF interface with an explicit Microsoft YaHei UI font, modern navigation/cards, export-path controls, synchronized region fields, and a CI UTF-8 resource check.
+- Redesigned Chinese WPF interface with an explicit Microsoft YaHei UI font, modern navigation/cards, export-path controls, editable region fields, concise recording status, expandable FFmpeg diagnostics, and a CI UTF-8 resource check.
 - Single-installer pipeline with a self-contained .NET runtime, bundled FFmpeg DLLs, checksum verification, and FFmpeg encode/probe integration tests.
 
 ## Feature parity status

@@ -7,9 +7,11 @@ The Windows app lives in Windows/ and is isolated from the existing Swift/macOS 
 - [x] Separate WPF/.NET desktop target.
 - [x] FFmpeg executable discovery from app-local tools, DOGSC_FFMPEG_PATH, or PATH.
 - [x] Desktop/window/coordinate-region capture command path with 30/60 FPS and cursor rendering.
+- [x] Live desktop/window/region preview; recording errors use concise summaries with expandable detailed FFmpeg logs.
+- [x] Odd-size GDI frames are padded to even dimensions and converted to the selected encoder pixel format; failed h264_mf startup retries with MPEG-4. CI verifies 1600x1075 capture pads to 1600x1076 and both encoders produce valid MP4.
 - [x] WASAPI system loopback and DirectShow microphone input with audio mixing.
 - [x] Static webcam overlay through DirectShow with five positions and three size presets; CI validates the FFmpeg overlay filter with synthetic video inputs.
-- [x] Video import/probing, preview, clip ordering, in/out trim, and 0.5x–2x speed.
+- [x] Video import/probing, preview, generated timeline thumbnails, clip ordering, in/out trim, and 0.5x–2x speed.
 - [x] Versioned JSON project save/load with missing-media and invalid-range checks.
 - [x] MP4/M4A export code paths; 1080p/1440p/4K and 30/60 FPS; 16:9/9:16/1:1/4:3/3:2 canvases, fit/fill and background options.
 - [x] Recording marker button and Ctrl+Alt+M global shortcut; timestamps saved to a JSON sidecar and available for seeking in the editor.
@@ -22,7 +24,8 @@ The Windows app lives in Windows/ and is isolated from the existing Swift/macOS 
 ## Required before claiming Mac parity
 
 - [ ] Native Windows Graphics Capture implementation and tests for protected, minimized, occluded, and high-DPI windows.
-- [ ] Drag-to-select region and reliable multi-monitor/negative-origin handling.
+- [x] Drag-to-select region.
+- [ ] Reliable multi-monitor/negative-origin handling and real-device region capture validation.
 - [ ] iPhone/iPad capture equivalent and device discovery.
 - [ ] Animated camera entrance/layout effects and rounded or masked camera overlays; the basic static webcam overlay is implemented.
 - [ ] Cursor asset library, click feedback, pointer event timeline, and cursor calibration.
