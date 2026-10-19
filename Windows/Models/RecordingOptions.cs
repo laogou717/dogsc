@@ -17,6 +17,8 @@ public sealed class RecordingOptions
     public int RegionWidth { get; init; }
     public int RegionHeight { get; init; }
     public int FramesPerSecond { get; init; } = 30;
+    public bool ShowCursor { get; init; } = true;
+    public bool EnableMarkers { get; init; } = true;
     public bool CaptureSystemAudio { get; init; }
     public bool CaptureMicrophone { get; init; }
     public string? MicrophoneDevice { get; init; }

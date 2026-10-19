@@ -18,6 +18,7 @@ public sealed class RecordingService : IDisposable
     private long _systemAudioStartedAt;
     private long _videoStartedAt;
     private bool _captureMicrophone;
+    private bool _markersEnabled = true;
 
     public event Action<string>? StatusChanged;
 
@@ -29,7 +30,7 @@ public sealed class RecordingService : IDisposable
 
     public RecordingMarker? AddMarker(string? label = null)
     {
-        if (!IsRecording)
+        if (!IsRecording || !_markersEnabled)
             return null;
 
         RecordingMarker marker;
@@ -67,6 +68,7 @@ public sealed class RecordingService : IDisposable
         _process = null;
         _outputPath = Path.GetFullPath(options.OutputPath);
         _captureMicrophone = options.CaptureMicrophone;
+        _markersEnabled = options.EnableMarkers;
         lock (_markers)
             _markers.Clear();
         // Remove markers left by a previous recording when the same output name is reused.
@@ -281,7 +283,7 @@ public sealed class RecordingService : IDisposable
     {
         Add(args, "-hide_banner", "-y", "-loglevel", "info", "-thread_queue_size", "1024",
             "-f", "gdigrab", "-framerate", options.FramesPerSecond.ToString(CultureInfo.InvariantCulture),
-            "-draw_mouse", "1");
+            "-draw_mouse", options.ShowCursor ? "1" : "0");
 
         if (options.Mode == CaptureMode.Region)
         {

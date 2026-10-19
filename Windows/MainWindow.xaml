@@ -149,10 +149,10 @@
                                                 <StackPanel x:Name="RegionSelectionPanel" Visibility="Collapsed" Margin="0,8,0,0">
                                                     <TextBlock Style="{StaticResource FieldLabel}" Text="区域坐标（相对于桌面左上角，单位：像素）" />
                                                     <UniformGrid Columns="4" Margin="0,0,0,4">
-                                                        <StackPanel Margin="0,0,7,0"><TextBlock Style="{StaticResource FieldLabel}" Text="X" /><TextBox x:Name="RegionXTextBox" Text="0" /></StackPanel>
-                                                        <StackPanel Margin="0,0,7,0"><TextBlock Style="{StaticResource FieldLabel}" Text="Y" /><TextBox x:Name="RegionYTextBox" Text="0" /></StackPanel>
-                                                        <StackPanel Margin="0,0,7,0"><TextBlock Style="{StaticResource FieldLabel}" Text="宽度" /><TextBox x:Name="RegionWidthTextBox" Text="1280" /></StackPanel>
-                                                        <StackPanel><TextBlock Style="{StaticResource FieldLabel}" Text="高度" /><TextBox x:Name="RegionHeightTextBox" Text="720" /></StackPanel>
+                                                        <StackPanel Margin="0,0,7,0"><TextBlock Style="{StaticResource FieldLabel}" Text="X" /><TextBox x:Name="RegionXTextBox" Text="0" TextChanged="RegionCoordinates_TextChanged" /></StackPanel>
+                                                        <StackPanel Margin="0,0,7,0"><TextBlock Style="{StaticResource FieldLabel}" Text="Y" /><TextBox x:Name="RegionYTextBox" Text="0" TextChanged="RegionCoordinates_TextChanged" /></StackPanel>
+                                                        <StackPanel Margin="0,0,7,0"><TextBlock Style="{StaticResource FieldLabel}" Text="宽度" /><TextBox x:Name="RegionWidthTextBox" Text="1280" TextChanged="RegionCoordinates_TextChanged" /></StackPanel>
+                                                        <StackPanel><TextBlock Style="{StaticResource FieldLabel}" Text="高度" /><TextBox x:Name="RegionHeightTextBox" Text="720" TextChanged="RegionCoordinates_TextChanged" /></StackPanel>
                                                     </UniformGrid>
                                                     <Button Content="▧  拖动选择区域..." Style="{StaticResource PrimaryButton}" Click="SelectRegion_Click" HorizontalAlignment="Stretch" />
                                                 </StackPanel>
@@ -424,7 +424,7 @@
                                                 <ComboBoxItem Content="60 FPS" Tag="60" />
                                             </ComboBox>
                                             <TextBlock Style="{StaticResource FieldLabel}" Text="导出格式" />
-                                            <ComboBox x:Name="ExportFormatCombo">
+                                            <ComboBox x:Name="ExportFormatCombo" SelectionChanged="ExportFormatCombo_SelectionChanged">
                                                 <ComboBoxItem Content="MP4 视频" Tag="MP4" />
                                                 <ComboBoxItem Content="M4A 音频" Tag="M4A" />
                                             </ComboBox>

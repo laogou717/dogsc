@@ -67,6 +67,8 @@ public partial class MainWindow : Window
         CameraSizeCombo.SelectedIndex = 0;
         var videos = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
         OutputPathTextBox.Text = Path.Combine(videos, "DogSC", $"DogSC-{DateTime.Now:yyyyMMdd-HHmmss}.mp4");
+        ExportOutputPathTextBox.Text = Path.Combine(videos, "DogSC", "DogSC-Export.mp4");
+        SyncRegionSummary();
 
         _recordingService.StatusChanged += message =>
         {
@@ -120,6 +122,80 @@ public partial class MainWindow : Window
         }
 
         return IntPtr.Zero;
+    }
+
+    private void NavigateTo(int index)
+    {
+        MainTabs.SelectedIndex = index;
+        NavRecordButton.Tag = index == 0 ? "Selected" : null;
+        NavEditButton.Tag = index == 1 ? "Selected" : null;
+        NavExportButton.Tag = index == 1 ? "Selected" : null;
+        NavSettingsButton.Tag = index == 2 ? "Selected" : null;
+    }
+
+    private void NavRecord_Click(object sender, RoutedEventArgs e) => NavigateTo(0);
+
+    private void NavEdit_Click(object sender, RoutedEventArgs e) => NavigateTo(1);
+
+    private void NavExport_Click(object sender, RoutedEventArgs e)
+    {
+        NavigateTo(1);
+        ExportOutputPathTextBox.Focus();
+    }
+
+    private void NavSettings_Click(object sender, RoutedEventArgs e) => NavigateTo(2);
+
+    private void RegionCoordinates_TextChanged(object sender, TextChangedEventArgs e) => SyncRegionSummary();
+
+    private void SyncRegionSummary()
+    {
+        if (RegionXSummaryTextBox is null)
+            return;
+
+        RegionXSummaryTextBox.Text = RegionXTextBox.Text;
+        RegionYSummaryTextBox.Text = RegionYTextBox.Text;
+        RegionWidthSummaryTextBox.Text = RegionWidthTextBox.Text;
+        RegionHeightSummaryTextBox.Text = RegionHeightTextBox.Text;
+    }
+
+    private void ExportFormatCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (ExportOutputPathTextBox is null || string.IsNullOrWhiteSpace(ExportOutputPathTextBox.Text))
+            return;
+
+        var extension = string.Equals((ExportFormatCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString(), "M4A",
+            StringComparison.OrdinalIgnoreCase) ? ".m4a" : ".mp4";
+        try
+        {
+            ExportOutputPathTextBox.Text = Path.ChangeExtension(ExportOutputPathTextBox.Text, extension);
+        }
+        catch
+        {
+            // Keep the editable path unchanged until the user chooses a valid path.
+        }
+    }
+
+    private void BrowseExportPath_Click(object sender, RoutedEventArgs e)
+    {
+        var audioOnly = string.Equals((ExportFormatCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString(), "M4A",
+            StringComparison.OrdinalIgnoreCase);
+        var extension = audioOnly ? ".m4a" : ".mp4";
+        var dialog = new SaveFileDialog
+        {
+            Title = audioOnly ? "选择 M4A 导出位置" : "选择 MP4 导出位置",
+            Filter = audioOnly ? "M4A 音频|*.m4a" : "MP4 视频|*.mp4",
+            DefaultExt = extension,
+            AddExtension = true,
+            FileName = string.IsNullOrWhiteSpace(ExportOutputPathTextBox.Text)
+                ? audioOnly ? "DogSC-Export.m4a" : "DogSC-Export.mp4"
+                : Path.GetFileName(ExportOutputPathTextBox.Text),
+            InitialDirectory = Directory.Exists(Path.GetDirectoryName(ExportOutputPathTextBox.Text))
+                ? Path.GetDirectoryName(ExportOutputPathTextBox.Text)
+                : Environment.GetFolderPath(Environment.SpecialFolder.MyVideos)
+        };
+
+        if (dialog.ShowDialog(this) == true)
+            ExportOutputPathTextBox.Text = dialog.FileName;
     }
 
     private void ShowShortcuts_Click(object sender, RoutedEventArgs e)
@@ -307,6 +383,8 @@ public partial class MainWindow : Window
                 CaptureSystemAudio = SystemAudioCheckBox.IsChecked == true,
                 CaptureMicrophone = MicrophoneCheckBox.IsChecked == true,
                 MicrophoneDevice = MicrophoneCombo.SelectedItem as string,
+                ShowCursor = ShowCursorCheckBox.IsChecked == true,
+                EnableMarkers = RecordMarkerCheckBox.IsChecked == true,
                 CaptureCamera = CameraOverlayCheckBox.IsChecked == true,
                 CameraDevice = CameraCombo.SelectedItem as string,
                 CameraPosition = ReadTagString(CameraPositionCombo, "bottom-right"),
@@ -315,7 +393,7 @@ public partial class MainWindow : Window
 
             StartRecordingButton.IsEnabled = false;
             StopRecordingButton.IsEnabled = true;
-            AddMarkerButton.IsEnabled = true;
+            AddMarkerButton.IsEnabled = options.EnableMarkers;
             RecordingStatusText.Text = "正在启动录制...";
             await _recordingService.StartAsync(options);
             RecordingStatusText.Text = "录制中。结束后请点击“停止录制”。";
@@ -748,29 +826,48 @@ public partial class MainWindow : Window
         }
         var audioOnly = string.Equals((ExportFormatCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString(), "M4A",
             StringComparison.OrdinalIgnoreCase);
-        var dialog = new SaveFileDialog
+        var extension = audioOnly ? ".m4a" : ".mp4";
+        var outputPath = ExportOutputPathTextBox.Text.Trim();
+        if (string.IsNullOrWhiteSpace(outputPath))
         {
-            Title = audioOnly ? "导出 M4A 音频" : "导出 MP4 视频",
-            Filter = audioOnly ? "M4A 音频|*.m4a" : "MP4 视频|*.mp4",
-            DefaultExt = audioOnly ? ".m4a" : ".mp4",
-            AddExtension = true,
-            FileName = audioOnly ? "DogSC-Export.m4a" : "DogSC-Export.mp4"
-        };
-        if (dialog.ShowDialog(this) != true)
+            var dialog = new SaveFileDialog
+            {
+                Title = audioOnly ? "导出 M4A 音频" : "导出 MP4 视频",
+                Filter = audioOnly ? "M4A 音频|*.m4a" : "MP4 视频|*.mp4",
+                DefaultExt = extension,
+                AddExtension = true,
+                FileName = audioOnly ? "DogSC-Export.m4a" : "DogSC-Export.mp4",
+                InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos)
+            };
+            if (dialog.ShowDialog(this) != true)
+                return;
+
+            outputPath = dialog.FileName;
+            ExportOutputPathTextBox.Text = outputPath;
+        }
+        else if (!string.Equals(Path.GetExtension(outputPath), extension, StringComparison.OrdinalIgnoreCase))
+        {
+            outputPath = Path.ChangeExtension(outputPath, extension);
+            ExportOutputPathTextBox.Text = outputPath;
+        }
+
+        if (File.Exists(outputPath) &&
+            MessageBox.Show(this, "目标文件已存在，是否覆盖？", "确认覆盖",
+                MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
             return;
 
         ExportButton.IsEnabled = false;
         try
         {
             var progress = new Progress<string>(message => EditorStatusText.Text = message);
-            await _mediaEditorService.ExportAsync(_clips.ToArray(), dialog.FileName,
+            await _mediaEditorService.ExportAsync(_clips.ToArray(), outputPath,
                 ReadTagInt(ExportResolutionCombo, 1080), ReadTagInt(ExportFrameRateCombo, 30), audioOnly, progress,
                 ReadTagString(ExportAspectRatioCombo, "16:9"),
                 ReadTagString(ExportFitModeCombo, "fit"),
                 ReadTagString(ExportBackgroundCombo, "black"),
                 string.IsNullOrWhiteSpace(ExportBackgroundImageTextBox.Text) ? null : ExportBackgroundImageTextBox.Text.Trim());
-            EditorStatusText.Text = "导出完成：" + dialog.FileName;
-            MessageBox.Show(this, "导出完成：" + dialog.FileName, "DogSC", MessageBoxButton.OK, MessageBoxImage.Information);
+            EditorStatusText.Text = "导出完成：" + outputPath;
+            MessageBox.Show(this, "导出完成：" + outputPath, "DogSC", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception exception)
         {
