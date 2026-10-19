@@ -44,6 +44,7 @@
                                 <StackPanel Width="110"><TextBlock Text="Y" /><TextBox x:Name="RegionYTextBox" Text="0" /></StackPanel>
                                 <StackPanel Width="130"><TextBlock Text="宽度" /><TextBox x:Name="RegionWidthTextBox" Text="1280" /></StackPanel>
                                 <StackPanel Width="130"><TextBlock Text="高度" /><TextBox x:Name="RegionHeightTextBox" Text="720" /></StackPanel>
+                                <StackPanel VerticalAlignment="Bottom"><Button Content="拖动选择区域..." Click="SelectRegion_Click" /></StackPanel>
                             </WrapPanel>
                         </StackPanel>
                         <Separator Margin="0,10,0,10" />

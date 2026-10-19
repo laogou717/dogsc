@@ -225,6 +225,18 @@ public partial class MainWindow : Window
         }
     }
 
+    private void SelectRegion_Click(object sender, RoutedEventArgs e)
+    {
+        using var selector = new RegionSelectionWindow { Owner = this };
+        if (selector.ShowDialog() != true || selector.SelectedRegion is not Rect region)
+            return;
+
+        RegionXTextBox.Text = ((int)region.X).ToString(CultureInfo.InvariantCulture);
+        RegionYTextBox.Text = ((int)region.Y).ToString(CultureInfo.InvariantCulture);
+        RegionWidthTextBox.Text = ((int)region.Width).ToString(CultureInfo.InvariantCulture);
+        RegionHeightTextBox.Text = ((int)region.Height).ToString(CultureInfo.InvariantCulture);
+    }
+
     private void BrowseOutput_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new SaveFileDialog
