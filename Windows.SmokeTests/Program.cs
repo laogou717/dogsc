@@ -48,7 +48,7 @@ try
     var cameraOverlay = Path.Combine(root, "camera-overlay.mp4");
     var projectPath = Path.Combine(root, "roundtrip.dogscproj");
 
-    Console.WriteLine("1/5 Generating a deterministic video+audio source.");
+    Console.WriteLine("1/8 Generating a deterministic video+audio source.");
     var generate = await RunAsync(ffmpeg,
         "-hide_banner", "-y", "-loglevel", "error",
         "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30",
