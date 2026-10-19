@@ -53,9 +53,6 @@ public sealed class RecordingOptions
         if (CaptureMicrophone && string.IsNullOrWhiteSpace(MicrophoneDevice))
             throw new InvalidOperationException("已启用麦克风录制，但没有选择麦克风设备。");
 
-        if (CaptureCamera && string.IsNullOrWhiteSpace(CameraDevice))
-            throw new InvalidOperationException("已启用摄像头叠加，但没有选择摄像头设备。");
-
         if (CameraPosition is not ("top-left" or "top-right" or "bottom-left" or "bottom-right" or "center"))
             throw new InvalidOperationException("摄像头位置设置无效。");
 
