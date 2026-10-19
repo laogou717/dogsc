@@ -15,6 +15,8 @@ public sealed class ClipItem : INotifyPropertyChanged
     private double _fadeInSeconds;
     private double _fadeOutSeconds;
     private int _rotationDegrees;
+    private double _zoomStart = 1.0;
+    private double _zoomEnd = 1.0;
     private string? _thumbnailPath;
 
     public string FilePath
@@ -96,6 +98,18 @@ public sealed class ClipItem : INotifyPropertyChanged
             var normalized = ((value % 360) + 360) % 360;
             SetField(ref _rotationDegrees, normalized % 90 == 0 ? normalized : 0);
         }
+    }
+
+    public double ZoomStart
+    {
+        get => _zoomStart;
+        set => SetField(ref _zoomStart, double.IsFinite(value) ? Math.Clamp(value, 1.0, 2.0) : 1.0);
+    }
+
+    public double ZoomEnd
+    {
+        get => _zoomEnd;
+        set => SetField(ref _zoomEnd, double.IsFinite(value) ? Math.Clamp(value, 1.0, 2.0) : 1.0);
     }
 
     [JsonIgnore]
