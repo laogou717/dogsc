@@ -67,7 +67,7 @@ try
     const string evenSizeFilter = "pad=ceil(iw/2)*2:ceil(ih/2)*2:0:0:color=black,format=nv12";
     var oddCaptureResult = await RunAsync(ffmpeg,
         "-hide_banner", "-y", "-loglevel", "error",
-        "-f", "lavfi", "-i", "testsrc2=size=1600x1075:rate=30",
+        "-f", "lavfi", "-i", "testsrc=size=1600x1075:rate=30,format=bgra",
         "-t", "1", "-vf", evenSizeFilter,
         "-c:v", "h264_mf", "-b:v", "1M", "-pix_fmt", "nv12", oddCapture);
     Require(oddCaptureResult.ExitCode == 0 && File.Exists(oddCapture) && new FileInfo(oddCapture).Length > 1024,
@@ -79,7 +79,7 @@ try
     Console.WriteLine("3/12 Verifying compatibility encoder fallback for odd-sized capture.");
     var oddFallbackResult = await RunAsync(ffmpeg,
         "-hide_banner", "-y", "-loglevel", "error",
-        "-f", "lavfi", "-i", "testsrc2=size=1600x1075:rate=30",
+        "-f", "lavfi", "-i", "testsrc=size=1600x1075:rate=30,format=bgra",
         "-t", "1", "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2:0:0:color=black,format=yuv420p",
         "-c:v", "mpeg4", "-b:v", "1M", "-pix_fmt", "yuv420p", oddCaptureFallback);
     Require(oddFallbackResult.ExitCode == 0 && File.Exists(oddCaptureFallback) && new FileInfo(oddCaptureFallback).Length > 1024,
