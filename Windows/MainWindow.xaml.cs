@@ -19,6 +19,9 @@ public partial class MainWindow : Window
     private readonly MediaEditorService _mediaEditorService = new();
     private readonly ProjectFileService _projectFileService = new();
     private readonly ObservableCollection<ClipItem> _clips = new();
+    private readonly Stack<List<ClipItem>> _undoStack = new();
+    private readonly Stack<List<ClipItem>> _redoStack = new();
+    private bool _restoringHistory;
     private bool _previewPlaying;
     private bool _closingAfterStop;
     private double _previewStartSeconds;
@@ -43,6 +46,7 @@ public partial class MainWindow : Window
         InitializeComponent();
         App.WriteDiagnostic("MainWindow InitializeComponent completed");
         ClipsGrid.ItemsSource = _clips;
+        UpdateHistoryButtons();
         CaptureModeCombo.SelectedIndex = 0;
         FrameRateCombo.SelectedIndex = 0;
         ExportFormatCombo.SelectedIndex = 0;
@@ -290,6 +294,8 @@ public partial class MainWindow : Window
                 var probe = await _mediaEditorService.ProbeAsync(path);
                 if (!probe.HasVideo)
                     throw new InvalidOperationException("文件不包含视频流。");
+                if (added == 0)
+                    SaveUndoState();
                 _clips.Add(new ClipItem { FilePath = Path.GetFullPath(path), StartSeconds = 0, EndSeconds = probe.DurationSeconds, Speed = 1 });
                 added++;
             }
@@ -466,9 +472,14 @@ public partial class MainWindow : Window
             var info = await _mediaEditorService.ProbeAsync(clip.FilePath);
             if (end > info.DurationSeconds + 0.05)
                 throw new InvalidOperationException($"出点超过媒体时长（{info.DurationSeconds:F2} 秒）。");
+            var speed = ReadTagDouble(ClipSpeedCombo.SelectedItem as ComboBoxItem, 1.0);
+            if (Math.Abs(clip.StartSeconds - start) > 0.0001 ||
+                Math.Abs(clip.EndSeconds - end) > 0.0001 ||
+                Math.Abs(clip.Speed - speed) > 0.0001)
+                SaveUndoState();
             clip.StartSeconds = start;
             clip.EndSeconds = end;
-            clip.Speed = ReadTagDouble(ClipSpeedCombo.SelectedItem as ComboBoxItem, 1.0);
+            clip.Speed = speed;
             ClipsGrid.Items.Refresh();
             EditorStatusText.Text = $"片段设置已应用：{clip.DisplayLabel}";
         }
@@ -483,6 +494,7 @@ public partial class MainWindow : Window
         if (ClipsGrid.SelectedItem is not ClipItem clip)
             return;
         var index = ClipsGrid.SelectedIndex;
+        SaveUndoState();
         _clips.Remove(clip);
         if (_clips.Count > 0)
             ClipsGrid.SelectedIndex = Math.Min(index, _clips.Count - 1);
@@ -504,6 +516,7 @@ public partial class MainWindow : Window
         var destination = index + delta;
         if (index < 0 || destination < 0 || destination >= _clips.Count)
             return;
+        SaveUndoState();
         _clips.Move(index, destination);
         ClipsGrid.SelectedIndex = destination;
         EditorStatusText.Text = "片段顺序已更新。";
@@ -539,9 +552,8 @@ public partial class MainWindow : Window
         try
         {
             var clips = await _projectFileService.LoadAsync(dialog.FileName);
-            _clips.Clear();
-            foreach (var clip in clips)
-                _clips.Add(clip);
+            SaveUndoState();
+            ReplaceClips(clips, 0);
             ClipsGrid.SelectedIndex = _clips.Count > 0 ? 0 : -1;
             EditorStatusText.Text = $"项目已打开，包含 {_clips.Count} 个片段。";
         }
@@ -611,6 +623,100 @@ public partial class MainWindow : Window
     {
         await StopRecordingAsync();
         Close();
+    }
+
+    private void SaveUndoState()
+    {
+        if (_restoringHistory)
+            return;
+
+        _undoStack.Push(CaptureClips());
+        while (_undoStack.Count > 100)
+        {
+            var keep = _undoStack.Reverse().Take(100).Reverse().ToArray();
+            _undoStack.Clear();
+            foreach (var snapshot in keep)
+                _undoStack.Push(snapshot);
+        }
+
+        _redoStack.Clear();
+        UpdateHistoryButtons();
+    }
+
+    private List<ClipItem> CaptureClips() =>
+        _clips.Select(clip => new ClipItem
+        {
+            FilePath = clip.FilePath,
+            StartSeconds = clip.StartSeconds,
+            EndSeconds = clip.EndSeconds,
+            Speed = clip.Speed
+        }).ToList();
+
+    private void ReplaceClips(IEnumerable<ClipItem> clips, int selectedIndex)
+    {
+        _restoringHistory = true;
+        try
+        {
+            _clips.Clear();
+            foreach (var clip in clips)
+            {
+                _clips.Add(new ClipItem
+                {
+                    FilePath = clip.FilePath,
+                    StartSeconds = clip.StartSeconds,
+                    EndSeconds = clip.EndSeconds,
+                    Speed = clip.Speed
+                });
+            }
+        }
+        finally
+        {
+            _restoringHistory = false;
+        }
+
+        ClipsGrid.SelectedIndex = _clips.Count == 0 ? -1 : Math.Clamp(selectedIndex, 0, _clips.Count - 1);
+        if (_clips.Count == 0)
+        {
+            _previewElement?.Stop();
+            if (_previewElement is not null)
+                _previewElement.Source = null;
+            RecordingMarkersList.ItemsSource = Array.Empty<RecordingMarker>();
+        }
+        UpdateHistoryButtons();
+    }
+
+    private void Undo_Click(object sender, RoutedEventArgs e)
+    {
+        if (_undoStack.Count == 0)
+            return;
+
+        _redoStack.Push(CaptureClips());
+        var previous = _undoStack.Pop();
+        var selectedIndex = ClipsGrid.SelectedIndex;
+        ReplaceClips(previous, selectedIndex);
+        EditorStatusText.Text = "已撤销上一步编辑。";
+        UpdateHistoryButtons();
+    }
+
+    private void Redo_Click(object sender, RoutedEventArgs e)
+    {
+        if (_redoStack.Count == 0)
+            return;
+
+        _undoStack.Push(CaptureClips());
+        var next = _redoStack.Pop();
+        var selectedIndex = ClipsGrid.SelectedIndex;
+        ReplaceClips(next, selectedIndex);
+        EditorStatusText.Text = "已重做编辑。";
+        UpdateHistoryButtons();
+    }
+
+    private void UpdateHistoryButtons()
+    {
+        if (UndoButton is not null)
+            UndoButton.IsEnabled = _undoStack.Count > 0;
+        if (RedoButton is not null)
+            RedoButton.IsEnabled = _redoStack.Count > 0;
     }
 
     private static int ReadTagInt(ComboBox comboBox, int fallback)
