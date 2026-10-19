@@ -708,6 +708,9 @@ public partial class MainWindow : Window
             "Ctrl+E：导出媒体\n" +
             "Ctrl+Z：撤销\n" +
             "Ctrl+Y 或 Ctrl+Shift+Z：重做\n" +
+            "Ctrl+B：在预览播放头处分割片段\n" +
+            "Ctrl+D：复制所选片段\n" +
+            "I / O：将预览位置设为入点 / 出点\n" +
             "Delete：删除所选片段\n" +
             "Space：播放/暂停预览\n" +
             "Ctrl+Alt+M：录制时添加剪辑标记",
