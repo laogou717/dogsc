@@ -1255,7 +1255,7 @@ public partial class MainWindow : Window
         ClipFadeInTextBox.Text = clip.FadeInSeconds.ToString("0.##", CultureInfo.InvariantCulture);
         ClipFadeOutTextBox.Text = clip.FadeOutSeconds.ToString("0.##", CultureInfo.InvariantCulture);
         ClipRotationCombo.SelectedItem = ClipRotationCombo.Items.OfType<ComboBoxItem>()
-            .FirstOrDefault(item => ReadTagInt(item, 0) == clip.RotationDegrees);
+            .FirstOrDefault(item => int.TryParse(item.Tag?.ToString(), out var rotationTag) && rotationTag == clip.RotationDegrees);
         _previewTimer.Stop();
         _previewClip = clip;
         _previewStartSeconds = clip.StartSeconds;
