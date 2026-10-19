@@ -307,7 +307,7 @@
                         <ContentControl x:Name="PreviewHost" />
                     </Border>
                     <DockPanel Grid.Row="2" Margin="0,7,0,0">
-                        <Button x:Name="PreviewPlayButton" Content="&#xE768;  播放预览" FontFamily="Segoe MDL2 Assets" Style="{StaticResource PrimaryButton}" Click="TogglePreview_Click" MinWidth="128" MinHeight="36" Margin="0,0,8,0" />
+                        <Button x:Name="PreviewPlayButton" Style="{StaticResource PrimaryButton}" Click="TogglePreview_Click" MinWidth="128" MinHeight="36" Margin="0,0,8,0"><StackPanel Orientation="Horizontal" HorizontalAlignment="Center"><TextBlock Text="▶" FontFamily="Segoe UI Symbol" Margin="0,0,7,0" VerticalAlignment="Center" /><TextBlock Text="播放预览" VerticalAlignment="Center" /></StackPanel></Button>
                         <TextBlock Text="空格：播放 / 暂停" Foreground="#7B879B" FontSize="11" VerticalAlignment="Center" />
                     </DockPanel>
                 </Grid>
@@ -351,7 +351,7 @@
                         <Button DockPanel.Dock="Right" Content="快捷键" Click="ShowShortcuts_Click" Margin="0" MinHeight="30" Padding="9,5" />
                     </DockPanel>
                     <WrapPanel Grid.Row="1" Margin="0,0,0,6">
-                        <Button Content="&#xE710; 导入片段" FontFamily="Segoe MDL2 Assets" Style="{StaticResource PrimaryButton}" Click="AddClips_Click" Margin="0,0,6,0" MinHeight="32" Padding="10,5" />
+                        <Button Style="{StaticResource PrimaryButton}" Click="AddClips_Click" Margin="0,0,6,0" MinHeight="32" Padding="10,5"><StackPanel Orientation="Horizontal"><TextBlock Text="+" FontSize="17" Margin="0,0,6,0" VerticalAlignment="Center" /><TextBlock Text="导入片段" VerticalAlignment="Center" /></StackPanel></Button>
                         <Button Content="打开项目" Click="LoadProject_Click" Margin="0,0,6,0" MinHeight="32" Padding="10,5" />
                         <Button Content="保存项目" Click="SaveProject_Click" Margin="0" MinHeight="32" Padding="10,5" />
                     </WrapPanel>
@@ -449,7 +449,7 @@
                     <Expander Header="高级设置" FontSize="12" Margin="0,5,0,0">
                         <TextBlock Text="输出采用兼容的 H.264 / AAC 编码参数；失败时可查看日志诊断。" Foreground="#6B7A91" FontSize="11" TextWrapping="Wrap" Margin="0,7,0,4" />
                     </Expander>
-                    <Button x:Name="ExportButton" Content="&#xE74E;  开始导出" FontFamily="Segoe MDL2 Assets" Style="{StaticResource PrimaryButton}" MinHeight="42" Margin="0,9,0,0" Click="Export_Click" />
+                    <Button x:Name="ExportButton" Style="{StaticResource PrimaryButton}" MinHeight="42" Margin="0,9,0,0" Click="Export_Click"><StackPanel Orientation="Horizontal" HorizontalAlignment="Center"><TextBlock Text="↗" FontFamily="Segoe UI Symbol" FontSize="16" Margin="0,0,8,0" VerticalAlignment="Center" /><TextBlock Text="开始导出" VerticalAlignment="Center" /></StackPanel></Button>
                     <TextBlock x:Name="EditorStatusText" Text="导入视频后即可编辑并导出。" Foreground="#6B7A91" FontSize="11" TextWrapping="Wrap" Margin="2,6,2,0" />
                 </StackPanel>
             </Border>
