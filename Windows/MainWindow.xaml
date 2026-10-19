@@ -133,6 +133,7 @@
                         <Button Content="删除片段" Click="RemoveClip_Click" />
                         <Button Content="上移" Click="MoveClipUp_Click" />
                         <Button Content="下移" Click="MoveClipDown_Click" />
+                        <Button Content="快捷键" Click="ShowShortcuts_Click" />
                     </WrapPanel>
                     <DataGrid x:Name="ClipsGrid" Grid.Row="1" AutoGenerateColumns="False"
                               CanUserAddRows="False" IsReadOnly="True" SelectionMode="Single"

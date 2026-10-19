@@ -122,6 +122,20 @@ public partial class MainWindow : Window
         return IntPtr.Zero;
     }
 
+    private void ShowShortcuts_Click(object sender, RoutedEventArgs e)
+    {
+        MessageBox.Show(this,
+            "Ctrl+O：导入视频\n" +
+            "Ctrl+S：保存项目\n" +
+            "Ctrl+E：导出媒体\n" +
+            "Ctrl+Z：撤销\n" +
+            "Ctrl+Y 或 Ctrl+Shift+Z：重做\n" +
+            "Delete：删除所选片段\n" +
+            "Space：播放/暂停预览\n" +
+            "Ctrl+Alt+M：录制时添加剪辑标记",
+            "DogSC 快捷键", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
     private void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
     {
         var control = Keyboard.Modifiers.HasFlag(ModifierKeys.Control);
