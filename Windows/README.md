@@ -29,7 +29,8 @@ Developers can override FFmpeg discovery with DOGSC_FFMPEG_PATH. Ordinary users 
 - WASAPI system-audio loopback through NAudio and DirectShow microphone capture, including post-recording audio mixing.
 - Video import and preview, clip ordering, in/out trimming, and 0.5x–2x playback speed.
 - Versioned .dogscproj project save/load.
-- MP4 export at 1080p/1440p/4K and 30/60 FPS, plus M4A audio export.
+- Recording markers via a button and Ctrl+Alt+M global shortcut; timestamps are saved to a companion .markers.json file and can be selected in the editor to seek the preview.
+- MP4 export at 1080p/1440p/4K and 30/60 FPS, with 16:9, 9:16, 1:1, 4:3 and 3:2 canvas ratios, fit/fill modes and selectable backgrounds; plus M4A audio export.
 - Single-installer pipeline with a self-contained .NET runtime, bundled FFmpeg DLLs, checksum verification, and an FFmpeg encode/probe smoke test.
 
 ## Feature parity status

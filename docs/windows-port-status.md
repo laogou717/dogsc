@@ -10,8 +10,10 @@ The Windows app lives in Windows/ and is isolated from the existing Swift/macOS 
 - [x] WASAPI system loopback and DirectShow microphone input with audio mixing.
 - [x] Video import/probing, preview, clip ordering, in/out trim, and 0.5x–2x speed.
 - [x] Versioned JSON project save/load with missing-media and invalid-range checks.
-- [x] MP4/M4A export code paths and resolution/frame-rate selection.
+- [x] MP4/M4A export code paths; 1080p/1440p/4K and 30/60 FPS; 16:9/9:16/1:1/4:3/3:2 canvases, fit/fill and background options.
+- [x] Recording marker button and Ctrl+Alt+M global shortcut; timestamps saved to a JSON sidecar and available for seeking in the editor.
 - [x] Single-installer script; self-contained .NET publishing; pinned FFmpeg LGPL shared build; SHA-256 verification; FFmpeg encode/probe smoke test in CI.
+- [x] CI integration tests for media probing, project save/load, MP4/M4A export, portrait output and square crop; successful installed-app startup verified on commit 672cccc3e8223bad91a3de0a4965f62cbf2c3c5e.
 - [ ] Windows build and installer workflow must pass after the current commit; inspect its logs rather than assuming success.
 - [ ] Validate installation, first launch, uninstall, and clean-machine operation on a real Windows 10/11 machine.
 - [ ] Validate capture and audio sync with real devices, multiple monitors, mixed DPI, long recordings, sleep/resume, and export recovery.
@@ -25,7 +27,7 @@ The Windows app lives in Windows/ and is isolated from the existing Swift/macOS 
 - [ ] Cursor asset library, click feedback, pointer event timeline, and cursor calibration.
 - [ ] Automatic cursor-follow zoom, manual zoom keyframes, 3D perspective, focus blur, and opening animations.
 - [ ] Background, crop/aspect ratio, rounded corners, shadows, device frames, stickers, softening/highlight effects, and scene presets.
-- [ ] Full multi-track timeline operations, thumbnails/waveforms, snapping, undo/redo, markers, and advanced audio editing.
+- [ ] Full multi-track timeline operations, thumbnails/waveforms, snapping, undo/redo, marker tracks/timeline editing, and advanced audio editing.
 - [ ] Settings, shortcut reference, localization parity, updater, signed installer, and release packaging.
 - [ ] Automated parity tests comparing project semantics and export behavior with macOS fixtures.
 - [ ] Manual regression matrix on Windows 10/11 and common integrated/discrete graphics plus common audio interfaces.
