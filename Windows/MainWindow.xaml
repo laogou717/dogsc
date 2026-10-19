@@ -95,7 +95,7 @@
                                 <TextBlock Text="录制 · 编辑 · 导出" FontSize="11" Foreground="#6D7E99" />
                                 <Separator Margin="0,12,0,9" Background="#D6E4FA" />
                                 <TextBlock Text="DogSC" FontSize="12" FontWeight="SemiBold" />
-                                <TextBlock Text="v0.1.11  ·  预览版" FontSize="11" Foreground="#7C8AA2" Margin="0,3,0,0" />
+                                <TextBlock Text="v0.1.12  ·  预览版" FontSize="11" Foreground="#7C8AA2" Margin="0,3,0,0" />
                             </StackPanel>
                         </Border>
                     </Grid>

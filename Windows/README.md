@@ -27,6 +27,7 @@ Developers can override FFmpeg discovery with DOGSC_FFMPEG_PATH. Ordinary users 
 
 - Desktop, window-title, and drag-selected coordinate-region capture at 30/60 FPS with a configurable cursor visibility toggle.
 - Live preview of the selected desktop/window/region, with fit/fill preview scaling and an explicit note that final recording output is authoritative.
+- When webcam overlay is enabled, a periodic webcam snapshot appears over the preview using the selected position/size. The camera snapshot preview pauses during recording to avoid opening the DirectShow device twice; the actual webcam overlay is captured by the recording pipeline.
 - Odd capture dimensions are padded to even dimensions and converted to an encoder-compatible pixel format; failed Media Foundation H.264 startup retries with the MPEG-4 compatibility encoder.
 - WASAPI system-audio loopback through NAudio and DirectShow microphone capture, including post-recording audio mixing.
 - Static webcam overlay recording through DirectShow, with small/medium/large sizing and five placement presets.

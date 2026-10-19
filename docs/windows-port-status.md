@@ -8,6 +8,7 @@ The Windows app lives in Windows/ and is isolated from the existing Swift/macOS 
 - [x] FFmpeg executable discovery from app-local tools, DOGSC_FFMPEG_PATH, or PATH.
 - [x] Desktop/window/coordinate-region capture command path with 30/60 FPS and cursor rendering.
 - [x] Live desktop/window/region preview; recording errors use concise summaries with expandable detailed FFmpeg logs.
+- [x] Periodic webcam snapshot overlay in the preview, honoring camera position and size controls. Snapshot preview pauses during recording to avoid competing DirectShow device handles.
 - [x] Odd-size GDI frames are padded to even dimensions and converted to the selected encoder pixel format; failed h264_mf startup retries with MPEG-4. CI verifies 1600x1075 capture pads to 1600x1076 and both encoders produce valid MP4.
 - [x] WASAPI system loopback and DirectShow microphone input with audio mixing.
 - [x] Static webcam overlay through DirectShow with five positions and three size presets; CI validates the FFmpeg overlay filter with synthetic video inputs.
