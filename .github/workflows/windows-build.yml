@@ -171,9 +171,16 @@ jobs:
           retention-days: 30
 
       - name: Publish tagged Windows preview release
-        if: startsWith(github.ref, 'refs/tags/windows-v')
+        if: startsWith(github.ref, 'refs/tags/windows-v') || (github.ref == 'refs/heads/windows-port' && contains(github.event.head_commit.message, '[publish-release]'))
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/windows-v') && github.ref_name || 'windows-v0.1.0' }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ startsWith(github.ref, 'refs/tags/windows-v') && format('DogSC Windows Preview {0}', github.ref_name) || 'DogSC Windows Preview v0.1.0' }}
+          body: |
+            DogSC for Windows — preview release.
+
+            Includes the self-contained Windows x64 application and bundled LGPL FFmpeg tools. This is a Windows preview; hardware-dependent capture and full macOS feature parity still require additional validation.
           files: artifacts/installer/DogSC-Setup-win-x64.exe
           prerelease: true
           generate_release_notes: true
