@@ -400,7 +400,10 @@
                     </WrapPanel>
                     <DataGrid x:Name="ClipsGrid" Grid.Row="2" AutoGenerateColumns="False" CanUserAddRows="False"
                               IsReadOnly="True" SelectionMode="Single" SelectionChanged="ClipsGrid_SelectionChanged"
-                              HeadersVisibility="Column" GridLinesVisibility="Horizontal" RowHeight="68" MinHeight="130">
+                              AllowDrop="True" PreviewMouseLeftButtonDown="ClipsGrid_PreviewMouseLeftButtonDown"
+                              PreviewMouseMove="ClipsGrid_PreviewMouseMove" Drop="ClipsGrid_Drop"
+                              HeadersVisibility="Column" GridLinesVisibility="Horizontal" RowHeight="68" MinHeight="130"
+                              ToolTip="可拖动片段行调整顺序；入点、出点和速度可在上方调整">
                         <DataGrid.Columns>
                             <DataGridTemplateColumn Header="片段" Width="*">
                                 <DataGridTemplateColumn.CellTemplate>
