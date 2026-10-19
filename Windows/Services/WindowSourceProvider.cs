@@ -6,12 +6,16 @@ namespace DogSC.Windows.Services;
 
 public static class WindowSourceProvider
 {
+    [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+    [return: MarshalAs(UnmanagedType.Bool)]
     private delegate bool EnumWindowsCallback(IntPtr handle, IntPtr lParam);
 
-    [DllImport("user32.dll")]
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool EnumWindows(EnumWindowsCallback callback, IntPtr lParam);
 
     [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool IsWindowVisible(IntPtr handle);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
@@ -28,27 +32,37 @@ public static class WindowSourceProvider
         var windows = new List<WindowSource>();
         var ownProcessId = (uint)Environment.ProcessId;
 
-        EnumWindows((handle, _) =>
+        EnumWindowsCallback callback = (handle, _) =>
         {
-            if (!IsWindowVisible(handle))
-                return true;
+            try
+            {
+                if (!IsWindowVisible(handle))
+                    return true;
 
-            GetWindowThreadProcessId(handle, out var processId);
-            if (processId == ownProcessId)
-                return true;
+                GetWindowThreadProcessId(handle, out var processId);
+                if (processId == ownProcessId)
+                    return true;
 
-            var length = GetWindowTextLength(handle);
-            if (length <= 0)
-                return true;
+                var length = GetWindowTextLength(handle);
+                if (length <= 0)
+                    return true;
 
-            var text = new StringBuilder(length + 1);
-            _ = GetWindowText(handle, text, text.Capacity);
-            var title = text.ToString().Trim();
-            if (title.Length > 0)
-                windows.Add(new WindowSource { Title = title, Handle = handle, ProcessId = processId });
+                var text = new StringBuilder(length + 1);
+                _ = GetWindowText(handle, text, text.Capacity);
+                var title = text.ToString().Trim();
+                if (title.Length > 0)
+                    windows.Add(new WindowSource { Title = title, Handle = handle, ProcessId = processId });
+            }
+            catch
+            {
+                // Never allow a managed exception to cross a native callback boundary.
+            }
 
             return true;
-        }, IntPtr.Zero);
+        };
+
+        _ = EnumWindows(callback, IntPtr.Zero);
+        GC.KeepAlive(callback);
 
         return windows
             .GroupBy(w => w.Title, StringComparer.CurrentCultureIgnoreCase)
