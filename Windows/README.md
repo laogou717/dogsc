@@ -37,6 +37,8 @@ Developers can override FFmpeg discovery with DOGSC_FFMPEG_PATH. Ordinary users 
 - MP4 export at 1080p/1440p/4K and 30/60 FPS, with 16:9, 9:16, 1:1, 4:3 and 3:2 canvas ratios, fit/fill modes and selectable backgrounds; plus M4A audio export.
 - Redesigned Chinese WPF interface matching the supplied recording/editor mockups: two-column recording layout, fixed footer action bar, two-column editing/export workspace, rounded controls, Segoe MDL2 icons separated from localized text, and a vector dog illustration.
 - DirectShow device names are decoded from raw FFmpeg bytes using strict UTF-8 with Windows ANSI-code-page fallback, preventing garbled Chinese device names.
+- Window recording captures the selected window's desktop rectangle to avoid black frames from GPU-accelerated apps. DogSC minimizes during capture; use Ctrl+Alt+Shift+S to stop without covering the target window.
+- Recording layout gives more width to live preview, and the region selection button uses a vector dashed-rectangle icon instead of a font glyph.
 - Single-installer pipeline with a self-contained .NET runtime, bundled FFmpeg DLLs, checksum verification, and FFmpeg encode/probe integration tests.
 
 ## Feature parity status

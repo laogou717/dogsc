@@ -34,6 +34,28 @@ static async Task<(int ExitCode, string Output)> RunAsync(string exe, params str
     return (process.ExitCode, (await stdout) + Environment.NewLine + (await stderr));
 }
 
+Console.WriteLine("Window-capture regression check: use desktop crop instead of title= input.");
+var windowCaptureArgs = new List<string>();
+RecordingService.BuildArguments(new RecordingOptions
+{
+    OutputPath = Path.Combine(Path.GetTempPath(), "dogsc-window-capture-regression.mp4"),
+    Mode = CaptureMode.Window,
+    WindowTitle = "GPU accelerated test window",
+    WindowX = 137,
+    WindowY = 83,
+    WindowWidth = 1280,
+    WindowHeight = 720
+}, windowCaptureArgs, "h264_mf");
+Require(windowCaptureArgs.Contains("desktop"), "window capture must use the composed desktop input.");
+Require(!windowCaptureArgs.Any(argument => argument.StartsWith("title=", StringComparison.OrdinalIgnoreCase)),
+    "window capture must not use gdigrab title= because it can produce black GPU-window recordings.");
+Require(windowCaptureArgs.IndexOf("-offset_x") >= 0 && windowCaptureArgs[windowCaptureArgs.IndexOf("-offset_x") + 1] == "137",
+    "window capture X offset was not applied.");
+Require(windowCaptureArgs.IndexOf("-offset_y") >= 0 && windowCaptureArgs[windowCaptureArgs.IndexOf("-offset_y") + 1] == "83",
+    "window capture Y offset was not applied.");
+Require(windowCaptureArgs.IndexOf("-video_size") >= 0 && windowCaptureArgs[windowCaptureArgs.IndexOf("-video_size") + 1] == "1280x720",
+    "window capture crop dimensions were not applied.");
+
 var ffmpeg = FfmpegLocator.FindFfmpegPath()
     ?? throw new InvalidOperationException("Set DOGSC_FFMPEG_PATH to the bundled ffmpeg.exe before running tests.");
 var root = Path.Combine(Path.GetTempPath(), "DogSC-Integration-" + Guid.NewGuid().ToString("N"));

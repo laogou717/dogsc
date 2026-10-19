@@ -59,7 +59,7 @@
     <Grid>
         <Grid.RowDefinitions><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
         <Grid Grid.Row="0">
-            <Grid.ColumnDefinitions><ColumnDefinition Width="0.94*" /><ColumnDefinition Width="1.06*" /></Grid.ColumnDefinitions>
+            <Grid.ColumnDefinitions><ColumnDefinition Width="0.82*" /><ColumnDefinition Width="1.18*" /></Grid.ColumnDefinitions>
             <Grid Grid.Column="0" Margin="0,0,8,0">
                 <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
                 <Border Grid.Row="0" Style="{StaticResource CardStyle}" Padding="14" Margin="0,0,0,10">
@@ -183,8 +183,13 @@
                             <StackPanel Margin="0,0,7,0"><TextBlock Style="{StaticResource FieldLabel}" Text="宽度" Margin="0,0,0,3" /><TextBox x:Name="RegionWidthTextBox" Text="1280" TextChanged="RegionCoordinates_TextChanged" /></StackPanel>
                             <StackPanel><TextBlock Style="{StaticResource FieldLabel}" Text="高度" Margin="0,0,0,3" /><TextBox x:Name="RegionHeightTextBox" Text="720" TextChanged="RegionCoordinates_TextChanged" /></StackPanel>
                         </UniformGrid>
-                        <Button Content="&#xE8A7;  拖动选择区域..." Click="SelectRegion_Click" Margin="0,8,0,0" HorizontalAlignment="Stretch"
-                                Background="#D7E8FF" Foreground="#1769F5" BorderBrush="#D7E8FF" MinHeight="38" />
+                        <Button Click="SelectRegion_Click" Margin="0,8,0,0" HorizontalAlignment="Stretch"
+                                Background="#D7E8FF" Foreground="#1769F5" BorderBrush="#D7E8FF" MinHeight="38" ToolTip="按住鼠标左键拖动选择屏幕区域">
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                <Rectangle Width="15" Height="15" Stroke="#1769F5" StrokeThickness="2" StrokeDashArray="2,2" Margin="0,0,8,0" VerticalAlignment="Center" />
+                                <TextBlock Text="拖动选择区域..." VerticalAlignment="Center" />
+                            </StackPanel>
+                        </Button>
                     </StackPanel>
                 </Border>
             </Grid>

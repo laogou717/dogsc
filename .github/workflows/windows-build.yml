@@ -198,13 +198,13 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/windows-v') || (github.ref == 'refs/heads/windows-port' && contains(github.event.head_commit.message, '[publish-release]'))
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/windows-v') && github.ref_name || 'windows-v0.1.18' }}
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/windows-v') && github.ref_name || 'windows-v0.1.19' }}
           target_commitish: ${{ github.sha }}
-          name: ${{ startsWith(github.ref, 'refs/tags/windows-v') && format('DogSC Windows Preview {0}', github.ref_name) || 'DogSC Windows Preview v0.1.18' }}
+          name: ${{ startsWith(github.ref, 'refs/tags/windows-v') && format('DogSC Windows Preview {0}', github.ref_name) || 'DogSC Windows Preview v0.1.19' }}
           body: |
-            DogSC for Windows — Chinese UI rendering and layout refinement preview v0.1.18.
+            DogSC for Windows — black GPU-window capture fix and recording layout refinement preview v0.1.19.
 
-            This release fixes Chinese DirectShow device names by decoding FFmpeg output as UTF-8 when valid and falling back to the active Windows ANSI code page, and separates Fluent icon glyphs from Chinese button text across recording, preview, import, and export controls to prevent tofu/garbled labels. It removes excess content from the recording options card to keep the marker row visible, tightens the device and action panel proportions, and retains the design-matched editor/export layout and recording compatibility fixes.
+            This release fixes black recordings of GPU-accelerated application windows by capturing the selected window's visible desktop rectangle instead of FFmpeg gdigrab title=, minimizes DogSC while window recording runs to avoid covering the target, adds Ctrl+Alt+Shift+S as a global stop shortcut, widens the live-preview column, and replaces the broken region-picker glyph with a vector selection icon. Chinese DirectShow device names retain UTF-8/Windows-code-page decoding fallback.
 
             Includes the self-contained Windows x64 application and bundled LGPL FFmpeg tools. Hardware-dependent capture and remaining macOS feature parity still require additional validation.
           files: artifacts/installer/DogSC-Setup-win-x64.exe

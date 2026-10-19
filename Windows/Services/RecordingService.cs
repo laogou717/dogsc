@@ -321,7 +321,7 @@ public sealed class RecordingService : IDisposable
         }
     }
 
-    private static void BuildArguments(RecordingOptions options, ICollection<string> args, string videoEncoder)
+    public static void BuildArguments(RecordingOptions options, ICollection<string> args, string videoEncoder)
     {
         Add(args, "-hide_banner", "-y", "-loglevel", "info", "-thread_queue_size", "1024",
             "-f", "gdigrab", "-framerate", options.FramesPerSecond.ToString(CultureInfo.InvariantCulture),
@@ -334,8 +334,18 @@ public sealed class RecordingService : IDisposable
                 "-offset_y", options.RegionY.ToString(CultureInfo.InvariantCulture),
                 "-video_size", $"{options.RegionWidth}x{options.RegionHeight}");
         }
+        else if (options.Mode == CaptureMode.Window)
+        {
+            // gdigrab title= frequently returns black frames for GPU-rendered windows.
+            // Crop the selected window from the composed desktop instead; MainWindow
+            // minimizes itself before starting capture so it cannot cover the target.
+            Add(args,
+                "-offset_x", options.WindowX.ToString(CultureInfo.InvariantCulture),
+                "-offset_y", options.WindowY.ToString(CultureInfo.InvariantCulture),
+                "-video_size", $"{options.WindowWidth}x{options.WindowHeight}");
+        }
 
-        Add(args, "-i", options.Mode == CaptureMode.Window ? "title=" + options.WindowTitle : "desktop");
+        Add(args, "-i", "desktop");
 
         var nextInput = 1;
         int? microphoneInput = null;

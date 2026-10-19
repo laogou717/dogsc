@@ -12,6 +12,10 @@ public sealed class RecordingOptions
     public required string OutputPath { get; init; }
     public CaptureMode Mode { get; init; } = CaptureMode.Desktop;
     public string? WindowTitle { get; init; }
+    public int WindowX { get; init; }
+    public int WindowY { get; init; }
+    public int WindowWidth { get; init; }
+    public int WindowHeight { get; init; }
     public int RegionX { get; init; }
     public int RegionY { get; init; }
     public int RegionWidth { get; init; }
@@ -37,6 +41,9 @@ public sealed class RecordingOptions
 
         if (Mode == CaptureMode.Window && string.IsNullOrWhiteSpace(WindowTitle))
             throw new InvalidOperationException("请选择要录制的窗口。");
+
+        if (Mode == CaptureMode.Window && (WindowWidth < 16 || WindowHeight < 16))
+            throw new InvalidOperationException("所选窗口尺寸无效。请刷新窗口列表后重试。");
 
         // Negative offsets are valid on Windows virtual desktops when a secondary
         // monitor is positioned left of or above the primary monitor.

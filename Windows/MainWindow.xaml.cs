@@ -48,10 +48,16 @@ public partial class MainWindow : Window
     private const int Srccopy = 0x00CC0020;
     private const int CaptureBlt = 0x40000000;
     private const int MarkerHotKeyId = 0xD05C;
+    private const int StopWindowRecordingHotKeyId = 0xD05D;
     private const int WmHotKey = 0x0312;
     private const uint ModAlt = 0x0001;
     private const uint ModControl = 0x0002;
+    private const uint ModShift = 0x0004;
     private const uint VirtualKeyM = 0x4D;
+    private const uint VirtualKeyS = 0x53;
+    private const int SwRestore = 9;
+    private bool _stopWindowRecordingHotKeyRegistered;
+    private bool _restoreWindowAfterRecording;
     private HwndSource? _windowSource;
     private bool _markerHotKeyRegistered;
 
@@ -69,6 +75,22 @@ public partial class MainWindow : Window
         public int Right;
         public int Bottom;
     }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindow(IntPtr hwnd);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsIconic(IntPtr hwnd);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ShowWindow(IntPtr hwnd, int command);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetForegroundWindow(IntPtr hwnd);
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern IntPtr GetDC(IntPtr hwnd);
@@ -157,9 +179,14 @@ public partial class MainWindow : Window
         _windowSource = HwndSource.FromHwnd(handle);
         _windowSource?.AddHook(WindowMessageHook);
         _markerHotKeyRegistered = RegisterHotKey(handle, MarkerHotKeyId, ModControl | ModAlt, VirtualKeyM);
+        _stopWindowRecordingHotKeyRegistered = RegisterHotKey(handle, StopWindowRecordingHotKeyId,
+            ModControl | ModAlt | ModShift, VirtualKeyS);
         App.WriteDiagnostic(_markerHotKeyRegistered
             ? "Global marker shortcut Ctrl+Alt+M registered"
             : $"Global marker shortcut registration failed: {Marshal.GetLastWin32Error()}");
+        App.WriteDiagnostic(_stopWindowRecordingHotKeyRegistered
+            ? "Global window-recording stop shortcut Ctrl+Alt+Shift+S registered"
+            : $"Global stop shortcut registration failed: {Marshal.GetLastWin32Error()}");
     }
 
     protected override void OnClosed(EventArgs e)
@@ -175,6 +202,8 @@ public partial class MainWindow : Window
         var handle = new WindowInteropHelper(this).Handle;
         if (_markerHotKeyRegistered)
             _ = UnregisterHotKey(handle, MarkerHotKeyId);
+        if (_stopWindowRecordingHotKeyRegistered)
+            _ = UnregisterHotKey(handle, StopWindowRecordingHotKeyId);
         _windowSource?.RemoveHook(WindowMessageHook);
         _windowSource = null;
         base.OnClosed(e);
@@ -185,8 +214,14 @@ public partial class MainWindow : Window
         if (message == WmHotKey && wParam.ToInt32() == MarkerHotKeyId)
         {
             var marker = _recordingService.AddMarker();
-            if (marker is not null)
+            if (marker is not null && IsVisible)
                 RecordingStatusText.Text = $"已添加剪辑标记 #{marker.Index}，时间 {marker.TimeSeconds:F2} 秒。";
+            handled = true;
+        }
+        else if (message == WmHotKey && wParam.ToInt32() == StopWindowRecordingHotKeyId)
+        {
+            if (_restoreWindowAfterRecording || _recordingService.IsRecording)
+                _ = Dispatcher.BeginInvoke(new Action(async () => await StopRecordingAsync()));
             handled = true;
         }
 
@@ -866,11 +901,41 @@ public partial class MainWindow : Window
                 MessageBox.Show(this, "目标文件已存在，是否覆盖？", "确认覆盖", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
                 return;
 
+            var selectedWindow = WindowCombo.SelectedItem as WindowSource;
+            var windowX = 0;
+            var windowY = 0;
+            var windowWidth = 0;
+            var windowHeight = 0;
+            if (mode == CaptureMode.Window)
+            {
+                if (selectedWindow is null || !IsWindow(selectedWindow.Handle))
+                    throw new InvalidOperationException("请选择一个仍然打开的窗口，然后点击“刷新”更新窗口列表。");
+
+                if (IsIconic(selectedWindow.Handle))
+                    _ = ShowWindow(selectedWindow.Handle, SwRestore);
+                _ = SetForegroundWindow(selectedWindow.Handle);
+                await Task.Delay(180);
+
+                if (!GetWindowRect(selectedWindow.Handle, out var windowRect))
+                    throw new InvalidOperationException("无法获取所选窗口的位置。请刷新窗口列表后重试。");
+
+                windowX = windowRect.Left;
+                windowY = windowRect.Top;
+                windowWidth = windowRect.Right - windowRect.Left;
+                windowHeight = windowRect.Bottom - windowRect.Top;
+                if (windowWidth < 16 || windowHeight < 16)
+                    throw new InvalidOperationException("所选窗口尺寸无效。请先恢复窗口并重试。");
+            }
+
             var options = new RecordingOptions
             {
                 OutputPath = output,
                 Mode = mode,
-                WindowTitle = (WindowCombo.SelectedItem as WindowSource)?.Title,
+                WindowTitle = selectedWindow?.Title,
+                WindowX = windowX,
+                WindowY = windowY,
+                WindowWidth = windowWidth,
+                WindowHeight = windowHeight,
                 RegionX = ReadTextInt(RegionXTextBox.Text, "区域 X"),
                 RegionY = ReadTextInt(RegionYTextBox.Text, "区域 Y"),
                 RegionWidth = ReadTextInt(RegionWidthTextBox.Text, "区域宽度"),
@@ -893,11 +958,25 @@ public partial class MainWindow : Window
             RecordingStatusText.Text = "正在启动录制...";
             await WaitForCameraPreviewIdleAsync();
             CameraPreviewFrame.Visibility = Visibility.Collapsed;
+
+            if (mode == CaptureMode.Window)
+            {
+                // Capture the target's composed desktop rectangle, so minimize DogSC
+                // to prevent its own window from covering the selected application.
+                _restoreWindowAfterRecording = true;
+                Title = "DogSC - 窗口录制中（Ctrl+Alt+Shift+S 停止）";
+                WindowState = WindowState.Minimized;
+                await Task.Delay(500);
+            }
+
             await _recordingService.StartAsync(options);
-            RecordingStatusText.Text = "录制中。结束后请点击“停止录制”。";
+            RecordingStatusText.Text = mode == CaptureMode.Window
+                ? "窗口录制中。按 Ctrl+Alt+Shift+S 停止，Ctrl+Alt+M 添加标记。"
+                : "录制中。结束后请点击“停止录制”。";
         }
         catch (Exception exception)
         {
+            RestoreWindowAfterCaptureIfNeeded();
             StartRecordingButton.IsEnabled = true;
             StopRecordingButton.IsEnabled = false;
             AddMarkerButton.IsEnabled = false;
@@ -908,6 +987,18 @@ public partial class MainWindow : Window
             MessageBox.Show(this, friendlyError + Environment.NewLine + Environment.NewLine + "详细信息已保存到“查看详细日志”。",
                 "无法开始录制", MessageBoxButton.OK, MessageBoxImage.Error);
         }
+    }
+
+    private void RestoreWindowAfterCaptureIfNeeded()
+    {
+        if (!_restoreWindowAfterRecording)
+            return;
+
+        _restoreWindowAfterRecording = false;
+        Title = "DogSC";
+        WindowState = WindowState.Normal;
+        Show();
+        Activate();
     }
 
     private async void StopRecording_Click(object sender, RoutedEventArgs e) => await StopRecordingAsync();
@@ -926,6 +1017,7 @@ public partial class MainWindow : Window
         }
         finally
         {
+            RestoreWindowAfterCaptureIfNeeded();
             StartRecordingButton.IsEnabled = true;
             StopRecordingButton.IsEnabled = false;
             AddMarkerButton.IsEnabled = false;
