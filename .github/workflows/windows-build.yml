@@ -99,6 +99,38 @@ jobs:
           & $iscc "Windows/installer.iss"
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
 
+      - name: Validate installed bundle
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installer = Join-Path $env:GITHUB_WORKSPACE "artifacts/installer/DogSC-Setup-win-x64.exe"
+          if (!(Test-Path -LiteralPath $installer)) { throw "Installer artifact was not generated." }
+          $installDir = Join-Path $env:RUNNER_TEMP "DogSC-Install-Smoke"
+          & $installer /VERYSILENT /SUPPRESSMSGBOXES /NORESTART "/DIR=$installDir"
+          if ($LASTEXITCODE -ne 0) { throw "Silent installation failed with exit code $LASTEXITCODE" }
+          $appExe = Join-Path $installDir "DogSC.Windows.exe"
+          $ffmpegExe = Join-Path $installDir "tools/ffmpeg.exe"
+          $ffprobeExe = Join-Path $installDir "tools/ffprobe.exe"
+          foreach ($requiredFile in @($appExe, $ffmpegExe, $ffprobeExe)) {
+            if (!(Test-Path -LiteralPath $requiredFile)) { throw "Installed file missing: $requiredFile" }
+          }
+          & $ffmpegExe -hide_banner -version 2>&1 | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Packaged ffmpeg.exe could not start from the installed directory." }
+          & $ffprobeExe -hide_banner -version 2>&1 | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Packaged ffprobe.exe could not start from the installed directory." }
+          $notice = Join-Path $installDir "THIRD-PARTY-NOTICES.txt"
+          $license = Join-Path $installDir "COPYING.LGPLv2.1.txt"
+          if (!(Test-Path -LiteralPath $notice) -or !(Test-Path -LiteralPath $license)) {
+            throw "Third-party license notices were not included in the installation."
+          }
+          $installedBytes = (Get-ChildItem -LiteralPath $installDir -Recurse -File | Measure-Object -Property Length -Sum).Sum
+          if ($installedBytes -lt 20000000) { throw "Installed bundle size is unexpectedly small." }
+          $uninstaller = Join-Path $installDir "unins000.exe"
+          if (Test-Path -LiteralPath $uninstaller) {
+            & $uninstaller /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+            if ($LASTEXITCODE -ne 0) { throw "Silent uninstall failed with exit code $LASTEXITCODE" }
+          }
+
       - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
