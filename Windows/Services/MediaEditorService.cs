@@ -294,7 +294,7 @@ public sealed class MediaEditorService
                 }
                 else
                 {
-                    filters.Add($"[{i}:v:0]trim=start={start}:end={end},setpts=(PTS-STARTPTS)/{speed}{rotationFilter}," +
+                    filters.Add($"[{i}:v:0]trim=start={start}:end={end},setpts=(PTS-STARTPTS)/{speed}{zoomFilter}{rotationFilter}," +
                         $"scale={width}:{height}:force_original_aspect_ratio={scaleMode}{fitFilters}," +
                         $"setsar=1,fps={framesPerSecond}{videoFadeFilters},format=nv12[v{i}]");
                 }
