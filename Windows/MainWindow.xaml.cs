@@ -7,6 +7,8 @@ using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Interop;
+using System.Windows.Input;
+using System.Windows.Controls.Primitives;
 using DogSC.Windows.Models;
 using DogSC.Windows.Services;
 using Microsoft.Win32;
@@ -112,6 +114,51 @@ public partial class MainWindow : Window
         }
 
         return IntPtr.Zero;
+    }
+
+    private void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        var control = Keyboard.Modifiers.HasFlag(ModifierKeys.Control);
+        var shift = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift);
+        var textInputFocused = Keyboard.FocusedElement is TextBoxBase ||
+                               Keyboard.FocusedElement is ComboBox ||
+                               Keyboard.FocusedElement is PasswordBox;
+
+        if (control && !shift && e.Key == Key.O)
+        {
+            AddClips_Click(this, new RoutedEventArgs());
+            e.Handled = true;
+        }
+        else if (control && !shift && e.Key == Key.S)
+        {
+            SaveProject_Click(this, new RoutedEventArgs());
+            e.Handled = true;
+        }
+        else if (control && !shift && e.Key == Key.E)
+        {
+            Export_Click(this, new RoutedEventArgs());
+            e.Handled = true;
+        }
+        else if (control && !shift && e.Key == Key.Z)
+        {
+            Undo_Click(this, new RoutedEventArgs());
+            e.Handled = true;
+        }
+        else if (control && (shift && e.Key == Key.Z || e.Key == Key.Y))
+        {
+            Redo_Click(this, new RoutedEventArgs());
+            e.Handled = true;
+        }
+        else if (!textInputFocused && e.Key == Key.Delete)
+        {
+            RemoveClip_Click(this, new RoutedEventArgs());
+            e.Handled = true;
+        }
+        else if (!textInputFocused && e.Key == Key.Space)
+        {
+            TogglePreview_Click(this, new RoutedEventArgs());
+            e.Handled = true;
+        }
     }
 
     private void CaptureModeCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)

@@ -3,7 +3,8 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="DogSC for Windows" Height="820" Width="1240"
         MinHeight="680" MinWidth="960" WindowStartupLocation="CenterScreen"
-        Closing="MainWindow_Closing">
+        Closing="MainWindow_Closing"
+        PreviewKeyDown="MainWindow_PreviewKeyDown">
     <Grid Margin="14">
         <TabControl>
             <TabItem Header="屏幕录制">
