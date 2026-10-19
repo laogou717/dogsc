@@ -36,6 +36,7 @@ The Windows app lives in Windows/ and is isolated from the existing Swift/macOS 
 - [x] Basic settings/help page and shortcut reference.
 - [x] Modern Chinese UI styling with Microsoft YaHei UI font fallback and UTF-8 source checks in CI.
 - [x] Design-matched two-column recording layout and editing/export workspace, custom dog illustration, consistent Segoe MDL2 icons, and rounded ComboBox/checkbox styles.
+- [x] Chinese DirectShow device names use UTF-8 detection with Windows ANSI-code-page fallback; icon glyphs are separated from Chinese button text to prevent tofu characters.
 - [ ] Full localization parity, updater, production code signing, and manual real-device validation.
 - [ ] Automated parity tests comparing project semantics and export behavior with macOS fixtures.
 - [ ] Manual regression matrix on Windows 10/11 and common integrated/discrete graphics plus common audio interfaces.

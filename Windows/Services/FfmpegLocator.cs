@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace DogSC.Windows.Services;
@@ -69,10 +70,15 @@ public static class FfmpegLocator
             process.StartInfo.ArgumentList.Add(argument);
 
         process.Start();
-        var stderrTask = process.StandardError.ReadToEndAsync();
-        var stdoutTask = process.StandardOutput.ReadToEndAsync();
+        // FFmpeg DirectShow device names can be emitted as UTF-8 or the active
+        // Windows ANSI code page depending on the bundled build. Read bytes first
+        // so Chinese device names are decoded without replacement characters.
+        var stderrTask = ReadAllBytesAsync(process.StandardError.BaseStream);
+        var stdoutTask = ReadAllBytesAsync(process.StandardOutput.BaseStream);
         await process.WaitForExitAsync().ConfigureAwait(false);
-        var output = (await stderrTask.ConfigureAwait(false)) + Environment.NewLine + (await stdoutTask.ConfigureAwait(false));
+        var stderrBytes = await stderrTask.ConfigureAwait(false);
+        var stdoutBytes = await stdoutTask.ConfigureAwait(false);
+        var output = DecodeProcessText(stderrBytes) + Environment.NewLine + DecodeProcessText(stdoutBytes);
 
         var devices = Regex.Matches(output, "\"([^\"]+)\"\\s+\\(" + Regex.Escape(deviceType) + "\\)")
             .Select(match => match.Groups[1].Value.Trim())
@@ -81,6 +87,47 @@ public static class FfmpegLocator
             .ToArray();
 
         return devices;
+    }
+
+    private static async Task<byte[]> ReadAllBytesAsync(Stream stream)
+    {
+        using var buffer = new MemoryStream();
+        await stream.CopyToAsync(buffer).ConfigureAwait(false);
+        return buffer.ToArray();
+    }
+
+    private static string DecodeProcessText(byte[] bytes)
+    {
+        if (bytes.Length == 0)
+            return string.Empty;
+
+        try
+        {
+            return new UTF8Encoding(false, true).GetString(bytes);
+        }
+        catch (DecoderFallbackException)
+        {
+            try
+            {
+                Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+                var codePage = GetWindowsAnsiCodePage();
+                return Encoding.GetEncoding(codePage).GetString(bytes);
+            }
+            catch
+            {
+                try { return Encoding.GetEncoding(936).GetString(bytes); }
+                catch { return Encoding.Latin1.GetString(bytes); }
+            }
+        }
+    }
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    private static extern uint GetACP();
+
+    private static int GetWindowsAnsiCodePage()
+    {
+        var codePage = GetACP();
+        return codePage is > 0 and <= 65535 ? (int)codePage : 936;
     }
 
     private static string? FindOnPath(string executable)
