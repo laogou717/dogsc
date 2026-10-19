@@ -76,7 +76,8 @@ public sealed class MediaEditorService
         IProgress<string>? progress = null,
         string aspectRatio = "16:9",
         string fitMode = "fit",
-        string backgroundColor = "black")
+        string backgroundColor = "black",
+        string? backgroundImagePath = null)
     {
         if (clips.Count == 0)
             throw new InvalidOperationException("时间线上没有可导出的片段。");
@@ -96,6 +97,14 @@ public sealed class MediaEditorService
             "blue" => "0x1D4ED8",
             _ => throw new InvalidOperationException("背景颜色不受支持。")
         };
+        if (!string.IsNullOrWhiteSpace(backgroundImagePath))
+        {
+            backgroundImagePath = Path.GetFullPath(backgroundImagePath);
+            if (!File.Exists(backgroundImagePath))
+                throw new FileNotFoundException("找不到背景图片。", backgroundImagePath);
+            if (audioOnly)
+                backgroundImagePath = null;
+        }
         if (audioOnly && !string.Equals(Path.GetExtension(outputPath), ".m4a", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("音频导出文件必须使用 .m4a 扩展名。");
         if (!audioOnly && !string.Equals(Path.GetExtension(outputPath), ".mp4", StringComparison.OrdinalIgnoreCase))
@@ -123,13 +132,23 @@ public sealed class MediaEditorService
             Directory.CreateDirectory(outputDirectory);
 
         var totalDuration = clips.Sum(clip => clip.DurationSeconds);
-        var graph = BuildFilterGraph(clips, probes, outputHeight, framesPerSecond, audioOnly, aspectRatio, fitMode, backgroundColor);
+        var graph = BuildFilterGraph(clips, probes, outputHeight, framesPerSecond, audioOnly, aspectRatio, fitMode, backgroundColor, backgroundImagePath);
         var args = new List<string> { "-hide_banner", "-y", "-loglevel", "error" };
 
         foreach (var clip in clips)
         {
             args.Add("-i");
             args.Add(Path.GetFullPath(clip.FilePath));
+        }
+
+        if (!audioOnly && !string.IsNullOrWhiteSpace(backgroundImagePath))
+        {
+            args.Add("-loop");
+            args.Add("1");
+            args.Add("-framerate");
+            args.Add(framesPerSecond.ToString(CultureInfo.InvariantCulture));
+            args.Add("-i");
+            args.Add(backgroundImagePath);
         }
 
         args.Add("-filter_complex");
@@ -202,10 +221,21 @@ public sealed class MediaEditorService
         bool audioOnly,
         string aspectRatio,
         string fitMode,
-        string backgroundColor)
+        string backgroundColor,
+        string? backgroundImagePath)
     {
         var filters = new List<string>();
         var (width, height) = GetCanvasSize(outputHeight, aspectRatio);
+        var hasBackgroundImage = !audioOnly && !string.IsNullOrWhiteSpace(backgroundImagePath);
+        if (hasBackgroundImage)
+        {
+            var bgInputIndex = clips.Count;
+            var splitOutputs = clips.Count > 1
+                ? ",split=" + clips.Count + string.Concat(Enumerable.Range(0, clips.Count).Select(i => $"[bg{i}]"))
+                : "[bg0]";
+            filters.Add($"[{bgInputIndex}:v:0]scale={width}:{height}:force_original_aspect_ratio=increase," +
+                $"crop={width}:{height},setsar=1,format=nv12{splitOutputs}");
+        }
 
         for (var i = 0; i < clips.Count; i++)
         {
@@ -219,11 +249,23 @@ public sealed class MediaEditorService
             {
                 var scaleMode = fitMode == "fit" ? "decrease" : "increase";
                 var fitFilters = fitMode == "fit"
-                    ? $",pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color={backgroundColor}"
+                    ? hasBackgroundImage ? string.Empty : $",pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color={backgroundColor}"
                     : $",crop={width}:{height}";
-                filters.Add($"[{i}:v:0]trim=start={start}:end={end},setpts=(PTS-STARTPTS)/{speed}," +
-                    $"scale={width}:{height}:force_original_aspect_ratio={scaleMode}{fitFilters}," +
-                    $"setsar=1,fps={framesPerSecond},format=nv12[v{i}]");
+                if (hasBackgroundImage)
+                {
+                    filters.Add($"[{i}:v:0]trim=start={start}:end={end},setpts=(PTS-STARTPTS)/{speed}," +
+                        $"scale={width}:{height}:force_original_aspect_ratio={scaleMode}{fitFilters}," +
+                        $"setsar=1,fps={framesPerSecond},format=nv12[fg{i}]");
+                    var x = fitMode == "fit" ? "(W-w)/2" : "0";
+                    var y = fitMode == "fit" ? "(H-h)/2" : "0";
+                    filters.Add($"[bg{i}][fg{i}]overlay=x={x}:y={y}:shortest=1,format=nv12[v{i}]");
+                }
+                else
+                {
+                    filters.Add($"[{i}:v:0]trim=start={start}:end={end},setpts=(PTS-STARTPTS)/{speed}," +
+                        $"scale={width}:{height}:force_original_aspect_ratio={scaleMode}{fitFilters}," +
+                        $"setsar=1,fps={framesPerSecond},format=nv12[v{i}]");
+                }
             }
 
             if (probes[i].HasAudio)

@@ -206,6 +206,13 @@
                                 <ComboBoxItem Content="白色" Tag="white" />
                                 <ComboBoxItem Content="蓝色" Tag="blue" />
                             </ComboBox>
+                            <StackPanel Width="330">
+                                <TextBlock Text="自定义背景图片（可选）" />
+                                <DockPanel>
+                                    <Button DockPanel.Dock="Right" Content="浏览..." Click="BrowseBackgroundImage_Click" />
+                                    <TextBox x:Name="ExportBackgroundImageTextBox" IsReadOnly="True" />
+                                </DockPanel>
+                            </StackPanel>
                         </WrapPanel>
                     </DockPanel>
                     <ListBox x:Name="RecordingMarkersList" Grid.Row="5" Margin="3,8,3,0"

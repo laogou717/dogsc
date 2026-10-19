@@ -257,6 +257,18 @@ public partial class MainWindow : Window
         RegionHeightTextBox.Text = ((int)region.Height).ToString(CultureInfo.InvariantCulture);
     }
 
+    private void BrowseBackgroundImage_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "选择背景图片",
+            Filter = "图片文件|*.png;*.jpg;*.jpeg;*.bmp;*.webp;*.tif;*.tiff|所有文件|*.*",
+            Multiselect = false
+        };
+        if (dialog.ShowDialog(this) == true)
+            ExportBackgroundImageTextBox.Text = dialog.FileName;
+    }
+
     private void BrowseOutput_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new SaveFileDialog

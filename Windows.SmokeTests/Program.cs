@@ -46,6 +46,8 @@ try
     var portrait = Path.Combine(root, "portrait.mp4");
     var square = Path.Combine(root, "square.mp4");
     var cameraOverlay = Path.Combine(root, "camera-overlay.mp4");
+    var backgroundImage = Path.Combine(root, "background.png");
+    var imageBackgroundOutput = Path.Combine(root, "image-background.mp4");
     var projectPath = Path.Combine(root, "roundtrip.dogscproj");
 
     Console.WriteLine("1/8 Generating a deterministic video+audio source.");
@@ -88,7 +90,12 @@ try
         Speed = 1.25
     };
 
-    Console.WriteLine("4/8 Saving and reopening a project.");
+    Console.WriteLine("4/9 Creating a custom background image.");
+    var imageResult = await RunAsync(ffmpeg, "-hide_banner", "-y", "-loglevel", "error",
+        "-f", "lavfi", "-i", "color=c=red:size=640x360", "-frames:v", "1", backgroundImage);
+    Require(imageResult.ExitCode == 0 && File.Exists(backgroundImage), "could not generate background image: " + imageResult.Output);
+
+    Console.WriteLine("5/9 Saving and reopening a project.");
     var projectService = new ProjectFileService();
     await projectService.SaveAsync(projectPath, new[] { clip });
     var reopened = await projectService.LoadAsync(projectPath);
@@ -97,7 +104,7 @@ try
     Require(Math.Abs(reopened[0].EndSeconds - 2.75) < 0.001, "project out-point changed during round-trip.");
     Require(Math.Abs(reopened[0].Speed - 1.25) < 0.001, "project speed changed during round-trip.");
 
-    Console.WriteLine("5/8 Exporting an edited MP4.");
+    Console.WriteLine("6/9 Exporting an edited MP4.");
     await editor.ExportAsync(reopened, output, 1080, 30, false);
     var exportedInfo = await editor.ProbeAsync(output);
     Require(exportedInfo.HasVideo && exportedInfo.HasAudio, "MP4 export is missing video or audio.");
@@ -106,19 +113,25 @@ try
     Require(exportedInfo.DurationSeconds > 1.7 && exportedInfo.DurationSeconds < 2.3,
         $"MP4 export has unexpected duration {exportedInfo.DurationSeconds.ToString(CultureInfo.InvariantCulture)}.");
 
-    Console.WriteLine("6/8 Exporting a portrait canvas with fit padding.");
+    Console.WriteLine("7/9 Exporting a portrait canvas with fit padding.");
     await editor.ExportAsync(reopened, portrait, 1080, 30, false, null, "9:16", "fit", "dark");
     var portraitInfo = await editor.ProbeAsync(portrait);
     Require(portraitInfo.Width == 1080 && portraitInfo.Height == 1920,
         $"Portrait export has unexpected resolution {portraitInfo.Width}x{portraitInfo.Height}.");
 
-    Console.WriteLine("7/8 Exporting a square canvas with fill/crop.");
+    Console.WriteLine("8/9 Exporting a square canvas with fill/crop.");
     await editor.ExportAsync(reopened, square, 1080, 30, false, null, "1:1", "fill", "blue");
     var squareInfo = await editor.ProbeAsync(square);
     Require(squareInfo.Width == 1080 && squareInfo.Height == 1080,
         $"Square export has unexpected resolution {squareInfo.Width}x{squareInfo.Height}.");
 
-    Console.WriteLine("8/8 Exporting M4A audio.");
+    Console.WriteLine("9/9 Exporting with a custom background image.");
+    await editor.ExportAsync(reopened, imageBackgroundOutput, 1080, 30, false, null, "16:9", "fit", "black", backgroundImage);
+    var imageBackgroundInfo = await editor.ProbeAsync(imageBackgroundOutput);
+    Require(imageBackgroundInfo.Width == 1920 && imageBackgroundInfo.Height == 1080,
+        $"Image background export has unexpected resolution {imageBackgroundInfo.Width}x{imageBackgroundInfo.Height}.");
+
+    Console.WriteLine("9/9 Exporting M4A audio.");
     await editor.ExportAsync(reopened, audio, 1080, 30, true);
     var audioInfo = await editor.ProbeAsync(audio);
     Require(audioInfo.HasAudio && !audioInfo.HasVideo, "M4A export must contain audio only.");
