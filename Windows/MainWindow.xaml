@@ -373,13 +373,27 @@
                                             </WrapPanel>
                                             <DataGrid x:Name="ClipsGrid" AutoGenerateColumns="False" CanUserAddRows="False"
                                                       IsReadOnly="True" SelectionMode="Single" SelectionChanged="ClipsGrid_SelectionChanged"
-                                                      HeadersVisibility="Column" GridLinesVisibility="Horizontal" Height="220">
+                                                      HeadersVisibility="Column" GridLinesVisibility="Horizontal" Height="235" RowHeight="58">
                                                 <DataGrid.Columns>
-                                                    <DataGridTextColumn Header="媒体文件" Binding="{Binding FileName}" Width="*" />
-                                                    <DataGridTextColumn Header="入点" Binding="{Binding StartSeconds, StringFormat=F2}" Width="70" />
-                                                    <DataGridTextColumn Header="出点" Binding="{Binding EndSeconds, StringFormat=F2}" Width="70" />
-                                                    <DataGridTextColumn Header="速度" Binding="{Binding Speed, StringFormat=F2}" Width="62" />
-                                                    <DataGridTextColumn Header="时长" Binding="{Binding DurationSeconds, StringFormat=F2}" Width="70" />
+                                                    <DataGridTemplateColumn Header="片段" Width="*">
+                                                        <DataGridTemplateColumn.CellTemplate>
+                                                            <DataTemplate>
+                                                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="2">
+                                                                    <Border Width="76" Height="43" Background="#E5EFFA" CornerRadius="6" ClipToBounds="True">
+                                                                        <Image Source="{Binding ThumbnailPath}" Stretch="UniformToFill" />
+                                                                    </Border>
+                                                                    <StackPanel VerticalAlignment="Center" Margin="9,0,0,0">
+                                                                        <TextBlock Text="{Binding FileName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                                                        <TextBlock Text="{Binding DisplayLabel}" Foreground="#73819A" FontSize="10" TextTrimming="CharacterEllipsis" />
+                                                                    </StackPanel>
+                                                                </StackPanel>
+                                                            </DataTemplate>
+                                                        </DataGridTemplateColumn.CellTemplate>
+                                                    </DataGridTemplateColumn>
+                                                    <DataGridTextColumn Header="入点" Binding="{Binding StartSeconds, StringFormat=F2}" Width="62" />
+                                                    <DataGridTextColumn Header="出点" Binding="{Binding EndSeconds, StringFormat=F2}" Width="62" />
+                                                    <DataGridTextColumn Header="速度" Binding="{Binding Speed, StringFormat=F2}" Width="55" />
+                                                    <DataGridTextColumn Header="时长" Binding="{Binding DurationSeconds, StringFormat=F2}" Width="62" />
                                                 </DataGrid.Columns>
                                             </DataGrid>
                                             <WrapPanel Margin="0,8,0,0">

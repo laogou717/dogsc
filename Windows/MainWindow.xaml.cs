@@ -5,6 +5,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using System.Security.Cryptography;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Interop;
@@ -759,7 +760,9 @@ public partial class MainWindow : Window
                     throw new InvalidOperationException("文件不包含视频流。");
                 if (added == 0)
                     SaveUndoState();
-                _clips.Add(new ClipItem { FilePath = Path.GetFullPath(path), StartSeconds = 0, EndSeconds = probe.DurationSeconds, Speed = 1 });
+                var fullPath = Path.GetFullPath(path);
+                var thumbnailPath = await CreateClipThumbnailAsync(fullPath, 0);
+                _clips.Add(new ClipItem { FilePath = fullPath, StartSeconds = 0, EndSeconds = probe.DurationSeconds, Speed = 1, ThumbnailPath = thumbnailPath });
                 added++;
             }
             catch (Exception exception)
@@ -772,6 +775,74 @@ public partial class MainWindow : Window
         if (_clips.Count > 0 && ClipsGrid.SelectedIndex < 0)
             ClipsGrid.SelectedIndex = 0;
         EditorStatusText.Text = $"已导入 {added} 个视频片段。当前时间线共 {_clips.Count} 个片段。";
+    }
+
+    private async Task<string?> CreateClipThumbnailAsync(string mediaPath, double timeSeconds)
+    {
+        var ffmpeg = FfmpegLocator.FindFfmpegPath();
+        if (ffmpeg is null || !File.Exists(mediaPath))
+            return null;
+
+        try
+        {
+            var key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+                Path.GetFullPath(mediaPath) + "|" + Math.Max(0, timeSeconds).ToString("F2", CultureInfo.InvariantCulture))))[..20];
+            var directory = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "DogSC", "cache", "thumbnails");
+            Directory.CreateDirectory(directory);
+            var thumbnailPath = Path.Combine(directory, key + ".jpg");
+
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = ffmpeg,
+                UseShellExecute = false,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+            foreach (var argument in new[]
+            {
+                "-hide_banner", "-loglevel", "error", "-y",
+                "-ss", Math.Max(0, timeSeconds).ToString("0.###", CultureInfo.InvariantCulture),
+                "-i", Path.GetFullPath(mediaPath),
+                "-frames:v", "1",
+                "-vf", "scale=120:68:force_original_aspect_ratio=decrease,pad=120:68:(ow-iw)/2:(oh-ih)/2:color=0xE5EFFA",
+                "-q:v", "4", thumbnailPath
+            })
+                startInfo.ArgumentList.Add(argument);
+
+            using var process = new Process { StartInfo = startInfo };
+            if (!process.Start())
+                return null;
+
+            var stderrTask = process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+            var stderr = await stderrTask;
+            if (process.ExitCode == 0 && File.Exists(thumbnailPath) && new FileInfo(thumbnailPath).Length > 0)
+                return thumbnailPath;
+
+            App.WriteDiagnostic("Thumbnail generation failed: " + stderr);
+            TryDeleteThumbnail(thumbnailPath);
+        }
+        catch (Exception exception)
+        {
+            App.WriteDiagnostic("Thumbnail generation failed: " + exception);
+        }
+
+        return null;
+    }
+
+    private static void TryDeleteThumbnail(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+        catch
+        {
+            // Thumbnail cache cleanup must never block editing.
+        }
     }
 
     private void ClipsGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -978,9 +1049,12 @@ public partial class MainWindow : Window
                 PreviewPlayButton.Content = "播放预览";
                 SaveUndoState();
             }
+            var startChanged = Math.Abs(clip.StartSeconds - start) > 0.0001;
             clip.StartSeconds = start;
             clip.EndSeconds = end;
             clip.Speed = speed;
+            if (startChanged)
+                clip.ThumbnailPath = await CreateClipThumbnailAsync(clip.FilePath, start) ?? clip.ThumbnailPath;
             _previewClip = clip;
             _previewStartSeconds = start;
             if (_previewElement is not null && _previewElement.Source is not null)
@@ -998,7 +1072,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private void SplitClip_Click(object sender, RoutedEventArgs e)
+    private async void SplitClip_Click(object sender, RoutedEventArgs e)
     {
         if (ClipsGrid.SelectedItem is not ClipItem clip || _previewElement?.Source is null)
         {
@@ -1018,6 +1092,7 @@ public partial class MainWindow : Window
             return;
         }
 
+        var splitThumbnail = await CreateClipThumbnailAsync(clip.FilePath, splitAt);
         SaveUndoState();
         var originalEnd = clip.EndSeconds;
         clip.EndSeconds = splitAt;
@@ -1026,7 +1101,8 @@ public partial class MainWindow : Window
             FilePath = clip.FilePath,
             StartSeconds = splitAt,
             EndSeconds = originalEnd,
-            Speed = clip.Speed
+            Speed = clip.Speed,
+            ThumbnailPath = splitThumbnail ?? clip.ThumbnailPath
         });
         ClipsGrid.Items.Refresh();
         EditorStatusText.Text = $"已在 {splitAt:F2} 秒处分割片段。可使用撤销/重做恢复操作。";
@@ -1099,6 +1175,8 @@ public partial class MainWindow : Window
         try
         {
             var clips = await _projectFileService.LoadAsync(dialog.FileName);
+            foreach (var clip in clips)
+                clip.ThumbnailPath = await CreateClipThumbnailAsync(clip.FilePath, clip.StartSeconds);
             SaveUndoState();
             ReplaceClips(clips, 0);
             ClipsGrid.SelectedIndex = _clips.Count > 0 ? 0 : -1;
@@ -1216,7 +1294,8 @@ public partial class MainWindow : Window
             FilePath = clip.FilePath,
             StartSeconds = clip.StartSeconds,
             EndSeconds = clip.EndSeconds,
-            Speed = clip.Speed
+            Speed = clip.Speed,
+            ThumbnailPath = clip.ThumbnailPath
         }).ToList();
 
     private void ReplaceClips(IEnumerable<ClipItem> clips, int selectedIndex)
@@ -1236,7 +1315,8 @@ public partial class MainWindow : Window
                     FilePath = clip.FilePath,
                     StartSeconds = clip.StartSeconds,
                     EndSeconds = clip.EndSeconds,
-                    Speed = clip.Speed
+                    Speed = clip.Speed,
+                    ThumbnailPath = clip.ThumbnailPath
                 });
             }
         }

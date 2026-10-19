@@ -11,6 +11,7 @@ public sealed class ClipItem : INotifyPropertyChanged
     private double _startSeconds;
     private double _endSeconds;
     private double _speed = 1.0;
+    private string? _thumbnailPath;
 
     public string FilePath
     {
@@ -63,6 +64,13 @@ public sealed class ClipItem : INotifyPropertyChanged
                 OnPropertyChanged(nameof(DisplayLabel));
             }
         }
+    }
+
+    [JsonIgnore]
+    public string? ThumbnailPath
+    {
+        get => _thumbnailPath;
+        set => SetField(ref _thumbnailPath, value);
     }
 
     [JsonIgnore]
