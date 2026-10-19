@@ -49,7 +49,7 @@
                             <TextBlock Text="让灵感&#x0a;被更好地记录" FontSize="13" Foreground="#71829B" Margin="3,0,0,8" />
                             <Separator Background="#DCE6F5" Margin="3,0,3,8" />
                             <TextBlock Text="DogSC" FontSize="12" FontWeight="SemiBold" Margin="3,0,0,0" />
-                            <TextBlock Text="v0.1.18  ·  预览版" FontSize="11" Foreground="#7C8AA2" Margin="3,3,0,0" />
+                            <TextBlock Text="v0.1.20  ·  预览版" FontSize="11" Foreground="#7C8AA2" Margin="3,3,0,0" />
                         </StackPanel>
                     </Grid>
                 </Border>
@@ -131,7 +131,7 @@
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="28" /><ColumnDefinition Width="*" /><ColumnDefinition Width="48" /></Grid.ColumnDefinitions>
                                 <TextBlock Grid.Column="0" Text="&#xE714;" FontFamily="Segoe MDL2 Assets" FontSize="19" Foreground="#27364D" VerticalAlignment="Center" />
                                 <TextBlock Grid.Column="1" Text="摄像头叠加" VerticalAlignment="Center" />
-                                <CheckBox x:Name="CameraOverlayCheckBox" Grid.Column="2" Content="" Checked="CameraOverlayCheckBox_Checked" Unchecked="CameraOverlayCheckBox_Unchecked" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0" Width="44" />
+                                <CheckBox x:Name="CameraOverlayCheckBox" Grid.Column="2" Content="" ToolTip="需要检测到摄像头设备后才能启用叠加" Checked="CameraOverlayCheckBox_Checked" Unchecked="CameraOverlayCheckBox_Unchecked" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0" Width="44" />
                             </Grid>
                             <Grid Margin="28,0,0,3">
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
@@ -241,7 +241,7 @@
                             <TextBlock Style="{StaticResource SectionTitle}" Text="设备设置" Margin="9,0,0,0" />
                         </StackPanel>
                         <Grid>
-                            <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                            <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
                             <Grid.ColumnDefinitions><ColumnDefinition Width="25" /><ColumnDefinition Width="110" /><ColumnDefinition Width="*" /><ColumnDefinition Width="42" /></Grid.ColumnDefinitions>
                             <TextBlock Grid.Row="0" Grid.Column="0" Text="&#xE720;" FontFamily="Segoe MDL2 Assets" FontSize="18" VerticalAlignment="Center" />
                             <TextBlock Grid.Row="0" Grid.Column="1" Text="麦克风设备" VerticalAlignment="Center" />
@@ -251,6 +251,9 @@
                             <TextBlock Grid.Row="1" Grid.Column="1" Text="摄像头设备" VerticalAlignment="Center" />
                             <ComboBox x:Name="CameraCombo" Grid.Row="1" Grid.Column="2" Margin="0,2,5,4" SelectionChanged="CameraCombo_SelectionChanged" />
                             <Button Grid.Row="1" Grid.Column="3" Content="&#xE72C;" FontFamily="Segoe MDL2 Assets" ToolTip="刷新摄像头设备" Click="RefreshCameraDevices_Click" Padding="7,4" Margin="0,2,0,4" />
+                            <TextBlock x:Name="CameraDeviceStatusText" Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="3"
+                                       Text="正在检测摄像头设备..." FontSize="11" Foreground="#74839A"
+                                       Margin="0,3,0,0" TextWrapping="Wrap" Visibility="Collapsed" />
                         </Grid>
                     </StackPanel>
                 </Border>
