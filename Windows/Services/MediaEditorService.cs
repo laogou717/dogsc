@@ -143,12 +143,17 @@ public sealed class MediaEditorService
 
         if (!audioOnly && !string.IsNullOrWhiteSpace(backgroundImagePath))
         {
-            args.Add("-loop");
-            args.Add("1");
-            args.Add("-framerate");
-            args.Add(framesPerSecond.ToString(CultureInfo.InvariantCulture));
-            args.Add("-i");
-            args.Add(backgroundImagePath);
+            foreach (var clip in clips)
+            {
+                args.Add("-loop");
+                args.Add("1");
+                args.Add("-framerate");
+                args.Add(framesPerSecond.ToString(CultureInfo.InvariantCulture));
+                args.Add("-t");
+                args.Add(F(clip.DurationSeconds));
+                args.Add("-i");
+                args.Add(backgroundImagePath);
+            }
         }
 
         args.Add("-filter_complex");
@@ -229,12 +234,12 @@ public sealed class MediaEditorService
         var hasBackgroundImage = !audioOnly && !string.IsNullOrWhiteSpace(backgroundImagePath);
         if (hasBackgroundImage)
         {
-            var bgInputIndex = clips.Count;
-            var splitOutputs = clips.Count > 1
-                ? ",split=" + clips.Count + string.Concat(Enumerable.Range(0, clips.Count).Select(i => $"[bg{i}]"))
-                : "[bg0]";
-            filters.Add($"[{bgInputIndex}:v:0]scale={width}:{height}:force_original_aspect_ratio=increase," +
-                $"crop={width}:{height},setsar=1,format=nv12{splitOutputs}");
+            for (var i = 0; i < clips.Count; i++)
+            {
+                var bgInputIndex = clips.Count + i;
+                filters.Add($"[{bgInputIndex}:v:0]scale={width}:{height}:force_original_aspect_ratio=increase," +
+                    $"crop={width}:{height},setsar=1,format=nv12[bg{i}]");
+            }
         }
 
         for (var i = 0; i < clips.Count; i++)

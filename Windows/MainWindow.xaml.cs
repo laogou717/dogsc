@@ -767,7 +767,8 @@ public partial class MainWindow : Window
                 ReadTagInt(ExportResolutionCombo, 1080), ReadTagInt(ExportFrameRateCombo, 30), audioOnly, progress,
                 ReadTagString(ExportAspectRatioCombo, "16:9"),
                 ReadTagString(ExportFitModeCombo, "fit"),
-                ReadTagString(ExportBackgroundCombo, "black"));
+                ReadTagString(ExportBackgroundCombo, "black"),
+                string.IsNullOrWhiteSpace(ExportBackgroundImageTextBox.Text) ? null : ExportBackgroundImageTextBox.Text.Trim());
             EditorStatusText.Text = "导出完成：" + dialog.FileName;
             MessageBox.Show(this, "导出完成：" + dialog.FileName, "DogSC", MessageBoxButton.OK, MessageBoxImage.Information);
         }

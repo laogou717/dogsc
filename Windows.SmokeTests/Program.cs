@@ -77,7 +77,7 @@ try
         $"Webcam overlay changed the screen canvas to {overlayInfo.Width}x{overlayInfo.Height}.");
 
     var editor = new MediaEditorService();
-    Console.WriteLine("3/8 Probing the generated media.");
+    Console.WriteLine("3/10 Probing the generated media.");
     var sourceInfo = await editor.ProbeAsync(source);
     Require(sourceInfo.HasVideo && sourceInfo.HasAudio && sourceInfo.DurationSeconds >= 2.8,
         "probe did not find the expected video/audio streams and duration.");
@@ -90,12 +90,12 @@ try
         Speed = 1.25
     };
 
-    Console.WriteLine("4/9 Creating a custom background image.");
+    Console.WriteLine("4/10 Creating a custom background image.");
     var imageResult = await RunAsync(ffmpeg, "-hide_banner", "-y", "-loglevel", "error",
         "-f", "lavfi", "-i", "color=c=red:size=640x360", "-frames:v", "1", backgroundImage);
     Require(imageResult.ExitCode == 0 && File.Exists(backgroundImage), "could not generate background image: " + imageResult.Output);
 
-    Console.WriteLine("5/9 Saving and reopening a project.");
+    Console.WriteLine("5/10 Saving and reopening a project.");
     var projectService = new ProjectFileService();
     await projectService.SaveAsync(projectPath, new[] { clip });
     var reopened = await projectService.LoadAsync(projectPath);
@@ -104,7 +104,7 @@ try
     Require(Math.Abs(reopened[0].EndSeconds - 2.75) < 0.001, "project out-point changed during round-trip.");
     Require(Math.Abs(reopened[0].Speed - 1.25) < 0.001, "project speed changed during round-trip.");
 
-    Console.WriteLine("6/9 Exporting an edited MP4.");
+    Console.WriteLine("6/10 Exporting an edited MP4.");
     await editor.ExportAsync(reopened, output, 1080, 30, false);
     var exportedInfo = await editor.ProbeAsync(output);
     Require(exportedInfo.HasVideo && exportedInfo.HasAudio, "MP4 export is missing video or audio.");
@@ -113,32 +113,32 @@ try
     Require(exportedInfo.DurationSeconds > 1.7 && exportedInfo.DurationSeconds < 2.3,
         $"MP4 export has unexpected duration {exportedInfo.DurationSeconds.ToString(CultureInfo.InvariantCulture)}.");
 
-    Console.WriteLine("7/9 Exporting a portrait canvas with fit padding.");
+    Console.WriteLine("7/10 Exporting a portrait canvas with fit padding.");
     await editor.ExportAsync(reopened, portrait, 1080, 30, false, null, "9:16", "fit", "dark");
     var portraitInfo = await editor.ProbeAsync(portrait);
     Require(portraitInfo.Width == 1080 && portraitInfo.Height == 1920,
         $"Portrait export has unexpected resolution {portraitInfo.Width}x{portraitInfo.Height}.");
 
-    Console.WriteLine("8/9 Exporting a square canvas with fill/crop.");
+    Console.WriteLine("8/10 Exporting a square canvas with fill/crop.");
     await editor.ExportAsync(reopened, square, 1080, 30, false, null, "1:1", "fill", "blue");
     var squareInfo = await editor.ProbeAsync(square);
     Require(squareInfo.Width == 1080 && squareInfo.Height == 1080,
         $"Square export has unexpected resolution {squareInfo.Width}x{squareInfo.Height}.");
 
-    Console.WriteLine("9/9 Exporting with a custom background image.");
+    Console.WriteLine("9/10 Exporting with a custom background image.");
     await editor.ExportAsync(reopened, imageBackgroundOutput, 1080, 30, false, null, "16:9", "fit", "black", backgroundImage);
     var imageBackgroundInfo = await editor.ProbeAsync(imageBackgroundOutput);
     Require(imageBackgroundInfo.Width == 1920 && imageBackgroundInfo.Height == 1080,
         $"Image background export has unexpected resolution {imageBackgroundInfo.Width}x{imageBackgroundInfo.Height}.");
 
-    Console.WriteLine("9/9 Exporting M4A audio.");
+    Console.WriteLine("10/10 Exporting M4A audio.");
     await editor.ExportAsync(reopened, audio, 1080, 30, true);
     var audioInfo = await editor.ProbeAsync(audio);
     Require(audioInfo.HasAudio && !audioInfo.HasVideo, "M4A export must contain audio only.");
     Require(audioInfo.DurationSeconds > 1.7 && audioInfo.DurationSeconds < 2.3,
         $"M4A export has unexpected duration {audioInfo.DurationSeconds.ToString(CultureInfo.InvariantCulture)}.");
 
-    Console.WriteLine("PASS: synthetic webcam overlay, media probing, project round-trip, edited MP4, portrait fit, square fill/crop, and M4A export.");
+    Console.WriteLine("PASS: synthetic webcam overlay, media probing, project round-trip, edited MP4, portrait fit, square fill/crop, custom image background, and M4A export.");
 }
 finally
 {
