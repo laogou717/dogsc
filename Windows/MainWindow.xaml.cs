@@ -9,6 +9,7 @@ using System.Windows.Controls;
 using System.Windows.Interop;
 using System.Windows.Input;
 using System.Windows.Controls.Primitives;
+using System.Windows.Threading;
 using DogSC.Windows.Models;
 using DogSC.Windows.Services;
 using Microsoft.Win32;
@@ -29,6 +30,8 @@ public partial class MainWindow : Window
     private bool _closingAfterStop;
     private double _previewStartSeconds;
     private MediaElement? _previewElement;
+    private ClipItem? _previewClip;
+    private readonly DispatcherTimer _previewTimer = new() { Interval = TimeSpan.FromMilliseconds(50) };
     private const int MarkerHotKeyId = 0xD05C;
     private const int WmHotKey = 0x0312;
     private const uint ModAlt = 0x0001;
@@ -48,6 +51,7 @@ public partial class MainWindow : Window
         App.WriteDiagnostic("MainWindow constructor entered");
         InitializeComponent();
         App.WriteDiagnostic("MainWindow InitializeComponent completed");
+        _previewTimer.Tick += PreviewTimer_Tick;
         ClipsGrid.ItemsSource = _clips;
         UpdateHistoryButtons();
         CaptureModeCombo.SelectedIndex = 0;
@@ -379,6 +383,8 @@ public partial class MainWindow : Window
         ClipEndTextBox.Text = clip.EndSeconds.ToString("0.##", CultureInfo.InvariantCulture);
         ClipSpeedCombo.SelectedItem = ClipSpeedCombo.Items.OfType<ComboBoxItem>()
             .FirstOrDefault(item => Math.Abs(ReadTagDouble(item, 1) - clip.Speed) < 0.0001);
+        _previewTimer.Stop();
+        _previewClip = clip;
         _previewStartSeconds = clip.StartSeconds;
         _previewPlaying = false;
         PreviewPlayButton.Content = "播放预览";
@@ -387,6 +393,7 @@ public partial class MainWindow : Window
         {
             var preview = EnsurePreviewElement();
             preview.Stop();
+            preview.SpeedRatio = Math.Clamp(clip.Speed, 0.5, 2.0);
             preview.Source = new Uri(Path.GetFullPath(clip.FilePath));
         }
         catch (Exception exception)
@@ -465,6 +472,7 @@ public partial class MainWindow : Window
             return;
         try
         {
+            preview.SpeedRatio = Math.Clamp(_previewClip?.Speed ?? 1.0, 0.5, 2.0);
             preview.Position = TimeSpan.FromSeconds(Math.Max(0, _previewStartSeconds));
             preview.Pause();
             _previewPlaying = false;
@@ -478,8 +486,27 @@ public partial class MainWindow : Window
 
     private void PreviewElement_MediaEnded(object sender, RoutedEventArgs e)
     {
+        _previewTimer.Stop();
         _previewPlaying = false;
         PreviewPlayButton.Content = "播放预览";
+    }
+
+    private void PreviewTimer_Tick(object? sender, EventArgs e)
+    {
+        if (!_previewPlaying || _previewElement is null || _previewClip is null)
+        {
+            _previewTimer.Stop();
+            return;
+        }
+
+        if (_previewElement.Position.TotalSeconds >= _previewClip.EndSeconds)
+        {
+            _previewElement.Pause();
+            _previewElement.Position = TimeSpan.FromSeconds(_previewClip.EndSeconds);
+            _previewTimer.Stop();
+            _previewPlaying = false;
+            PreviewPlayButton.Content = "播放预览";
+        }
     }
 
     private void TogglePreview_Click(object sender, RoutedEventArgs e)
@@ -494,13 +521,22 @@ public partial class MainWindow : Window
             if (_previewPlaying)
             {
                 _previewElement.Pause();
+                _previewTimer.Stop();
                 _previewPlaying = false;
                 PreviewPlayButton.Content = "播放预览";
             }
             else
             {
+                if (_previewClip is not null &&
+                    (_previewElement.Position.TotalSeconds < _previewClip.StartSeconds ||
+                     _previewElement.Position.TotalSeconds >= _previewClip.EndSeconds))
+                    _previewElement.Position = TimeSpan.FromSeconds(_previewClip.StartSeconds);
+
+                if (_previewClip is not null)
+                    _previewElement.SpeedRatio = Math.Clamp(_previewClip.Speed, 0.5, 2.0);
                 _previewElement.Play();
                 _previewPlaying = true;
+                _previewTimer.Start();
                 PreviewPlayButton.Content = "暂停预览";
             }
         }
@@ -540,6 +576,14 @@ public partial class MainWindow : Window
             clip.StartSeconds = start;
             clip.EndSeconds = end;
             clip.Speed = speed;
+            _previewClip = clip;
+            _previewStartSeconds = start;
+            if (_previewElement is not null && _previewElement.Source is not null)
+            {
+                _previewElement.SpeedRatio = Math.Clamp(speed, 0.5, 2.0);
+                if (_previewElement.Position.TotalSeconds < start || _previewElement.Position.TotalSeconds >= end)
+                    _previewElement.Position = TimeSpan.FromSeconds(start);
+            }
             ClipsGrid.Items.Refresh();
             EditorStatusText.Text = $"片段设置已应用：{clip.DisplayLabel}";
         }
@@ -737,6 +781,8 @@ public partial class MainWindow : Window
         ClipsGrid.SelectedIndex = _clips.Count == 0 ? -1 : Math.Clamp(selectedIndex, 0, _clips.Count - 1);
         if (_clips.Count == 0)
         {
+            _previewTimer.Stop();
+            _previewPlaying = false;
             _previewElement?.Stop();
             if (_previewElement is not null)
                 _previewElement.Source = null;
