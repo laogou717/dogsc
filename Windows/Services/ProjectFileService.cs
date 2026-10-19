@@ -6,7 +6,7 @@ namespace DogSC.Windows.Services;
 
 public sealed class ProjectFileService
 {
-    private const int CurrentVersion = 1;
+    private const int CurrentVersion = 2;
 
     public async Task SaveAsync(string path, IReadOnlyList<ClipItem> clips)
     {
@@ -18,7 +18,11 @@ public sealed class ProjectFileService
                 FilePath = Path.GetFullPath(clip.FilePath),
                 StartSeconds = clip.StartSeconds,
                 EndSeconds = clip.EndSeconds,
-                Speed = clip.Speed
+                Speed = clip.Speed,
+                Volume = clip.Volume,
+                FadeInSeconds = clip.FadeInSeconds,
+                FadeOutSeconds = clip.FadeOutSeconds,
+                RotationDegrees = clip.RotationDegrees
             }).ToList()
         };
 
@@ -35,7 +39,7 @@ public sealed class ProjectFileService
         var project = JsonSerializer.Deserialize<ProjectDocument>(json)
             ?? throw new InvalidDataException("项目文件为空或格式不正确。");
 
-        if (project.Version != CurrentVersion)
+        if (project.Version is < 1 or > CurrentVersion)
             throw new InvalidDataException($"不支持的项目文件版本：{project.Version}。");
 
         var clips = new List<ClipItem>();
@@ -53,7 +57,11 @@ public sealed class ProjectFileService
                 FilePath = Path.GetFullPath(item.FilePath),
                 StartSeconds = item.StartSeconds,
                 EndSeconds = item.EndSeconds,
-                Speed = item.Speed
+                Speed = item.Speed,
+                Volume = item.Volume,
+                FadeInSeconds = item.FadeInSeconds,
+                FadeOutSeconds = item.FadeOutSeconds,
+                RotationDegrees = item.RotationDegrees
             });
         }
 
@@ -72,5 +80,9 @@ public sealed class ProjectFileService
         public double StartSeconds { get; set; }
         public double EndSeconds { get; set; }
         public double Speed { get; set; } = 1.0;
+        public double Volume { get; set; } = 1.0;
+        public double FadeInSeconds { get; set; }
+        public double FadeOutSeconds { get; set; }
+        public int RotationDegrees { get; set; }
     }
 }
