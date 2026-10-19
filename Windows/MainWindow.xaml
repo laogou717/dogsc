@@ -160,7 +160,7 @@
                                                 <TextBlock Style="{StaticResource SectionTitle}" Text="录制选项" />
                                                 <CheckBox x:Name="SystemAudioCheckBox" Content="系统声音（WASAPI）" IsChecked="True" />
                                                 <CheckBox x:Name="MicrophoneCheckBox" Content="麦克风录音" />
-                                                <CheckBox x:Name="CameraOverlayCheckBox" Content="叠加摄像头画面" />
+                                                <CheckBox x:Name="CameraOverlayCheckBox" Content="叠加摄像头画面" Checked="CameraOverlayCheckBox_Checked" Unchecked="CameraOverlayCheckBox_Unchecked" />
                                                 <Grid Margin="0,0,0,2">
                                                     <Grid.ColumnDefinitions>
                                                         <ColumnDefinition Width="*" />
@@ -168,7 +168,7 @@
                                                     </Grid.ColumnDefinitions>
                                                     <StackPanel Grid.Column="0" Margin="0,0,8,0">
                                                         <TextBlock Style="{StaticResource FieldLabel}" Text="摄像头位置" />
-                                                        <ComboBox x:Name="CameraPositionCombo">
+                                                        <ComboBox x:Name="CameraPositionCombo" SelectionChanged="CameraOverlayPlacement_SelectionChanged">
                                                             <ComboBoxItem Content="右下" Tag="bottom-right" />
                                                             <ComboBoxItem Content="左下" Tag="bottom-left" />
                                                             <ComboBoxItem Content="右上" Tag="top-right" />
@@ -178,7 +178,7 @@
                                                     </StackPanel>
                                                     <StackPanel Grid.Column="1">
                                                         <TextBlock Style="{StaticResource FieldLabel}" Text="摄像头尺寸" />
-                                                        <ComboBox x:Name="CameraSizeCombo">
+                                                        <ComboBox x:Name="CameraSizeCombo" SelectionChanged="CameraOverlayPlacement_SelectionChanged">
                                                             <ComboBoxItem Content="小" Tag="small" />
                                                             <ComboBoxItem Content="中" Tag="medium" />
                                                             <ComboBoxItem Content="大" Tag="large" />
@@ -222,6 +222,11 @@
                                                 <Border Background="#E5EFFA" CornerRadius="12" Height="278" ClipToBounds="True">
                                                     <Grid>
                                                         <Image x:Name="LivePreviewImage" Stretch="Uniform" SnapsToDevicePixels="True" />
+                                                        <Border x:Name="CameraPreviewFrame" Width="150" Height="84" HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                                                                Margin="12,12,12,28" Background="#101827" BorderBrush="#FFFFFF" BorderThickness="2"
+                                                                CornerRadius="9" ClipToBounds="True" Visibility="Collapsed">
+                                                            <Image x:Name="CameraPreviewImage" Stretch="UniformToFill" />
+                                                        </Border>
                                                         <StackPanel x:Name="LivePreviewPlaceholder" HorizontalAlignment="Center" VerticalAlignment="Center">
                                                             <Border Width="70" Height="70" Background="#DCEAFF" CornerRadius="22" HorizontalAlignment="Center">
                                                                 <TextBlock Text="▣" FontSize="38" Foreground="#1769F5" HorizontalAlignment="Center" VerticalAlignment="Center" />
@@ -264,7 +269,7 @@
                                                 <TextBlock Style="{StaticResource FieldLabel}" Text="摄像头设备（DirectShow）" />
                                                 <DockPanel>
                                                     <Button DockPanel.Dock="Right" Content="刷新" Click="RefreshCameraDevices_Click" />
-                                                    <ComboBox x:Name="CameraCombo" />
+                                                    <ComboBox x:Name="CameraCombo" SelectionChanged="CameraCombo_SelectionChanged" />
                                                 </DockPanel>
                                                 <TextBlock Text="设备列表来自 Windows 多媒体驱动与 FFmpeg。" Foreground="#73819A" FontSize="11" TextWrapping="Wrap" Margin="2,5,2,0" />
                                             </StackPanel>

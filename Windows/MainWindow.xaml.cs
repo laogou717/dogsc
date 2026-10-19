@@ -38,7 +38,11 @@ public partial class MainWindow : Window
     private ClipItem? _previewClip;
     private readonly DispatcherTimer _previewTimer = new() { Interval = TimeSpan.FromMilliseconds(50) };
     private readonly DispatcherTimer _livePreviewTimer = new() { Interval = TimeSpan.FromMilliseconds(600) };
+    private readonly DispatcherTimer _cameraPreviewTimer = new() { Interval = TimeSpan.FromSeconds(2) };
+    private readonly SemaphoreSlim _cameraPreviewGate = new(1, 1);
     private readonly StringBuilder _recordingLog = new();
+    private bool _cameraPreviewCaptureInProgress;
+    private Process? _cameraPreviewProcess;
     private bool _previewCaptureInProgress;
     private const int Srccopy = 0x00CC0020;
     private const int CaptureBlt = 0x40000000;
@@ -111,6 +115,7 @@ public partial class MainWindow : Window
         App.WriteDiagnostic("MainWindow InitializeComponent completed");
         _previewTimer.Tick += PreviewTimer_Tick;
         _livePreviewTimer.Tick += LivePreviewTimer_Tick;
+        _cameraPreviewTimer.Tick += CameraPreviewTimer_Tick;
         ClipsGrid.ItemsSource = _clips;
         UpdateHistoryButtons();
         CaptureModeCombo.SelectedIndex = 0;
@@ -136,6 +141,7 @@ public partial class MainWindow : Window
         {
             App.WriteDiagnostic("MainWindow loaded; starting audio device discovery");
             _livePreviewTimer.Start();
+            _cameraPreviewTimer.Start();
             await LoadMicrophoneDevicesAsync();
             await LoadCameraDevicesAsync();
             App.WriteDiagnostic("Audio/video device discovery finished");
@@ -159,6 +165,12 @@ public partial class MainWindow : Window
     {
         _previewTimer.Stop();
         _livePreviewTimer.Stop();
+        _cameraPreviewTimer.Stop();
+        if (_cameraPreviewProcess is { HasExited: false })
+        {
+            try { _cameraPreviewProcess.Kill(entireProcessTree: true); }
+            catch { }
+        }
         var handle = new WindowInteropHelper(this).Handle;
         if (_markerHotKeyRegistered)
             _ = UnregisterHotKey(handle, MarkerHotKeyId);
@@ -257,6 +269,154 @@ public partial class MainWindow : Window
 
         if (dialog.ShowDialog(this) == true)
             ExportOutputPathTextBox.Text = dialog.FileName;
+    }
+
+    private async void CameraPreviewTimer_Tick(object? sender, EventArgs e) =>
+        await UpdateCameraPreviewAsync();
+
+    private void CameraOverlayCheckBox_Checked(object sender, RoutedEventArgs e) =>
+        _ = UpdateCameraPreviewAsync();
+
+    private void CameraOverlayCheckBox_Unchecked(object sender, RoutedEventArgs e)
+    {
+        CameraPreviewFrame.Visibility = Visibility.Collapsed;
+        CameraPreviewImage.Source = null;
+    }
+
+    private void CameraCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        UpdateCameraPreviewPlacement();
+        if (CameraOverlayCheckBox?.IsChecked == true)
+            _ = UpdateCameraPreviewAsync();
+    }
+
+    private void CameraOverlayPlacement_SelectionChanged(object sender, SelectionChangedEventArgs e) =>
+        UpdateCameraPreviewPlacement();
+
+    private void UpdateCameraPreviewPlacement()
+    {
+        if (CameraPreviewFrame is null || CameraPositionCombo is null || CameraSizeCombo is null)
+            return;
+
+        var position = ReadTagString(CameraPositionCombo, "bottom-right");
+        CameraPreviewFrame.HorizontalAlignment = position switch
+        {
+            "top-left" or "bottom-left" => HorizontalAlignment.Left,
+            "center" => HorizontalAlignment.Center,
+            _ => HorizontalAlignment.Right
+        };
+        CameraPreviewFrame.VerticalAlignment = position switch
+        {
+            "top-left" or "top-right" => VerticalAlignment.Top,
+            "center" => VerticalAlignment.Center,
+            _ => VerticalAlignment.Bottom
+        };
+
+        var size = ReadTagString(CameraSizeCombo, "small");
+        var width = size switch { "large" => 205d, "medium" => 165d, _ => 125d };
+        CameraPreviewFrame.Width = width;
+        CameraPreviewFrame.Height = width * 9d / 16d;
+        CameraPreviewFrame.Margin = new Thickness(12, 12, 12, 28);
+    }
+
+    private async Task WaitForCameraPreviewIdleAsync()
+    {
+        await _cameraPreviewGate.WaitAsync();
+        _cameraPreviewGate.Release();
+    }
+
+    private async Task UpdateCameraPreviewAsync()
+    {
+        if (_cameraPreviewCaptureInProgress)
+            return;
+
+        if (CameraOverlayCheckBox?.IsChecked != true)
+        {
+            if (CameraPreviewFrame is not null)
+                CameraPreviewFrame.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        if (!StartRecordingButton.IsEnabled || _recordingService.IsRecording ||
+            CameraCombo.SelectedItem is not string deviceName)
+            return;
+
+        var ffmpeg = FfmpegLocator.FindFfmpegPath();
+        if (ffmpeg is null)
+        {
+            CameraPreviewFrame.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        _cameraPreviewCaptureInProgress = true;
+        await _cameraPreviewGate.WaitAsync();
+        Process? process = null;
+        try
+        {
+            if (!StartRecordingButton.IsEnabled || _recordingService.IsRecording ||
+                CameraOverlayCheckBox.IsChecked != true)
+                return;
+
+            var directory = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "DogSC", "cache");
+            Directory.CreateDirectory(directory);
+            var imagePath = Path.Combine(directory, "camera-preview.jpg");
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = ffmpeg,
+                UseShellExecute = false,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+            foreach (var argument in new[]
+            {
+                "-hide_banner", "-loglevel", "error", "-y",
+                "-f", "dshow", "-i", "video=" + deviceName,
+                "-frames:v", "1",
+                "-vf", "scale=320:180:force_original_aspect_ratio=decrease,pad=320:180:(ow-iw)/2:(oh-ih)/2:color=black",
+                "-q:v", "4", imagePath
+            })
+                startInfo.ArgumentList.Add(argument);
+
+            process = new Process { StartInfo = startInfo };
+            _cameraPreviewProcess = process;
+            if (!process.Start())
+                return;
+
+            var stderrTask = process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+            var stderr = await stderrTask;
+            if (process.ExitCode != 0 || !File.Exists(imagePath) || new FileInfo(imagePath).Length == 0)
+            {
+                App.WriteDiagnostic("Camera preview unavailable: " + stderr);
+                CameraPreviewFrame.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            var bitmap = new BitmapImage();
+            bitmap.BeginInit();
+            bitmap.CacheOption = BitmapCacheOption.OnLoad;
+            bitmap.UriSource = new Uri(imagePath, UriKind.Absolute);
+            bitmap.EndInit();
+            bitmap.Freeze();
+            CameraPreviewImage.Source = bitmap;
+            UpdateCameraPreviewPlacement();
+            CameraPreviewFrame.Visibility = Visibility.Visible;
+        }
+        catch (Exception exception)
+        {
+            App.WriteDiagnostic("Camera preview failed: " + exception);
+            CameraPreviewFrame.Visibility = Visibility.Collapsed;
+        }
+        finally
+        {
+            if (ReferenceEquals(_cameraPreviewProcess, process))
+                _cameraPreviewProcess = null;
+            process?.Dispose();
+            _cameraPreviewGate.Release();
+            _cameraPreviewCaptureInProgress = false;
+        }
     }
 
     private void HandleRecordingStatusChanged(string message)
@@ -687,6 +847,8 @@ public partial class MainWindow : Window
             StopRecordingButton.IsEnabled = true;
             AddMarkerButton.IsEnabled = options.EnableMarkers;
             RecordingStatusText.Text = "正在启动录制...";
+            await WaitForCameraPreviewIdleAsync();
+            CameraPreviewFrame.Visibility = Visibility.Collapsed;
             await _recordingService.StartAsync(options);
             RecordingStatusText.Text = "录制中。结束后请点击“停止录制”。";
         }
