@@ -8,6 +8,7 @@ The Windows app lives in Windows/ and is isolated from the existing Swift/macOS 
 - [x] FFmpeg executable discovery from app-local tools, DOGSC_FFMPEG_PATH, or PATH.
 - [x] Desktop/window/coordinate-region capture command path with 30/60 FPS and cursor rendering.
 - [x] WASAPI system loopback and DirectShow microphone input with audio mixing.
+- [x] Static webcam overlay through DirectShow with five positions and three size presets; CI validates the FFmpeg overlay filter with synthetic video inputs.
 - [x] Video import/probing, preview, clip ordering, in/out trim, and 0.5x–2x speed.
 - [x] Versioned JSON project save/load with missing-media and invalid-range checks.
 - [x] MP4/M4A export code paths; 1080p/1440p/4K and 30/60 FPS; 16:9/9:16/1:1/4:3/3:2 canvases, fit/fill and background options.
@@ -23,7 +24,7 @@ The Windows app lives in Windows/ and is isolated from the existing Swift/macOS 
 - [ ] Native Windows Graphics Capture implementation and tests for protected, minimized, occluded, and high-DPI windows.
 - [ ] Drag-to-select region and reliable multi-monitor/negative-origin handling.
 - [ ] iPhone/iPad capture equivalent and device discovery.
-- [ ] Camera overlay, camera layout and entrance animations.
+- [ ] Animated camera entrance/layout effects and rounded or masked camera overlays; the basic static webcam overlay is implemented.
 - [ ] Cursor asset library, click feedback, pointer event timeline, and cursor calibration.
 - [ ] Automatic cursor-follow zoom, manual zoom keyframes, 3D perspective, focus blur, and opening animations.
 - [ ] Background, crop/aspect ratio, rounded corners, shadows, device frames, stickers, softening/highlight effects, and scene presets.
