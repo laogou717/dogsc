@@ -3,11 +3,14 @@ using System.ComponentModel;
 using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Interop;
 using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Controls.Primitives;
 using System.Windows.Threading;
 using DogSC.Windows.Models;
@@ -32,6 +35,11 @@ public partial class MainWindow : Window
     private MediaElement? _previewElement;
     private ClipItem? _previewClip;
     private readonly DispatcherTimer _previewTimer = new() { Interval = TimeSpan.FromMilliseconds(50) };
+    private readonly DispatcherTimer _livePreviewTimer = new() { Interval = TimeSpan.FromMilliseconds(600) };
+    private readonly StringBuilder _recordingLog = new();
+    private bool _previewCaptureInProgress;
+    private const int Srccopy = 0x00CC0020;
+    private const int CaptureBlt = 0x40000000;
     private const int MarkerHotKeyId = 0xD05C;
     private const int WmHotKey = 0x0312;
     private const uint ModAlt = 0x0001;
@@ -46,16 +54,66 @@ public partial class MainWindow : Window
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr GetDC(IntPtr hwnd);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern int ReleaseDC(IntPtr hwnd, IntPtr hdc);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetWindowRect(IntPtr hwnd, out NativeRect rect);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool PrintWindow(IntPtr hwnd, IntPtr hdcBlt, uint flags);
+
+    [DllImport("user32.dll")]
+    private static extern int GetSystemMetrics(int index);
+
+    [DllImport("gdi32.dll", SetLastError = true)]
+    private static extern IntPtr CreateCompatibleDC(IntPtr hdc);
+
+    [DllImport("gdi32.dll", SetLastError = true)]
+    private static extern IntPtr CreateCompatibleBitmap(IntPtr hdc, int width, int height);
+
+    [DllImport("gdi32.dll", SetLastError = true)]
+    private static extern IntPtr SelectObject(IntPtr hdc, IntPtr hObject);
+
+    [DllImport("gdi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool BitBlt(IntPtr hdcDest, int xDest, int yDest, int width, int height,
+        IntPtr hdcSource, int xSource, int ySource, int rasterOperation);
+
+    [DllImport("gdi32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool DeleteObject(IntPtr hObject);
+
+    [DllImport("gdi32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool DeleteDC(IntPtr hdc);
+
     public MainWindow()
     {
         App.WriteDiagnostic("MainWindow constructor entered");
         InitializeComponent();
         App.WriteDiagnostic("MainWindow InitializeComponent completed");
         _previewTimer.Tick += PreviewTimer_Tick;
+        _livePreviewTimer.Tick += LivePreviewTimer_Tick;
         ClipsGrid.ItemsSource = _clips;
         UpdateHistoryButtons();
         CaptureModeCombo.SelectedIndex = 0;
         FrameRateCombo.SelectedIndex = 0;
+        UpdateCaptureModeButtons();
         ExportFormatCombo.SelectedIndex = 0;
         ExportResolutionCombo.SelectedIndex = 0;
         ExportFrameRateCombo.SelectedIndex = 0;
@@ -68,19 +126,14 @@ public partial class MainWindow : Window
         var videos = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
         OutputPathTextBox.Text = Path.Combine(videos, "DogSC", $"DogSC-{DateTime.Now:yyyyMMdd-HHmmss}.mp4");
         ExportOutputPathTextBox.Text = Path.Combine(videos, "DogSC", "DogSC-Export.mp4");
-        SyncRegionSummary();
-
-        _recordingService.StatusChanged += message =>
-        {
-            if (!Dispatcher.HasShutdownStarted)
-                Dispatcher.BeginInvoke(new Action(() => RecordingStatusText.Text = message));
-        };
+        _recordingService.StatusChanged += HandleRecordingStatusChanged;
 
         // Do not enumerate native top-level windows during startup. On Windows,
         // display enumeration is an explicit user action and is refreshed on demand.
         Loaded += async (_, _) =>
         {
             App.WriteDiagnostic("MainWindow loaded; starting audio device discovery");
+            _livePreviewTimer.Start();
             await LoadMicrophoneDevicesAsync();
             await LoadCameraDevicesAsync();
             App.WriteDiagnostic("Audio/video device discovery finished");
@@ -103,6 +156,7 @@ public partial class MainWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         _previewTimer.Stop();
+        _livePreviewTimer.Stop();
         var handle = new WindowInteropHelper(this).Handle;
         if (_markerHotKeyRegistered)
             _ = UnregisterHotKey(handle, MarkerHotKeyId);
@@ -145,17 +199,22 @@ public partial class MainWindow : Window
 
     private void NavSettings_Click(object sender, RoutedEventArgs e) => NavigateTo(2, "settings");
 
-    private void RegionCoordinates_TextChanged(object sender, TextChangedEventArgs e) => SyncRegionSummary();
-
-    private void SyncRegionSummary()
+    private void RegionCoordinates_TextChanged(object sender, TextChangedEventArgs e)
     {
-        if (RegionXSummaryTextBox is null)
+        if (LivePreviewStatusText is not null && CaptureModeCombo.SelectedIndex == 2)
+            LivePreviewStatusText.Text = "区域坐标已更新，预览将自动刷新";
+    }
+
+    private void PreviewScaleCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (LivePreviewImage is null)
             return;
 
-        RegionXSummaryTextBox.Text = RegionXTextBox.Text;
-        RegionYSummaryTextBox.Text = RegionYTextBox.Text;
-        RegionWidthSummaryTextBox.Text = RegionWidthTextBox.Text;
-        RegionHeightSummaryTextBox.Text = RegionHeightTextBox.Text;
+        LivePreviewImage.Stretch = string.Equals(
+            (PreviewScaleCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString(),
+            "fill", StringComparison.OrdinalIgnoreCase)
+            ? Stretch.UniformToFill
+            : Stretch.Uniform;
     }
 
     private void ExportFormatCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -196,6 +255,198 @@ public partial class MainWindow : Window
 
         if (dialog.ShowDialog(this) == true)
             ExportOutputPathTextBox.Text = dialog.FileName;
+    }
+
+    private void HandleRecordingStatusChanged(string message)
+    {
+        if (Dispatcher.HasShutdownStarted)
+            return;
+
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (message.StartsWith("LOG:", StringComparison.Ordinal))
+            {
+                AppendRecordingLog(message[4..]);
+                return;
+            }
+
+            AppendRecordingLog(message);
+            RecordingStatusText.Text = message switch
+            {
+                "正在启动录制..." => "正在初始化采集源与视频编码器...",
+                "录制中" => "正在录制。完成后请点击“停止”。",
+                "录制已停止" => "录制已停止，文件已保存。",
+                "H.264 编码器启动失败，正在切换兼容编码器..." => "H.264 初始化失败，正在尝试兼容编码器...",
+                "已切换到兼容视频编码器（MPEG-4）" => "已使用兼容编码器，录制继续。",
+                _ => message
+            };
+            RecordingStatusDot.Fill = message == "录制中"
+                ? new SolidColorBrush(Color.FromRgb(220, 38, 38))
+                : new SolidColorBrush(Color.FromRgb(24, 168, 116));
+        }));
+    }
+
+    private void AppendRecordingLog(string message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+            return;
+
+        _recordingLog.AppendLine($"[{DateTime.Now:HH:mm:ss}] {message}");
+        var lines = _recordingLog.ToString().Split(Environment.NewLine);
+        if (lines.Length > 500)
+        {
+            _recordingLog.Clear();
+            _recordingLog.AppendLine(string.Join(Environment.NewLine, lines.Skip(lines.Length - 350)));
+        }
+
+        RecordingLogTextBox.Text = _recordingLog.ToString();
+        RecordingLogTextBox.ScrollToEnd();
+    }
+
+    private static string GetFriendlyRecordingError(Exception exception)
+    {
+        var details = exception.ToString();
+        if (details.Contains("MF_E_INVALIDMEDIATYPE", StringComparison.OrdinalIgnoreCase) ||
+            details.Contains("could not set output type", StringComparison.OrdinalIgnoreCase) ||
+            details.Contains("error while opening encoder", StringComparison.OrdinalIgnoreCase))
+        {
+            return "录制失败：Windows H.264 编码器不接受当前画面格式。程序已尝试自动切换兼容编码器；请检查详细日志，或改用“全屏”模式重试。";
+        }
+
+        if (details.Contains("Could not open video device", StringComparison.OrdinalIgnoreCase) ||
+            details.Contains("Could not find video device", StringComparison.OrdinalIgnoreCase))
+        {
+            return "录制失败：无法打开所选采集源。请确认目标窗口仍然打开且未最小化，再刷新窗口列表重试。";
+        }
+
+        return "录制启动失败。请检查采集范围、设备权限及输出文件路径；详细错误已记录。";
+    }
+
+    private void LivePreviewTimer_Tick(object? sender, EventArgs e)
+    {
+        if (_previewCaptureInProgress || !IsVisible || MainTabs.SelectedIndex != 0)
+            return;
+
+        _previewCaptureInProgress = true;
+        try
+        {
+            var source = CaptureLivePreview();
+            if (source is not null)
+            {
+                LivePreviewImage.Source = source;
+                LivePreviewPlaceholder.Visibility = Visibility.Collapsed;
+                LivePreviewStatusText.Text = CaptureModeCombo.SelectedIndex switch
+                {
+                    1 => "窗口预览已更新",
+                    2 => "区域预览已更新",
+                    _ => "桌面预览已更新"
+                };
+            }
+            else
+            {
+                LivePreviewImage.Source = null;
+                LivePreviewPlaceholder.Visibility = Visibility.Visible;
+                LivePreviewStatusText.Text = CaptureModeCombo.SelectedIndex == 1
+                    ? "请先选择一个有效窗口"
+                    : "暂时无法获取预览画面";
+            }
+        }
+        catch (Exception exception)
+        {
+            App.WriteDiagnostic("Live preview failed: " + exception);
+            LivePreviewStatusText.Text = "预览暂不可用，录制功能不受影响";
+        }
+        finally
+        {
+            _previewCaptureInProgress = false;
+        }
+    }
+
+    private BitmapSource? CaptureLivePreview()
+    {
+        var virtualLeft = GetSystemMetrics(76);
+        var virtualTop = GetSystemMetrics(77);
+        var virtualWidth = GetSystemMetrics(78);
+        var virtualHeight = GetSystemMetrics(79);
+        if (virtualWidth <= 0 || virtualHeight <= 0)
+            return null;
+
+        var x = virtualLeft;
+        var y = virtualTop;
+        var width = virtualWidth;
+        var height = virtualHeight;
+        IntPtr windowHandle = IntPtr.Zero;
+
+        if (CaptureModeCombo.SelectedIndex == 1)
+        {
+            if (WindowCombo.SelectedItem is not WindowSource selectedWindow)
+                return null;
+
+            windowHandle = selectedWindow.Handle;
+            if (!GetWindowRect(windowHandle, out var rect))
+                return null;
+
+            x = rect.Left;
+            y = rect.Top;
+            width = rect.Right - rect.Left;
+            height = rect.Bottom - rect.Top;
+        }
+        else if (CaptureModeCombo.SelectedIndex == 2)
+        {
+            if (!int.TryParse(RegionXTextBox.Text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var regionX) ||
+                !int.TryParse(RegionYTextBox.Text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var regionY) ||
+                !int.TryParse(RegionWidthTextBox.Text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var regionWidth) ||
+                !int.TryParse(RegionHeightTextBox.Text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var regionHeight))
+                return null;
+
+            if (regionWidth < 16 || regionHeight < 16)
+                return null;
+
+            x = virtualLeft + regionX;
+            y = virtualTop + regionY;
+            width = regionWidth;
+            height = regionHeight;
+        }
+
+        if (width < 1 || height < 1 || width > 16384 || height > 16384)
+            return null;
+
+        var screenDc = GetDC(IntPtr.Zero);
+        if (screenDc == IntPtr.Zero)
+            return null;
+
+        var memoryDc = IntPtr.Zero;
+        var bitmap = IntPtr.Zero;
+        var oldObject = IntPtr.Zero;
+        try
+        {
+            memoryDc = CreateCompatibleDC(screenDc);
+            bitmap = CreateCompatibleBitmap(screenDc, width, height);
+            if (memoryDc == IntPtr.Zero || bitmap == IntPtr.Zero)
+                return null;
+
+            oldObject = SelectObject(memoryDc, bitmap);
+            var captured = windowHandle != IntPtr.Zero
+                ? PrintWindow(windowHandle, memoryDc, 2) ||
+                  BitBlt(memoryDc, 0, 0, width, height, screenDc, x, y, Srccopy | CaptureBlt)
+                : BitBlt(memoryDc, 0, 0, width, height, screenDc, x, y, Srccopy | CaptureBlt);
+            if (!captured)
+                return null;
+
+            var frame = Imaging.CreateBitmapSourceFromHBitmap(bitmap, IntPtr.Zero, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
+            frame.Freeze();
+            return frame;
+        }
+        finally
+        {
+            if (oldObject != IntPtr.Zero)
+                _ = SelectObject(memoryDc, oldObject);
+            if (bitmap != IntPtr.Zero)
+                _ = DeleteObject(bitmap);
+            if (memoryDc != IntPtr.Zero)
+                _ = DeleteDC(memoryDc);
+            _ = ReleaseDC(IntPtr.Zero, screenDc);
+        }
     }
 
     private void ShowShortcuts_Click(object sender, RoutedEventArgs e)
@@ -259,11 +510,46 @@ public partial class MainWindow : Window
 
     private void CaptureModeCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (WindowSelectionPanel is null || RegionSelectionPanel is null)
+        if (WindowSelectionPanel is null)
             return;
         var tag = (CaptureModeCombo.SelectedItem as ComboBoxItem)?.Tag?.ToString();
         WindowSelectionPanel.Visibility = tag == "Window" ? Visibility.Visible : Visibility.Collapsed;
-        RegionSelectionPanel.Visibility = tag == "Region" ? Visibility.Visible : Visibility.Collapsed;
+        UpdateCaptureModeButtons();
+    }
+
+    private void CaptureDesktop_Click(object sender, RoutedEventArgs e) => SetCaptureMode(0);
+
+    private void CaptureWindow_Click(object sender, RoutedEventArgs e) => SetCaptureMode(1);
+
+    private void CaptureRegion_Click(object sender, RoutedEventArgs e) => SetCaptureMode(2);
+
+    private void SetCaptureMode(int index)
+    {
+        CaptureModeCombo.SelectedIndex = index;
+        UpdateCaptureModeButtons();
+        LivePreviewStatusText.Text = index switch
+        {
+            1 => "正在预览所选窗口",
+            2 => "正在预览指定区域",
+            _ => "正在预览整个桌面"
+        };
+    }
+
+    private void UpdateCaptureModeButtons()
+    {
+        if (CaptureDesktopButton is null)
+            return;
+
+        SetModeButton(CaptureDesktopButton, CaptureModeCombo.SelectedIndex == 0);
+        SetModeButton(CaptureWindowButton, CaptureModeCombo.SelectedIndex == 1);
+        SetModeButton(CaptureRegionButton, CaptureModeCombo.SelectedIndex == 2);
+    }
+
+    private static void SetModeButton(Button button, bool selected)
+    {
+        button.Background = selected ? new SolidColorBrush(Color.FromRgb(23, 105, 245)) : new SolidColorBrush(Color.FromRgb(241, 245, 250));
+        button.Foreground = selected ? Brushes.White : new SolidColorBrush(Color.FromRgb(38, 54, 79));
+        button.BorderBrush = selected ? new SolidColorBrush(Color.FromRgb(23, 105, 245)) : new SolidColorBrush(Color.FromRgb(226, 233, 243));
     }
 
     private void RefreshWindows_Click(object sender, RoutedEventArgs e) => RefreshWindows();
@@ -331,6 +617,7 @@ public partial class MainWindow : Window
         RegionYTextBox.Text = ((int)region.Y).ToString(CultureInfo.InvariantCulture);
         RegionWidthTextBox.Text = ((int)region.Width).ToString(CultureInfo.InvariantCulture);
         RegionHeightTextBox.Text = ((int)region.Height).ToString(CultureInfo.InvariantCulture);
+        SetCaptureMode(2);
     }
 
     private void ClearBackgroundImage_Click(object sender, RoutedEventArgs e) =>
@@ -406,8 +693,12 @@ public partial class MainWindow : Window
             StartRecordingButton.IsEnabled = true;
             StopRecordingButton.IsEnabled = false;
             AddMarkerButton.IsEnabled = false;
-            RecordingStatusText.Text = exception.Message;
-            MessageBox.Show(this, exception.Message, "无法开始录制", MessageBoxButton.OK, MessageBoxImage.Error);
+            AppendRecordingLog(exception.ToString());
+            var friendlyError = GetFriendlyRecordingError(exception);
+            RecordingStatusText.Text = friendlyError;
+            RecordingStatusDot.Fill = new SolidColorBrush(Color.FromRgb(220, 38, 38));
+            MessageBox.Show(this, friendlyError + Environment.NewLine + Environment.NewLine + "详细信息已保存到“查看详细日志”。",
+                "无法开始录制", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 

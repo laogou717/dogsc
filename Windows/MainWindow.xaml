@@ -18,7 +18,7 @@
 
             <Border Grid.Row="0" Background="#FFFFFF" BorderBrush="#E8EDF5" BorderThickness="0,0,0,1"
                     CornerRadius="18,18,0,0" Padding="22,0">
-                <DockPanel LastChildFill="True" VerticalAlignment="Center">
+                <DockPanel LastChildFill="False" VerticalAlignment="Center">
                     <Border DockPanel.Dock="Left" Width="43" Height="43" CornerRadius="13"
                             Background="#1769F5" Margin="0,0,13,0">
                         <Grid>
@@ -129,11 +129,16 @@
                                             <StackPanel>
                                                 <TextBlock Style="{StaticResource SectionTitle}" Text="录制模式" />
                                                 <TextBlock Style="{StaticResource FieldLabel}" Text="选择要捕获的屏幕范围" />
-                                                <ComboBox x:Name="CaptureModeCombo" SelectionChanged="CaptureModeCombo_SelectionChanged">
+                                                <ComboBox x:Name="CaptureModeCombo" Visibility="Collapsed" SelectionChanged="CaptureModeCombo_SelectionChanged">
                                                     <ComboBoxItem Content="整个桌面" Tag="Desktop" />
                                                     <ComboBoxItem Content="指定窗口" Tag="Window" />
                                                     <ComboBoxItem Content="指定区域" Tag="Region" />
                                                 </ComboBox>
+                                                <UniformGrid Columns="3" Margin="0,2,0,8">
+                                                    <Button x:Name="CaptureDesktopButton" Content="▣  全屏" Click="CaptureDesktop_Click" Margin="0,2,5,2" MinHeight="42" />
+                                                    <Button x:Name="CaptureWindowButton" Content="▱  窗口" Click="CaptureWindow_Click" Margin="2" MinHeight="42" />
+                                                    <Button x:Name="CaptureRegionButton" Content="⬚  区域" Click="CaptureRegion_Click" Margin="5,2,0,2" MinHeight="42" />
+                                                </UniformGrid>
                                                 <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
                                                     <TextBlock Text="录制帧率" Foreground="#65738B" VerticalAlignment="Center" Margin="0,0,12,0" />
                                                     <ComboBox x:Name="FrameRateCombo" Width="125">
@@ -146,16 +151,7 @@
                                                     <TextBlock Style="{StaticResource FieldLabel}" Text="要录制的窗口" />
                                                     <ComboBox x:Name="WindowCombo" DisplayMemberPath="Title" />
                                                 </StackPanel>
-                                                <StackPanel x:Name="RegionSelectionPanel" Visibility="Collapsed" Margin="0,8,0,0">
-                                                    <TextBlock Style="{StaticResource FieldLabel}" Text="区域坐标（相对于桌面左上角，单位：像素）" />
-                                                    <UniformGrid Columns="4" Margin="0,0,0,4">
-                                                        <StackPanel Margin="0,0,7,0"><TextBlock Style="{StaticResource FieldLabel}" Text="X" /><TextBox x:Name="RegionXTextBox" Text="0" TextChanged="RegionCoordinates_TextChanged" /></StackPanel>
-                                                        <StackPanel Margin="0,0,7,0"><TextBlock Style="{StaticResource FieldLabel}" Text="Y" /><TextBox x:Name="RegionYTextBox" Text="0" TextChanged="RegionCoordinates_TextChanged" /></StackPanel>
-                                                        <StackPanel Margin="0,0,7,0"><TextBlock Style="{StaticResource FieldLabel}" Text="宽度" /><TextBox x:Name="RegionWidthTextBox" Text="1280" TextChanged="RegionCoordinates_TextChanged" /></StackPanel>
-                                                        <StackPanel><TextBlock Style="{StaticResource FieldLabel}" Text="高度" /><TextBox x:Name="RegionHeightTextBox" Text="720" TextChanged="RegionCoordinates_TextChanged" /></StackPanel>
-                                                    </UniformGrid>
-                                                    <Button Content="▧  拖动选择区域..." Style="{StaticResource PrimaryButton}" Click="SelectRegion_Click" HorizontalAlignment="Stretch" />
-                                                </StackPanel>
+
                                             </StackPanel>
                                         </Border>
 
@@ -200,10 +196,10 @@
                                                 <TextBlock Style="{StaticResource SectionTitle}" Text="区域设置" />
                                                 <TextBlock Foreground="#65738B" FontSize="12" Text="支持拖动框选，也可以直接输入像素坐标。" Margin="0,0,0,9" />
                                                 <UniformGrid Columns="4">
-                                                    <StackPanel Margin="0,0,7,0"><TextBlock Style="{StaticResource FieldLabel}" Text="X" /><TextBox x:Name="RegionXSummaryTextBox" Text="0" IsReadOnly="True" /></StackPanel>
-                                                    <StackPanel Margin="0,0,7,0"><TextBlock Style="{StaticResource FieldLabel}" Text="Y" /><TextBox x:Name="RegionYSummaryTextBox" Text="0" IsReadOnly="True" /></StackPanel>
-                                                    <StackPanel Margin="0,0,7,0"><TextBlock Style="{StaticResource FieldLabel}" Text="宽度" /><TextBox x:Name="RegionWidthSummaryTextBox" Text="1280" IsReadOnly="True" /></StackPanel>
-                                                    <StackPanel><TextBlock Style="{StaticResource FieldLabel}" Text="高度" /><TextBox x:Name="RegionHeightSummaryTextBox" Text="720" IsReadOnly="True" /></StackPanel>
+                                                    <StackPanel Margin="0,0,7,0"><TextBlock Style="{StaticResource FieldLabel}" Text="X" /><TextBox x:Name="RegionXTextBox" Text="320" TextChanged="RegionCoordinates_TextChanged" /></StackPanel>
+                                                    <StackPanel Margin="0,0,7,0"><TextBlock Style="{StaticResource FieldLabel}" Text="Y" /><TextBox x:Name="RegionYTextBox" Text="200" TextChanged="RegionCoordinates_TextChanged" /></StackPanel>
+                                                    <StackPanel Margin="0,0,7,0"><TextBlock Style="{StaticResource FieldLabel}" Text="宽度" /><TextBox x:Name="RegionWidthTextBox" Text="1280" TextChanged="RegionCoordinates_TextChanged" /></StackPanel>
+                                                    <StackPanel><TextBlock Style="{StaticResource FieldLabel}" Text="高度" /><TextBox x:Name="RegionHeightTextBox" Text="720" TextChanged="RegionCoordinates_TextChanged" /></StackPanel>
                                                 </UniformGrid>
                                                 <Button Content="▧  拖动选择区域..." Click="SelectRegion_Click" Style="{StaticResource PrimaryButton}" Margin="0,8,0,0" />
                                             </StackPanel>
@@ -216,19 +212,39 @@
                                         <Border Style="{StaticResource CardStyle}" Margin="0,0,0,12">
                                             <StackPanel>
                                                 <DockPanel Margin="0,0,0,12">
-                                                    <TextBlock Style="{StaticResource SectionTitle}" Text="录制状态" Margin="0" />
+                                                    <TextBlock Style="{StaticResource SectionTitle}" Text="实时预览" Margin="0" />
                                                     <Border DockPanel.Dock="Right" Background="#E9F8F1" CornerRadius="7" Padding="8,4">
                                                         <TextBlock Text="本地采集" FontSize="11" Foreground="#14865E" />
                                                     </Border>
                                                 </DockPanel>
-                                                <Border Background="#F1F6FE" CornerRadius="12" Padding="18">
-                                                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
-                                                        <Border Width="70" Height="70" Background="#DCEAFF" CornerRadius="22" HorizontalAlignment="Center">
-                                                            <TextBlock Text="◉" FontSize="40" Foreground="#1769F5" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                <DockPanel Margin="0,0,0,10">
+                                                    <TextBlock Style="{StaticResource SectionTitle}" Text="实时预览" Margin="0" />
+                                                    <ComboBox x:Name="PreviewScaleCombo" Width="125" SelectedIndex="0" DockPanel.Dock="Right"
+                                                              SelectionChanged="PreviewScaleCombo_SelectionChanged">
+                                                        <ComboBoxItem Content="适应窗口" Tag="fit" />
+                                                        <ComboBoxItem Content="填充窗口" Tag="fill" />
+                                                    </ComboBox>
+                                                </DockPanel>
+                                                <Border Background="#E5EFFA" CornerRadius="12" Height="278" ClipToBounds="True">
+                                                    <Grid>
+                                                        <Image x:Name="LivePreviewImage" Stretch="Uniform" SnapsToDevicePixels="True" />
+                                                        <StackPanel x:Name="LivePreviewPlaceholder" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                                            <Border Width="70" Height="70" Background="#DCEAFF" CornerRadius="22" HorizontalAlignment="Center">
+                                                                <TextBlock Text="▣" FontSize="38" Foreground="#1769F5" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                            </Border>
+                                                            <TextBlock Text="正在等待预览画面" FontSize="17" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,14,0,5" />
+                                                            <TextBlock Text="预览会随录制模式自动更新" TextWrapping="Wrap" TextAlignment="Center" Foreground="#6B7A91" FontSize="12" MaxWidth="310" />
+                                                        </StackPanel>
+                                                        <Border VerticalAlignment="Bottom" Background="#CC17243A" Padding="9,5">
+                                                            <TextBlock Text="实时采集预览 · 每 0.6 秒刷新" Foreground="#FFFFFF" FontSize="11" />
                                                         </Border>
-                                                        <TextBlock Text="准备好开始录制了吗？" FontSize="17" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,15,0,5" />
-                                                        <TextBlock Text="录制将在后台启动，完成后可在编辑页预览和导出。" TextWrapping="Wrap" TextAlignment="Center" Foreground="#6B7A91" FontSize="12" MaxWidth="310" />
-                                                    </StackPanel>
+                                                    </Grid>
+                                                </Border>
+                                                <Border Background="#F1F6FE" CornerRadius="10" Padding="11" Margin="0,9,0,12">
+                                                    <DockPanel>
+                                                        <TextBlock Text="i" FontWeight="Bold" Foreground="#1769F5" FontSize="18" DockPanel.Dock="Left" Margin="0,0,10,0" />
+                                                        <TextBlock x:Name="LivePreviewStatusText" Text="预览用于确认采集范围；最终录制画面以导出文件为准。" Foreground="#64748B" FontSize="12" TextWrapping="Wrap" VerticalAlignment="Center" />
+                                                    </DockPanel>
                                                 </Border>
                                                 <TextBlock Text="当前输出文件" Style="{StaticResource FieldLabel}" />
                                                 <TextBox x:Name="OutputPathTextBox" />
@@ -258,20 +274,28 @@
                             </Grid>
 
                             <Border Grid.Row="1" Style="{StaticResource CardStyle}" Padding="12" Margin="0,10,0,0">
-                                <DockPanel LastChildFill="True">
-                                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
-                                        <Button x:Name="StartRecordingButton" Content="⏺  开始录制" Style="{StaticResource PrimaryButton}" MinWidth="142" MinHeight="44" Click="StartRecording_Click" />
-                                        <Button x:Name="StopRecordingButton" Content="■  停止录制" MinWidth="112" MinHeight="44" IsEnabled="False" Click="StopRecording_Click" />
-                                        <Button x:Name="AddMarkerButton" Content="⚑  添加标记" MinWidth="112" MinHeight="44" IsEnabled="False" Click="AddRecordingMarker_Click" />
-                                    </StackPanel>
-                                    <StackPanel VerticalAlignment="Center" Margin="7,0,15,0">
-                                        <StackPanel Orientation="Horizontal">
-                                            <Ellipse Width="8" Height="8" Fill="{StaticResource SuccessBrush}" VerticalAlignment="Center" Margin="0,0,8,0" />
-                                            <TextBlock Text="录制状态" FontWeight="SemiBold" />
+                                <StackPanel>
+                                    <DockPanel LastChildFill="True">
+                                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                                            <Button x:Name="StartRecordingButton" Content="◉  开始录制" Style="{StaticResource PrimaryButton}" MinWidth="142" MinHeight="44" Click="StartRecording_Click" />
+                                            <Button x:Name="PauseRecordingButton" Content="Ⅱ  暂停" MinWidth="92" MinHeight="44" IsEnabled="False" ToolTip="当前录制引擎暂不支持无损暂停" />
+                                            <Button x:Name="StopRecordingButton" Content="■  停止" MinWidth="98" MinHeight="44" IsEnabled="False" Click="StopRecording_Click" />
+                                            <Button x:Name="AddMarkerButton" Content="⚑  添加标记" MinWidth="112" MinHeight="44" IsEnabled="False" Click="AddRecordingMarker_Click" />
                                         </StackPanel>
-                                        <TextBlock x:Name="RecordingStatusText" Text="就绪。请选择录制范围与设备。" Foreground="#6B7A91" FontSize="12" TextWrapping="Wrap" Margin="16,4,0,0" />
-                                    </StackPanel>
-                                </DockPanel>
+                                        <StackPanel VerticalAlignment="Center" Margin="7,0,15,0">
+                                            <StackPanel Orientation="Horizontal">
+                                                <Ellipse x:Name="RecordingStatusDot" Width="8" Height="8" Fill="{StaticResource SuccessBrush}" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                                <TextBlock Text="录制状态" FontWeight="SemiBold" />
+                                            </StackPanel>
+                                            <TextBlock x:Name="RecordingStatusText" Text="就绪。请选择录制范围与设备。" Foreground="#6B7A91" FontSize="12" TextWrapping="Wrap" Margin="16,4,0,0" />
+                                        </StackPanel>
+                                    </DockPanel>
+                                    <Expander Header="查看详细日志" Margin="4,8,4,0" MaxHeight="185">
+                                        <TextBox x:Name="RecordingLogTextBox" Height="140" IsReadOnly="True" AcceptsReturn="True"
+                                                 TextWrapping="NoWrap" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                                                 FontFamily="Consolas" FontSize="11" BorderThickness="0" Background="#F7F9FD" />
+                                    </Expander>
+                                </StackPanel>
                             </Border>
                         </Grid>
                     </TabItem>
