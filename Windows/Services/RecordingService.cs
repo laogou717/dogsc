@@ -293,12 +293,46 @@ public sealed class RecordingService : IDisposable
 
         Add(args, "-i", options.Mode == CaptureMode.Window ? "title=" + options.WindowTitle : "desktop");
 
-        if (options.CaptureMicrophone)
-            Add(args, "-thread_queue_size", "1024", "-f", "dshow", "-i", "audio=" + options.MicrophoneDevice);
+        var nextInput = 1;
+        int? microphoneInput = null;
+        int? cameraInput = null;
 
-        Add(args, "-map", "0:v:0");
         if (options.CaptureMicrophone)
-            Add(args, "-map", "1:a:0");
+        {
+            microphoneInput = nextInput++;
+            Add(args, "-thread_queue_size", "1024", "-f", "dshow", "-i", "audio=" + options.MicrophoneDevice);
+        }
+
+        if (options.CaptureCamera)
+        {
+            cameraInput = nextInput++;
+            Add(args, "-thread_queue_size", "1024", "-f", "dshow",
+                "-framerate", options.FramesPerSecond.ToString(CultureInfo.InvariantCulture),
+                "-i", "video=" + options.CameraDevice);
+        }
+
+        if (cameraInput.HasValue)
+        {
+            var scale = options.CameraSize switch { "large" => "0.40", "medium" => "0.30", _ => "0.22" };
+            var (x, y) = options.CameraPosition switch
+            {
+                "top-left" => ("32", "32"),
+                "top-right" => ("main_w-overlay_w-32", "32"),
+                "bottom-left" => ("32", "main_h-overlay_h-32"),
+                "center" => ("(main_w-overlay_w)/2", "(main_h-overlay_h)/2"),
+                _ => ("main_w-overlay_w-32", "main_h-overlay_h-32")
+            };
+            var graph = $"[{cameraInput.Value}:v:0][0:v:0]scale2ref=w=main_w*{scale}:h=main_h*{scale}:force_original_aspect_ratio=decrease[cam][screen];" +
+                        $"[screen][cam]overlay=x={x}:y={y}:eof_action=pass:shortest=0:repeatlast=1[vout]";
+            Add(args, "-filter_complex", graph, "-map", "[vout]");
+        }
+        else
+        {
+            Add(args, "-map", "0:v:0");
+        }
+
+        if (microphoneInput.HasValue)
+            Add(args, "-map", $"{microphoneInput.Value}:a:0");
         else
             Add(args, "-an");
 

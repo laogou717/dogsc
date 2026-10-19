@@ -20,6 +20,10 @@ public sealed class RecordingOptions
     public bool CaptureSystemAudio { get; init; }
     public bool CaptureMicrophone { get; init; }
     public string? MicrophoneDevice { get; init; }
+    public bool CaptureCamera { get; init; }
+    public string? CameraDevice { get; init; }
+    public string CameraPosition { get; init; } = "bottom-right";
+    public string CameraSize { get; init; } = "small";
 
     public void Validate()
     {
@@ -39,5 +43,14 @@ public sealed class RecordingOptions
 
         if (CaptureMicrophone && string.IsNullOrWhiteSpace(MicrophoneDevice))
             throw new InvalidOperationException("已启用麦克风录制，但没有选择麦克风设备。");
+
+        if (CaptureCamera && string.IsNullOrWhiteSpace(CameraDevice))
+            throw new InvalidOperationException("已启用摄像头叠加，但没有选择摄像头设备。");
+
+        if (CameraPosition is not ("top-left" or "top-right" or "bottom-left" or "bottom-right" or "center"))
+            throw new InvalidOperationException("摄像头位置设置无效。");
+
+        if (CameraSize is not ("small" or "medium" or "large"))
+            throw new InvalidOperationException("摄像头尺寸设置无效。");
     }
 }

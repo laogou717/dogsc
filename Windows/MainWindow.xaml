@@ -49,6 +49,37 @@
                         <TextBlock FontSize="16" FontWeight="SemiBold" Text="音频" />
                         <CheckBox x:Name="SystemAudioCheckBox" Content="录制系统声音（Windows WASAPI）" IsChecked="True" />
                         <CheckBox x:Name="MicrophoneCheckBox" Content="同时录制麦克风" />
+                        <Separator Margin="0,6,0,6" />
+                        <CheckBox x:Name="CameraOverlayCheckBox" Content="录制时叠加摄像头画面" />
+                        <WrapPanel Margin="0,0,0,8">
+                            <StackPanel Width="340">
+                                <TextBlock Text="摄像头设备（DirectShow）" />
+                                <ComboBox x:Name="CameraCombo" />
+                            </StackPanel>
+                            <StackPanel VerticalAlignment="Bottom">
+                                <Button Content="检测摄像头" Click="RefreshCameraDevices_Click" />
+                            </StackPanel>
+                        </WrapPanel>
+                        <WrapPanel Margin="0,0,0,8">
+                            <StackPanel Width="180">
+                                <TextBlock Text="摄像头位置" />
+                                <ComboBox x:Name="CameraPositionCombo">
+                                    <ComboBoxItem Content="右下" Tag="bottom-right" />
+                                    <ComboBoxItem Content="左下" Tag="bottom-left" />
+                                    <ComboBoxItem Content="右上" Tag="top-right" />
+                                    <ComboBoxItem Content="左上" Tag="top-left" />
+                                    <ComboBoxItem Content="居中" Tag="center" />
+                                </ComboBox>
+                            </StackPanel>
+                            <StackPanel Width="180">
+                                <TextBlock Text="摄像头大小" />
+                                <ComboBox x:Name="CameraSizeCombo">
+                                    <ComboBoxItem Content="小" Tag="small" />
+                                    <ComboBoxItem Content="中" Tag="medium" />
+                                    <ComboBoxItem Content="大" Tag="large" />
+                                </ComboBox>
+                            </StackPanel>
+                        </WrapPanel>
                         <WrapPanel Margin="0,0,0,8">
                             <StackPanel Width="430">
                                 <TextBlock Text="麦克风设备（DirectShow）" />

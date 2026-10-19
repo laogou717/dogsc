@@ -52,6 +52,8 @@ public partial class MainWindow : Window
         ExportFitModeCombo.SelectedIndex = 0;
         ExportBackgroundCombo.SelectedIndex = 0;
         ClipSpeedCombo.SelectedIndex = 2;
+        CameraPositionCombo.SelectedIndex = 0;
+        CameraSizeCombo.SelectedIndex = 0;
         var videos = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
         OutputPathTextBox.Text = Path.Combine(videos, "DogSC", $"DogSC-{DateTime.Now:yyyyMMdd-HHmmss}.mp4");
 
@@ -67,7 +69,8 @@ public partial class MainWindow : Window
         {
             App.WriteDiagnostic("MainWindow loaded; starting audio device discovery");
             await LoadMicrophoneDevicesAsync();
-            App.WriteDiagnostic("Audio device discovery finished");
+            await LoadCameraDevicesAsync();
+            App.WriteDiagnostic("Audio/video device discovery finished");
         };
     }
 
@@ -151,6 +154,26 @@ public partial class MainWindow : Window
         }
     }
 
+    private async void RefreshCameraDevices_Click(object sender, RoutedEventArgs e) => await LoadCameraDevicesAsync();
+
+    private async Task LoadCameraDevicesAsync()
+    {
+        try
+        {
+            var selected = CameraCombo.SelectedItem as string;
+            var devices = await FfmpegLocator.GetDirectShowVideoDevicesAsync();
+            CameraCombo.ItemsSource = devices;
+            if (selected is not null && devices.Contains(selected))
+                CameraCombo.SelectedItem = selected;
+            else if (devices.Count > 0)
+                CameraCombo.SelectedIndex = 0;
+        }
+        catch (Exception exception)
+        {
+            RecordingStatusText.Text = "摄像头设备检测失败：" + exception.Message;
+        }
+    }
+
     private void BrowseOutput_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new SaveFileDialog
@@ -188,7 +211,11 @@ public partial class MainWindow : Window
                 FramesPerSecond = ReadTagInt(FrameRateCombo, 30),
                 CaptureSystemAudio = SystemAudioCheckBox.IsChecked == true,
                 CaptureMicrophone = MicrophoneCheckBox.IsChecked == true,
-                MicrophoneDevice = MicrophoneCombo.SelectedItem as string
+                MicrophoneDevice = MicrophoneCombo.SelectedItem as string,
+                CaptureCamera = CameraOverlayCheckBox.IsChecked == true,
+                CameraDevice = CameraCombo.SelectedItem as string,
+                CameraPosition = ReadTagString(CameraPositionCombo, "bottom-right"),
+                CameraSize = ReadTagString(CameraSizeCombo, "small")
             };
 
             StartRecordingButton.IsEnabled = false;

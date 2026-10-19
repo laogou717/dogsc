@@ -42,7 +42,13 @@ public static class FfmpegLocator
         return FindOnPath("ffprobe.exe");
     }
 
-    public static async Task<IReadOnlyList<string>> GetDirectShowAudioDevicesAsync()
+    public static Task<IReadOnlyList<string>> GetDirectShowAudioDevicesAsync() =>
+        GetDirectShowDevicesAsync("audio");
+
+    public static Task<IReadOnlyList<string>> GetDirectShowVideoDevicesAsync() =>
+        GetDirectShowDevicesAsync("video");
+
+    private static async Task<IReadOnlyList<string>> GetDirectShowDevicesAsync(string deviceType)
     {
         var ffmpeg = FindFfmpegPath()
             ?? throw new InvalidOperationException("未找到 ffmpeg.exe。请安装包含 dshow/WASAPI 的 FFmpeg，并将其加入 PATH。");
@@ -68,7 +74,7 @@ public static class FfmpegLocator
         await process.WaitForExitAsync().ConfigureAwait(false);
         var output = (await stderrTask.ConfigureAwait(false)) + Environment.NewLine + (await stdoutTask.ConfigureAwait(false));
 
-        var devices = Regex.Matches(output, "\"([^\"]+)\"\\s+\\(audio\\)")
+        var devices = Regex.Matches(output, "\"([^\"]+)\"\\s+\\(" + Regex.Escape(deviceType) + "\\)")
             .Select(match => match.Groups[1].Value.Trim())
             .Where(name => name.Length > 0 && !name.StartsWith("@device_", StringComparison.OrdinalIgnoreCase))
             .Distinct(StringComparer.OrdinalIgnoreCase)
