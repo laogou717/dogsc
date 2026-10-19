@@ -198,15 +198,15 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/windows-v') || (github.ref == 'refs/heads/windows-port' && contains(github.event.head_commit.message, '[publish-release]'))
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/windows-v') && github.ref_name || 'windows-v0.1.20' }}
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/windows-v') && github.ref_name || 'windows-v0.1.21' }}
           target_commitish: ${{ github.sha }}
-          name: ${{ startsWith(github.ref, 'refs/tags/windows-v') && format('DogSC Windows Preview {0}', github.ref_name) || 'DogSC Windows Preview v0.1.20' }}
+          name: ${{ startsWith(github.ref, 'refs/tags/windows-v') && format('DogSC Windows Preview {0}', github.ref_name) || 'DogSC Windows Preview v0.1.21' }}
           body: |
-            DogSC for Windows — missing-camera recording fallback and recording UI refinement preview v0.1.20.
+            DogSC for Windows — video editing workflow preview v0.1.21.
 
-            This release allows recording to continue when no webcam is connected: camera overlay controls are disabled with a clear status message, startup automatically skips camera capture when no device is selected, and the FFmpeg argument builder never adds an invalid video= input. It adds a regression test for the no-camera path and refines the device card status UI. The GPU-window black-frame workaround, wider preview column, vector region-selection icon, and Chinese DirectShow device-name decoding fallback are retained.
+            This preview expands the Windows editor with drag-and-drop clip ordering, clip duplication and splitting, in/out point controls, audio waveform previews, rotation, volume, fade-in/fade-out, basic start/end zoom keyframes, SRT subtitle burn-in, and project autosave/recovery. It retains screen recording, webcam fallback, project import/export, and configurable output settings.
 
-            Includes the self-contained Windows x64 application and bundled LGPL FFmpeg tools. Hardware-dependent capture and remaining macOS feature parity still require additional validation.
+            Includes the self-contained Windows x64 installer and bundled LGPL FFmpeg tools. This is a preview build; hardware-dependent capture, advanced multi-track editing, and broader device compatibility should be validated on target Windows systems.
           files: artifacts/installer/DogSC-Setup-win-x64.exe
           prerelease: true
           generate_release_notes: true
