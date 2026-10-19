@@ -1,6 +1,6 @@
 ; Script generated for DogSC for Windows.
 #define MyAppName "DogSC for Windows"
-#define MyAppVersion "0.1.16"
+#define MyAppVersion "0.1.17"
 #define MyAppPublisher "DogSC"
 #define MyAppExeName "DogSC.Windows.exe"
 
