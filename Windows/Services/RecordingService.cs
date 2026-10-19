@@ -306,8 +306,10 @@ public sealed class RecordingService : IDisposable
         if (options.CaptureCamera)
         {
             cameraInput = nextInput++;
+            // Many webcams only expose stable DirectShow modes at 30 FPS. The screen
+            // remains 30/60 FPS; the overlay repeats camera frames when necessary.
             Add(args, "-thread_queue_size", "1024", "-f", "dshow",
-                "-framerate", options.FramesPerSecond.ToString(CultureInfo.InvariantCulture),
+                "-framerate", "30",
                 "-i", "video=" + options.CameraDevice);
         }
 
