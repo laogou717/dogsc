@@ -85,7 +85,7 @@ jobs:
           }
           Set-Content -LiteralPath (Join-Path $toolsDir "FFmpeg-BUILD.txt") -Value ($version + [Environment]::NewLine + "Build configuration:" + [Environment]::NewLine + $buildConfig) -Encoding utf8
           Copy-Item -LiteralPath "Windows/THIRD-PARTY-NOTICES.txt" -Destination (Join-Path $publishDir "THIRD-PARTY-NOTICES.txt")
-          Invoke-WebRequest -Uri "https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt" -OutFile (Join-Path $publishDir "COPYING.LGPLv2.1.txt")
+          Copy-Item -LiteralPath "Windows/COPYING.LGPLv2.1.txt" -Destination (Join-Path $publishDir "COPYING.LGPLv2.1.txt")
 
       - name: Install Inno Setup
         shell: pwsh
