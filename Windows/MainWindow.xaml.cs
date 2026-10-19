@@ -124,26 +124,26 @@ public partial class MainWindow : Window
         return IntPtr.Zero;
     }
 
-    private void NavigateTo(int index)
+    private void NavigateTo(int index, string selectedNavigation)
     {
         MainTabs.SelectedIndex = index;
-        NavRecordButton.Tag = index == 0 ? "Selected" : null;
-        NavEditButton.Tag = index == 1 ? "Selected" : null;
-        NavExportButton.Tag = index == 1 ? "Selected" : null;
-        NavSettingsButton.Tag = index == 2 ? "Selected" : null;
+        NavRecordButton.Tag = selectedNavigation == "record" ? "Selected" : null;
+        NavEditButton.Tag = selectedNavigation == "edit" ? "Selected" : null;
+        NavExportButton.Tag = selectedNavigation == "export" ? "Selected" : null;
+        NavSettingsButton.Tag = selectedNavigation == "settings" ? "Selected" : null;
     }
 
-    private void NavRecord_Click(object sender, RoutedEventArgs e) => NavigateTo(0);
+    private void NavRecord_Click(object sender, RoutedEventArgs e) => NavigateTo(0, "record");
 
-    private void NavEdit_Click(object sender, RoutedEventArgs e) => NavigateTo(1);
+    private void NavEdit_Click(object sender, RoutedEventArgs e) => NavigateTo(1, "edit");
 
     private void NavExport_Click(object sender, RoutedEventArgs e)
     {
-        NavigateTo(1);
+        NavigateTo(1, "export");
         ExportOutputPathTextBox.Focus();
     }
 
-    private void NavSettings_Click(object sender, RoutedEventArgs e) => NavigateTo(2);
+    private void NavSettings_Click(object sender, RoutedEventArgs e) => NavigateTo(2, "settings");
 
     private void RegionCoordinates_TextChanged(object sender, TextChangedEventArgs e) => SyncRegionSummary();
 

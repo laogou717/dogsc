@@ -198,11 +198,11 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/windows-v') || (github.ref == 'refs/heads/windows-port' && contains(github.event.head_commit.message, '[publish-release]'))
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/windows-v') && github.ref_name || 'windows-v0.1.9' }}
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/windows-v') && github.ref_name || 'windows-v0.1.10' }}
           target_commitish: ${{ github.sha }}
-          name: ${{ startsWith(github.ref, 'refs/tags/windows-v') && format('DogSC Windows Preview {0}', github.ref_name) || 'DogSC Windows Preview v0.1.9' }}
+          name: ${{ startsWith(github.ref, 'refs/tags/windows-v') && format('DogSC Windows Preview {0}', github.ref_name) || 'DogSC Windows Preview v0.1.10' }}
           body: |
-            DogSC for Windows — UI refresh preview v0.1.9.
+            DogSC for Windows — UI refresh preview v0.1.10.
 
             This release refreshes the Chinese UI layout, sets an explicit Microsoft YaHei UI font, adds UTF-8 resource validation to CI, and wires navigation, export-path selection, region-coordinate synchronization, cursor visibility, and marker enable/disable controls.
 
