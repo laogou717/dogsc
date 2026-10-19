@@ -333,6 +333,9 @@ public partial class MainWindow : Window
         RegionHeightTextBox.Text = ((int)region.Height).ToString(CultureInfo.InvariantCulture);
     }
 
+    private void ClearBackgroundImage_Click(object sender, RoutedEventArgs e) =>
+        ExportBackgroundImageTextBox.Clear();
+
     private void BrowseBackgroundImage_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new OpenFileDialog
