@@ -213,12 +213,6 @@
                                             <StackPanel>
                                                 <DockPanel Margin="0,0,0,12">
                                                     <TextBlock Style="{StaticResource SectionTitle}" Text="实时预览" Margin="0" />
-                                                    <Border DockPanel.Dock="Right" Background="#E9F8F1" CornerRadius="7" Padding="8,4">
-                                                        <TextBlock Text="本地采集" FontSize="11" Foreground="#14865E" />
-                                                    </Border>
-                                                </DockPanel>
-                                                <DockPanel Margin="0,0,0,10">
-                                                    <TextBlock Style="{StaticResource SectionTitle}" Text="实时预览" Margin="0" />
                                                     <ComboBox x:Name="PreviewScaleCombo" Width="125" SelectedIndex="0" DockPanel.Dock="Right"
                                                               SelectionChanged="PreviewScaleCombo_SelectionChanged">
                                                         <ComboBoxItem Content="适应窗口" Tag="fit" />
@@ -246,6 +240,12 @@
                                                         <TextBlock x:Name="LivePreviewStatusText" Text="预览用于确认采集范围；最终录制画面以导出文件为准。" Foreground="#64748B" FontSize="12" TextWrapping="Wrap" VerticalAlignment="Center" />
                                                     </DockPanel>
                                                 </Border>
+                                            </StackPanel>
+                                        </Border>
+
+                                        <Border Style="{StaticResource CardStyle}" Margin="0,0,0,12">
+                                            <StackPanel>
+                                                <TextBlock Style="{StaticResource SectionTitle}" Text="输出文件" />
                                                 <TextBlock Text="当前输出文件" Style="{StaticResource FieldLabel}" />
                                                 <TextBox x:Name="OutputPathTextBox" />
                                                 <Button Content="选择保存位置..." Click="BrowseOutput_Click" HorizontalAlignment="Right" />
