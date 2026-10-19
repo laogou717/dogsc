@@ -109,7 +109,7 @@ try
     Require(audioInfo.DurationSeconds > 1.7 && audioInfo.DurationSeconds < 2.3,
         $"M4A export has unexpected duration {audioInfo.DurationSeconds.ToString(CultureInfo.InvariantCulture)}.");
 
-    Console.WriteLine("PASS: media probing, project round-trip, MP4 edit/export and M4A export.");
+    Console.WriteLine("PASS: media probing, project round-trip, trimmed/speed-adjusted MP4, portrait fit, square fill/crop, and M4A export.");
 }
 finally
 {
