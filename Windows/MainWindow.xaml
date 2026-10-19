@@ -365,6 +365,18 @@
                         </StackPanel>
                         <TextBlock Grid.Column="4" Text="支持画面旋转、音量与淡入淡出" Foreground="#7B879B" FontSize="10" TextWrapping="Wrap" VerticalAlignment="Center" Margin="4,8,0,0" />
                     </Grid>
+                    <Grid Margin="0,7,0,0">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /><ColumnDefinition Width="2*" /></Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" Margin="0,0,6,0">
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="关键帧缩放：起始（1-2×）" Margin="0,0,0,3" />
+                            <TextBox x:Name="ClipZoomStartTextBox" Text="1" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Margin="0,0,6,0">
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="关键帧缩放：结束（1-2×）" Margin="0,0,0,3" />
+                            <TextBox x:Name="ClipZoomEndTextBox" Text="1" />
+                        </StackPanel>
+                        <TextBlock Grid.Column="2" Text="起止缩放值会在片段播放期间平滑变化，可制作简单推近或拉远效果。" Foreground="#7B879B" FontSize="10" TextWrapping="Wrap" VerticalAlignment="Center" Margin="5,6,0,0" />
+                    </Grid>
                     <DockPanel Margin="0,6,0,0">
                         <Button DockPanel.Dock="Right" Content="应用修改" Style="{StaticResource PrimaryButton}" Click="ApplyClipEdits_Click" Margin="0" />
                         <TextBlock Text="支持 0.5× 至 2× 速度" Foreground="#7B879B" FontSize="11" VerticalAlignment="Center" />
