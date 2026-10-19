@@ -62,29 +62,53 @@ struct RecorderInputPopover: View {
         VStack(alignment: .leading, spacing: 4) {
             deviceList(model.availableCameras, selectedID: model.configuration.cameraDeviceID, action: model.selectCamera)
             if model.configuration.recordsCamera {
-                RecorderCameraPreview(sink: model.configurationCameraFrameSink, mirrored: model.recordingCameraMirrored)
-                    .frame(height: 152).clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    .overlay {
-                        if model.cameraRuntimeFormat == nil {
-                            ProgressView().controlSize(.small).frame(maxWidth: .infinity, maxHeight: .infinity)
-                                .background(RecorderStyle.silver, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                        }
+                if model.availableCameras.isEmpty || !model.availableCameras.contains(where: { $0.id == model.configuration.cameraDeviceID }) {
+                    VStack(spacing: 8) {
+                        Image(systemName: "video.slash")
+                            .font(.system(size: 22, weight: .medium))
+                            .foregroundStyle(RecorderStyle.muted)
+                        Text("未找到可用摄像头")
+                            .font(.appUI(size: 13, weight: .semibold))
+                            .foregroundStyle(RecorderStyle.ink)
+                        Text("连接摄像头后刷新设备列表，或关闭摄像头录制继续。")
+                            .font(.appUI(size: 11))
+                            .foregroundStyle(RecorderStyle.muted)
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Button("刷新设备") { model.refreshCaptureDevicesInBackground() }
+                            .font(.appUI(size: 12, weight: .medium))
+                            .buttonStyle(RecorderPlainPressButtonStyle(cornerRadius: 10))
+                            .padding(.top, 2)
                     }
-                    .overlay(alignment: .bottomTrailing) {
-                        // The two things done to the picture sit on the picture.
-                        HStack(spacing: 6) {
-                            previewButton("arrow.left.and.right", title: "镜像画面", active: model.recordingCameraMirrored) {
-                                model.recordingCameraMirrored.toggle()
-                            }
-                            previewButton("wand.and.stars", title: "系统视频效果…", active: false) {
-                                RecorderPopoverPresenter.shared.dismiss()
-                                CaptureDeviceCatalog.showSystemVideoEffects()
-                            }
-                        }
-                        .padding(8)
-                    }
+                    .frame(maxWidth: .infinity, minHeight: 152)
+                    .background(RecorderStyle.silver, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                     .padding(.horizontal, 10).padding(.top, 6)
-                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                    .accessibilityElement(children: .contain)
+                } else {
+                    RecorderCameraPreview(sink: model.configurationCameraFrameSink, mirrored: model.recordingCameraMirrored)
+                        .frame(height: 152).clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .overlay {
+                            if model.cameraRuntimeFormat == nil {
+                                ProgressView().controlSize(.small).frame(maxWidth: .infinity, maxHeight: .infinity)
+                                    .background(RecorderStyle.silver, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            }
+                        }
+                        .overlay(alignment: .bottomTrailing) {
+                            // The two things done to the picture sit on the picture.
+                            HStack(spacing: 6) {
+                                previewButton("arrow.left.and.right", title: "镜像画面", active: model.recordingCameraMirrored) {
+                                    model.recordingCameraMirrored.toggle()
+                                }
+                                previewButton("wand.and.stars", title: "系统视频效果…", active: false) {
+                                    RecorderPopoverPresenter.shared.dismiss()
+                                    CaptureDeviceCatalog.showSystemVideoEffects()
+                                }
+                            }
+                            .padding(8)
+                        }
+                        .padding(.horizontal, 10).padding(.top, 6)
+                        .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                }
                 Button {
                     withAnimation(RecorderMotion.settle) { expandedResolution.toggle() }
                 } label: {
