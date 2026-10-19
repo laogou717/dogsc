@@ -47,6 +47,7 @@ public partial class MainWindow : Window
     private Process? _cameraPreviewProcess;
     private bool _syncExportFormatChecks;
     private bool _previewCaptureInProgress;
+    private Point _clipDragStartPoint;
     private const int Srccopy = 0x00CC0020;
     private const int CaptureBlt = 0x40000000;
     private const int MarkerHotKeyId = 0xD05C;
@@ -1290,6 +1291,44 @@ public partial class MainWindow : Window
         {
             // Thumbnail cache cleanup must never block editing.
         }
+    }
+
+    private void ClipsGrid_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        _clipDragStartPoint = e.GetPosition(ClipsGrid);
+    }
+
+    private void ClipsGrid_PreviewMouseMove(object sender, MouseEventArgs e)
+    {
+        if (e.LeftButton != MouseButtonState.Pressed || ClipsGrid.SelectedItem is not ClipItem clip)
+            return;
+
+        var current = e.GetPosition(ClipsGrid);
+        if (Math.Abs(current.X - _clipDragStartPoint.X) < SystemParameters.MinimumHorizontalDragDistance &&
+            Math.Abs(current.Y - _clipDragStartPoint.Y) < SystemParameters.MinimumVerticalDragDistance)
+            return;
+
+        DragDrop.DoDragDrop(ClipsGrid, clip, DragDropEffects.Move);
+    }
+
+    private void ClipsGrid_Drop(object sender, DragEventArgs e)
+    {
+        if (e.Data.GetData(typeof(ClipItem)) is not ClipItem sourceClip)
+            return;
+
+        var targetRow = ItemsControl.ContainerFromElement(ClipsGrid, e.OriginalSource as DependencyObject) as DataGridRow;
+        if (targetRow?.Item is not ClipItem targetClip || ReferenceEquals(sourceClip, targetClip))
+            return;
+
+        var sourceIndex = _clips.IndexOf(sourceClip);
+        var targetIndex = _clips.IndexOf(targetClip);
+        if (sourceIndex < 0 || targetIndex < 0 || sourceIndex == targetIndex)
+            return;
+
+        SaveUndoState();
+        _clips.Move(sourceIndex, targetIndex);
+        ClipsGrid.SelectedItem = sourceClip;
+        EditorStatusText.Text = "时间线片段顺序已通过拖放更新。";
     }
 
     private void ClipsGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
