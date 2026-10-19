@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Text.Json;
 using DogSC.Windows.Models;
 
 namespace DogSC.Windows.Services;
@@ -9,6 +10,7 @@ namespace DogSC.Windows.Services;
 public sealed class RecordingService : IDisposable
 {
     private readonly ConcurrentQueue<string> _recentOutput = new();
+    private readonly List<RecordingMarker> _markers = new();
     private Process? _process;
     private SystemAudioLoopbackCapture? _systemAudioCapture;
     private string? _systemAudioPath;
@@ -18,6 +20,32 @@ public sealed class RecordingService : IDisposable
     private bool _captureMicrophone;
 
     public event Action<string>? StatusChanged;
+
+    public IReadOnlyList<RecordingMarker> GetMarkers()
+    {
+        lock (_markers)
+            return _markers.ToArray();
+    }
+
+    public RecordingMarker? AddMarker(string? label = null)
+    {
+        if (!IsRecording)
+            return null;
+
+        RecordingMarker marker;
+        lock (_markers)
+        {
+            marker = new RecordingMarker(
+                _markers.Count + 1,
+                Math.Max(0, Stopwatch.GetElapsedTime(_videoStartedAt).TotalSeconds),
+                string.IsNullOrWhiteSpace(label) ? $"标记 {_markers.Count + 1}" : label.Trim(),
+                DateTimeOffset.Now);
+            _markers.Add(marker);
+        }
+
+        StatusChanged?.Invoke($"已添加剪辑标记 #{marker.Index}，时间 {marker.TimeSeconds:F2} 秒");
+        return marker;
+    }
 
     public bool IsRecording
     {
@@ -39,6 +67,8 @@ public sealed class RecordingService : IDisposable
         _process = null;
         _outputPath = Path.GetFullPath(options.OutputPath);
         _captureMicrophone = options.CaptureMicrophone;
+        lock (_markers)
+            _markers.Clear();
 
         var ffmpeg = FfmpegLocator.FindFfmpegPath()
             ?? throw new InvalidOperationException("未找到 ffmpeg.exe。请安装 FFmpeg，或使用集成安装包。");
@@ -141,6 +171,16 @@ public sealed class RecordingService : IDisposable
                 if (ReferenceEquals(_process, process))
                     _process = null;
             }
+        }
+
+        // Save marker timestamps independently of the media mux step so a later
+        // audio merge failure does not destroy the user's recording notes.
+        var markers = GetMarkers();
+        if (markers.Count > 0 && !string.IsNullOrWhiteSpace(_outputPath))
+        {
+            var markerPath = Path.ChangeExtension(_outputPath, ".markers.json");
+            var json = JsonSerializer.Serialize(markers, new JsonSerializerOptions { WriteIndented = true });
+            await File.WriteAllTextAsync(markerPath, json).ConfigureAwait(false);
         }
 
         if (_systemAudioCapture is not null)

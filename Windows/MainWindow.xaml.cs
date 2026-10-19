@@ -138,6 +138,7 @@ public partial class MainWindow : Window
 
             StartRecordingButton.IsEnabled = false;
             StopRecordingButton.IsEnabled = true;
+            AddMarkerButton.IsEnabled = true;
             RecordingStatusText.Text = "正在启动录制...";
             await _recordingService.StartAsync(options);
             RecordingStatusText.Text = "录制中。结束后请点击“停止录制”。";
@@ -146,6 +147,7 @@ public partial class MainWindow : Window
         {
             StartRecordingButton.IsEnabled = true;
             StopRecordingButton.IsEnabled = false;
+            AddMarkerButton.IsEnabled = false;
             RecordingStatusText.Text = exception.Message;
             MessageBox.Show(this, exception.Message, "无法开始录制", MessageBoxButton.OK, MessageBoxImage.Error);
         }
@@ -169,7 +171,20 @@ public partial class MainWindow : Window
         {
             StartRecordingButton.IsEnabled = true;
             StopRecordingButton.IsEnabled = false;
+            AddMarkerButton.IsEnabled = false;
         }
+    }
+
+    private void AddRecordingMarker_Click(object sender, RoutedEventArgs e)
+    {
+        var marker = _recordingService.AddMarker();
+        if (marker is null)
+        {
+            RecordingStatusText.Text = "当前没有正在进行的录制，无法添加标记。";
+            return;
+        }
+
+        RecordingStatusText.Text = $"已添加剪辑标记 #{marker.Index}，时间 {marker.TimeSeconds:F2} 秒。";
     }
 
     private void AddClips_Click(object sender, RoutedEventArgs e) => _ = AddClipsAsync();

@@ -69,6 +69,8 @@
                                     Background="#2563EB" Foreground="White" Click="StartRecording_Click" />
                             <Button x:Name="StopRecordingButton" Content="停止录制" MinWidth="120"
                                     IsEnabled="False" Click="StopRecording_Click" />
+                            <Button x:Name="AddMarkerButton" Content="添加剪辑标记" MinWidth="120"
+                                    IsEnabled="False" Click="AddRecordingMarker_Click" />
                         </WrapPanel>
                         <Border Background="#F3F5F8" CornerRadius="6" Padding="10" Margin="3,12,3,0">
                             <TextBlock x:Name="RecordingStatusText" TextWrapping="Wrap"
