@@ -249,27 +249,41 @@ public sealed class MediaEditorService
             var end = F(clip.EndSeconds);
             var speed = F(clip.Speed);
             var duration = F(clip.DurationSeconds);
+            var fadeIn = Math.Min(clip.FadeInSeconds, clip.DurationSeconds / 2);
+            var fadeOut = Math.Min(clip.FadeOutSeconds, clip.DurationSeconds / 2);
+            var rotationFilter = clip.RotationDegrees switch
+            {
+                90 => ",transpose=1",
+                180 => ",hflip,vflip",
+                270 => ",transpose=2",
+                _ => string.Empty
+            };
 
             if (!audioOnly)
             {
                 var scaleMode = fitMode == "fit" ? "decrease" : "increase";
+                var videoFadeFilters = string.Empty;
+                if (fadeIn > 0.001)
+                    videoFadeFilters += $",fade=t=in:st=0:d={F(fadeIn)}";
+                if (fadeOut > 0.001)
+                    videoFadeFilters += $",fade=t=out:st={F(Math.Max(0, clip.DurationSeconds - fadeOut))}:d={F(fadeOut)}";
                 var fitFilters = fitMode == "fit"
                     ? hasBackgroundImage ? string.Empty : $",pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color={backgroundColor}"
                     : $",crop={width}:{height}";
                 if (hasBackgroundImage)
                 {
-                    filters.Add($"[{i}:v:0]trim=start={start}:end={end},setpts=(PTS-STARTPTS)/{speed}," +
+                    filters.Add($"[{i}:v:0]trim=start={start}:end={end},setpts=(PTS-STARTPTS)/{speed}{rotationFilter}," +
                         $"scale={width}:{height}:force_original_aspect_ratio={scaleMode}{fitFilters}," +
-                        $"setsar=1,fps={framesPerSecond},format=nv12[fg{i}]");
+                        $"setsar=1,fps={framesPerSecond}{videoFadeFilters},format=nv12[fg{i}]");
                     var x = fitMode == "fit" ? "(W-w)/2" : "0";
                     var y = fitMode == "fit" ? "(H-h)/2" : "0";
                     filters.Add($"[bg{i}][fg{i}]overlay=x={x}:y={y}:shortest=1,format=nv12[v{i}]");
                 }
                 else
                 {
-                    filters.Add($"[{i}:v:0]trim=start={start}:end={end},setpts=(PTS-STARTPTS)/{speed}," +
+                    filters.Add($"[{i}:v:0]trim=start={start}:end={end},setpts=(PTS-STARTPTS)/{speed}{rotationFilter}," +
                         $"scale={width}:{height}:force_original_aspect_ratio={scaleMode}{fitFilters}," +
-                        $"setsar=1,fps={framesPerSecond},format=nv12[v{i}]");
+                        $"setsar=1,fps={framesPerSecond}{videoFadeFilters},format=nv12[v{i}]");
                 }
             }
 
@@ -277,6 +291,11 @@ public sealed class MediaEditorService
             {
                 var atempo = BuildAtempo(clip.Speed);
                 var audioFilters = string.IsNullOrEmpty(atempo) ? string.Empty : "," + atempo;
+                audioFilters += $",volume={F(clip.Volume)}";
+                if (fadeIn > 0.001)
+                    audioFilters += $",afade=t=in:st=0:d={F(fadeIn)}";
+                if (fadeOut > 0.001)
+                    audioFilters += $",afade=t=out:st={F(Math.Max(0, clip.DurationSeconds - fadeOut))}:d={F(fadeOut)}";
                 filters.Add($"[{i}:a:0]atrim=start={start}:end={end},asetpts=PTS-STARTPTS{audioFilters},aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo[a{i}]");
             }
             else
