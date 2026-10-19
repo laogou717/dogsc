@@ -38,7 +38,9 @@ The Windows app lives in Windows/ and is isolated from the existing Swift/macOS 
 - [x] Design-matched two-column recording layout and editing/export workspace, custom dog illustration, consistent Segoe MDL2 icons, and rounded ComboBox/checkbox styles.
 - [x] Chinese DirectShow device names use UTF-8 detection with Windows ANSI-code-page fallback; icon glyphs are separated from Chinese button text to prevent tofu characters.
 - [x] Window-capture regression test verifies desktop input, selected-window offsets, and dimensions; window mode no longer uses the black-prone gdigrab title input.
+- [x] Missing-camera regression test verifies that recording validates and builds a normal desktop recording pipeline without a `video=` input or camera overlay graph.
 - [x] Window capture minimizes DogSC and provides Ctrl+Alt+Shift+S global stop; preview column widened and region selection icon replaced with a vector shape.
+- [x] Camera overlay and camera position/size controls are disabled when no device is available; the device card explains that recording remains available without webcam overlay.
 - [ ] Full localization parity, updater, production code signing, and manual real-device validation.
 - [ ] Automated parity tests comparing project semantics and export behavior with macOS fixtures.
 - [ ] Manual regression matrix on Windows 10/11 and common integrated/discrete graphics plus common audio interfaces.
