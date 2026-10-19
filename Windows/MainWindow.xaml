@@ -342,6 +342,29 @@
                             </ComboBox>
                         </StackPanel>
                     </Grid>
+                    <Grid Margin="0,8,0,0">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" Margin="0,0,6,0">
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="音量（0-200%）" Margin="0,0,0,3" />
+                            <TextBox x:Name="ClipVolumeTextBox" Text="1" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Margin="0,0,6,0">
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="淡入（秒）" Margin="0,0,0,3" />
+                            <TextBox x:Name="ClipFadeInTextBox" Text="0" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="2" Margin="0,0,6,0">
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="淡出（秒）" Margin="0,0,0,3" />
+                            <TextBox x:Name="ClipFadeOutTextBox" Text="0" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="3" Margin="0,0,6,0">
+                            <TextBlock Style="{StaticResource FieldLabel}" Text="旋转" Margin="0,0,0,3" />
+                            <ComboBox x:Name="ClipRotationCombo">
+                                <ComboBoxItem Content="0°" Tag="0" /><ComboBoxItem Content="90°" Tag="90" />
+                                <ComboBoxItem Content="180°" Tag="180" /><ComboBoxItem Content="270°" Tag="270" />
+                            </ComboBox>
+                        </StackPanel>
+                        <TextBlock Grid.Column="4" Text="支持画面旋转、音量与淡入淡出" Foreground="#7B879B" FontSize="10" TextWrapping="Wrap" VerticalAlignment="Center" Margin="4,8,0,0" />
+                    </Grid>
                     <DockPanel Margin="0,6,0,0">
                         <Button DockPanel.Dock="Right" Content="应用修改" Style="{StaticResource PrimaryButton}" Click="ApplyClipEdits_Click" Margin="0" />
                         <TextBlock Text="支持 0.5× 至 2× 速度" Foreground="#7B879B" FontSize="11" VerticalAlignment="Center" />
