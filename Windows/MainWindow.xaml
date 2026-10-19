@@ -389,7 +389,10 @@
                         </DataGrid.Columns>
                     </DataGrid>
                     <WrapPanel Grid.Row="3" Margin="0,6,0,0">
-                        <Button Content="分割片段" Click="SplitClip_Click" Margin="0,0,5,0" MinHeight="30" Padding="8,4" />
+                        <Button Content="分割片段" Click="SplitClip_Click" Margin="0,0,5,0" MinHeight="30" Padding="8,4" ToolTip="在预览播放头位置拆分片段（Ctrl+B）" />
+                        <Button Content="复制片段" Click="DuplicateClip_Click" Margin="0,0,5,0" MinHeight="30" Padding="8,4" ToolTip="复制所选片段（Ctrl+D）" />
+                        <Button Content="设为入点" Click="SetClipInPoint_Click" Margin="0,0,5,0" MinHeight="30" Padding="8,4" ToolTip="将当前预览位置设为片段入点（I）" />
+                        <Button Content="设为出点" Click="SetClipOutPoint_Click" Margin="0,0,5,0" MinHeight="30" Padding="8,4" ToolTip="将当前预览位置设为片段出点（O）" />
                         <Button Content="删除片段" Click="RemoveClip_Click" Margin="0,0,5,0" MinHeight="30" Padding="8,4" />
                         <Button Content="上移" Click="MoveClipUp_Click" Margin="0,0,5,0" MinHeight="30" Padding="8,4" />
                         <Button Content="下移" Click="MoveClipDown_Click" Margin="0,0,5,0" MinHeight="30" Padding="8,4" />
