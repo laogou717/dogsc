@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.IO;
 using System.Text.Json;
 using DogSC.Windows.Models;
 
@@ -78,6 +79,8 @@ public sealed class MediaEditorService
             throw new InvalidOperationException("时间线上没有可导出的片段。");
         if (framesPerSecond is not (30 or 60))
             throw new InvalidOperationException("导出帧率仅支持 30 或 60 FPS。");
+        if (outputHeight is not (1080 or 1440 or 2160))
+            throw new InvalidOperationException("导出分辨率仅支持 1080p、1440p 或 4K。");
         if (audioOnly && !string.Equals(Path.GetExtension(outputPath), ".m4a", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("音频导出文件必须使用 .m4a 扩展名。");
         if (!audioOnly && !string.Equals(Path.GetExtension(outputPath), ".mp4", StringComparison.OrdinalIgnoreCase))
@@ -123,11 +126,17 @@ public sealed class MediaEditorService
         }
         else
         {
+            var videoBitrate = outputHeight switch
+            {
+                1440 => "16M",
+                2160 => "35M",
+                _ => "8M"
+            };
             args.AddRange(new[]
             {
                 "-map", "[vout]", "-map", "[aout]",
-                "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-                "-pix_fmt", "yuv420p", "-r", framesPerSecond.ToString(CultureInfo.InvariantCulture),
+                "-c:v", "h264_mf", "-b:v", videoBitrate,
+                "-pix_fmt", "nv12", "-r", framesPerSecond.ToString(CultureInfo.InvariantCulture),
                 "-c:a", "aac", "-b:a", "192k", "-ar", "48000"
             });
         }
@@ -197,7 +206,7 @@ public sealed class MediaEditorService
             {
                 filters.Add($"[{i}:v:0]trim=start={start}:end={end},setpts=(PTS-STARTPTS)/{speed}," +
                     $"scale={width}:{outputHeight}:force_original_aspect_ratio=decrease," +
-                    $"pad={width}:{outputHeight}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={framesPerSecond},format=yuv420p[v{i}]");
+                    $"pad={width}:{outputHeight}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={framesPerSecond},format=nv12[v{i}]");
             }
 
             if (probes[i].HasAudio)

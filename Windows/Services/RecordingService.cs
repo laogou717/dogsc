@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
+using System.IO;
 using DogSC.Windows.Models;
 
 namespace DogSC.Windows.Services;
@@ -54,7 +55,7 @@ public sealed class RecordingService : IDisposable
         BuildArguments(options, startInfo.ArgumentList);
 
         _process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
-        _process.ErrorDataReceived += (_, eventArgs) =>
+        _process.ErrorDataReceived += (sender, eventArgs) =>
         {
             if (string.IsNullOrWhiteSpace(eventArgs.Data))
                 return;
@@ -179,8 +180,7 @@ public sealed class RecordingService : IDisposable
             Add(args, "-an");
         }
 
-        Add(args, "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-            "-pix_fmt", "yuv420p", "-r", options.FramesPerSecond.ToString(CultureInfo.InvariantCulture));
+        Add(args, "-c:v", "h264_mf", "-b:v", "12M", "-pix_fmt", "nv12", "-r", options.FramesPerSecond.ToString(CultureInfo.InvariantCulture));
 
         if (audioInputs.Count > 0)
             Add(args, "-c:a", "aac", "-b:a", "192k", "-ar", "48000");

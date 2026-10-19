@@ -1,0 +1,26 @@
+DogSC for Windows - third-party notices
+
+FFmpeg
+------
+The Windows installer bundles the FFmpeg shared-library build from:
+https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-10-17-20-51
+
+Pinned archive:
+ffmpeg-n9.0.2-28-g669f5ab083-win64-lgpl-shared-9.0.zip
+SHA-256:
+00ab3bc8fe02554bd0fffac9968bba498d1ab7e899a4871b85fbba828a50bfcc
+
+This is the LGPL shared variant. The installer includes the FFmpeg binaries and their adjacent shared libraries, the LGPL 2.1 license text, and FFmpeg build configuration. FFmpeg and its bundled libraries remain subject to their own licenses; see the build configuration and upstream source/build repositories for the exact component list and corresponding source:
+https://ffmpeg.org/
+https://git.ffmpeg.org/ffmpeg.git
+https://github.com/BtbN/FFmpeg-Builds
+
+The FFmpeg binaries are invoked as separate processes. DogSC does not modify FFmpeg and does not claim ownership of FFmpeg or its bundled libraries.
+
+.NET
+----
+The installer publishes the application self-contained for win-x64 using the .NET 8 runtime. See:
+https://dotnet.microsoft.com/
+https://github.com/dotnet/runtime
+
+The DogSC application source is licensed under the repository's MIT License.

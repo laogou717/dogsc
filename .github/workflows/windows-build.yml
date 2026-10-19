@@ -1,9 +1,11 @@
-name: Windows build
+name: Windows build and installer
 
 on:
   push:
     branches:
       - windows-port
+    tags:
+      - "windows-v*"
     paths:
       - "Windows/**"
       - ".github/workflows/windows-build.yml"
@@ -14,7 +16,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -29,10 +31,86 @@ jobs:
           dotnet-version: 8.0.x
 
       - name: Restore
-        run: dotnet restore Windows/DogSC.Windows.csproj
+        run: dotnet restore Windows/DogSC.Windows.csproj --runtime win-x64
 
       - name: Build Release
-        run: dotnet build Windows/DogSC.Windows.csproj --configuration Release --no-restore
+        run: dotnet build Windows/DogSC.Windows.csproj --configuration Release --runtime win-x64 --no-restore
 
-      - name: Publish win-x64
-        run: dotnet publish Windows/DogSC.Windows.csproj --configuration Release --runtime win-x64 --self-contained false --output artifacts/windows
+      - name: Publish self-contained win-x64 application
+        run: dotnet publish Windows/DogSC.Windows.csproj --configuration Release --runtime win-x64 --self-contained true --no-restore --output artifacts/publish
+
+      - name: Download pinned LGPL FFmpeg build and run media smoke test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $archive = Join-Path $env:RUNNER_TEMP "ffmpeg-win64-lgpl.zip"
+          $extractRoot = Join-Path $env:RUNNER_TEMP "ffmpeg-extracted"
+          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-17-20-51/ffmpeg-n9.0.2-28-g669f5ab083-win64-lgpl-shared-9.0.zip"
+          $expectedSha256 = "00ab3bc8fe02554bd0fffac9968bba498d1ab7e899a4871b85fbba828a50bfcc"
+          Invoke-WebRequest -Uri $url -OutFile $archive
+          $actualSha256 = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualSha256 -ne $expectedSha256) {
+            throw "FFmpeg archive SHA-256 mismatch. Expected $expectedSha256, got $actualSha256"
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath $extractRoot -Force
+          $ffmpeg = Get-ChildItem -LiteralPath $extractRoot -Filter "ffmpeg.exe" -Recurse | Select-Object -First 1
+          if ($null -eq $ffmpeg) { throw "ffmpeg.exe not found in the verified archive." }
+          $ffprobe = Join-Path $ffmpeg.Directory.FullName "ffprobe.exe"
+          if (!(Test-Path -LiteralPath $ffprobe)) { throw "ffprobe.exe not found next to ffmpeg.exe." }
+
+          $devices = (& $ffmpeg.FullName -hide_banner -devices 2>&1 | Out-String)
+          foreach ($device in @("gdigrab", "dshow", "wasapi")) {
+            if ($devices -notmatch [regex]::Escape($device)) { throw "FFmpeg build is missing required device: $device" }
+          }
+          $encoders = (& $ffmpeg.FullName -hide_banner -encoders 2>&1 | Out-String)
+          if ($encoders -notmatch "\bh264_mf\b") { throw "FFmpeg build is missing the Windows Media Foundation H.264 encoder (h264_mf)." }
+          if ($encoders -notmatch "\baac\b") { throw "FFmpeg build is missing the AAC encoder." }
+
+          $smokeFile = Join-Path $env:RUNNER_TEMP "dogsc-ffmpeg-smoke.mp4"
+          & $ffmpeg.FullName -hide_banner -loglevel error -f lavfi -i "testsrc2=size=320x240:rate=30" -f lavfi -i "sine=frequency=1000:sample_rate=48000" -t 1 -c:v h264_mf -b:v 500k -pix_fmt nv12 -c:a aac -b:a 96k -shortest $smokeFile
+          if ($LASTEXITCODE -ne 0 -or !(Test-Path -LiteralPath $smokeFile)) { throw "FFmpeg encode smoke test failed." }
+          $probe = (& $ffprobe -v error -show_entries stream=codec_type -of json $smokeFile | ConvertFrom-Json)
+          if (@($probe.streams | Where-Object codec_type -eq "video").Count -eq 0 -or @($probe.streams | Where-Object codec_type -eq "audio").Count -eq 0) {
+            throw "FFmpeg smoke output does not contain both video and audio streams."
+          }
+
+          $publishDir = Join-Path $env:GITHUB_WORKSPACE "artifacts/publish"
+          $toolsDir = Join-Path $publishDir "tools"
+          New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
+          Copy-Item -Path (Join-Path $ffmpeg.Directory.FullName "*") -Destination $toolsDir -Recurse -Force
+          $version = (& $ffmpeg.FullName -hide_banner -version 2>&1 | Out-String)
+          $buildConfig = (& $ffmpeg.FullName -hide_banner -buildconf 2>&1 | Out-String)
+          if ($buildConfig -match "--enable-gpl|--enable-nonfree") {
+            throw "The bundled FFmpeg build must remain LGPL and must not enable GPL/nonfree components."
+          }
+          Set-Content -LiteralPath (Join-Path $toolsDir "FFmpeg-BUILD.txt") -Value ($version + [Environment]::NewLine + "Build configuration:" + [Environment]::NewLine + $buildConfig) -Encoding utf8
+          Copy-Item -LiteralPath "Windows/THIRD-PARTY-NOTICES.txt" -Destination (Join-Path $publishDir "THIRD-PARTY-NOTICES.txt")
+          Invoke-WebRequest -Uri "https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt" -OutFile (Join-Path $publishDir "COPYING.LGPLv2.1.txt")
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+
+      - name: Build single-file installer
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (!(Test-Path -LiteralPath $iscc)) { $iscc = (Get-Command ISCC.exe -ErrorAction Stop).Source }
+          & $iscc "Windows/installer.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: DogSC-Windows-Installer
+          path: artifacts/installer/DogSC-Setup-win-x64.exe
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish tagged Windows preview release
+        if: startsWith(github.ref, 'refs/tags/windows-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/installer/DogSC-Setup-win-x64.exe
+          prerelease: true
+          generate_release_notes: true

@@ -275,7 +275,7 @@ public partial class MainWindow : Window
                 throw new InvalidOperationException($"出点超过媒体时长（{info.DurationSeconds:F2} 秒）。");
             clip.StartSeconds = start;
             clip.EndSeconds = end;
-            clip.Speed = ReadTagDouble(ClipSpeedCombo, 1.0);
+            clip.Speed = ReadTagDouble(ClipSpeedCombo.SelectedItem as ComboBoxItem, 1.0);
             ClipsGrid.Items.Refresh();
             EditorStatusText.Text = $"片段设置已应用：{clip.DisplayLabel}";
         }
