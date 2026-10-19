@@ -77,7 +77,8 @@ public sealed class MediaEditorService
         string aspectRatio = "16:9",
         string fitMode = "fit",
         string backgroundColor = "black",
-        string? backgroundImagePath = null)
+        string? backgroundImagePath = null,
+        string? subtitleFilePath = null)
     {
         if (clips.Count == 0)
             throw new InvalidOperationException("时间线上没有可导出的片段。");
@@ -104,6 +105,14 @@ public sealed class MediaEditorService
                 throw new FileNotFoundException("找不到背景图片。", backgroundImagePath);
             if (audioOnly)
                 backgroundImagePath = null;
+        }
+        if (!string.IsNullOrWhiteSpace(subtitleFilePath))
+        {
+            subtitleFilePath = Path.GetFullPath(subtitleFilePath);
+            if (!File.Exists(subtitleFilePath))
+                throw new FileNotFoundException("找不到 SRT 字幕文件。", subtitleFilePath);
+            if (audioOnly)
+                subtitleFilePath = null;
         }
         if (audioOnly && !string.Equals(Path.GetExtension(outputPath), ".m4a", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("音频导出文件必须使用 .m4a 扩展名。");
@@ -132,7 +141,7 @@ public sealed class MediaEditorService
             Directory.CreateDirectory(outputDirectory);
 
         var totalDuration = clips.Sum(clip => clip.DurationSeconds);
-        var graph = BuildFilterGraph(clips, probes, outputHeight, framesPerSecond, audioOnly, aspectRatio, fitMode, backgroundColor, backgroundImagePath);
+        var graph = BuildFilterGraph(clips, probes, outputHeight, framesPerSecond, audioOnly, aspectRatio, fitMode, backgroundColor, backgroundImagePath, subtitleFilePath);
         var args = new List<string> { "-hide_banner", "-y", "-loglevel", "error" };
 
         foreach (var clip in clips)
@@ -173,7 +182,7 @@ public sealed class MediaEditorService
             };
             args.AddRange(new[]
             {
-                "-map", "[vout]", "-map", "[aout]",
+                "-map", string.IsNullOrWhiteSpace(subtitleFilePath) ? "[vout]" : "[vsub]", "-map", "[aout]",
                 "-c:v", "h264_mf", "-b:v", videoBitrate,
                 "-pix_fmt", "nv12", "-r", framesPerSecond.ToString(CultureInfo.InvariantCulture),
                 "-c:a", "aac", "-b:a", "192k", "-ar", "48000"
@@ -227,7 +236,8 @@ public sealed class MediaEditorService
         string aspectRatio,
         string fitMode,
         string backgroundColor,
-        string? backgroundImagePath)
+        string? backgroundImagePath,
+        string? subtitleFilePath)
     {
         var filters = new List<string>();
         var (width, height) = GetCanvasSize(outputHeight, aspectRatio);
@@ -315,8 +325,17 @@ public sealed class MediaEditorService
             filters.Add(inputs + $"concat=n={clips.Count}:v=1:a=1[vout][aout]");
         }
 
+        if (!audioOnly && !string.IsNullOrWhiteSpace(subtitleFilePath))
+        {
+            var escapedSubtitlePath = EscapeFilterPath(subtitleFilePath);
+            filters.Add($"[vout]subtitles=filename='{escapedSubtitlePath}':charenc=UTF-8[vsub]");
+        }
+
         return string.Join(";", filters);
     }
+
+    private static string EscapeFilterPath(string path) =>
+        Path.GetFullPath(path).Replace("\\", "/").Replace(":", "\\:").Replace("'", "\\'");
 
     private static (int Width, int Height) GetCanvasSize(int shortEdge, string aspectRatio)
     {
