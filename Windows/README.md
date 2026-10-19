@@ -13,7 +13,7 @@ A tagged windows-v* build is configured to publish a GitHub pre-release containi
 
 ## Developer build
 
-Requirements: Windows 10 version 2004 (build 19041) or later, .NET 8 SDK, and an FFmpeg build with gdigrab, dshow, wasapi, h264_mf, and ffprobe.exe.
+Requirements: Windows 10 version 2004 (build 19041) or later, .NET 8 SDK, and an FFmpeg build with gdigrab, dshow, h264_mf, and ffprobe.exe.
 
 From the repository root, run in PowerShell:
 
@@ -26,7 +26,7 @@ Developers can override FFmpeg discovery with DOGSC_FFMPEG_PATH. Ordinary users 
 ## Windows foundation implemented
 
 - Desktop, window-title, and coordinate-based region capture at 30/60 FPS with cursor rendering.
-- WASAPI system-audio loopback and DirectShow microphone capture, including mixing both inputs.
+- WASAPI system-audio loopback through NAudio and DirectShow microphone capture, including post-recording audio mixing.
 - Video import and preview, clip ordering, in/out trimming, and 0.5x–2x playback speed.
 - Versioned .dogscproj project save/load.
 - MP4 export at 1080p/1440p/4K and 30/60 FPS, plus M4A audio export.

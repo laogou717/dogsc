@@ -59,7 +59,7 @@ jobs:
           if (!(Test-Path -LiteralPath $ffprobe)) { throw "ffprobe.exe not found next to ffmpeg.exe." }
 
           $devices = (& $ffmpeg.FullName -hide_banner -devices 2>&1 | Out-String)
-          foreach ($device in @("gdigrab", "dshow", "wasapi")) {
+          foreach ($device in @("gdigrab", "dshow")) {
             if ($devices -notmatch [regex]::Escape($device)) { throw "FFmpeg build is missing required device: $device" }
           }
           $encoders = (& $ffmpeg.FullName -hide_banner -encoders 2>&1 | Out-String)
