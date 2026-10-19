@@ -27,6 +27,30 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Validate UTF-8 Chinese UI resources
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $utf8 = [System.Text.UTF8Encoding]::new($false, $true)
+          $paths = @(
+            "Windows/App.xaml",
+            "Windows/MainWindow.xaml",
+            "Windows/MainWindow.xaml.cs",
+            "Windows/RegionSelectionWindow.cs"
+          )
+          foreach ($relativePath in $paths) {
+            $path = Join-Path $env:GITHUB_WORKSPACE $relativePath
+            $content = [System.IO.File]::ReadAllText($path, $utf8)
+            if ($content.Contains([char]0xFFFD)) {
+              throw "Replacement character found in UI source: $relativePath"
+            }
+          }
+          $ui = [System.IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE "Windows/MainWindow.xaml"), $utf8)
+          foreach ($label in @("录制模式", "片段预览", "导出设置", "设置与帮助", "Microsoft YaHei UI")) {
+            if (!$ui.Contains($label)) { throw "Expected Chinese UI label or font setting missing: $label" }
+          }
+          Write-Host "UI resources are valid UTF-8 and expected Chinese labels are present."
+
       - name: Set up .NET
         uses: actions/setup-dotnet@v4
         with:
@@ -174,13 +198,15 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/windows-v') || (github.ref == 'refs/heads/windows-port' && contains(github.event.head_commit.message, '[publish-release]'))
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/windows-v') && github.ref_name || 'windows-v0.1.0' }}
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/windows-v') && github.ref_name || 'windows-v0.1.9' }}
           target_commitish: ${{ github.sha }}
-          name: ${{ startsWith(github.ref, 'refs/tags/windows-v') && format('DogSC Windows Preview {0}', github.ref_name) || 'DogSC Windows Preview v0.1.0' }}
+          name: ${{ startsWith(github.ref, 'refs/tags/windows-v') && format('DogSC Windows Preview {0}', github.ref_name) || 'DogSC Windows Preview v0.1.9' }}
           body: |
-            DogSC for Windows — preview release.
+            DogSC for Windows — UI refresh preview v0.1.9.
 
-            Includes the self-contained Windows x64 application and bundled LGPL FFmpeg tools. This is a Windows preview; hardware-dependent capture and full macOS feature parity still require additional validation.
+            This release refreshes the Chinese UI layout, sets an explicit Microsoft YaHei UI font, adds UTF-8 resource validation to CI, and wires navigation, export-path selection, region-coordinate synchronization, cursor visibility, and marker enable/disable controls.
+
+            Includes the self-contained Windows x64 application and bundled LGPL FFmpeg tools. Hardware-dependent capture and remaining macOS feature parity still require additional validation.
           files: artifacts/installer/DogSC-Setup-win-x64.exe
           prerelease: true
           generate_release_notes: true

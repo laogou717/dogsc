@@ -15,7 +15,7 @@ The Windows app lives in Windows/ and is isolated from the existing Swift/macOS 
 - [x] Recording marker button and Ctrl+Alt+M global shortcut; timestamps saved to a JSON sidecar and available for seeking in the editor.
 - [x] Single-installer script; self-contained .NET publishing; pinned FFmpeg LGPL shared build; SHA-256 verification; FFmpeg encode/probe smoke test in CI.
 - [x] CI integration tests for media probing, project save/load, MP4/M4A export, portrait output and square crop; successful installed-app startup verified on commit 672cccc3e8223bad91a3de0a4965f62cbf2c3c5e.
-- [ ] Windows build and installer workflow must pass after the current commit; inspect its logs rather than assuming success.
+- [x] Windows build, media/project integration tests, installer generation, installed-app startup, and silent uninstall passed on commit 27e19a37de7a225166bd198da0e4c3f4ff7bed07.
 - [ ] Validate installation, first launch, uninstall, and clean-machine operation on a real Windows 10/11 machine.
 - [ ] Validate capture and audio sync with real devices, multiple monitors, mixed DPI, long recordings, sleep/resume, and export recovery.
 
@@ -28,8 +28,10 @@ The Windows app lives in Windows/ and is isolated from the existing Swift/macOS 
 - [ ] Cursor asset library, click feedback, pointer event timeline, and cursor calibration.
 - [ ] Automatic cursor-follow zoom, manual zoom keyframes, 3D perspective, focus blur, and opening animations.
 - [ ] Background, crop/aspect ratio, rounded corners, shadows, device frames, stickers, softening/highlight effects, and scene presets.
-- [ ] Full multi-track timeline operations, thumbnails/waveforms, snapping, undo/redo, marker tracks/timeline editing, and advanced audio editing.
-- [ ] Settings, shortcut reference, localization parity, updater, signed installer, and release packaging.
+- [ ] Full multi-track timeline operations, thumbnails/waveforms, snapping, marker-track editing, and advanced audio editing. Basic split, reorder, undo and redo are implemented.
+- [x] Basic settings/help page and shortcut reference.
+- [x] Modern Chinese UI styling with Microsoft YaHei UI font fallback and UTF-8 source checks in CI.
+- [ ] Full localization parity, updater, production code signing, and manual real-device validation.
 - [ ] Automated parity tests comparing project semantics and export behavior with macOS fixtures.
 - [ ] Manual regression matrix on Windows 10/11 and common integrated/discrete graphics plus common audio interfaces.
 

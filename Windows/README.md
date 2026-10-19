@@ -25,17 +25,18 @@ Developers can override FFmpeg discovery with DOGSC_FFMPEG_PATH. Ordinary users 
 
 ## Windows foundation implemented
 
-- Desktop, window-title, and coordinate-based region capture at 30/60 FPS with cursor rendering.
+- Desktop, window-title, and drag-selected coordinate-region capture at 30/60 FPS with a configurable cursor visibility toggle.
 - WASAPI system-audio loopback through NAudio and DirectShow microphone capture, including post-recording audio mixing.
 - Static webcam overlay recording through DirectShow, with small/medium/large sizing and five placement presets.
-- Video import and preview, clip ordering, in/out trimming, and 0.5x–2x playback speed.
+- Video import and preview, clip ordering, in/out trimming, split-at-playhead, undo/redo history, keyboard shortcuts, and 0.5x–2x playback speed.
 - Versioned .dogscproj project save/load.
 - Recording markers via a button and Ctrl+Alt+M global shortcut; timestamps are saved to a companion .markers.json file and can be selected in the editor to seek the preview.
 - MP4 export at 1080p/1440p/4K and 30/60 FPS, with 16:9, 9:16, 1:1, 4:3 and 3:2 canvas ratios, fit/fill modes and selectable backgrounds; plus M4A audio export.
-- Single-installer pipeline with a self-contained .NET runtime, bundled FFmpeg DLLs, checksum verification, and an FFmpeg encode/probe smoke test.
+- Redesigned Chinese WPF interface with an explicit Microsoft YaHei UI font, modern navigation/cards, export-path controls, synchronized region fields, and a CI UTF-8 resource check.
+- Single-installer pipeline with a self-contained .NET runtime, bundled FFmpeg DLLs, checksum verification, and FFmpeg encode/probe integration tests.
 
 ## Feature parity status
 
-This is not yet a complete Windows port. The macOS application contains additional capabilities that still need Windows-specific implementations and parity tests, including iPhone/iPad capture, animated camera entrance/layout and rounded camera masks, cursor click effects and automatic zoom, 3D perspective/focus effects, stickers and device frames, advanced multi-track editing, thumbnails/waveforms, snapping, undo/redo, marker tracks, settings, full localization, shortcut reference, update support, and production signing.
+This is not yet a complete Windows port. The macOS application contains additional capabilities that still need Windows-specific implementations and parity tests, including iPhone/iPad capture, animated camera entrance/layout and rounded camera masks, cursor click effects and automatic zoom, 3D perspective/focus effects, stickers and device frames, advanced multi-track editing, thumbnails/waveforms, snapping, advanced audio editing, full localization, updater, and production signing.
 
 See the Windows parity checklist in docs/windows-port-status.md. A successful build is necessary but does not prove that recording works on all Windows hardware or that all Mac features have been ported.
