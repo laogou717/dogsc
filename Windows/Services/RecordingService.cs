@@ -69,6 +69,8 @@ public sealed class RecordingService : IDisposable
         _captureMicrophone = options.CaptureMicrophone;
         lock (_markers)
             _markers.Clear();
+        // Remove markers left by a previous recording when the same output name is reused.
+        TryDelete(Path.ChangeExtension(_outputPath, ".markers.json"));
 
         var ffmpeg = FfmpegLocator.FindFfmpegPath()
             ?? throw new InvalidOperationException("未找到 ffmpeg.exe。请安装 FFmpeg，或使用集成安装包。");
