@@ -140,7 +140,7 @@ public sealed class RecordingService : IDisposable
 
         BuildArguments(options, startInfo.ArgumentList, videoEncoder);
         var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
-        process.ErrorDataReceived += (_, eventArgs) =>
+        process.ErrorDataReceived += (sender, eventArgs) =>
         {
             if (string.IsNullOrWhiteSpace(eventArgs.Data))
                 return;
