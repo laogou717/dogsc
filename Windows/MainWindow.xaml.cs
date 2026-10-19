@@ -1160,7 +1160,8 @@ public partial class MainWindow : Window
                     SaveUndoState();
                 var fullPath = Path.GetFullPath(path);
                 var thumbnailPath = await CreateClipThumbnailAsync(fullPath, 0);
-                _clips.Add(new ClipItem { FilePath = fullPath, StartSeconds = 0, EndSeconds = probe.DurationSeconds, Speed = 1, ThumbnailPath = thumbnailPath });
+                var waveformPath = probe.HasAudio ? await CreateAudioWaveformAsync(fullPath) : null;
+                _clips.Add(new ClipItem { FilePath = fullPath, StartSeconds = 0, EndSeconds = probe.DurationSeconds, Speed = 1, ThumbnailPath = thumbnailPath, AudioWaveformPath = waveformPath });
                 added++;
             }
             catch (Exception exception)
@@ -1227,6 +1228,54 @@ public partial class MainWindow : Window
             App.WriteDiagnostic("Thumbnail generation failed: " + exception);
         }
 
+        return null;
+    }
+
+    private async Task<string?> CreateAudioWaveformAsync(string mediaPath)
+    {
+        var ffmpeg = FfmpegLocator.FindFfmpegPath();
+        if (ffmpeg is null || !File.Exists(mediaPath))
+            return null;
+
+        try
+        {
+            var stamp = File.GetLastWriteTimeUtc(mediaPath).Ticks.ToString(CultureInfo.InvariantCulture);
+            var key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Path.GetFullPath(mediaPath) + "|" + stamp)))[..20];
+            var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DogSC", "cache", "waveforms");
+            Directory.CreateDirectory(directory);
+            var output = Path.Combine(directory, key + ".png");
+            if (File.Exists(output) && new FileInfo(output).Length > 0)
+                return output;
+
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = ffmpeg,
+                UseShellExecute = false,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+            foreach (var argument in new[]
+            {
+                "-hide_banner", "-loglevel", "error", "-y", "-i", Path.GetFullPath(mediaPath),
+                "-filter_complex", "showwavespic=s=600x40:colors=0x1769F5:scale=sqrt",
+                "-frames:v", "1", output
+            })
+                startInfo.ArgumentList.Add(argument);
+
+            using var process = new Process { StartInfo = startInfo };
+            if (!process.Start())
+                return null;
+            var stderrTask = process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+            var stderr = await stderrTask;
+            if (process.ExitCode == 0 && File.Exists(output) && new FileInfo(output).Length > 0)
+                return output;
+            App.WriteDiagnostic("Audio waveform generation failed: " + stderr);
+        }
+        catch (Exception exception)
+        {
+            App.WriteDiagnostic("Audio waveform generation failed: " + exception);
+        }
         return null;
     }
 
@@ -1533,6 +1582,7 @@ public partial class MainWindow : Window
             RotationDegrees = clip.RotationDegrees,
             ZoomStart = clip.ZoomStart,
             ZoomEnd = clip.ZoomEnd,
+            AudioWaveformPath = clip.AudioWaveformPath,
             ThumbnailPath = splitThumbnail ?? clip.ThumbnailPath
         });
         ClipsGrid.Items.Refresh();
@@ -1678,7 +1728,11 @@ public partial class MainWindow : Window
         {
             var clips = await _projectFileService.LoadAsync(dialog.FileName);
             foreach (var clip in clips)
+            {
                 clip.ThumbnailPath = await CreateClipThumbnailAsync(clip.FilePath, clip.StartSeconds);
+                var probe = await _mediaEditorService.ProbeAsync(clip.FilePath);
+                clip.AudioWaveformPath = probe.HasAudio ? await CreateAudioWaveformAsync(clip.FilePath) : null;
+            }
             SaveUndoState();
             ReplaceClips(clips, 0);
             ClipsGrid.SelectedIndex = _clips.Count > 0 ? 0 : -1;
@@ -1826,7 +1880,11 @@ public partial class MainWindow : Window
 
             var recovered = await _projectFileService.LoadAsync(path);
             foreach (var clip in recovered)
+            {
                 clip.ThumbnailPath = await CreateClipThumbnailAsync(clip.FilePath, clip.StartSeconds);
+                var probe = await _mediaEditorService.ProbeAsync(clip.FilePath);
+                clip.AudioWaveformPath = probe.HasAudio ? await CreateAudioWaveformAsync(clip.FilePath) : null;
+            }
             ReplaceClips(recovered, 0);
             EditorStatusText.Text = $"已恢复 {recovered.Count} 个片段。请另存为正式项目。";
         }
