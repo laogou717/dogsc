@@ -344,8 +344,17 @@ public partial class MainWindow : Window
     private async void CameraPreviewTimer_Tick(object? sender, EventArgs e) =>
         await UpdateCameraPreviewAsync();
 
-    private void CameraOverlayCheckBox_Checked(object sender, RoutedEventArgs e) =>
+    private void CameraOverlayCheckBox_Checked(object sender, RoutedEventArgs e)
+    {
+        if (CameraCombo.SelectedItem is not string deviceName || string.IsNullOrWhiteSpace(deviceName))
+        {
+            CameraOverlayCheckBox.IsChecked = false;
+            UpdateCameraAvailability();
+            return;
+        }
+
         _ = UpdateCameraPreviewAsync();
+    }
 
     private void CameraOverlayCheckBox_Unchecked(object sender, RoutedEventArgs e)
     {
@@ -355,6 +364,7 @@ public partial class MainWindow : Window
 
     private void CameraCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
+        UpdateCameraAvailability();
         UpdateCameraPreviewPlacement();
         if (CameraOverlayCheckBox?.IsChecked == true)
             _ = UpdateCameraPreviewAsync();
@@ -841,10 +851,43 @@ public partial class MainWindow : Window
                 CameraCombo.SelectedItem = selected;
             else if (devices.Count > 0)
                 CameraCombo.SelectedIndex = 0;
+
+            UpdateCameraAvailability();
         }
         catch (Exception exception)
         {
-            RecordingStatusText.Text = "摄像头设备检测失败：" + exception.Message;
+            CameraCombo.ItemsSource = Array.Empty<string>();
+            UpdateCameraAvailability();
+            CameraDeviceStatusText.Text = "摄像头检测失败；录制仍可继续，不会叠加摄像头画面。";
+            CameraDeviceStatusText.Visibility = Visibility.Visible;
+            AppendRecordingLog("Camera device discovery failed: " + exception);
+        }
+    }
+
+    private void UpdateCameraAvailability()
+    {
+        if (CameraCombo is null || CameraOverlayCheckBox is null ||
+            CameraPositionCombo is null || CameraSizeCombo is null ||
+            CameraDeviceStatusText is null)
+            return;
+
+        var hasCamera = CameraCombo.SelectedItem is string deviceName &&
+                        !string.IsNullOrWhiteSpace(deviceName);
+        if (!hasCamera && CameraOverlayCheckBox.IsChecked == true)
+            CameraOverlayCheckBox.IsChecked = false;
+
+        CameraOverlayCheckBox.IsEnabled = hasCamera;
+        CameraPositionCombo.IsEnabled = hasCamera;
+        CameraSizeCombo.IsEnabled = hasCamera;
+        CameraDeviceStatusText.Text = hasCamera
+            ? string.Empty
+            : "未检测到摄像头。录制仍可继续，摄像头叠加已停用。";
+        CameraDeviceStatusText.Visibility = hasCamera ? Visibility.Collapsed : Visibility.Visible;
+
+        if (!hasCamera)
+        {
+            CameraPreviewFrame.Visibility = Visibility.Collapsed;
+            CameraPreviewImage.Source = null;
         }
     }
 
@@ -927,6 +970,17 @@ public partial class MainWindow : Window
                     throw new InvalidOperationException("所选窗口尺寸无效。请先恢复窗口并重试。");
             }
 
+            var cameraDevice = CameraCombo.SelectedItem as string;
+            var captureCamera = CameraOverlayCheckBox.IsChecked == true &&
+                                !string.IsNullOrWhiteSpace(cameraDevice);
+            if (CameraOverlayCheckBox.IsChecked == true && !captureCamera)
+            {
+                CameraOverlayCheckBox.IsChecked = false;
+                UpdateCameraAvailability();
+                CameraDeviceStatusText.Text = "未检测到摄像头。已自动关闭摄像头叠加，本次录制将继续。";
+                CameraDeviceStatusText.Visibility = Visibility.Visible;
+            }
+
             var options = new RecordingOptions
             {
                 OutputPath = output,
@@ -946,8 +1000,8 @@ public partial class MainWindow : Window
                 MicrophoneDevice = MicrophoneCombo.SelectedItem as string,
                 ShowCursor = ShowCursorCheckBox.IsChecked == true,
                 EnableMarkers = RecordMarkerCheckBox.IsChecked == true,
-                CaptureCamera = CameraOverlayCheckBox.IsChecked == true,
-                CameraDevice = CameraCombo.SelectedItem as string,
+                CaptureCamera = captureCamera,
+                CameraDevice = captureCamera ? cameraDevice : null,
                 CameraPosition = ReadTagString(CameraPositionCombo, "bottom-right"),
                 CameraSize = ReadTagString(CameraSizeCombo, "small")
             };
