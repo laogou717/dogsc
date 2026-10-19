@@ -1,0 +1,160 @@
+<Window x:Class="DogSC.Windows.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="DogSC for Windows" Height="820" Width="1240"
+        MinHeight="680" MinWidth="960" WindowStartupLocation="CenterScreen"
+        Closing="MainWindow_Closing">
+    <Grid Margin="14">
+        <TabControl>
+            <TabItem Header="屏幕录制">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="14">
+                        <TextBlock FontSize="22" FontWeight="SemiBold" Text="屏幕录制" />
+                        <TextBlock Margin="0,4,0,14" Foreground="#5B6472"
+                                   Text="支持桌面、窗口和指定区域采集；录制由 FFmpeg 执行。" />
+                        <WrapPanel Margin="0,0,0,8">
+                            <StackPanel Width="210">
+                                <TextBlock Text="采集来源" />
+                                <ComboBox x:Name="CaptureModeCombo" SelectionChanged="CaptureModeCombo_SelectionChanged">
+                                    <ComboBoxItem Content="整个桌面" Tag="Desktop" />
+                                    <ComboBoxItem Content="指定窗口" Tag="Window" />
+                                    <ComboBoxItem Content="指定区域" Tag="Region" />
+                                </ComboBox>
+                            </StackPanel>
+                            <StackPanel Width="150">
+                                <TextBlock Text="录制帧率" />
+                                <ComboBox x:Name="FrameRateCombo">
+                                    <ComboBoxItem Content="30 FPS" Tag="30" />
+                                    <ComboBoxItem Content="60 FPS" Tag="60" />
+                                </ComboBox>
+                            </StackPanel>
+                            <StackPanel VerticalAlignment="Bottom">
+                                <Button Content="刷新窗口列表" Click="RefreshWindows_Click" />
+                            </StackPanel>
+                        </WrapPanel>
+                        <StackPanel x:Name="WindowSelectionPanel" Visibility="Collapsed" Margin="0,0,0,8">
+                            <TextBlock Text="要录制的窗口" />
+                            <ComboBox x:Name="WindowCombo" DisplayMemberPath="Title" />
+                        </StackPanel>
+                        <StackPanel x:Name="RegionSelectionPanel" Visibility="Collapsed" Margin="0,0,0,8">
+                            <TextBlock Text="区域坐标（相对于桌面左上角，单位为像素）" />
+                            <WrapPanel>
+                                <StackPanel Width="110"><TextBlock Text="X" /><TextBox x:Name="RegionXTextBox" Text="0" /></StackPanel>
+                                <StackPanel Width="110"><TextBlock Text="Y" /><TextBox x:Name="RegionYTextBox" Text="0" /></StackPanel>
+                                <StackPanel Width="130"><TextBlock Text="宽度" /><TextBox x:Name="RegionWidthTextBox" Text="1280" /></StackPanel>
+                                <StackPanel Width="130"><TextBlock Text="高度" /><TextBox x:Name="RegionHeightTextBox" Text="720" /></StackPanel>
+                            </WrapPanel>
+                        </StackPanel>
+                        <Separator Margin="0,10,0,10" />
+                        <TextBlock FontSize="16" FontWeight="SemiBold" Text="音频" />
+                        <CheckBox x:Name="SystemAudioCheckBox" Content="录制系统声音（需要 FFmpeg WASAPI 支持）" IsChecked="True" />
+                        <CheckBox x:Name="MicrophoneCheckBox" Content="同时录制麦克风" />
+                        <WrapPanel Margin="0,0,0,8">
+                            <StackPanel Width="430">
+                                <TextBlock Text="麦克风设备（DirectShow）" />
+                                <ComboBox x:Name="MicrophoneCombo" />
+                            </StackPanel>
+                            <StackPanel VerticalAlignment="Bottom">
+                                <Button Content="重新检测音频设备" Click="RefreshAudioDevices_Click" />
+                            </StackPanel>
+                        </WrapPanel>
+                        <Separator Margin="0,10,0,10" />
+                        <TextBlock FontSize="16" FontWeight="SemiBold" Text="保存位置" />
+                        <DockPanel Margin="0,4,0,10">
+                            <Button DockPanel.Dock="Right" Content="浏览..." Click="BrowseOutput_Click" />
+                            <TextBox x:Name="OutputPathTextBox" />
+                        </DockPanel>
+                        <WrapPanel>
+                            <Button x:Name="StartRecordingButton" Content="开始录制" MinWidth="120"
+                                    Background="#2563EB" Foreground="White" Click="StartRecording_Click" />
+                            <Button x:Name="StopRecordingButton" Content="停止录制" MinWidth="120"
+                                    IsEnabled="False" Click="StopRecording_Click" />
+                        </WrapPanel>
+                        <Border Background="#F3F5F8" CornerRadius="6" Padding="10" Margin="3,12,3,0">
+                            <TextBlock x:Name="RecordingStatusText" TextWrapping="Wrap"
+                                       Text="就绪。请先安装 FFmpeg，并确保 ffmpeg.exe、ffprobe.exe 可用。" />
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+            <TabItem Header="视频编辑">
+                <Grid Margin="12">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="220" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <WrapPanel Grid.Row="0" Margin="0,0,0,8">
+                        <Button Content="导入视频" Click="AddClips_Click" />
+                        <Button Content="打开项目" Click="LoadProject_Click" />
+                        <Button Content="保存项目" Click="SaveProject_Click" />
+                        <Button Content="删除片段" Click="RemoveClip_Click" />
+                        <Button Content="上移" Click="MoveClipUp_Click" />
+                        <Button Content="下移" Click="MoveClipDown_Click" />
+                    </WrapPanel>
+                    <DataGrid x:Name="ClipsGrid" Grid.Row="1" AutoGenerateColumns="False"
+                              CanUserAddRows="False" IsReadOnly="True" SelectionMode="Single"
+                              SelectionChanged="ClipsGrid_SelectionChanged" HeadersVisibility="Column"
+                              GridLinesVisibility="Horizontal">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="媒体文件" Binding="{Binding FileName}" Width="*" />
+                            <DataGridTextColumn Header="入点 (秒)" Binding="{Binding StartSeconds, StringFormat=F2}" Width="110" />
+                            <DataGridTextColumn Header="出点 (秒)" Binding="{Binding EndSeconds, StringFormat=F2}" Width="110" />
+                            <DataGridTextColumn Header="速度" Binding="{Binding Speed, StringFormat=F2}" Width="90" />
+                            <DataGridTextColumn Header="时长 (秒)" Binding="{Binding DurationSeconds, StringFormat=F2}" Width="110" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                    <WrapPanel Grid.Row="2" Margin="0,8,0,8" VerticalAlignment="Center">
+                        <StackPanel Width="125"><TextBlock Text="入点（秒）" /><TextBox x:Name="ClipStartTextBox" Text="0" /></StackPanel>
+                        <StackPanel Width="125"><TextBlock Text="出点（秒）" /><TextBox x:Name="ClipEndTextBox" Text="0" /></StackPanel>
+                        <StackPanel Width="135">
+                            <TextBlock Text="播放速度" />
+                            <ComboBox x:Name="ClipSpeedCombo">
+                                <ComboBoxItem Content="0.50x" Tag="0.5" />
+                                <ComboBoxItem Content="0.75x" Tag="0.75" />
+                                <ComboBoxItem Content="1.00x" Tag="1" />
+                                <ComboBoxItem Content="1.25x" Tag="1.25" />
+                                <ComboBoxItem Content="1.50x" Tag="1.5" />
+                                <ComboBoxItem Content="2.00x" Tag="2" />
+                            </ComboBox>
+                        </StackPanel>
+                        <StackPanel VerticalAlignment="Bottom"><Button Content="应用片段设置" Click="ApplyClipEdits_Click" /></StackPanel>
+                        <StackPanel VerticalAlignment="Bottom"><Button x:Name="PreviewPlayButton" Content="播放预览" Click="TogglePreview_Click" /></StackPanel>
+                    </WrapPanel>
+                    <Border Grid.Row="3" Background="#101318" CornerRadius="6" Padding="4">
+                        <MediaElement x:Name="PreviewElement" LoadedBehavior="Manual" UnloadedBehavior="Manual"
+                                      Stretch="Uniform" ScrubbingEnabled="True" MediaOpened="PreviewElement_MediaOpened"
+                                      MediaEnded="PreviewElement_MediaEnded" />
+                    </Border>
+                    <DockPanel Grid.Row="4" Margin="0,8,0,0">
+                        <Button DockPanel.Dock="Right" x:Name="ExportButton" Content="导出" MinWidth="100" Click="Export_Click" />
+                        <WrapPanel VerticalAlignment="Center">
+                            <TextBlock VerticalAlignment="Center" Text="格式" />
+                            <ComboBox x:Name="ExportFormatCombo" Width="125">
+                                <ComboBoxItem Content="MP4 视频" Tag="MP4" />
+                                <ComboBoxItem Content="M4A 音频" Tag="M4A" />
+                            </ComboBox>
+                            <TextBlock VerticalAlignment="Center" Text="分辨率" />
+                            <ComboBox x:Name="ExportResolutionCombo" Width="125">
+                                <ComboBoxItem Content="1080p" Tag="1080" />
+                                <ComboBoxItem Content="1440p" Tag="1440" />
+                                <ComboBoxItem Content="4K" Tag="2160" />
+                            </ComboBox>
+                            <TextBlock VerticalAlignment="Center" Text="帧率" />
+                            <ComboBox x:Name="ExportFrameRateCombo" Width="105">
+                                <ComboBoxItem Content="30 FPS" Tag="30" />
+                                <ComboBoxItem Content="60 FPS" Tag="60" />
+                            </ComboBox>
+                        </WrapPanel>
+                    </DockPanel>
+                    <TextBlock Grid.Row="5" x:Name="EditorStatusText" Margin="4,8,4,0"
+                               Foreground="#5B6472" TextWrapping="Wrap"
+                               Text="导入视频后可裁剪、排序、变速、保存项目并导出 MP4/M4A。" />
+                </Grid>
+            </TabItem>
+        </TabControl>
+    </Grid>
+</Window>

@@ -1,0 +1,38 @@
+name: Windows build
+
+on:
+  push:
+    branches:
+      - windows-port
+    paths:
+      - "Windows/**"
+      - ".github/workflows/windows-build.yml"
+  pull_request:
+    paths:
+      - "Windows/**"
+      - ".github/workflows/windows-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore Windows/DogSC.Windows.csproj
+
+      - name: Build Release
+        run: dotnet build Windows/DogSC.Windows.csproj --configuration Release --no-restore
+
+      - name: Publish win-x64
+        run: dotnet publish Windows/DogSC.Windows.csproj --configuration Release --runtime win-x64 --self-contained false --output artifacts/windows
