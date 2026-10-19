@@ -73,7 +73,10 @@ public sealed class MediaEditorService
         int outputHeight,
         int framesPerSecond,
         bool audioOnly,
-        IProgress<string>? progress = null)
+        IProgress<string>? progress = null,
+        string aspectRatio = "16:9",
+        string fitMode = "fit",
+        string backgroundColor = "black")
     {
         if (clips.Count == 0)
             throw new InvalidOperationException("时间线上没有可导出的片段。");
@@ -108,7 +111,7 @@ public sealed class MediaEditorService
             Directory.CreateDirectory(outputDirectory);
 
         var totalDuration = clips.Sum(clip => clip.DurationSeconds);
-        var graph = BuildFilterGraph(clips, probes, outputHeight, framesPerSecond, audioOnly);
+        var graph = BuildFilterGraph(clips, probes, outputHeight, framesPerSecond, audioOnly, aspectRatio, fitMode, backgroundColor);
         var args = new List<string> { "-hide_banner", "-y", "-loglevel", "error" };
 
         foreach (var clip in clips)
@@ -184,15 +187,13 @@ public sealed class MediaEditorService
         IReadOnlyList<MediaProbeInfo> probes,
         int outputHeight,
         int framesPerSecond,
-        bool audioOnly)
+        bool audioOnly,
+        string aspectRatio,
+        string fitMode,
+        string backgroundColor)
     {
         var filters = new List<string>();
-        var width = outputHeight switch
-        {
-            1440 => 2560,
-            2160 => 3840,
-            _ => 1920
-        };
+        var (width, height) = GetCanvasSize(outputHeight, aspectRatio);
 
         for (var i = 0; i < clips.Count; i++)
         {
@@ -204,9 +205,13 @@ public sealed class MediaEditorService
 
             if (!audioOnly)
             {
+                var scaleMode = fitMode == "fit" ? "decrease" : "increase";
+                var fitFilters = fitMode == "fit"
+                    ? $",pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color={backgroundColor}"
+                    : $",crop={width}:{height}";
                 filters.Add($"[{i}:v:0]trim=start={start}:end={end},setpts=(PTS-STARTPTS)/{speed}," +
-                    $"scale={width}:{outputHeight}:force_original_aspect_ratio=decrease," +
-                    $"pad={width}:{outputHeight}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={framesPerSecond},format=nv12[v{i}]");
+                    $"scale={width}:{height}:force_original_aspect_ratio={scaleMode}{fitFilters}," +
+                    $"setsar=1,fps={framesPerSecond},format=nv12[v{i}]");
             }
 
             if (probes[i].HasAudio)
@@ -233,6 +238,24 @@ public sealed class MediaEditorService
         }
 
         return string.Join(";", filters);
+    }
+
+    private static (int Width, int Height) GetCanvasSize(int shortEdge, string aspectRatio)
+    {
+        static int Even(double value)
+        {
+            var rounded = (int)Math.Round(value, MidpointRounding.AwayFromZero);
+            return rounded % 2 == 0 ? rounded : rounded - 1;
+        }
+
+        return aspectRatio switch
+        {
+            "9:16" => (shortEdge, Even(shortEdge * 16d / 9d)),
+            "1:1" => (shortEdge, shortEdge),
+            "4:3" => (Even(shortEdge * 4d / 3d), shortEdge),
+            "3:2" => (Even(shortEdge * 3d / 2d), shortEdge),
+            _ => (Even(shortEdge * 16d / 9d), shortEdge)
+        };
     }
 
     private static string BuildAtempo(double speed)
