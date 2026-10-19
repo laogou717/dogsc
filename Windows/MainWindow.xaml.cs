@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Interop;
@@ -285,6 +286,7 @@ public partial class MainWindow : Window
         _previewStartSeconds = clip.StartSeconds;
         _previewPlaying = false;
         PreviewPlayButton.Content = "播放预览";
+        LoadRecordingMarkers(clip);
         try
         {
             var preview = EnsurePreviewElement();
@@ -295,6 +297,51 @@ public partial class MainWindow : Window
         {
             EditorStatusText.Text = "无法初始化媒体预览：" + exception.Message;
         }
+    }
+
+    private void LoadRecordingMarkers(ClipItem clip)
+    {
+        var markerPath = Path.ChangeExtension(clip.FilePath, ".markers.json");
+        try
+        {
+            var markers = File.Exists(markerPath)
+                ? JsonSerializer.Deserialize<List<RecordingMarker>>(File.ReadAllText(markerPath)) ?? new List<RecordingMarker>()
+                : new List<RecordingMarker>();
+            RecordingMarkersList.ItemsSource = markers;
+            RecordingMarkersList.SelectedIndex = -1;
+            if (markers.Count > 0)
+                EditorStatusText.Text = $"已加载 {markers.Count} 个录制标记。选择标记可跳转预览。";
+        }
+        catch (Exception exception)
+        {
+            RecordingMarkersList.ItemsSource = Array.Empty<RecordingMarker>();
+            EditorStatusText.Text = "无法读取录制标记：" + exception.Message;
+        }
+    }
+
+    private void RecordingMarkersList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (RecordingMarkersList.SelectedItem is not RecordingMarker marker)
+            return;
+
+        _previewStartSeconds = marker.TimeSeconds;
+        if (_previewElement?.Source is not null)
+        {
+            try
+            {
+                _previewElement.Position = TimeSpan.FromSeconds(Math.Max(0, marker.TimeSeconds));
+                _previewElement.Pause();
+                _previewPlaying = false;
+                PreviewPlayButton.Content = "播放预览";
+            }
+            catch (Exception exception)
+            {
+                EditorStatusText.Text = "无法跳转到标记：" + exception.Message;
+                return;
+            }
+        }
+
+        EditorStatusText.Text = $"标记 #{marker.Index}：{marker.Label}（{marker.TimeSeconds:F2} 秒）";
     }
 
     private MediaElement EnsurePreviewElement()
