@@ -1229,6 +1229,11 @@ public partial class MainWindow : Window
         ClipEndTextBox.Text = clip.EndSeconds.ToString("0.##", CultureInfo.InvariantCulture);
         ClipSpeedCombo.SelectedItem = ClipSpeedCombo.Items.OfType<ComboBoxItem>()
             .FirstOrDefault(item => Math.Abs(ReadTagDouble(item, 1) - clip.Speed) < 0.0001);
+        ClipVolumeTextBox.Text = clip.Volume.ToString("0.##", CultureInfo.InvariantCulture);
+        ClipFadeInTextBox.Text = clip.FadeInSeconds.ToString("0.##", CultureInfo.InvariantCulture);
+        ClipFadeOutTextBox.Text = clip.FadeOutSeconds.ToString("0.##", CultureInfo.InvariantCulture);
+        ClipRotationCombo.SelectedItem = ClipRotationCombo.Items.OfType<ComboBoxItem>()
+            .FirstOrDefault(item => ReadTagInt(item, 0) == clip.RotationDegrees);
         _previewTimer.Stop();
         _previewClip = clip;
         _previewStartSeconds = clip.StartSeconds;
@@ -1402,9 +1407,12 @@ public partial class MainWindow : Window
             return;
         }
         if (!TryReadDouble(ClipStartTextBox.Text, out var start) ||
-            !TryReadDouble(ClipEndTextBox.Text, out var end) || start < 0 || end <= start)
+            !TryReadDouble(ClipEndTextBox.Text, out var end) || start < 0 || end <= start ||
+            !TryReadDouble(ClipVolumeTextBox.Text, out var volume) || volume < 0 || volume > 2 ||
+            !TryReadDouble(ClipFadeInTextBox.Text, out var fadeIn) || fadeIn < 0 ||
+            !TryReadDouble(ClipFadeOutTextBox.Text, out var fadeOut) || fadeOut < 0)
         {
-            MessageBox.Show(this, "入点和出点必须是有效数字，且出点必须大于入点。", "片段设置无效",
+            MessageBox.Show(this, "请检查入出点、音量（0-2）和淡入淡出时长。", "片段设置无效",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
@@ -1415,9 +1423,16 @@ public partial class MainWindow : Window
             if (end > info.DurationSeconds + 0.05)
                 throw new InvalidOperationException($"出点超过媒体时长（{info.DurationSeconds:F2} 秒）。");
             var speed = ReadTagDouble(ClipSpeedCombo.SelectedItem as ComboBoxItem, 1.0);
+            var rotation = ReadTagInt(ClipRotationCombo, 0);
+            if (fadeIn + fadeOut > end - start)
+                throw new InvalidOperationException("淡入与淡出时长之和不能超过片段时长。");
             if (Math.Abs(clip.StartSeconds - start) > 0.0001 ||
                 Math.Abs(clip.EndSeconds - end) > 0.0001 ||
-                Math.Abs(clip.Speed - speed) > 0.0001)
+                Math.Abs(clip.Speed - speed) > 0.0001 ||
+                Math.Abs(clip.Volume - volume) > 0.0001 ||
+                Math.Abs(clip.FadeInSeconds - fadeIn) > 0.0001 ||
+                Math.Abs(clip.FadeOutSeconds - fadeOut) > 0.0001 ||
+                clip.RotationDegrees != rotation)
             {
                 _previewTimer.Stop();
                 _previewElement?.Pause();
@@ -1429,6 +1444,10 @@ public partial class MainWindow : Window
             clip.StartSeconds = start;
             clip.EndSeconds = end;
             clip.Speed = speed;
+            clip.Volume = volume;
+            clip.FadeInSeconds = fadeIn;
+            clip.FadeOutSeconds = fadeOut;
+            clip.RotationDegrees = rotation;
             if (startChanged)
                 clip.ThumbnailPath = await CreateClipThumbnailAsync(clip.FilePath, start) ?? clip.ThumbnailPath;
             _previewClip = clip;
@@ -1478,6 +1497,10 @@ public partial class MainWindow : Window
             StartSeconds = splitAt,
             EndSeconds = originalEnd,
             Speed = clip.Speed,
+            Volume = clip.Volume,
+            FadeInSeconds = clip.FadeInSeconds,
+            FadeOutSeconds = clip.FadeOutSeconds,
+            RotationDegrees = clip.RotationDegrees,
             ThumbnailPath = splitThumbnail ?? clip.ThumbnailPath
         });
         ClipsGrid.Items.Refresh();
