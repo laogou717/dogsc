@@ -1605,6 +1605,13 @@ public partial class MainWindow : Window
             StartSeconds = clip.StartSeconds,
             EndSeconds = clip.EndSeconds,
             Speed = clip.Speed,
+            Volume = clip.Volume,
+            FadeInSeconds = clip.FadeInSeconds,
+            FadeOutSeconds = clip.FadeOutSeconds,
+            RotationDegrees = clip.RotationDegrees,
+            ZoomStart = clip.ZoomStart,
+            ZoomEnd = clip.ZoomEnd,
+            AudioWaveformPath = clip.AudioWaveformPath,
             ThumbnailPath = clip.ThumbnailPath
         };
         _clips.Insert(insertIndex, duplicate);
@@ -1920,6 +1927,13 @@ public partial class MainWindow : Window
             StartSeconds = clip.StartSeconds,
             EndSeconds = clip.EndSeconds,
             Speed = clip.Speed,
+            Volume = clip.Volume,
+            FadeInSeconds = clip.FadeInSeconds,
+            FadeOutSeconds = clip.FadeOutSeconds,
+            RotationDegrees = clip.RotationDegrees,
+            ZoomStart = clip.ZoomStart,
+            ZoomEnd = clip.ZoomEnd,
+            AudioWaveformPath = clip.AudioWaveformPath,
             ThumbnailPath = clip.ThumbnailPath
         }).ToList();
 
@@ -1941,6 +1955,13 @@ public partial class MainWindow : Window
                     StartSeconds = clip.StartSeconds,
                     EndSeconds = clip.EndSeconds,
                     Speed = clip.Speed,
+                    Volume = clip.Volume,
+                    FadeInSeconds = clip.FadeInSeconds,
+                    FadeOutSeconds = clip.FadeOutSeconds,
+                    RotationDegrees = clip.RotationDegrees,
+                    ZoomStart = clip.ZoomStart,
+                    ZoomEnd = clip.ZoomEnd,
+                    AudioWaveformPath = clip.AudioWaveformPath,
                     ThumbnailPath = clip.ThumbnailPath
                 });
             }
