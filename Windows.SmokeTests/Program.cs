@@ -46,6 +46,8 @@ try
     var portrait = Path.Combine(root, "portrait.mp4");
     var square = Path.Combine(root, "square.mp4");
     var cameraOverlay = Path.Combine(root, "camera-overlay.mp4");
+    var oddCapture = Path.Combine(root, "odd-window-capture.mp4");
+    var oddCaptureFallback = Path.Combine(root, "odd-window-capture-fallback.mp4");
     var backgroundImage = Path.Combine(root, "background.png");
     var imageBackgroundOutput = Path.Combine(root, "image-background.mp4");
     var projectPath = Path.Combine(root, "roundtrip.dogscproj");
@@ -61,7 +63,29 @@ try
     Require(generate.ExitCode == 0 && File.Exists(source) && new FileInfo(source).Length > 1024,
         "could not generate source media: " + generate.Output);
 
-    Console.WriteLine("2/8 Verifying the webcam overlay filter with synthetic camera input.");
+    Console.WriteLine("2/11 Verifying odd-sized window capture is padded for H.264.");
+    const string evenSizeFilter = "pad=ceil(iw/2)*2:ceil(ih/2)*2:0:0:color=black,format=nv12";
+    var oddCaptureResult = await RunAsync(ffmpeg,
+        "-hide_banner", "-y", "-loglevel", "error",
+        "-f", "lavfi", "-i", "testsrc2=size=1600x1075:rate=30",
+        "-t", "1", "-vf", evenSizeFilter,
+        "-c:v", "h264_mf", "-b:v", "1M", "-pix_fmt", "nv12", oddCapture);
+    Require(oddCaptureResult.ExitCode == 0 && File.Exists(oddCapture) && new FileInfo(oddCapture).Length > 1024,
+        "odd-sized H.264 capture failed after even-size padding: " + oddCaptureResult.Output);
+    var oddCaptureInfo = await new MediaEditorService().ProbeAsync(oddCapture);
+    Require(oddCaptureInfo.Width == 1600 && oddCaptureInfo.Height == 1076,
+        $"Odd-size capture should be padded to 1600x1076, got {oddCaptureInfo.Width}x{oddCaptureInfo.Height}.");
+
+    Console.WriteLine("3/11 Verifying compatibility encoder fallback for odd-sized capture.");
+    var oddFallbackResult = await RunAsync(ffmpeg,
+        "-hide_banner", "-y", "-loglevel", "error",
+        "-f", "lavfi", "-i", "testsrc2=size=1600x1075:rate=30",
+        "-t", "1", "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2:0:0:color=black,format=yuv420p",
+        "-c:v", "mpeg4", "-b:v", "1M", "-pix_fmt", "yuv420p", oddCaptureFallback);
+    Require(oddFallbackResult.ExitCode == 0 && File.Exists(oddCaptureFallback) && new FileInfo(oddCaptureFallback).Length > 1024,
+        "MPEG-4 fallback failed for odd-sized capture: " + oddFallbackResult.Output);
+
+    Console.WriteLine("4/11 Verifying the webcam overlay filter with synthetic camera input.");
     const string overlayGraph = "[1:v:0][0:v:0]scale2ref=w=main_w*0.22:h=main_h*0.22:force_original_aspect_ratio=decrease[cam][screen];" +
         "[screen][cam]overlay=x=main_w-overlay_w-32:y=main_h-overlay_h-32:eof_action=pass:shortest=0:repeatlast=1[vout]";
     var overlay = await RunAsync(ffmpeg,
@@ -90,12 +114,12 @@ try
         Speed = 1.25
     };
 
-    Console.WriteLine("4/10 Creating a custom background image.");
+    Console.WriteLine("6/11 Creating a custom background image.");
     var imageResult = await RunAsync(ffmpeg, "-hide_banner", "-y", "-loglevel", "error",
         "-f", "lavfi", "-i", "color=c=red:size=640x360", "-frames:v", "1", backgroundImage);
     Require(imageResult.ExitCode == 0 && File.Exists(backgroundImage), "could not generate background image: " + imageResult.Output);
 
-    Console.WriteLine("5/10 Saving and reopening a project.");
+    Console.WriteLine("7/11 Saving and reopening a project.");
     var projectService = new ProjectFileService();
     await projectService.SaveAsync(projectPath, new[] { clip });
     var reopened = await projectService.LoadAsync(projectPath);
@@ -104,7 +128,7 @@ try
     Require(Math.Abs(reopened[0].EndSeconds - 2.75) < 0.001, "project out-point changed during round-trip.");
     Require(Math.Abs(reopened[0].Speed - 1.25) < 0.001, "project speed changed during round-trip.");
 
-    Console.WriteLine("6/10 Exporting an edited MP4.");
+    Console.WriteLine("8/11 Exporting an edited MP4.");
     await editor.ExportAsync(reopened, output, 1080, 30, false);
     var exportedInfo = await editor.ProbeAsync(output);
     Require(exportedInfo.HasVideo && exportedInfo.HasAudio, "MP4 export is missing video or audio.");
@@ -113,32 +137,32 @@ try
     Require(exportedInfo.DurationSeconds > 1.7 && exportedInfo.DurationSeconds < 2.3,
         $"MP4 export has unexpected duration {exportedInfo.DurationSeconds.ToString(CultureInfo.InvariantCulture)}.");
 
-    Console.WriteLine("7/10 Exporting a portrait canvas with fit padding.");
+    Console.WriteLine("9/11 Exporting a portrait canvas with fit padding.");
     await editor.ExportAsync(reopened, portrait, 1080, 30, false, null, "9:16", "fit", "dark");
     var portraitInfo = await editor.ProbeAsync(portrait);
     Require(portraitInfo.Width == 1080 && portraitInfo.Height == 1920,
         $"Portrait export has unexpected resolution {portraitInfo.Width}x{portraitInfo.Height}.");
 
-    Console.WriteLine("8/10 Exporting a square canvas with fill/crop.");
+    Console.WriteLine("10/11 Exporting a square canvas with fill/crop.");
     await editor.ExportAsync(reopened, square, 1080, 30, false, null, "1:1", "fill", "blue");
     var squareInfo = await editor.ProbeAsync(square);
     Require(squareInfo.Width == 1080 && squareInfo.Height == 1080,
         $"Square export has unexpected resolution {squareInfo.Width}x{squareInfo.Height}.");
 
-    Console.WriteLine("9/10 Exporting with a custom background image.");
+    Console.WriteLine("11/11 Exporting with a custom background image.");
     await editor.ExportAsync(reopened, imageBackgroundOutput, 1080, 30, false, null, "16:9", "fit", "black", backgroundImage);
     var imageBackgroundInfo = await editor.ProbeAsync(imageBackgroundOutput);
     Require(imageBackgroundInfo.Width == 1920 && imageBackgroundInfo.Height == 1080,
         $"Image background export has unexpected resolution {imageBackgroundInfo.Width}x{imageBackgroundInfo.Height}.");
 
-    Console.WriteLine("10/10 Exporting M4A audio.");
+    Console.WriteLine("11/11 Exporting M4A audio.");
     await editor.ExportAsync(reopened, audio, 1080, 30, true);
     var audioInfo = await editor.ProbeAsync(audio);
     Require(audioInfo.HasAudio && !audioInfo.HasVideo, "M4A export must contain audio only.");
     Require(audioInfo.DurationSeconds > 1.7 && audioInfo.DurationSeconds < 2.3,
         $"M4A export has unexpected duration {audioInfo.DurationSeconds.ToString(CultureInfo.InvariantCulture)}.");
 
-    Console.WriteLine("PASS: synthetic webcam overlay, media probing, project round-trip, edited MP4, portrait fit, square fill/crop, custom image background, and M4A export.");
+    Console.WriteLine("PASS: odd-sized capture padding, H.264 and MPEG-4 capture encoders, webcam overlay, media probing, project round-trip, edited MP4, portrait fit, square fill/crop, custom image background, and M4A export.");
 }
 finally
 {

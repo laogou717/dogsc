@@ -91,42 +91,30 @@ public sealed class RecordingService : IDisposable
                 _systemAudioStartedAt = _systemAudioCapture.StartedTimestamp;
             }
 
-            _recentOutput.Clear();
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = ffmpeg,
-                UseShellExecute = false,
-                RedirectStandardInput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true
-            };
-
-            BuildArguments(options, startInfo.ArgumentList);
-            _process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
-            _process.ErrorDataReceived += (sender, eventArgs) =>
-            {
-                if (string.IsNullOrWhiteSpace(eventArgs.Data))
-                    return;
-
-                _recentOutput.Enqueue(eventArgs.Data);
-                while (_recentOutput.Count > 40)
-                    _recentOutput.TryDequeue(out _);
-
-                StatusChanged?.Invoke(eventArgs.Data);
-            };
-
-            if (!_process.Start())
-                throw new InvalidOperationException("无法启动 FFmpeg 录制进程。");
-
-            _videoStartedAt = Stopwatch.GetTimestamp();
-            _process.BeginErrorReadLine();
             StatusChanged?.Invoke("正在启动录制...");
-
-            await Task.Delay(700).ConfigureAwait(false);
-            if (_process.HasExited)
+            try
             {
-                var details = string.Join(Environment.NewLine, _recentOutput.ToArray());
-                throw new InvalidOperationException("FFmpeg 启动录制失败。" + Environment.NewLine + details);
+                await StartFfmpegProcessAsync(ffmpeg, options, "h264_mf").ConfigureAwait(false);
+            }
+            catch (InvalidOperationException primaryException)
+            {
+                // Media Foundation's H.264 encoder can reject valid GDI capture formats
+                // on some Windows/GPU combinations. Retry once with the broadly supported
+                // MPEG-4 Part 2 encoder, preserving the same capture/audio inputs.
+                StatusChanged?.Invoke("H.264 编码器启动失败，正在切换兼容编码器...");
+                try
+                {
+                    await StartFfmpegProcessAsync(ffmpeg, options, "mpeg4").ConfigureAwait(false);
+                    StatusChanged?.Invoke("已切换到兼容视频编码器（MPEG-4）");
+                }
+                catch (Exception fallbackException)
+                {
+                    throw new InvalidOperationException(
+                        "FFmpeg 无法启动录制。已尝试 H.264 和兼容编码器，请检查采集源及设备。\n\n" +
+                        "H.264 详情：\n" + primaryException.Message +
+                        "\n\n兼容编码器详情：\n" + fallbackException.Message,
+                        fallbackException);
+                }
             }
 
             StatusChanged?.Invoke("录制中");
@@ -136,6 +124,60 @@ public sealed class RecordingService : IDisposable
             await StopProcessAndDiscardAudioAsync().ConfigureAwait(false);
             throw;
         }
+    }
+
+    private async Task StartFfmpegProcessAsync(string ffmpeg, RecordingOptions options, string videoEncoder)
+    {
+        _recentOutput.Clear();
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = ffmpeg,
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+
+        BuildArguments(options, startInfo.ArgumentList, videoEncoder);
+        var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
+        process.ErrorDataReceived += (_, eventArgs) =>
+        {
+            if (string.IsNullOrWhiteSpace(eventArgs.Data))
+                return;
+
+            _recentOutput.Enqueue(eventArgs.Data);
+            while (_recentOutput.Count > 80)
+                _recentOutput.TryDequeue(out _);
+
+            // Keep verbose FFmpeg output available for diagnostics without treating
+            // every progress line as a user-facing status message.
+            StatusChanged?.Invoke("LOG:" + eventArgs.Data);
+        };
+
+        if (!process.Start())
+        {
+            process.Dispose();
+            throw new InvalidOperationException("无法启动 FFmpeg 录制进程。");
+        }
+
+        _process = process;
+        _videoStartedAt = Stopwatch.GetTimestamp();
+        process.BeginErrorReadLine();
+
+        await Task.Delay(900).ConfigureAwait(false);
+        if (!process.HasExited)
+            return;
+
+        await process.WaitForExitAsync().ConfigureAwait(false);
+        var details = string.Join(Environment.NewLine, _recentOutput.ToArray());
+        var exitCode = process.ExitCode;
+        process.Dispose();
+        if (ReferenceEquals(_process, process))
+            _process = null;
+
+        throw new InvalidOperationException(
+            $"FFmpeg 使用 {videoEncoder} 编码器启动失败（退出代码 {exitCode}）。" +
+            Environment.NewLine + details);
     }
 
     public async Task StopAsync()
@@ -279,7 +321,7 @@ public sealed class RecordingService : IDisposable
         }
     }
 
-    private static void BuildArguments(RecordingOptions options, ICollection<string> args)
+    private static void BuildArguments(RecordingOptions options, ICollection<string> args, string videoEncoder)
     {
         Add(args, "-hide_banner", "-y", "-loglevel", "info", "-thread_queue_size", "1024",
             "-f", "gdigrab", "-framerate", options.FramesPerSecond.ToString(CultureInfo.InvariantCulture),
@@ -326,13 +368,17 @@ public sealed class RecordingService : IDisposable
                 "center" => ("(main_w-overlay_w)/2", "(main_h-overlay_h)/2"),
                 _ => ("main_w-overlay_w-32", "main_h-overlay_h-32")
             };
-            var graph = $"[{cameraInput.Value}:v:0][0:v:0]scale2ref=w=main_w*{scale}:h=main_h*{scale}:force_original_aspect_ratio=decrease[cam][screen];" +
-                        $"[screen][cam]overlay=x={x}:y={y}:eof_action=pass:shortest=0:repeatlast=1[vout]";
+            var pixelFormat = videoEncoder == "h264_mf" ? "nv12" : "yuv420p";
+            var graph = "[0:v:0]pad=ceil(iw/2)*2:ceil(ih/2)*2:0:0:color=black[screenbase];" +
+                        $"[{cameraInput.Value}:v:0][screenbase]scale2ref=w=main_w*{scale}:h=main_h*{scale}:force_original_aspect_ratio=decrease[cam][screen];" +
+                        $"[screen][cam]overlay=x={x}:y={y}:eof_action=pass:shortest=0:repeatlast=1,format={pixelFormat}[vout]";
             Add(args, "-filter_complex", graph, "-map", "[vout]");
         }
         else
         {
-            Add(args, "-map", "0:v:0");
+            var pixelFormat = videoEncoder == "h264_mf" ? "nv12" : "yuv420p";
+            Add(args, "-vf", $"pad=ceil(iw/2)*2:ceil(ih/2)*2:0:0:color=black,format={pixelFormat}",
+                "-map", "0:v:0");
         }
 
         if (microphoneInput.HasValue)
@@ -340,8 +386,9 @@ public sealed class RecordingService : IDisposable
         else
             Add(args, "-an");
 
-        Add(args, "-c:v", "h264_mf", "-b:v", "12M", "-pix_fmt", "nv12",
-            "-r", options.FramesPerSecond.ToString(CultureInfo.InvariantCulture));
+        var outputPixelFormat = videoEncoder == "h264_mf" ? "nv12" : "yuv420p";
+        Add(args, "-c:v", videoEncoder, "-b:v", videoEncoder == "mpeg4" ? "8M" : "12M",
+            "-pix_fmt", outputPixelFormat, "-r", options.FramesPerSecond.ToString(CultureInfo.InvariantCulture));
 
         if (options.CaptureMicrophone)
             Add(args, "-c:a", "aac", "-b:a", "192k", "-ar", "48000");
