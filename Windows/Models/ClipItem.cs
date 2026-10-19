@@ -18,6 +18,7 @@ public sealed class ClipItem : INotifyPropertyChanged
     private double _zoomStart = 1.0;
     private double _zoomEnd = 1.0;
     private string? _thumbnailPath;
+    private string? _audioWaveformPath;
 
     public string FilePath
     {
@@ -117,6 +118,13 @@ public sealed class ClipItem : INotifyPropertyChanged
     {
         get => _thumbnailPath;
         set => SetField(ref _thumbnailPath, value);
+    }
+
+    [JsonIgnore]
+    public string? AudioWaveformPath
+    {
+        get => _audioWaveformPath;
+        set => SetField(ref _audioWaveformPath, value);
     }
 
     [JsonIgnore]
