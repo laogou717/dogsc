@@ -11,6 +11,10 @@ public sealed class ClipItem : INotifyPropertyChanged
     private double _startSeconds;
     private double _endSeconds;
     private double _speed = 1.0;
+    private double _volume = 1.0;
+    private double _fadeInSeconds;
+    private double _fadeOutSeconds;
+    private int _rotationDegrees;
     private string? _thumbnailPath;
 
     public string FilePath
@@ -64,6 +68,30 @@ public sealed class ClipItem : INotifyPropertyChanged
                 OnPropertyChanged(nameof(DisplayLabel));
             }
         }
+    }
+
+    public double Volume
+    {
+        get => _volume;
+        set => SetField(ref _volume, double.IsFinite(value) ? Math.Clamp(value, 0, 2) : 1.0);
+    }
+
+    public double FadeInSeconds
+    {
+        get => _fadeInSeconds;
+        set => SetField(ref _fadeInSeconds, double.IsFinite(value) ? Math.Clamp(value, 0, 30) : 0);
+    }
+
+    public double FadeOutSeconds
+    {
+        get => _fadeOutSeconds;
+        set => SetField(ref _fadeOutSeconds, double.IsFinite(value) ? Math.Clamp(value, 0, 30) : 0);
+    }
+
+    public int RotationDegrees
+    {
+        get => _rotationDegrees;
+        set => SetField(ref _rotationDegrees, ((value % 360) + 360) % 360 is var normalized && normalized % 90 == 0 ? normalized : 0);
     }
 
     [JsonIgnore]
