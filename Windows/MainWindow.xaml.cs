@@ -937,6 +937,21 @@ public partial class MainWindow : Window
     private void ClearBackgroundImage_Click(object sender, RoutedEventArgs e) =>
         ExportBackgroundImageTextBox.Clear();
 
+    private void ClearSubtitle_Click(object sender, RoutedEventArgs e) =>
+        ExportSubtitleTextBox.Clear();
+
+    private void BrowseSubtitle_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "选择 SRT 字幕文件",
+            Filter = "SRT 字幕|*.srt|所有文件|*.*",
+            Multiselect = false
+        };
+        if (dialog.ShowDialog(this) == true)
+            ExportSubtitleTextBox.Text = dialog.FileName;
+    }
+
     private void BrowseBackgroundImage_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new OpenFileDialog
@@ -1714,7 +1729,8 @@ public partial class MainWindow : Window
                 ReadTagString(ExportAspectRatioCombo, "16:9"),
                 ReadTagString(ExportFitModeCombo, "fit"),
                 ReadTagString(ExportBackgroundCombo, "black"),
-                string.IsNullOrWhiteSpace(ExportBackgroundImageTextBox.Text) ? null : ExportBackgroundImageTextBox.Text.Trim());
+                string.IsNullOrWhiteSpace(ExportBackgroundImageTextBox.Text) ? null : ExportBackgroundImageTextBox.Text.Trim(),
+                string.IsNullOrWhiteSpace(ExportSubtitleTextBox.Text) ? null : ExportSubtitleTextBox.Text.Trim());
             EditorStatusText.Text = "导出完成：" + outputPath;
             MessageBox.Show(this, "导出完成：" + outputPath, "DogSC", MessageBoxButton.OK, MessageBoxImage.Information);
         }
