@@ -292,9 +292,17 @@ enum EditorExportRequestBuilder {
                 "音视频类型与扩展名不匹配：\(resolvedOutputURL.path)"
             )
         }
+        // Muted/hidden media is omitted from the render inputs, but still
+        // belongs to the project. Never allow an export to replace those
+        // originals just because this particular job does not read them.
+        let protectedInputURLs = assets.inputURLs + [
+            preparedRequest.camera?.url,
+            preparedRequest.microphone?.url,
+            wallpaperURL,
+        ].compactMap { $0 } + Array(stickerURLs.values)
         guard !ExportFileTransaction.collides(
             outputURL: resolvedOutputURL,
-            inputURLs: assets.inputURLs
+            inputURLs: protectedInputURLs
         ) else {
             throw EditorExportRequestError.outputCollidesWithInput(
                 resolvedOutputURL.path
