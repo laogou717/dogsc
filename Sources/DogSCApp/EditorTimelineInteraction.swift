@@ -184,6 +184,14 @@ enum EditorPrimaryTimelinePresentation {
             guard next.sourceStart >= previous.sourceEnd - 1.0 / 120_000.0 else {
                 return nil
             }
+            // A forward seam can still span material moved elsewhere in the
+            // output sequence. Restoring that interval would overlap a retained
+            // segment and be rejected by ProjectTimelineEditing.
+            guard !map.segments.contains(where: {
+                $0.id != previous.id && $0.id != next.id
+                    && $0.sourceStart < next.sourceStart - 1.0 / 120_000.0
+                    && $0.sourceEnd > previous.sourceEnd + 1.0 / 120_000.0
+            }) else { return nil }
             return EditorTimelineSegmentJunction(
                 previousSegmentID: previous.id,
                 nextSegmentID: next.id,

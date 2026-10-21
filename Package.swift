@@ -36,6 +36,10 @@ let package = Package(
                 ]),
             ]
         ),
+        .testTarget(
+            name: "DogSCAppTests",
+            dependencies: ["DogSCApp", "RecorderCore"]
+        ),
     ],
     swiftLanguageModes: [.v6]
 )
