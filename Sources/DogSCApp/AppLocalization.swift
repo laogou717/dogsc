@@ -64,10 +64,9 @@ final class AppLocalization: Observable, @unchecked Sendable {
             kCFPreferencesCurrentUser,
             kCFPreferencesAnyHost
         ) as? [String] ?? Locale.preferredLanguages
-        let identifier = Bundle.preferredLocalizations(
-            from: ["en", "zh-Hans"],
-            forPreferences: preference.preferredLanguages ?? systemLanguages
-        ).first ?? "en"
+        let identifier = AppLanguageResolution.identifier(
+            for: preference.preferredLanguages ?? systemLanguages
+        )
         let bundle = Bundle.main.url(forResource: identifier, withExtension: "lproj")
             .flatMap(Bundle.init(url:)) ?? .main
         return Language(identifier: identifier, bundle: bundle)
