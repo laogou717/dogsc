@@ -320,12 +320,12 @@ final class FirstLaunchIntroduction {
         resignationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didResignActiveNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.finish(activateDestination: false) }
+            Task { @MainActor [weak self] in self?.finish(activateDestination: false) }
         }
         screenObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated {
+            Task { @MainActor [weak self] in
                 guard !NSScreen.screens.contains(where: { $0.frame == screenFrame }) else { return }
                 self?.finish(activateDestination: false)
             }

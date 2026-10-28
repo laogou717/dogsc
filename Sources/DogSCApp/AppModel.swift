@@ -48,18 +48,18 @@ enum RecorderTransitionStage: Equatable, Sendable {
 
     var title: String {
         switch self {
-        case .idle: appLocalized("正在处理…")
-        case .checkingPermissions: appLocalized("正在检查设备与权限…")
-        case .creatingProject: appLocalized("正在创建录制项目…")
-        case .startingCamera: appLocalized("正在启动摄像头…")
-        case .startingMicrophone: appLocalized("正在启动麦克风…")
-        case .startingPrimaryCapture: appLocalized("正在等待首个屏幕帧…")
-        case .aligningTimeline: appLocalized("正在对齐各轨时间轴…")
-        case .finalizingTracks: appLocalized("正在结束所有录制轨道…")
-        case .validatingRecording: appLocalized("正在校验录制素材…")
-        case .savingProject: appLocalized("正在保存项目…")
-        case .discardingRecording: appLocalized("正在安全丢弃录制…")
-        case .openingEditor: appLocalized("正在打开编辑器…")
+        case .idle: return appLocalized("正在处理…")
+        case .checkingPermissions: return appLocalized("正在检查设备与权限…")
+        case .creatingProject: return appLocalized("正在创建录制项目…")
+        case .startingCamera: return appLocalized("正在启动摄像头…")
+        case .startingMicrophone: return appLocalized("正在启动麦克风…")
+        case .startingPrimaryCapture: return appLocalized("正在等待首个屏幕帧…")
+        case .aligningTimeline: return appLocalized("正在对齐各轨时间轴…")
+        case .finalizingTracks: return appLocalized("正在结束所有录制轨道…")
+        case .validatingRecording: return appLocalized("正在校验录制素材…")
+        case .savingProject: return appLocalized("正在保存项目…")
+        case .discardingRecording: return appLocalized("正在安全丢弃录制…")
+        case .openingEditor: return appLocalized("正在打开编辑器…")
         }
     }
 }
@@ -347,7 +347,7 @@ final class AppModel: ObservableObject {
             WindowCoordinator.endCaptureSourceSelection(restoringRecorder: false)
         }
         self.captureSetup.onFocusRestorationRequested = { [weak self] in
-            guard let self, phase == .setup else { return }
+            guard let self = self, self.phase == .setup else { return }
             WindowCoordinator.restoreCaptureSourceSelectionFocus()
         }
         self.captureSetup.recorderDisplayID = {
@@ -611,6 +611,7 @@ final class AppModel: ObservableObject {
                         preparationLogger.notice("prepare: microphone track started")
                     }
                     recorderTransitionStage = .startingPrimaryCapture
+                    appLog("prepare: transitioning to startingPrimaryCapture", category: "AppModel")
                     if plan.configuration.source == .device {
                         try await deviceRecorder.start(
                             to: session.deviceRecordingURL,
@@ -626,16 +627,20 @@ final class AppModel: ObservableObject {
                             height: dimensions?.height
                         ))
                     } else {
+                        appLog("prepare: calling recorder.start(runID: \(run.id))...", category: "AppModel")
                         try await recorder.start(
                             runID: run.id, configuration: plan.configuration,
                             outputURL: session.recordingURL(relativePath: plan.primaryRecordingRelativePath)
                         )
+                        appLog("prepare: recorder.start returned successfully", category: "AppModel")
                         guard recordingRuns.isCurrent(run.id) else { return }
                         recordingRuns.markStarted(.screen, for: run.id)
                         if let error = recorder.terminalError(for: run.id) { throw error }
                     }
                     preparationLogger.notice("prepare: screen track started")
+                    appLog("prepare: screen track started successfully", category: "AppModel")
                 } catch {
+                    appLog("prepare: CAUGHT ERROR in primary capture: \(error)", level: "ERROR", category: "AppModel")
                     guard recordingRuns.isCurrent(run.id) else { return }
                     let startError = error
                     surfaceVisibilityTask?.cancel()
@@ -722,6 +727,7 @@ final class AppModel: ObservableObject {
                 preparationTask = nil
                 startRecoveryHeartbeat(session: session, runID: run.id, plan: plan)
             } catch {
+                appLog("prepare: GLOBAL PREPARATION FAILED with error: \(error)", level: "ERROR", category: "AppModel")
                 guard recordingRuns.isCurrent(run.id) else { return }
                 let message = appErrorDescription(error)
                 captureSetup.stopPresentation()
@@ -794,6 +800,7 @@ final class AppModel: ObservableObject {
                     currentRunID: recordingRuns.active?.id
                 )
             } catch {
+                appLog("prepare: GLOBAL PREPARATION FAILED with error: \(error)", level: "ERROR", category: "AppModel")
                 guard recordingRuns.isCurrent(run.id) else { return }
                 await recoverFromFinalizeFailure(
                     run: run,
@@ -846,6 +853,7 @@ final class AppModel: ObservableObject {
             } catch is CancellationError {
                 return
             } catch {
+                appLog("prepare: GLOBAL PREPARATION FAILED with error: \(error)", level: "ERROR", category: "AppModel")
                 guard recordingRuns.isCurrent(run.id) else { return }
                 await recoverFromFinalizeFailure(
                     run: run,
@@ -1044,11 +1052,13 @@ final class AppModel: ObservableObject {
         Task { @MainActor [weak self] in
             guard let self else { return }
             defer {
-                if recordingRuns.isCurrent(run.id) {
-                    isPauseTransitioning = false
-                    if stopRequestedDuringPauseTransition {
-                        stopRequestedDuringPauseTransition = false
-                        stopRecording()
+                MainActor.assumeIsolated {
+                    if self.recordingRuns.isCurrent(run.id) {
+                        self.isPauseTransitioning = false
+                        if self.stopRequestedDuringPauseTransition {
+                            self.stopRequestedDuringPauseTransition = false
+                            self.stopRecording()
+                        }
                     }
                 }
             }

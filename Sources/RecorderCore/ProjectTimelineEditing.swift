@@ -84,12 +84,12 @@ extension ProjectTimelineEditingError: LocalizedError {
 private extension ProjectTimelineTrack {
     var userFacingName: String {
         switch self {
-        case .primaryRecording: "主片段"
-        case .zoom: "缩放"
-        case .screenMotion: "屏幕 3D"
-        case .cameraMotion: "摄像运动"
-        case .mosaic: "打码"
-        case .sticker: "贴图"
+        case .primaryRecording: return "主片段"
+        case .zoom: return "缩放"
+        case .screenMotion: return "屏幕 3D"
+        case .cameraMotion: return "摄像运动"
+        case .mosaic: return "打码"
+        case .sticker: return "贴图"
         }
     }
 }

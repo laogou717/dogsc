@@ -415,11 +415,12 @@ enum SharedFrameRenderer {
             height: cropRect.height * finalScale
         )
 
-        let visibleScreenMask: CIImage = switch screen.decoration {
+        let visibleScreenMask: CIImage
+        switch screen.decoration {
         case .none:
-            roundedMask(rect: finalRect, radius: screen.cornerRadius)
+            visibleScreenMask = roundedMask(rect: finalRect, radius: screen.cornerRadius)
         case let .chrome(chrome):
-            chrome.contentCornerRadius > 0
+            visibleScreenMask = chrome.contentCornerRadius > 0
                 ? roundedMask(rect: finalRect, radius: chrome.contentCornerRadius)
                 : CIImage(color: .white).cropped(to: finalRect)
         }
@@ -618,9 +619,10 @@ enum SharedFrameRenderer {
             from: scene.projectionRect,
             canvasHeight: canvasRect.height
         )
-        let projectionCornerRadius: Double = switch scene.decoration {
-        case .none: scene.cornerRadius
-        case let .chrome(chrome): chrome.outerCornerRadius
+        let projectionCornerRadius: Double
+        switch scene.decoration {
+        case .none: projectionCornerRadius = scene.cornerRadius
+        case let .chrome(chrome): projectionCornerRadius = chrome.outerCornerRadius
         }
 
         // The native 3D path below owns its own card/masks. Do not eagerly
@@ -630,11 +632,12 @@ enum SharedFrameRenderer {
         var cachedContentMask: CIImage?
         func contentMask() -> CIImage {
             if let cachedContentMask { return cachedContentMask }
-            let mask: CIImage = switch scene.decoration {
+            let mask: CIImage
+            switch scene.decoration {
             case .none:
-                roundedMask(rect: finalRect, radius: scene.cornerRadius)
+                mask = roundedMask(rect: finalRect, radius: scene.cornerRadius)
             case let .chrome(chrome):
-                chrome.contentCornerRadius > 0
+                mask = chrome.contentCornerRadius > 0
                     ? roundedMask(rect: finalRect, radius: chrome.contentCornerRadius)
                     : CIImage(color: .white).cropped(to: finalRect)
             }
@@ -645,10 +648,11 @@ enum SharedFrameRenderer {
         var cachedProjectionMask: CIImage?
         func projectionMask() -> CIImage {
             if let cachedProjectionMask { return cachedProjectionMask }
-            let mask: CIImage = switch scene.decoration {
-            case .none: contentMask()
+            let mask: CIImage
+            switch scene.decoration {
+            case .none: mask = contentMask()
             case let .chrome(chrome):
-                roundedMask(rect: projectionRect, radius: chrome.outerCornerRadius)
+                mask = roundedMask(rect: projectionRect, radius: chrome.outerCornerRadius)
             }
             cachedProjectionMask = mask
             return mask
@@ -686,15 +690,15 @@ enum SharedFrameRenderer {
             return border
         }
 
-        let attachedCursor: SharedFrameCursorLayer? = if let cursorScene = attachedCursorScene,
-                                             let cursorSource = attachedCursorSource {
-            SharedFrameCursorRenderer.layer(
+        let attachedCursor: SharedFrameCursorLayer?
+        if let cursorScene = attachedCursorScene, let cursorSource = attachedCursorSource {
+            attachedCursor = SharedFrameCursorRenderer.layer(
                 source: cursorSource,
                 scene: cursorScene,
                 canvasRect: canvasRect
             )
         } else {
-            nil
+            attachedCursor = nil
         }
         func decoratedLayer() -> CIImage {
             let mask = contentMask()
@@ -1754,12 +1758,13 @@ enum SharedFrameRenderer {
         scale patternScale: Double
     ) -> CGFloat {
         let shortEdge = max(min(canvasRect.width, canvasRect.height), 2)
-        let baseFraction: CGFloat = switch preset {
-        case .obsidianGrid: 0.0425
-        case .engineeringWhiteGrid: 0.040
-        case .midnightDots: 0.032
-        case .architecturalDots: 0.030
-        case .isometricMesh: 0.050
+        let baseFraction: CGFloat
+        switch preset {
+        case .obsidianGrid: baseFraction = 0.0425
+        case .engineeringWhiteGrid: baseFraction = 0.040
+        case .midnightDots: baseFraction = 0.032
+        case .architecturalDots: baseFraction = 0.030
+        case .isometricMesh: baseFraction = 0.050
         }
         return max(shortEdge * baseFraction * CGFloat(patternScale), 9)
     }

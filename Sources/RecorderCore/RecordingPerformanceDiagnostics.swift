@@ -128,29 +128,29 @@ public struct RecordingPerformanceSummary: Codable, Equatable, Sendable {
 
     private static func maximum<T: Comparable>(_ lhs: T?, _ rhs: T?) -> T? {
         switch (lhs, rhs) {
-        case let (lhs?, rhs?): max(lhs, rhs)
-        case let (lhs?, nil): lhs
-        case let (nil, rhs?): rhs
-        case (nil, nil): nil
+        case let (lhs?, rhs?): return max(lhs, rhs)
+        case let (lhs?, nil): return lhs
+        case let (nil, rhs?): return rhs
+        case (nil, nil): return nil
         }
     }
 
     private static func minimum<T: Comparable>(_ lhs: T?, _ rhs: T?) -> T? {
         switch (lhs, rhs) {
-        case let (lhs?, rhs?): min(lhs, rhs)
-        case let (lhs?, nil): lhs
-        case let (nil, rhs?): rhs
-        case (nil, nil): nil
+        case let (lhs?, rhs?): return min(lhs, rhs)
+        case let (lhs?, nil): return lhs
+        case let (nil, rhs?): return rhs
+        case (nil, nil): return nil
         }
     }
 
     private static func severity(_ state: RecordingThermalState) -> Int {
         switch state {
-        case .nominal: 0
-        case .fair: 1
-        case .serious: 2
-        case .critical: 3
-        case .unknown: -1
+        case .nominal: return 0
+        case .fair: return 1
+        case .serious: return 2
+        case .critical: return 3
+        case .unknown: return -1
         }
     }
 }

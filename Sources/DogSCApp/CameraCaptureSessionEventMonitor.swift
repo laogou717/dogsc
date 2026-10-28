@@ -23,7 +23,7 @@ final class CameraCaptureSessionEventMonitor {
             object: session,
             queue: nil
         ) { notification in
-            let error = notification.userInfo?[AVCaptureSessionErrorKey] as? NSError
+            let error: NSError = (notification.userInfo?[AVCaptureSessionErrorKey] as? NSError)
                 ?? NSError(
                     domain: AVFoundationErrorDomain,
                     code: AVError.unknown.rawValue,

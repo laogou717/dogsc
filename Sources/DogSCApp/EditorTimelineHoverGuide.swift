@@ -4,6 +4,7 @@ import SwiftUI
 
 /// A passive guide above clips and below the real playhead. Mouse movement
 /// updates this view directly without rebuilding the timeline's SwiftUI tree.
+@MainActor
 struct NativeTimelineHoverGuideView: NSViewRepresentable {
     let location: EditorTimelineHoverLocation
     let scrollView: NSScrollView?

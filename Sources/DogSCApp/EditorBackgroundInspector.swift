@@ -228,7 +228,7 @@ struct EditorBackgroundInspector: View {
                 .focusEffectDisabled()
                 .help("\(displayName) · \(variantName)")
                 .accessibilityLabel(String(format: appLocalized("%@，%@"), displayName, variantName))
-                .accessibilityAddTraits(isSelected ? .isSelected : [])
+                .accessibilityAddTraits(isSelected ? [.isSelected] : [])
                 if group.assets.count > 1 {
                     EditorActionMenu(title: displayName, items: group.assets.map { variant in
                         .action(localizedSystemWallpaperLabel(variant.variantName), isOn: selectedSystemAssetID == variant.id) {
@@ -380,7 +380,7 @@ struct EditorBackgroundInspector: View {
                     }
                     .buttonStyle(.editorThumbnail)
                     .accessibilityLabel(appLocalized(preset.rawValue))
-                    .accessibilityAddTraits(isSelected ? .isSelected : [])
+                    .accessibilityAddTraits(isSelected ? [.isSelected] : [])
                 }
             }
 
@@ -427,7 +427,7 @@ struct EditorBackgroundInspector: View {
                     }
                     .buttonStyle(.editorThumbnail)
                     .accessibilityLabel(appLocalized(preset.displayName))
-                    .accessibilityAddTraits(isSelected ? .isSelected : [])
+                    .accessibilityAddTraits(isSelected ? [.isSelected] : [])
                 }
             }
 

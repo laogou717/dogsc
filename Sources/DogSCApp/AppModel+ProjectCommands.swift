@@ -77,7 +77,7 @@ extension AppModel {
             isResolvingCompletedRecording = true
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                defer { isResolvingCompletedRecording = false }
+                defer { MainActor.assumeIsolated { self.isResolvingCompletedRecording = false } }
                 guard await WindowCoordinator.closeRecordingProjectEditorForReplacement(),
                       phase == .recordingComplete,
                       currentSession?.packageURL == sessionURL else { return }
@@ -507,7 +507,7 @@ extension AppModel {
         isMediaExchangeRunning = true
         Task { @MainActor [weak self] in
             guard let self else { return }
-            defer { isMediaExchangeRunning = false }
+            defer { MainActor.assumeIsolated { self.isMediaExchangeRunning = false } }
             do {
                 let folder = try await Task.detached(priority: .userInitiated) {
                     try ProjectMediaExchange.exportSources(
@@ -544,7 +544,7 @@ extension AppModel {
         isMediaExchangeRunning = true
         Task { @MainActor [weak self] in
             guard let self else { return }
-            defer { isMediaExchangeRunning = false }
+            defer { MainActor.assumeIsolated { self.isMediaExchangeRunning = false } }
             do {
                 try await ProjectMediaExchange.inspectCameraReplacement(camera)
                 let imported = try await Task.detached(priority: .userInitiated) {
@@ -740,7 +740,7 @@ extension AppModel {
         phase = .finishing
         projectOpenTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            defer { projectOpenTask = nil }
+            defer { MainActor.assumeIsolated { self.projectOpenTask = nil } }
 
             if let projectToFlush {
                 do {
@@ -836,8 +836,10 @@ extension AppModel {
                 return
             }
             defer {
-                if projectCatalogRefreshGeneration == generation {
-                    projectCatalogRefreshTask = nil
+                MainActor.assumeIsolated {
+                    if self.projectCatalogRefreshGeneration == generation {
+                        self.projectCatalogRefreshTask = nil
+                    }
                 }
             }
             let snapshot = await withTaskCancellationHandler {

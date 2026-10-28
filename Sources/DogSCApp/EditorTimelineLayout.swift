@@ -1452,7 +1452,7 @@ struct EditorRulerTicks: View, Equatable {
                             context.draw(
                                 Text(Self.label(tick.time))
                                     .font(.appUI(size: 10, weight: .medium)).monospacedDigit()
-                                    .foregroundStyle(EditorTheme.tertiaryText),
+                                    .foregroundColor(EditorTheme.tertiaryText),
                                 at: CGPoint(x: labelX, y: 10),
                                 anchor: .topLeading
                             )

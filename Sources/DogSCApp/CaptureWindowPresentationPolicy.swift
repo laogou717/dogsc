@@ -22,17 +22,17 @@ enum CaptureWindowLevelPolicy {
     static func level(for role: CaptureWindowPresentationRole) -> NSWindow.Level {
         switch role {
         case .recorderMemo:
-            NSWindow.Level(rawValue: activeRecorderLevel.rawValue + 1)
+            return NSWindow.Level(rawValue: activeRecorderLevel.rawValue + 1)
         case .selectionOverlay, .recordingGuideOverlay:
-            overlayLevel
+            return overlayLevel
         case let .recorderPanel(phase, selectionActive):
             switch phase {
             case .setup where selectionActive:
-                activeRecorderLevel
+                return activeRecorderLevel
             case .preparing, .recording:
-                activeRecorderLevel
+                return activeRecorderLevel
             case .setup, .finishing, .editor, .recordingComplete:
-                .floating
+                return .floating
             }
         }
     }
@@ -149,10 +149,10 @@ enum RecorderCaptureSourceAccessibilityID {
 
     static func value(for source: CaptureSource) -> String {
         switch source {
-        case .display: display
-        case .window: window
-        case .area: area
-        case .device: device
+        case .display: return display
+        case .window: return window
+        case .area: return area
+        case .device: return device
         }
     }
 }

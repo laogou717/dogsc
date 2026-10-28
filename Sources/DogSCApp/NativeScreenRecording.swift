@@ -17,9 +17,9 @@ enum NativeScreenRecordingBackendPolicy {
     static func captureResolution(for source: CaptureSource) -> SCCaptureResolutionType {
         switch source {
         case .window, .area:
-            .best
+            return .best
         case .display, .device:
-            .nominal
+            return .nominal
         }
     }
 
@@ -52,16 +52,16 @@ enum NativeScreenRecordingBackendPolicy {
 
     static func videoCodecType(for codec: CaptureCodec) -> AVVideoCodecType? {
         switch codec {
-        case .h264: .h264
-        case .hevc: .hevc
-        case .proRes422: nil
+        case .h264: return .h264
+        case .hevc: return .hevc
+        case .proRes422: return nil
         }
     }
 
     @available(macOS 15.0, *)
     static func nativeCodecIsAvailable(_ codec: CaptureCodec) -> Bool {
         guard let codecType = videoCodecType(for: codec) else { return false }
-        return SCRecordingOutputConfiguration().availableVideoCodecTypes.contains(codecType)
+        return SCRecordingOutputConfiguration.availableVideoCodecTypes.contains(codecType)
     }
 
     /// REC-001/REC-003: compatibility H.264 stays inside the hardware

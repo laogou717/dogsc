@@ -886,10 +886,10 @@ struct ExportSheet: View {
 
     private func resolutionDetail(_ resolution: CanvasResolution) -> String {
         switch resolution {
-        case .source: appLocalized("跟随素材")
-        case .fullHD: appLocalized("轻量高清")
-        case .quadHD: appLocalized("细节优先")
-        case .ultraHD: appLocalized("超清输出")
+        case .source: return appLocalized("跟随素材")
+        case .fullHD: return appLocalized("轻量高清")
+        case .quadHD: return appLocalized("细节优先")
+        case .ultraHD: return appLocalized("超清输出")
         }
     }
 }

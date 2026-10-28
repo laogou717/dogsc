@@ -46,9 +46,8 @@ struct EditorTrimGrip: View {
         Capsule(style: .continuous)
             .fill(color)
             .frame(width: 2, height: height)
-            .animation(.easeOut(duration: 0.12)) { grip in
-                grip.opacity(hovered ? 1 : 0.75)
-            }
+            .opacity(hovered ? 1 : 0.75)
+            .animation(.easeOut(duration: 0.12), value: hovered)
             .padding(1)
             .background(EditorTheme.panelRaised, in: Capsule())
             .frame(width: 12)

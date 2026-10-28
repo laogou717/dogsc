@@ -1,10 +1,10 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 5.7
 
 import PackageDescription
 
 let package = Package(
     name: "DogSC",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS(.v13)],
     products: [
         .library(name: "RecorderCore", targets: ["RecorderCore"]),
         .executable(name: "DogSC", targets: ["DogSCApp"]),
@@ -36,6 +36,5 @@ let package = Package(
                 ]),
             ]
         ),
-    ],
-    swiftLanguageModes: [.v6]
+    ]
 )

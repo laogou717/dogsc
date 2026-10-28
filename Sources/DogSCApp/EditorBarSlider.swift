@@ -6,6 +6,7 @@ import SwiftUI
 /// opening schedule draws a duration. Press inside the bar and drag to move
 /// its end; press in the empty track to jump there; double-click to type an
 /// exact number. One drag is one undo step, like every other slider.
+@MainActor
 struct EditorBarSlider: View {
     let title: String
     let value: Double

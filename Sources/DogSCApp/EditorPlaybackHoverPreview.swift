@@ -131,7 +131,9 @@ extension EditorPlaybackController {
                 self.hoverSeekInFlightCount = max(self.hoverSeekInFlightCount - 1, 0)
             }
             defer {
-                if belongsToCurrentHoverSession { self.scheduleHoverSeekIfNeeded() }
+                MainActor.assumeIsolated {
+                    if belongsToCurrentHoverSession { self.scheduleHoverSeekIfNeeded() }
+                }
             }
             guard belongsToCurrentHoverSession,
                   self.seekToken == requestedSeek,

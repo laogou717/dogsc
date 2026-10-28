@@ -28,15 +28,15 @@ enum MovieCaptureRole: Sendable {
 
     var displayName: String {
         switch self {
-        case .camera: appLocalized("摄像头")
-        case .iosDevice: appLocalized("iPhone/iPad 屏幕")
+        case .camera: return appLocalized("摄像头")
+        case .iosDevice: return appLocalized("iPhone/iPad 屏幕")
         }
     }
 
     var inputDeviceRole: CaptureInputDeviceRole {
         switch self {
-        case .camera: .camera
-        case .iosDevice: .iosDevice
+        case .camera: return .camera
+        case .iosDevice: return .iosDevice
         }
     }
 }
@@ -113,8 +113,8 @@ enum CaptureActivity {
 
     var recordingRequestID: UUID? {
         switch self {
-        case let .starting(id), let .recording(id), let .stopping(id): id
-        case .idle, .livePreview: nil
+        case let .starting(id), let .recording(id), let .stopping(id): return id
+        case .idle, .livePreview: return nil
         }
     }
 

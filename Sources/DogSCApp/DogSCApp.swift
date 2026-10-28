@@ -20,6 +20,7 @@ private final class EditorFirstMouseHostingView<Content: View>: NSHostingView<Co
 enum DogSCApplication {
     @MainActor
     static func main() {
+        appLog("DogSC Application started", category: "Lifecycle")
         // Resolve the saved language before constructing any presentation.
         _ = AppLanguageSettings.shared
         // SceneBuilder cannot conditionally apply newer scene modifiers.
@@ -60,7 +61,10 @@ private struct DogSCSettingsScene: Scene {
         // The normal app owns no SwiftUI-created main window. A dedicated
         // RecorderPanelController presents the compact recorder surface, while
         // EditorWindowController continues to own the full editor window.
-        Settings { AppSettingsView() }
+        Settings {
+            AppSettingsView()
+                .environment(\.locale, AppLocalization.shared.locale)
+        }
         .commands {
             CommandGroup(replacing: .appSettings) {
                 Button(appLocalized("设置…")) {
@@ -82,7 +86,6 @@ private struct DogSCSettingsScene: Scene {
                 }
             }
         }
-        .environment(\.locale, AppLocalization.shared.locale)
     }
 
 }

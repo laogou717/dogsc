@@ -23,8 +23,7 @@ actor EditorThumbnailPermits {
                     continuation.resume(throwing: CancellationError())
                     return
                 }
-                order.append(id)
-                waiting[id] = continuation
+                registerContinuation(continuation, for: id)
             }
         } onCancel: {
             Task { await self.cancel(id) }
@@ -45,5 +44,10 @@ actor EditorThumbnailPermits {
     private func cancel(_ id: UUID) {
         order.removeAll { $0 == id }
         waiting.removeValue(forKey: id)?.resume(throwing: CancellationError())
+    }
+
+    private func registerContinuation(_ continuation: CheckedContinuation<Void, Error>, for id: UUID) {
+        order.append(id)
+        waiting[id] = continuation
     }
 }

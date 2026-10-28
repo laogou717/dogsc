@@ -148,6 +148,7 @@ enum NativeTimelinePlayheadPart {
 
 /// The line stays inside the scrolling canvas; the knob is drawn above the
 /// viewport so its center can reach the left endpoint without clipping it.
+@MainActor
 struct NativeTimelinePlayheadView: NSViewRepresentable {
     let playbackController: EditorPlaybackController
     let duration: TimeInterval

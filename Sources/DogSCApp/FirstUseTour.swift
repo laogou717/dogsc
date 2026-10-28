@@ -7,19 +7,19 @@ enum FirstUseTourKind: String, CaseIterable {
     var steps: [FirstUseTourStep] {
         switch self {
         case .permissions:
-            [
+            return [
                 .init("permission.screen", "先允许录制屏幕", "打开系统设置，允许 DogSC 录制屏幕。返回后会自动检查。", "display"),
                 .init("permission.pointer", "让鼠标动作被记录", "辅助功能用于记录鼠标移动与点击。设置列表里没有 DogSC 时，把下方悬浮条中的图标拖进去，再打开开关。", "cursorarrow"),
                 .init("permission.finish", "授权已完成", "屏幕录制与辅助功能已就绪。进入后即可选择录制范围；摄像头和麦克风仍在启用时授权。", "checkmark.circle")
             ]
         case .recorder:
-            [
+            return [
                 .init("recorder.source", "选择录制范围", "录整个屏幕、一个窗口，或自己框选区域。连接的设备也可以作为录制来源。", "viewfinder"),
                 .init("recorder.inputs", "按需开启声音与摄像头", "在这里选择麦克风、摄像头和系统声音。只开启这次录制需要的输入。", "mic"),
                 .init("recorder.save", "设置保存位置", "选择项目位置、格式和画质。已有项目也可以从这里打开，继续编辑。", "folder")
             ]
         case .editor:
-            [
+            return [
                 .init("editor.tools", "从这里选择要调整的内容", "画面、运镜、光标、摄像头与声音，各自的设置都从左侧进入。", "slider.horizontal.3", side: .right),
                 .init("editor.inspector", "调整画面外观", "右侧显示当前选项的详细设置。背景、布局与样机的变化会显示在预览中。", "macwindow", side: .left),
                 .init("editor.timeline", "在时间线上剪辑", "移动播放指针定位内容，拖动片段边缘调整长度。吸附和预览可以在时间线上方开关。", "film", side: .above),
@@ -566,11 +566,12 @@ final class FirstUseTourController {
         let above = CGRect(x: target.midX - size.width / 2, y: target.maxY + gap, width: size.width, height: size.height)
         let left = CGRect(x: target.minX - gap - size.width, y: target.midY - size.height / 2, width: size.width, height: size.height)
         let right = CGRect(x: target.maxX + gap, y: target.midY - size.height / 2, width: size.width, height: size.height)
-        let candidates: [CGRect] = switch side {
-        case .below: [below, above, left, right]
-        case .above: [above, below, left, right]
-        case .left: [left, right, above, below]
-        case .right: [right, left, above, below]
+        let candidates: [CGRect]
+        switch side {
+        case .below: candidates = [below, above, left, right]
+        case .above: candidates = [above, below, left, right]
+        case .left: candidates = [left, right, above, below]
+        case .right: candidates = [right, left, above, below]
         }
         for candidate in candidates {
             let result = CGRect(x: min(max(candidate.minX, visible.minX), visible.maxX - size.width),

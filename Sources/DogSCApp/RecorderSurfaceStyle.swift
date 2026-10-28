@@ -134,19 +134,19 @@ struct RecorderPillButtonStyle: ButtonStyle {
 
         private var foreground: Color {
             switch kind {
-            case .record: .white
-            case .primary: RecorderStyle.onPrimary
-            case .soft: RecorderStyle.ink
-            case .quiet: RecorderStyle.ink.opacity(0.78)
+            case .record: return .white
+            case .primary: return RecorderStyle.onPrimary
+            case .soft: return RecorderStyle.ink
+            case .quiet: return RecorderStyle.ink.opacity(0.78)
             }
         }
 
         private func fill(hovered: Bool, pressed: Bool) -> Color {
             switch kind {
-            case .record: RecorderStyle.recording.opacity(pressed ? 0.78 : hovered ? 0.9 : 1)
-            case .primary: RecorderStyle.primaryFill.opacity(pressed ? 0.78 : hovered ? 0.9 : 0.96)
-            case .soft: RecorderStyle.chrome.opacity(pressed ? 0.2 : hovered ? 0.15 : 0.1)
-            case .quiet: RecorderStyle.chrome.opacity(pressed ? 0.14 : hovered ? 0.09 : 0)
+            case .record: return RecorderStyle.recording.opacity(pressed ? 0.78 : hovered ? 0.9 : 1)
+            case .primary: return RecorderStyle.primaryFill.opacity(pressed ? 0.78 : hovered ? 0.9 : 0.96)
+            case .soft: return RecorderStyle.chrome.opacity(pressed ? 0.2 : hovered ? 0.15 : 0.1)
+            case .quiet: return RecorderStyle.chrome.opacity(pressed ? 0.14 : hovered ? 0.09 : 0)
             }
         }
     }

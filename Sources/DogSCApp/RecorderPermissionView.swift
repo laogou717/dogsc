@@ -13,44 +13,44 @@ enum RequiredRecordingPermissionKind: String, CaseIterable, Identifiable, Sendab
 
     var title: String {
         switch self {
-        case .screenRecording: appLocalized("屏幕录制")
-        case .accessibility: appLocalized("辅助功能")
+        case .screenRecording: return appLocalized("屏幕录制")
+        case .accessibility: return appLocalized("辅助功能")
         }
     }
 
     var purpose: String {
         switch self {
-        case .screenRecording: appLocalized("录制屏幕、窗口或区域")
-        case .accessibility: appLocalized("记录鼠标移动与点击")
+        case .screenRecording: return appLocalized("录制屏幕、窗口或区域")
+        case .accessibility: return appLocalized("记录鼠标移动与点击")
         }
     }
 
     var systemImage: String {
         switch self {
-        case .screenRecording: "display"
-        case .accessibility: "accessibility"
+        case .screenRecording: return "display"
+        case .accessibility: return "accessibility"
         }
     }
 
     var settingsSection: String {
         switch self {
-        case .screenRecording: "Privacy_ScreenCapture"
-        case .accessibility: "Privacy_Accessibility"
+        case .screenRecording: return "Privacy_ScreenCapture"
+        case .accessibility: return "Privacy_Accessibility"
         }
     }
 
     var settingsListName: String {
         switch self {
-        case .screenRecording: appLocalized("屏幕与系统音频录制")
-        case .accessibility: appLocalized("辅助功能")
+        case .screenRecording: return appLocalized("屏幕与系统音频录制")
+        case .accessibility: return appLocalized("辅助功能")
         }
     }
 
     @MainActor
     func isGranted(in model: AppModel) -> Bool {
         switch self {
-        case .screenRecording: model.hasScreenRecordingPermissionForOnboarding
-        case .accessibility: model.hasAccessibilityPermission
+        case .screenRecording: return model.hasScreenRecordingPermissionForOnboarding
+        case .accessibility: return model.hasAccessibilityPermission
         }
     }
 }
@@ -116,7 +116,7 @@ final class ApplicationBundleDragView: NSView, NSDraggingSource {
             operation: .sourceOver,
             fraction: 1,
             respectFlipped: true,
-            hints: [.interpolation: NSImageInterpolation.high]
+            hints: nil
         )
     }
 

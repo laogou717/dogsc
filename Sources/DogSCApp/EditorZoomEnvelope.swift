@@ -153,11 +153,11 @@ struct EditorZoomEnvelope: View {
     private func position(of node: Node, plot: CGRect) -> CGPoint {
         switch node {
         case .enterEnd:
-            CGPoint(x: x(effectiveEnter, plot: plot), y: y(magnificationAt(effectiveEnter), plot: plot))
+            return CGPoint(x: x(effectiveEnter, plot: plot), y: y(magnificationAt(effectiveEnter), plot: plot))
         case .holdEnd:
-            CGPoint(x: x(animation.duration, plot: plot), y: y(magnificationAt(animation.duration), plot: plot))
+            return CGPoint(x: x(animation.duration, plot: plot), y: y(magnificationAt(animation.duration), plot: plot))
         case .exitEnd:
-            CGPoint(x: x(animation.duration + animation.exitDuration, plot: plot), y: y(1, plot: plot))
+            return CGPoint(x: x(animation.duration + animation.exitDuration, plot: plot), y: y(1, plot: plot))
         }
     }
 

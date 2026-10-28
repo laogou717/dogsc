@@ -488,7 +488,7 @@ final class DogSCApplicationDelegate: NSObject,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            DispatchQueue.main.async {
+            DispatchQueue.main.async { [weak self] in
                 self?.refreshMainMenuBindings()
             }
         }
@@ -608,13 +608,13 @@ enum RecorderPanelPolicy {
     ) -> NSSize? {
         switch phase {
         case .setup:
-            setupSize
+            return setupSize
         case .preparing, .finishing:
-            progressSize
+            return progressSize
         case .recording:
-            NSSize(width: recordingWindowWidth(recordsMicrophone: recordsMicrophone), height: 48)
+            return NSSize(width: recordingWindowWidth(recordsMicrophone: recordsMicrophone), height: 48)
         case .editor, .recordingComplete:
-            nil
+            return nil
         }
     }
 

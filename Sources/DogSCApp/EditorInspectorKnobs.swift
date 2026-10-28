@@ -379,7 +379,10 @@ struct EditorMixerStrip: View {
     }
 
     private func fader(level: Double, muted: Bool) -> some View {
-        let travel = faderHeight - capHeight
+        let travel: CGFloat = faderHeight - capHeight
+        let levelHeight: CGFloat = CGFloat(level) * travel
+        let barHeight: CGFloat = max(levelHeight + capHeight / 2 - 6, 0)
+        let thumbOffset: CGFloat = -levelHeight
         return ZStack(alignment: .bottom) {
             Capsule(style: .continuous)
                 .fill(EditorTheme.chrome(0.10))
@@ -387,7 +390,7 @@ struct EditorMixerStrip: View {
                 .frame(maxHeight: .infinity)
             Capsule(style: .continuous)
                 .fill((palette?.fill ?? EditorTheme.primaryText).opacity(muted ? 0.25 : 1))
-                .frame(width: 5, height: max(level * travel + capHeight / 2 - 6, 0))
+                .frame(width: 5, height: barHeight)
                 .padding(.bottom, 6)
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(EditorChoiceStyle.thumb)
@@ -401,7 +404,7 @@ struct EditorMixerStrip: View {
                 .shadow(color: EditorChoiceStyle.thumbShadow, radius: 3, y: 1.5)
                 .frame(width: 38, height: capHeight)
                 .scaleEffect(isDragging && !RecorderMotion.reduces ? 1.06 : 1)
-                .offset(y: -level * travel)
+                .offset(y: thumbOffset)
         }
         .frame(width: 42, height: faderHeight)
         .contentShape(Rectangle())

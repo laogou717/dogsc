@@ -322,7 +322,7 @@ final class EditorSessionContextProvider: ObservableObject {
             .removeDuplicates { $0 == $1 }
             .sink { [weak self, weak model] _ in
                 guard let self, let model else { return }
-                context = EditorSessionContext(model: model)
+                self.context = EditorSessionContext(model: model)
             }
     }
 }

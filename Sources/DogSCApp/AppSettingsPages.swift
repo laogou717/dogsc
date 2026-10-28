@@ -387,9 +387,9 @@ struct SettingsEditorPage: View {
 
     private var showsDark: Bool {
         switch appearance {
-        case .dark: true
-        case .light: false
-        case .system: colorScheme == .dark
+        case .dark: return true
+        case .light: return false
+        case .system: return colorScheme == .dark
         }
     }
 
@@ -412,9 +412,9 @@ struct SettingsEditorPage: View {
                     label: { $0.label },
                     icon: { preference in
                         switch preference {
-                        case .system: .appearance
-                        case .light: .sun
-                        case .dark: .moon
+                        case .system: return .appearance
+                        case .light: return .sun
+                        case .dark: return .moon
                         }
                     }
                 )
@@ -586,12 +586,8 @@ private struct SettingsEditorMiniature: View {
             .padding(.top, 30)
             .padding(.bottom, 20)
             // Resetting the layout settles the window back into place.
-            .keyframeAnimator(initialValue: CGFloat(1), trigger: resetPulse) { view, scale in
-                view.scaleEffect(RecorderMotion.reduces ? 1 : scale)
-            } keyframes: { _ in
-                CubicKeyframe(0.94, duration: 0.14)
-                SpringKeyframe(1, duration: 0.5, spring: RecorderMotion.morphSpring)
-            }
+            .scaleEffect(resetPulse && !RecorderMotion.reduces ? 0.96 : 1)
+            .animation(.spring(response: 0.4, dampingFraction: 0.6), value: resetPulse)
         }
         .frame(height: 238)
         .clipShape(frame)
@@ -654,9 +650,9 @@ struct SettingsRecordingPage: View {
                     label: { $0.label },
                     icon: { shape in
                         switch shape {
-                        case .circle: .shapeCircle
-                        case .roundedSquare: .shapeRounded
-                        case .sourceAspect: .shapeWide
+                        case .circle: return .shapeCircle
+                        case .roundedSquare: return .shapeRounded
+                        case .sourceAspect: return .shapeWide
                         }
                     }
                 )
@@ -831,17 +827,23 @@ private struct SettingsMiniRecorderBar: View {
 private struct SettingsCameraBubble: View {
     let shape: RecordingCameraPreviewShape
 
+    private var bubbleSize: CGSize {
+        switch shape {
+        case .circle, .roundedSquare: return CGSize(width: 62, height: 62)
+        case .sourceAspect: return CGSize(width: 100, height: 57)
+        }
+    }
+
+    private var bubbleRadius: CGFloat {
+        switch shape {
+        case .circle: return 31
+        case .roundedSquare: return 15
+        case .sourceAspect: return 10
+        }
+    }
+
     var body: some View {
-        let size: CGSize = switch shape {
-        case .circle, .roundedSquare: CGSize(width: 62, height: 62)
-        case .sourceAspect: CGSize(width: 100, height: 57)
-        }
-        let radius: CGFloat = switch shape {
-        case .circle: 31
-        case .roundedSquare: 15
-        case .sourceAspect: 10
-        }
-        let outline = RoundedRectangle(cornerRadius: radius, style: .continuous)
+        let outline = RoundedRectangle(cornerRadius: bubbleRadius, style: .continuous)
         outline
             .fill(LinearGradient(
                 colors: [Color(red: 0.86, green: 0.78, blue: 0.70), Color(red: 0.56, green: 0.50, blue: 0.48)],
@@ -854,7 +856,7 @@ private struct SettingsCameraBubble: View {
             }
             .clipShape(outline)
             .overlay { outline.strokeBorder(Color.white.opacity(0.9), lineWidth: 2) }
-            .frame(width: size.width, height: size.height)
+            .frame(width: bubbleSize.width, height: bubbleSize.height)
             .shadow(color: .black.opacity(0.3), radius: 8, y: 3)
             .animation(RecorderMotion.morph, value: shape)
     }
@@ -918,7 +920,8 @@ struct SettingsPermissionsPage: View {
     }
 
     private func tile(_ item: SettingsPermissionItem) -> some View {
-        let missing = if case .missing = item.status { true } else { false }
+        let missing: Bool
+        if case .missing = item.status { missing = true } else { missing = false }
         return VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top) {
                 AppLineIcon(kind: item.icon, size: 22)

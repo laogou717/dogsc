@@ -202,9 +202,9 @@ struct CaptureOutputTerminalFailure: LocalizedError, CustomNSError, @unchecked S
 
     var errorCode: Int {
         switch stage {
-        case .writerStart: 1
-        case .videoAppend: 2
-        case .audioAppend: 3
+        case .writerStart: return 1
+        case .videoAppend: return 2
+        case .audioAppend: return 3
         }
     }
 
@@ -224,9 +224,9 @@ struct CaptureOutputTerminalFailure: LocalizedError, CustomNSError, @unchecked S
 private extension CaptureOutputTerminalStage {
     var description: String {
         switch self {
-        case .writerStart: "启动视频写入器"
-        case .videoAppend: "写入视频帧"
-        case .audioAppend: "写入系统声音"
+        case .writerStart: return "启动视频写入器"
+        case .videoAppend: return "写入视频帧"
+        case .audioAppend: return "写入系统声音"
         }
     }
 }

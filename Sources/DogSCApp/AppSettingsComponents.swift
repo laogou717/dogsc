@@ -119,7 +119,6 @@ struct SettingsIsland<Content: View>: View {
                     }
                 }
             }
-            .scrollBounceBehavior(.basedOnSize)
             .scrollIndicators(contentHeight > maxHeight ? .automatic : .never)
             .frame(height: max(height, 1))
             .clipShape(RoundedRectangle(cornerRadius: SettingsLayout.islandRadius, style: .continuous))
@@ -168,19 +167,8 @@ struct SettingsRingingBell: View {
     var body: some View {
         AppLineIcon(kind: .bell, size: size)
             .foregroundStyle(enabled ? SettingsTheme.textSecondary : SettingsTheme.textFaint)
-            .keyframeAnimator(initialValue: 0.0, trigger: ringing) { view, angle in
-                view.rotationEffect(.degrees(RecorderMotion.reduces ? 0 : angle), anchor: .top)
-            } keyframes: { _ in
-                if ringing {
-                    CubicKeyframe(16, duration: 0.08)
-                    CubicKeyframe(-13, duration: 0.12)
-                    CubicKeyframe(9, duration: 0.12)
-                    CubicKeyframe(-5, duration: 0.12)
-                    SpringKeyframe(0, duration: 0.3, spring: Spring(duration: 0.3, bounce: 0.2))
-                } else {
-                    CubicKeyframe(0, duration: 0.01)
-                }
-            }
+            .rotationEffect(.degrees(ringing && !RecorderMotion.reduces ? 15 : 0), anchor: .top)
+            .animation(ringing ? .easeInOut(duration: 0.12).repeatCount(4, autoreverses: true) : .default, value: ringing)
             .animation(RecorderMotion.fade, value: enabled)
             .accessibilityHidden(true)
     }
@@ -216,24 +204,10 @@ private struct SettingsRipple: View {
         Circle()
             .strokeBorder(RecorderStyle.positiveInk, lineWidth: 1.5)
             .frame(width: 30, height: 30)
-            .keyframeAnimator(initialValue: RippleFrame(), trigger: active) { view, frame in
-                view.scaleEffect(frame.scale).opacity(frame.opacity)
-            } keyframes: { _ in
-                KeyframeTrack(\.scale) {
-                    CubicKeyframe(1, duration: 0.01)
-                    CubicKeyframe(active && !RecorderMotion.reduces ? 1.6 : 1, duration: 0.7)
-                }
-                KeyframeTrack(\.opacity) {
-                    CubicKeyframe(active ? 0.8 : 0, duration: 0.01)
-                    CubicKeyframe(0, duration: 0.7)
-                }
-            }
+            .scaleEffect(active && !RecorderMotion.reduces ? 1.6 : 1)
+            .opacity(active ? 0.8 : 0)
+            .animation(.easeOut(duration: 0.7), value: active)
             .accessibilityHidden(true)
-    }
-
-    struct RippleFrame {
-        var scale: CGFloat = 1
-        var opacity: Double = 0
     }
 }
 
@@ -444,12 +418,9 @@ struct SettingsPressStyle: ButtonStyle {
 struct SettingsActivationFeedback: ViewModifier {
     let trigger: Int
     func body(content: Content) -> some View {
-        content.keyframeAnimator(initialValue: CGFloat(1), trigger: trigger) { view, scale in
-            view.scaleEffect(RecorderMotion.reduces ? 1 : scale)
-        } keyframes: { _ in
-            CubicKeyframe(0.90, duration: 0.08)
-            SpringKeyframe(1, duration: 0.32, spring: Spring(duration: 0.32, bounce: 0.18))
-        }
+        content
+            .scaleEffect(trigger > 0 && !RecorderMotion.reduces ? 0.95 : 1)
+            .animation(.spring(response: 0.32, dampingFraction: 0.5), value: trigger)
     }
 }
 

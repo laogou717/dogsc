@@ -6,88 +6,88 @@ import SwiftUI
 enum EditorSymbolCatalog {
     static func kind(for systemName: String) -> AppLineIcon.Kind? {
         switch systemName {
-        case "arrow.uturn.backward", "arrow.uturn.left": .undo
-        case "arrow.uturn.forward", "arrow.uturn.right": .redo
-        case "gearshape", "gearshape.fill": .settings
-        case "plus", "plus.circle", "plus.circle.fill": .plus
-        case "minus", "minus.circle": .minus
-        case "slider.horizontal.3": .sliders
-        case "moon.stars.fill", "moon.fill": .moon
-        case "sun.max.fill", "sun.max": .sun
-        case "trash", "trash.fill": .trash
-        case "folder": .folder
-        case "square.3.layers.3d", "square.stack.3d.up", "square.stack", "rectangle.stack": .layers
-        case "rectangle.inset.filled", "square.on.square", "rectangle.on.rectangle": .layout
-        case "macwindow": .window
-        case "photo", "photo.on.rectangle.angled": .scene
-        case "grid": .grid
-        case "waveform", "waveform.path", "waveform.path.ecg", "waveform.path.ecg.rectangle": .waveform
-        case "film", "film.stack", "film.stack.fill", "timeline.selection": .film
-        case "crop": .crop
-        case "scissors": .scissors
-        case "viewfinder": .zoom
-        case "scope": .target
-        case "sparkles.rectangle.stack": .opening
-        case "sparkles", "sparkle": .sparkle
-        case "speaker.wave.2", "speaker.wave.2.fill": .speaker
-        case "speaker.slash", "speaker.slash.fill": .speakerOff
-        case "mic", "mic.fill": .microphone
-        case "video", "video.fill", "video.badge.ellipsis": .camera
-        case "video.slash", "video.slash.fill": .cameraOff
-        case "display": .display
-        case "pencil": .pencil
-        case "magnet": .magnet
-        case "eye", "eye.fill": .eye
-        case "eye.slash", "eye.slash.fill": .eyeOff
-        case "clock", "clock.badge.checkmark": .clock
-        case "cube", "cube.transparent", "move.3d": .cube
-        case "link": .link
-        case "photo.badge.plus": .photoAdd
-        case "doc.on.clipboard": .paste
-        case "arrow.up.left.and.arrow.down.right": .expand
-        case "aspectratio": .aspect
-        case "hand.draw": .move
-        case "arrow.triangle.2.circlepath", "arrow.clockwise", "arrow.counterclockwise", "rotate.right": .refresh
-        case "mappin.and.ellipse": .pin
-        case "speedometer": .speed
-        case "drop.halffull": .drop
-        case "circle.lefthalf.filled": .halfCircle
-        case "bookmark", "bookmark.fill": .bookmark
-        case "arrow.left.and.right": .swap
-        case "magnifyingglass", "plus.magnifyingglass": .search
-        case "slash.circle": .noSymbol
-        case "chevron.left": .chevronLeft
-        case "chevron.up": .chevronUp
-        case "chevron.right": .chevron
-        case "chevron.down": .chevronDown
-        case "xmark": .close
-        case "checkmark": .check
-        case "checkmark.circle", "checkmark.circle.fill": .checkCircle
-        case "exclamationmark.triangle", "exclamationmark.triangle.fill": .warning
-        case "info", "info.circle": .info
-        case "play.fill", "play": .play
-        case "rectangle.slash": .noFrame
-        case "rectangle": .shapeWide
-        case "rectangle.portrait": .portrait
-        case "arrow.left": .arrowLeft
-        case "arrow.right": .arrowRight
-        case "square.and.arrow.down": .download
-        case "cursorarrow.motionlines": .cursorMotion
-        case "cursorarrow": .cursor
-        case "person", "person.fill": .person
-        case "link.badge.plus": .link
-        case "arrow.up.left": .arrowUpLeft
-        case "arrow.down.right": .arrowDownRight
-        case "delete.left": .deleteLeft
-        case "delete.right": .deleteRight
-        case "list.number", "list.bullet": .list
-        case "rectangle.3.group": .presets
-        case "circle": .shapeCircle
-        case "rectangle.fill": .shapeWide
-        case "square", "square.fill": .shapeRounded
+        case "arrow.uturn.backward", "arrow.uturn.left": return .undo
+        case "arrow.uturn.forward", "arrow.uturn.right": return .redo
+        case "gearshape", "gearshape.fill": return .settings
+        case "plus", "plus.circle", "plus.circle.fill": return .plus
+        case "minus", "minus.circle": return .minus
+        case "slider.horizontal.3": return .sliders
+        case "moon.stars.fill", "moon.fill": return .moon
+        case "sun.max.fill", "sun.max": return .sun
+        case "trash", "trash.fill": return .trash
+        case "folder": return .folder
+        case "square.3.layers.3d", "square.stack.3d.up", "square.stack", "rectangle.stack": return .layers
+        case "rectangle.inset.filled", "square.on.square", "rectangle.on.rectangle": return .layout
+        case "macwindow": return .window
+        case "photo", "photo.on.rectangle.angled": return .scene
+        case "grid": return .grid
+        case "waveform", "waveform.path", "waveform.path.ecg", "waveform.path.ecg.rectangle": return .waveform
+        case "film", "film.stack", "film.stack.fill", "timeline.selection": return .film
+        case "crop": return .crop
+        case "scissors": return .scissors
+        case "viewfinder": return .zoom
+        case "scope": return .target
+        case "sparkles.rectangle.stack": return .opening
+        case "sparkles", "sparkle": return .sparkle
+        case "speaker.wave.2", "speaker.wave.2.fill": return .speaker
+        case "speaker.slash", "speaker.slash.fill": return .speakerOff
+        case "mic", "mic.fill": return .microphone
+        case "video", "video.fill", "video.badge.ellipsis": return .camera
+        case "video.slash", "video.slash.fill": return .cameraOff
+        case "display": return .display
+        case "pencil": return .pencil
+        case "magnet": return .magnet
+        case "eye", "eye.fill": return .eye
+        case "eye.slash", "eye.slash.fill": return .eyeOff
+        case "clock", "clock.badge.checkmark": return .clock
+        case "cube", "cube.transparent", "move.3d": return .cube
+        case "link": return .link
+        case "photo.badge.plus": return .photoAdd
+        case "doc.on.clipboard": return .paste
+        case "arrow.up.left.and.arrow.down.right": return .expand
+        case "aspectratio": return .aspect
+        case "hand.draw": return .move
+        case "arrow.triangle.2.circlepath", "arrow.clockwise", "arrow.counterclockwise", "rotate.right": return .refresh
+        case "mappin.and.ellipse": return .pin
+        case "speedometer": return .speed
+        case "drop.halffull": return .drop
+        case "circle.lefthalf.filled": return .halfCircle
+        case "bookmark", "bookmark.fill": return .bookmark
+        case "arrow.left.and.right": return .swap
+        case "magnifyingglass", "plus.magnifyingglass": return .search
+        case "slash.circle": return .noSymbol
+        case "chevron.left": return .chevronLeft
+        case "chevron.up": return .chevronUp
+        case "chevron.right": return .chevron
+        case "chevron.down": return .chevronDown
+        case "xmark": return .close
+        case "checkmark": return .check
+        case "checkmark.circle", "checkmark.circle.fill": return .checkCircle
+        case "exclamationmark.triangle", "exclamationmark.triangle.fill": return .warning
+        case "info", "info.circle": return .info
+        case "play.fill", "play": return .play
+        case "rectangle.slash": return .noFrame
+        case "rectangle": return .shapeWide
+        case "rectangle.portrait": return .portrait
+        case "arrow.left": return .arrowLeft
+        case "arrow.right": return .arrowRight
+        case "square.and.arrow.down": return .download
+        case "cursorarrow.motionlines": return .cursorMotion
+        case "cursorarrow": return .cursor
+        case "person", "person.fill": return .person
+        case "link.badge.plus": return .link
+        case "arrow.up.left": return .arrowUpLeft
+        case "arrow.down.right": return .arrowDownRight
+        case "delete.left": return .deleteLeft
+        case "delete.right": return .deleteRight
+        case "list.number", "list.bullet": return .list
+        case "rectangle.3.group": return .presets
+        case "circle": return .shapeCircle
+        case "rectangle.fill": return .shapeWide
+        case "square", "square.fill": return .shapeRounded
         // Layer order keeps the system glyphs: their front/back distinction
         // has no drawn equivalent yet.
-        default: nil
+        default: return nil
         }
     }
 }

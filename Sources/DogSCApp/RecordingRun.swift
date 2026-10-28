@@ -25,25 +25,25 @@ enum RecordingPlanError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .targetDoesNotMatchConfiguration:
-            "录制目标已变更，请重新选择显示器、窗口、区域或设备。"
+            return "录制目标已变更，请重新选择显示器、窗口、区域或设备。"
         case .invalidDisplay:
-            "请先选择要录制的显示器。"
+            return "请先选择要录制的显示器。"
         case .invalidWindow:
-            "请先选择要录制的窗口。"
+            return "请先选择要录制的窗口。"
         case .invalidArea:
-            "请先拖动选择要录制的区域。"
+            return "请先拖动选择要录制的区域。"
         case .invalidDevice:
-            "请先选择要录制的 iPhone 或 iPad。"
+            return "请先选择要录制的 iPhone 或 iPad。"
         case .displayUnavailable:
-            "已选择的显示器已断开，请重新选择。"
+            return "已选择的显示器已断开，请重新选择。"
         case .windowUnavailable:
-            "已选择的窗口已关闭，请重新选择。"
+            return "已选择的窗口已关闭，请重新选择。"
         case .deviceUnavailable:
-            "已选择的 iPhone 或 iPad 已断开，请重新选择。"
+            return "已选择的 iPhone 或 iPad 已断开，请重新选择。"
         case .missingCamera:
-            "已开启摄像头，但没有选择可用的摄像头。"
+            return "已开启摄像头，但没有选择可用的摄像头。"
         case .missingMicrophone:
-            "已开启麦克风，但没有选择可用的麦克风。"
+            return "已开启麦克风，但没有选择可用的麦克风。"
         }
     }
 }

@@ -1,11 +1,11 @@
 import AppKit
+import Combine
 import Foundation
-import Observation
 
 /// One immutable language snapshot is shared by SwiftUI and native labels.
 /// Reads can also come from error-formatting workers: the lock protects only
 /// that snapshot, while all changes and UI notifications belong to MainActor.
-final class AppLocalization: Observable, @unchecked Sendable {
+final class AppLocalization: ObservableObject, @unchecked Sendable {
     static let shared = AppLocalization()
 
     private struct Language {
@@ -17,7 +17,6 @@ final class AppLocalization: Observable, @unchecked Sendable {
         var locale: Locale { Locale(identifier: identifier) }
     }
 
-    private let registrar = ObservationRegistrar()
     private let lock = NSLock()
     private var current: Language
 
@@ -27,12 +26,8 @@ final class AppLocalization: Observable, @unchecked Sendable {
         ))
     }
 
-    // Access is registered at the caller's body evaluation, including when a
-    // computed label calls appLocalized through another type. No view .id or
-    // hosting-root replacement is needed to invalidate those String labels.
     private var language: Language {
-        registrar.access(self, keyPath: \.language)
-        return lock.withLock { current }
+        lock.withLock { current }
     }
 
     var locale: Locale { language.locale }
@@ -49,9 +44,9 @@ final class AppLocalization: Observable, @unchecked Sendable {
     func apply(_ preference: AppLanguagePreference) -> Bool {
         let next = Self.resolve(preference)
         guard lock.withLock({ current.identifier != next.identifier }) else { return false }
-        registrar.withMutation(of: self, keyPath: \.language) {
-            lock.withLock { current = next }
-        }
+        objectWillChange.send()
+        lock.withLock { current = next }
+        NotificationCenter.default.post(name: .appLanguageDidChange, object: nil)
         return true
     }
 

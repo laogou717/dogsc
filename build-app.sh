@@ -11,16 +11,18 @@ if [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app/Contents/Developer ]
   export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 fi
 
-if [[ "$(uname -s)" != Darwin || "$(uname -m)" != arm64 ]]; then
-  echo "DogSC currently requires an Apple Silicon Mac." >&2
+if [[ "$(uname -s)" != Darwin ]]; then
+  echo "DogSC requires macOS." >&2
   exit 1
 fi
-if [[ ! "$signing_identity" =~ ^[[:xdigit:]]{40}$ ]]; then
-  echo "Set DOGSC_SIGNING_IDENTITY to your Apple Development certificate's SHA-1 fingerprint." >&2
+
+if [[ -z "$signing_identity" ]]; then
+  signing_identity="-"
+elif [[ ! "$signing_identity" =~ ^[[:xdigit:]]{40}$ ]]; then
+  echo "Set DOGSC_SIGNING_IDENTITY to your Apple Development certificate's SHA-1 fingerprint, or leave empty for ad-hoc signing." >&2
   echo "List available identities with: security find-identity -v -p codesigning" >&2
   exit 1
-fi
-if ! security find-identity -v -p codesigning | grep -F "$signing_identity" >/dev/null; then
+elif ! security find-identity -v -p codesigning | grep -F "$signing_identity" >/dev/null; then
   echo "The specified signing identity is not available in your keychain." >&2
   exit 1
 fi
@@ -29,9 +31,13 @@ if [[ -e "$app_output" ]] && pgrep -x DogSC >/dev/null; then
   exit 1
 fi
 
-swift build -c release --product DogSC
-binary_dir="$(swift build -c release --show-bin-path)"
-sparkle_source="$project_root/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
+build_configuration="${DOGSC_BUILD_CONFIGURATION:-debug}"
+swift build -c "$build_configuration" --product DogSC
+binary_dir="$(swift build -c "$build_configuration" --show-bin-path)"
+sparkle_source="$project_root/.build/artifacts/sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
+if [[ ! -d "$sparkle_source" ]]; then
+  sparkle_source="$project_root/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
+fi
 [[ -f "$binary_dir/DogSC" && -d "$sparkle_source" ]]
 
 staging_dir="$(mktemp -d "${TMPDIR:-/tmp/}dogsc-build.XXXXXX")"
@@ -79,10 +85,12 @@ codesign --force --options runtime --entitlements Resources/DogSC.entitlements \
   --sign "$signing_identity" "$app"
 codesign --verify --deep --strict "$app"
 
-signature_details="$(codesign -dvvv "$app" 2>&1)"
-grep -F 'Authority=Apple Development:' <<< "$signature_details" >/dev/null
-grep -F 'flags=0x10000(runtime)' <<< "$signature_details" >/dev/null
-[[ "$(lipo -archs "$app/Contents/MacOS/DogSC")" = arm64 ]]
+if [[ "$signing_identity" != "-" ]]; then
+  signature_details="$(codesign -dvvv "$app" 2>&1)"
+  grep -F 'Authority=Apple Development:' <<< "$signature_details" >/dev/null
+  grep -F 'flags=0x10000(runtime)' <<< "$signature_details" >/dev/null
+fi
+[[ "$(lipo -archs "$app/Contents/MacOS/DogSC")" =~ (arm64|x86_64) ]]
 otool -l "$app/Contents/MacOS/DogSC" | grep -F '@executable_path/../Frameworks' >/dev/null
 
 # Check again after the build; never remove a bundle used by a running app.

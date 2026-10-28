@@ -34,11 +34,11 @@ public struct CameraCaptureResolution: Codable, Equatable, Hashable, Identifiabl
 
     public var resolutionLabel: String {
         switch (width, height) {
-        case (3840, 2160), (4096, 2160): "4K"
-        case (2560, 1440): "1440p"
-        case (1920, 1080): "1080p"
-        case (1280, 720): "720p"
-        default: "\(width)×\(height)"
+        case (3840, 2160), (4096, 2160): return "4K"
+        case (2560, 1440): return "1440p"
+        case (1920, 1080): return "1080p"
+        case (1280, 720): return "720p"
+        default: return "\(width)×\(height)"
         }
     }
 
@@ -143,9 +143,9 @@ public enum CaptureCodec: String, Codable, CaseIterable, Identifiable, Sendable 
 
     public var recordingLabel: String {
         switch self {
-        case .hevc: "HEVC（H.265，原生分辨率）"
-        case .h264: "H.264（兼容模式，最高 4K）"
-        case .proRes422: "ProRes 422（原生分辨率）"
+        case .hevc: return "HEVC（H.265，原生分辨率）"
+        case .h264: return "H.264（兼容模式，最高 4K）"
+        case .proRes422: return "ProRes 422（原生分辨率）"
         }
     }
 }
@@ -377,9 +377,9 @@ public struct FrameIntervalDiagnostics: Codable, Equatable, Sendable {
     public init(consuming intervals: inout [TimeInterval]) {
         intervals.removeAll { !$0.isFinite || $0 <= 0 }
         sampleCount = intervals.count
-        over25Milliseconds = intervals.count { $0 > 0.025 }
-        over33Milliseconds = intervals.count { $0 > (1.0 / 30.0) }
-        over50Milliseconds = intervals.count { $0 > 0.050 }
+        over25Milliseconds = intervals.filter { $0 > 0.025 }.count
+        over33Milliseconds = intervals.filter { $0 > (1.0 / 30.0) }.count
+        over50Milliseconds = intervals.filter { $0 > 0.050 }.count
 
         var currentRun = 0
         var longestRun = 0

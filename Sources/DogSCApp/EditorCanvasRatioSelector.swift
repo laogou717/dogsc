@@ -143,11 +143,12 @@ struct EditorCanvasRatioSelector: View {
 
     private func presetButton(_ ratio: CanvasAspectRatio) -> some View {
         let selected = selectedPreset == ratio
-        let aspect: CGFloat = switch ratio {
-        case .landscape: 16 / 9
-        case .standard: 4 / 3
-        case .cinema: 2.39
-        default: 1
+        let aspect: CGFloat
+        switch ratio {
+        case .landscape: aspect = 16 / 9
+        case .standard: aspect = 4 / 3
+        case .cinema: aspect = 2.39
+        default: aspect = 1
         }
         return Button {
             if ratio == .custom { editingCustom = true; return }

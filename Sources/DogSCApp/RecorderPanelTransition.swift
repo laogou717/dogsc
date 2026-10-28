@@ -30,8 +30,8 @@ final class RecorderPanelTransition {
             return
         }
         animate(window, to: 0, animated: true) { [weak self, weak window] in
-            guard let self, let window,
-                  revision == retiringRevision, !wantsVisible else { return }
+            guard let self = self, let window = window,
+                  self.revision == retiringRevision, !self.wantsVisible else { return }
             window.orderOut(nil)
             window.alphaValue = 1
         }

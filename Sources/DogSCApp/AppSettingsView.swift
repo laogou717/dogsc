@@ -14,21 +14,21 @@ enum AppSettingsSection: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .general: appLocalized("通用")
-        case .editor: appLocalized("编辑器")
-        case .recording: appLocalized("录制")
-        case .permissions: appLocalized("权限")
-        case .about: appLocalized("关于")
+        case .general: return appLocalized("通用")
+        case .editor: return appLocalized("编辑器")
+        case .recording: return appLocalized("录制")
+        case .permissions: return appLocalized("权限")
+        case .about: return appLocalized("关于")
         }
     }
 
     var icon: AppLineIcon.Kind {
         switch self {
-        case .general: .settings
-        case .editor: .sliders
-        case .recording: .record
-        case .permissions: .shield
-        case .about: .info
+        case .general: return .settings
+        case .editor: return .sliders
+        case .recording: return .record
+        case .permissions: return .shield
+        case .about: return .info
         }
     }
 }
@@ -285,9 +285,9 @@ struct AppSettingsView: View {
 
     private func status(for state: CapturePermissionState) -> SettingsPermissionStatus {
         switch state {
-        case .authorized: .granted
-        case .notDetermined: .askLater(state.label)
-        case .denied, .restricted: .missing(state.label)
+        case .authorized: return .granted
+        case .notDetermined: return .askLater(state.label)
+        case .denied, .restricted: return .missing(state.label)
         }
     }
 

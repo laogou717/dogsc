@@ -202,11 +202,11 @@ enum SystemWallpaperLibrary {
             guard fileManager.isReadableFile(atPath: normalized.path),
                   seen.insert("\(kind.rawValue):\(normalized.path)").inserted else { return }
             let stem = normalized.deletingPathExtension().lastPathComponent
-            let fallbackLabel: String = if kind == .screenSaverVideo,
-                                           UUID(uuidString: stem) != nil {
-                "本机屏保 · \(stem.prefix(4))"
+            let fallbackLabel: String
+            if kind == .screenSaverVideo, UUID(uuidString: stem) != nil {
+                fallbackLabel = "本机屏保 · \(stem.prefix(4))"
             } else {
-                stem
+                fallbackLabel = stem
             }
             let label = name ?? aerialNames[stem] ?? fallbackLabel
             let descriptor = wallpaperDescriptor(

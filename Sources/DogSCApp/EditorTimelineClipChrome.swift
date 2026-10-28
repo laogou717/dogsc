@@ -21,56 +21,56 @@ enum EditorTimelineClipEmphasis: Equatable {
 
     var strokeOpacity: Double {
         switch self {
-        case .idle: 0.08
-        case .hovered: 0.30
-        case .selected: 0.90
-        case .editing: 1
+        case .idle: return 0.08
+        case .hovered: return 0.30
+        case .selected: return 0.90
+        case .editing: return 1
         }
     }
 
     var strokeWidth: CGFloat {
         switch self {
-        case .idle: 0.65
-        case .hovered: 0.9
-        case .selected: 1.45
-        case .editing: 1.5
+        case .idle: return 0.65
+        case .hovered: return 0.9
+        case .selected: return 1.45
+        case .editing: return 1.5
         }
     }
 
     var handleOpacity: Double {
         switch self {
-        case .idle: 0
-        case .hovered, .selected, .editing: 1
+        case .idle: return 0
+        case .hovered, .selected, .editing: return 1
         }
     }
 
     /// Track-colour wash for effect clips (light appearance).
     var trackLightFillOpacity: Double {
         switch self {
-        case .idle: 0.26
-        case .hovered: 0.34
-        case .selected: 0.46
-        case .editing: 0.50
+        case .idle: return 0.26
+        case .hovered: return 0.34
+        case .selected: return 0.46
+        case .editing: return 0.50
         }
     }
 
     /// Track-colour wash for effect clips (dark appearance).
     var trackDarkFillOpacity: Double {
         switch self {
-        case .idle: 0.22
-        case .hovered: 0.30
-        case .selected: 0.40
-        case .editing: 0.44
+        case .idle: return 0.22
+        case .hovered: return 0.30
+        case .selected: return 0.40
+        case .editing: return 0.44
         }
     }
 
     /// The primary recording card stays neutral graphite.
     var primaryNeutralFillOpacity: Double {
         switch self {
-        case .idle: 0.035
-        case .hovered: 0.05
-        case .selected: 0.065
-        case .editing: 0.07
+        case .idle: return 0.035
+        case .hovered: return 0.05
+        case .selected: return 0.065
+        case .editing: return 0.07
         }
     }
 
@@ -118,11 +118,9 @@ extension View {
                     active ? ring : (tint ?? EditorTheme.chrome()),
                     lineWidth: active ? 1.5 : 0.75
                 )
-                // Only the ink fades; geometry and media stay at their exact
-                // edit positions, including selection changes during a cut.
-                .animation(.easeOut(duration: 0.14)) { border in
-                    border.opacity(active ? 1 : restOpacity)
-                }
+                .opacity(active ? 1 : restOpacity)
+                .animation(.easeOut(duration: 0.14), value: active)
+                .animation(.easeOut(duration: 0.14), value: restOpacity)
                 .allowsHitTesting(false)
         }
     }

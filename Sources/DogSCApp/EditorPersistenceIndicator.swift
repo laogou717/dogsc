@@ -15,28 +15,28 @@ enum EditorPersistenceBadgeState: CaseIterable, Hashable {
 
     var titleKey: String {
         switch self {
-        case .saved: "已保存"
-        case .saving: "正在保存"
-        case .editing: "编辑中"
-        case .failed: "保存失败"
+        case .saved: return "已保存"
+        case .saving: return "正在保存"
+        case .editing: return "编辑中"
+        case .failed: return "保存失败"
         }
     }
 
     var accessibilityKey: String {
         switch self {
-        case .saved: "项目已自动保存"
-        case .saving: "正在保存项目"
-        case .editing: "正在编辑项目"
-        case .failed: "查看自动保存失败原因"
+        case .saved: return "项目已自动保存"
+        case .saving: return "正在保存项目"
+        case .editing: return "正在编辑项目"
+        case .failed: return "查看自动保存失败原因"
         }
     }
 
     var identifier: String {
         switch self {
-        case .saved: "editor.persistence.saved"
-        case .saving: "editor.persistence.saving"
-        case .editing: "editor.persistence.editing"
-        case .failed: "editor.persistence.failed"
+        case .saved: return "editor.persistence.saved"
+        case .saving: return "editor.persistence.saving"
+        case .editing: return "editor.persistence.editing"
+        case .failed: return "editor.persistence.failed"
         }
     }
 }
