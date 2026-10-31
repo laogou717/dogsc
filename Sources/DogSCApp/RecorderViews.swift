@@ -186,6 +186,7 @@ struct SetupView: View {
 
 struct RecordingBar: View {
     @ObservedObject var model: AppModel
+    @Environment(\.recorderUsesNotchStyle) private var usesNotchStyle
     var onContentWidthChange: (CGFloat) -> Void = { _ in }
     @State private var pendingAction: RecordingBarAction?
     @State private var qualityWarningMonitor = RecordingQualityWarningMonitor()
@@ -194,10 +195,10 @@ struct RecordingBar: View {
         HStack(spacing: 0) {
             recordingStatus
             recordingActions
-            RecorderDragGrip()
+            if !usesNotchStyle { RecorderDragGrip() }
         }
-        .padding(.leading, 16).padding(.trailing, 6)
-        .frame(height: 48)
+        .padding(.leading, 16).padding(.trailing, usesNotchStyle ? 8 : 6)
+        .frame(height: usesNotchStyle ? 44 : 48)
         .fixedSize(horizontal: true, vertical: false)
         .foregroundStyle(RecorderStyle.ink)
         .accessibilityElement(children: .contain)

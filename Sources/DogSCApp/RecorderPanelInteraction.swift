@@ -82,6 +82,10 @@ final class RecorderPanelPointerRegion {
         // Keep the recipient stable until a native control or window drag
         // receives its mouse-up, even if the pointer leaves the island.
         guard NSEvent.pressedMouseButtons == 0 else { return }
+        if let regions = (window as? RecorderPanel)?.notchPointerRegions {
+            window.ignoresMouseEvents = !regions.contains { $0.contains(NSEvent.mouseLocation) }
+            return
+        }
         let point = islandView.convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
         let bounds = islandView.bounds
         let radius = min(bounds.width, bounds.height) / 2

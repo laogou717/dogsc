@@ -108,6 +108,7 @@ private struct RecorderIslandLayoutReporter {
 /// reserves/reclaims that canvas; SwiftUI remains the sole animation owner.
 struct RecorderMainWindowRoot: View {
     @ObservedObject var model: AppModel
+    @ObservedObject var notch: RecorderNotchState
     let phase: AppPhase
     let presentationRevision: UInt64
     var onWindowLayoutChange: (RecorderIslandLayout) -> Void = { _ in }
@@ -118,10 +119,78 @@ struct RecorderMainWindowRoot: View {
     @State private var layoutReporter: RecorderIslandLayoutReporter?
 
     var body: some View {
-        ZStack {
-            RecorderSurfaceShape(radius: islandSize.height / 2)
-                .frame(width: islandSize.width, height: islandSize.height)
+        Group {
+            if notch.isDocked {
+                notchIsland
+            } else {
+                floatingIsland
+            }
+        }
+    }
+
+    private var notchIsland: some View {
+        let size = RecorderNotchMetrics.expandedSize(contentSize: windowLayout.canvasSize,
+            notchWidth: notch.notchWidth, topInset: notch.topInset)
+        let surfaceSize = RecorderNotchMetrics.expandedSize(contentSize: islandSize,
+            notchWidth: notch.notchWidth, topInset: notch.topInset)
+        let collapsedSize = CGSize(width: notch.notchWidth,
+            height: notch.topInset + RecorderNotchMetrics.collapsedPeekHeight)
+        return ZStack(alignment: .top) {
+            RecorderNotchSurface(expandedSize: surfaceSize, collapsedSize: collapsedSize,
+                isExpanded: notch.isExpanded)
                 .allowsHitTesting(false)
+            floatingIsland
+                .environment(\.recorderUsesNotchStyle, true)
+                .padding(.top, notch.topInset + RecorderNotchMetrics.contentTopInset)
+                .opacity(notch.isExpanded ? 1 : 0)
+                .animation(RecorderNotchMotion.controls(appearing: notch.isExpanded),
+                    value: notch.isExpanded)
+                .allowsHitTesting(notch.isExpanded)
+                .accessibilityHidden(!notch.isExpanded)
+            Button(action: notch.reveal) {
+                VStack(spacing: 0) {
+                    Color.clear.frame(height: notch.topInset)
+                    Group {
+                        if phase == .recording {
+                            Circle().fill(RecorderStyle.recording).frame(width: 4, height: 4)
+                        } else {
+                            Capsule().fill(.white.opacity(0.22)).frame(width: 20, height: 1.5)
+                        }
+                    }
+                    .frame(height: RecorderNotchMetrics.collapsedPeekHeight)
+                }
+                .frame(width: notch.notchWidth)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(appLocalized("展开录制条"))
+            .accessibilityIdentifier("recorder.notch.reveal")
+            .opacity(notch.isExpanded ? 0 : 1)
+            .allowsHitTesting(!notch.isExpanded)
+            .accessibilityHidden(notch.isExpanded)
+        }
+        .frame(width: size.width, height: size.height, alignment: .top)
+        .mask(alignment: .top) {
+            RecorderNotchSurface(expandedSize: surfaceSize, collapsedSize: collapsedSize,
+                isExpanded: notch.isExpanded)
+        }
+        .environment(\.colorScheme, .dark)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(notch.isExpanded ? "recorder.notch.expanded" : "recorder.notch.collapsed")
+        .contextMenu {
+            Button(appLocalized("使用自由浮窗")) {
+                UserDefaults.standard.set(false, forKey: RecorderNotchPreference.enabledKey)
+            }
+        }
+    }
+
+    private var floatingIsland: some View {
+        ZStack {
+            if !notch.isDocked {
+                RecorderSurfaceShape(radius: islandSize.height / 2)
+                    .frame(width: islandSize.width, height: islandSize.height)
+                    .allowsHitTesting(false)
+            }
             // Keep entering and retiring controls inside the same animated
             // capsule as the surface, independent of their intrinsic sizes.
             ZStack {
@@ -159,18 +228,19 @@ struct RecorderMainWindowRoot: View {
                 }
             }
             .frame(width: islandSize.width, height: islandSize.height)
-            .clipShape(Capsule())
+            .clipShape(notch.isDocked ? AnyShape(Rectangle()) : AnyShape(Capsule()))
         }
         .background {
             RecorderIslandInteractionRegion()
                 .frame(width: islandSize.width, height: islandSize.height)
                 .allowsHitTesting(false)
         }
-        .contentShape(Capsule())
-        .modifier(RecorderSystemWindowDragModifier())
+        .contentShape(notch.isDocked ? AnyShape(Rectangle()) : AnyShape(Capsule()))
+        .modifier(RecorderSystemWindowDragModifier(enabled: !notch.isDocked))
         .animation(RecorderMotion.morph, value: islandSize)
         .animation(RecorderMotion.morph, value: phase)
-        .frame(width: windowLayout.canvasSize.width, height: windowLayout.canvasSize.height)
+        .frame(width: windowLayout.canvasSize.width, height: windowLayout.canvasSize.height,
+            alignment: notch.isDocked ? .top : .center)
         .animation(nil, value: windowLayout)
         .font(.appUI(.body))
         .appControlFocusAppearance()
@@ -192,7 +262,7 @@ struct RecorderMainWindowRoot: View {
                       size.width > 0, size.height > 0 else { return }
                 updateIslandSize(size)
             }
-            .transition(.recorderContent)
+            .transition(notch.isDocked ? .opacity : .recorderContent)
     }
 
     private func updateIslandSize(_ size: CGSize) {
@@ -268,9 +338,10 @@ extension AnyTransition {
 /// Only the island owns the official window gesture. Its transparent shadow
 /// canvas is drawing space, never a drag target.
 private struct RecorderSystemWindowDragModifier: ViewModifier {
+    var enabled = true
     @ViewBuilder
     func body(content: Content) -> some View {
-        if #available(macOS 15.0, *) {
+        if #available(macOS 15.0, *), enabled {
             content.gesture(WindowDragGesture())
         } else {
             content

@@ -1933,3 +1933,9 @@
 "编辑中" = "Editing";
 "项目已自动保存" = "Project Saved";
 "正在编辑项目" = "Editing Project";
+
+/* Notch hover recorder. */
+"展开录制条" = "Expand Recorder";
+"使用自由浮窗" = "Use Floating Recorder";
+"刘海悬停展开" = "Expand on Notch Hover";
+"鼠标移到屏幕顶部刘海时展开录制条，移开后自动收起；无刘海屏幕使用自由浮窗。" = "Hover over the camera notch to expand the recorder. Move away to collapse. Displays without a notch use the floating recorder.";

@@ -7,6 +7,7 @@ import SwiftUI
 /// lives behind the ellipsis.
 struct RecorderSetupSurface: View {
     @ObservedObject var model: AppModel
+    @Environment(\.recorderUsesNotchStyle) private var usesNotchStyle
     @AppStorage("recorder.capture-mode") private var storedMode = CaptureSource.display.rawValue
     @State private var rollsForward = true
 
@@ -14,37 +15,40 @@ struct RecorderSetupSurface: View {
         model.selectedCaptureSource ?? CaptureSource(rawValue: storedMode) ?? .display
     }
 
+    private var inputSize: CGFloat { usesNotchStyle ? 36 : 44 }
+    private var recordSize: CGFloat { usesNotchStyle ? 40 : 44 }
+
     var body: some View {
         HStack(spacing: 0) {
             wheel
                 .firstUseTourTarget("recorder.source", in: .recorder, highlight: .rounded(20))
 
             HStack(spacing: 0) {
-                RecorderPopoverButton(id: "microphone", title: "麦克风", width: 44, height: 44) {
+                RecorderPopoverButton(id: "microphone", title: "麦克风", width: inputSize, height: inputSize) {
                     RecorderMicrophoneGlyph(meter: model.microphoneInputLevel, enabled: model.configuration.recordsMicrophone)
                 } panel: { RecorderInputPopover(model: model, kind: .microphone) }
-                RecorderPopoverButton(id: "camera", title: "摄像头", width: 44, height: 44) {
+                RecorderPopoverButton(id: "camera", title: "摄像头", width: inputSize, height: inputSize) {
                     RecorderInputGlyph(on: "video.fill", off: "video.slash.fill", enabled: model.configuration.recordsCamera)
                 } panel: { RecorderInputPopover(model: model, kind: .camera) }
-                RecorderPopoverButton(id: "system-audio", title: "系统声音", width: 44, height: 44) {
+                RecorderPopoverButton(id: "system-audio", title: "系统声音", width: inputSize, height: inputSize) {
                     RecorderInputGlyph(on: "speaker.wave.2.fill", off: "speaker.slash.fill", enabled: model.configuration.recordsSystemAudio)
                 } panel: { RecorderInputPopover(model: model, kind: .systemAudio) }
             }
             .firstUseTourTarget("recorder.inputs", in: .recorder, highlight: .recorderInputs)
-            .padding(.leading, 6)
+            .padding(.leading, usesNotchStyle ? 4 : 6)
 
-            RecorderPopoverButton(id: "destination", title: "保存与录制配置", width: 44, height: 44, panelWidth: 300) {
+            RecorderPopoverButton(id: "destination", title: "保存与录制配置", width: inputSize, height: inputSize, panelWidth: 300) {
                 Image(systemName: "ellipsis").font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(RecorderStyle.muted)
-                    .frame(width: 44, height: 44)
+                    .frame(width: inputSize, height: inputSize)
             } panel: { RecorderSavePopover(model: model) }
             .firstUseTourTarget("recorder.save", in: .recorder, highlight: .rounded(22))
 
             recordButton.padding(.leading, 4)
-            RecorderDragGrip()
+            if !usesNotchStyle { RecorderDragGrip() }
         }
-        .padding(.horizontal, 8)
-        .frame(height: 56)
+        .padding(.horizontal, usesNotchStyle ? 4 : 8)
+        .frame(height: usesNotchStyle ? 48 : 56)
         .foregroundStyle(RecorderStyle.ink)
         .firstUseTour(.recorder, enabled: model.phase == .setup && !model.showsRequiredPermissionGate)
     }
@@ -65,9 +69,9 @@ struct RecorderSetupSurface: View {
             Image(systemName: "chevron.up.chevron.down").font(.system(size: 8, weight: .bold))
                 .foregroundStyle(RecorderStyle.faint)
         }
-        .padding(.leading, 14).padding(.trailing, 11)
-        .frame(height: 40)
-        .background(RecorderStyle.well, in: Capsule())
+        .padding(.leading, usesNotchStyle ? 10 : 14).padding(.trailing, usesNotchStyle ? 8 : 11)
+        .frame(height: usesNotchStyle ? 34 : 40)
+        .background(usesNotchStyle ? .clear : RecorderStyle.well, in: Capsule())
         .clipShape(Capsule())
         .overlay {
             RecorderModeWheelInput(label: appLocalized(Self.label(for: mode))) { step in roll(step) }
@@ -78,15 +82,16 @@ struct RecorderSetupSurface: View {
     private var recordButton: some View {
         RecorderNativeActionButton(accessibilityLabel: appLocalized("开始录制"),
             accessibilityIdentifier: RecorderCaptureSourceAccessibilityID.value(for: mode), isEnabled: true,
-            width: 44, height: 44, cornerRadius: 22, highlightOpacity: 0, action: {
+            width: recordSize, height: recordSize, cornerRadius: recordSize / 2, highlightOpacity: 0, action: {
                 RecorderPopoverPresenter.shared.dismiss()
                 model.selectCaptureSource(mode)
             }) {
             ZStack {
-                Circle().fill(RecorderStyle.recording).frame(width: 36, height: 36)
-                Circle().fill(.white).frame(width: 12, height: 12)
+                Circle().fill(RecorderStyle.recording)
+                    .frame(width: usesNotchStyle ? 32 : 36, height: usesNotchStyle ? 32 : 36)
+                Circle().fill(.white).frame(width: usesNotchStyle ? 11 : 12, height: usesNotchStyle ? 11 : 12)
             }
-            .frame(width: 44, height: 44)
+            .frame(width: recordSize, height: recordSize)
         }
     }
 

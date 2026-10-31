@@ -686,6 +686,8 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
     private let model: AppModel
     private let panel: RecorderPanel
     private let hostingView: RecorderHostingView<RecorderMainWindowRoot>
+    private let notchState: RecorderNotchState
+    private var notchController: RecorderNotchController!
     private var hasPositionedPanel = false
     private var currentPhase: AppPhase
     private var measuredWindowLayout: RecorderIslandLayout?
@@ -699,6 +701,8 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
     )
 
     init(model: AppModel) {
+        let notchState = RecorderNotchState()
+        self.notchState = notchState
         self.model = model
         currentPhase = model.phase
         let initialSize = RecorderPanelPolicy.contentSize(
@@ -709,6 +713,7 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
         hostingView = RecorderHostingView(
             rootView: RecorderMainWindowRoot(
                 model: model,
+                notch: notchState,
                 phase: model.phase,
                 presentationRevision: 0,
                 acceptsMeasurement: { false }
@@ -724,6 +729,10 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
         contentPresentationRevision &+= 1
         hostingView.rootView = makeRoot(for: model.phase)
         configurePanel(initialSize: initialSize)
+        notchController = RecorderNotchController(panel: panel, state: notchState) { [weak self] in
+            self?.notchConfigurationDidChange()
+        }
+        notchController.refreshConfiguration()
     }
 
     var window: NSPanel { panel }
@@ -734,7 +743,7 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
 
     private func makeRoot(for phase: AppPhase) -> RecorderMainWindowRoot {
         let revision = contentPresentationRevision
-        return RecorderMainWindowRoot(model: model, phase: phase,
+        return RecorderMainWindowRoot(model: model, notch: notchState, phase: phase,
             presentationRevision: revision,
             onWindowLayoutChange: { [weak self] layout in
                 self?.resizeContent(to: layout, for: phase, revision: revision)
@@ -756,13 +765,14 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
                 recordsMicrophone: model.configuration.recordsMicrophone) != nil,
               let layout = RecorderPanelPolicy.measuredWindowLayout(requested) else { return }
         measuredWindowLayout = layout
-        let destination = RecorderPanelPolicy.frame(
+        let destination = notchController?.windowFrame(for: layout.canvasSize,
+            placementSize: layout.placementSize) ?? RecorderPanelPolicy.frame(
             centeredOn: panel.frame, layout: layout,
             visibleFrame: panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
         )
         guard panel.frame != destination else { return }
-        panel.contentMinSize = layout.canvasSize
-        panel.contentMaxSize = layout.canvasSize
+        panel.contentMinSize = destination.size
+        panel.contentMaxSize = destination.size
         // Preserve the host, focus, press state and current screen. This runs
         // only for real content size changes, never for pointer drag updates.
         panel.setFrame(destination, display: true, animate: false)
@@ -796,17 +806,16 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
             for: phase,
             recordsMicrophone: model.configuration.recordsMicrophone
         ) else {
+            notchController.setVisible(false)
             transition.hide(panel, animated: false)
             return
         }
         let layout = measuredWindowLayout ?? .compact(fallbackSize)
-        let contentSize = layout.canvasSize
+        let contentSize = notchController.windowFrame(for: layout.canvasSize,
+            placementSize: layout.placementSize)?.size ?? layout.canvasSize
         let keepsAnimationCanvas = phaseChanged && hasPositionedPanel && panel.isVisible
 
-        panel.level = CaptureWindowLevelPolicy.level(for: .recorderPanel(
-            phase: phase,
-            selectionActive: selectionIsActive
-        ))
+        updatePanelLevel()
         // CaptureSurfaceFilter excludes this process's helper windows. Keep
         // the panel readable by other recorders throughout every phase.
         panel.sharingType = .readOnly
@@ -850,7 +859,8 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
             hasPositionedPanel = true
         }
 
-        let destination = RecorderPanelPolicy.frame(
+        let destination = notchController.windowFrame(for: layout.canvasSize,
+            placementSize: layout.placementSize) ?? RecorderPanelPolicy.frame(
             centeredOn: positionedFrame ?? panel.frame,
             layout: layout,
             visibleFrame: panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame
@@ -858,7 +868,8 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
 
         // Readiness updates are observed by the existing root. Replacing it
         // inside a zero-duration transaction interrupted press/selection state.
-        if phaseChanged || (phase != .recording && panel.frame.size != destination.size) {
+        if phaseChanged || (phase != .recording && (panel.frame.size != destination.size
+            || (notchState.isDocked && panel.frame != destination))) {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             NSAnimationContext.runAnimationGroup { context in
@@ -883,12 +894,14 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
             "phase=\(String(describing: phase), privacy: .public) frame=\(self.panel.frame.width, privacy: .public)x\(self.panel.frame.height, privacy: .public)"
         )
         guard !hidesSetupForSelection else {
+            notchController.setVisible(false)
             transition.hide(panel, animated: true)
             return
         }
         if phaseChanged || !panel.isVisible || panel.alphaValue < 1 {
             transition.show(panel, animated: true)
         }
+        notchController.setVisible(true)
         if phase == .setup, shouldActivateSetup {
             NSApplication.shared.activate(ignoringOtherApps: true)
             panel.makeKeyAndOrderFront(nil)
@@ -906,11 +919,9 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
         }
         selectionIsActive = active
         selectionSource = active ? source : nil
-        panel.level = CaptureWindowLevelPolicy.level(for: .recorderPanel(
-            phase: currentPhase,
-            selectionActive: active
-        ))
+        updatePanelLevel()
         if hidesSetupForSelection {
+            notchController.setVisible(false)
             RecorderPopoverPresenter.shared.dismiss()
             panel.makeFirstResponder(nil)
             transition.hide(panel, animated: true)
@@ -924,17 +935,21 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
 
     func hide() {
         FirstUseTourController.controller(for: .recorder).suspend()
+        notchController.setVisible(false)
         transition.hide(panel, animated: false)
     }
 
     func bringToFront() {
         guard currentPhase != .editor, !hidesSetupForSelection else { return }
         transition.show(panel, animated: !panel.isVisible)
+        notchController.setVisible(true)
+        notchController.reveal()
         NSApplication.shared.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
     }
 
     func shutdown() {
+        notchController.shutdown()
         RecorderPopoverPresenter.shared.dismiss()
         transition.hide(panel, animated: false)
         panel.setIslandInteractionView(nil)
@@ -974,14 +989,9 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
             phase: currentPhase,
             selectionActive: selectionIsActive
         ))
-        // A recorder HUD must keep one stable overlay identity while moving
-        // between displays with separate Spaces. This mirrors the camera HUD:
-        // the behavior is fixed at construction and never toggled while held.
-        panel.collectionBehavior = [
-            .canJoinAllSpaces,
-            .fullScreenAuxiliary,
-            .ignoresCycle,
-        ]
+        // Start with the floating HUD's Space behavior. Notch docking adds its
+        // desktop/Mission Control policy before the panel is first presented.
+        panel.collectionBehavior = RecorderPanelSpacePolicy.collectionBehavior(isDocked: false)
         panel.contentMinSize = initialSize
         panel.contentMaxSize = initialSize
         panel.delegate = self
@@ -990,6 +1000,7 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
     func windowDidMove(_ notification: Notification) {
         guard hasPositionedPanel, notification.object as? NSWindow === panel else { return }
         panel.refreshPointerInteraction()
+        guard !notchState.isDocked else { return }
         let savedFrame = measuredWindowLayout.map {
             RecorderPanelPolicy.frame(centeredOn: panel.frame,
                 contentSize: $0.placementSize, visibleFrame: nil)
@@ -999,10 +1010,42 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
             forKey: RecorderPanelPolicy.savedFrameKey
         )
     }
+
+    private func updatePanelLevel() {
+        let behavior = RecorderPanelSpacePolicy.collectionBehavior(isDocked: notchState.isDocked)
+        if panel.collectionBehavior != behavior {
+            panel.collectionBehavior = behavior
+        }
+        panel.level = notchState.isDocked
+            ? NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
+            : CaptureWindowLevelPolicy.level(for: .recorderPanel(
+                phase: currentPhase, selectionActive: selectionIsActive))
+        panel.hasShadow = !notchState.isDocked
+        panel.isMovable = !notchState.isDocked
+        panel.appearance = notchState.isDocked ? NSAppearance(named: .darkAqua) : nil
+    }
+
+    private func notchConfigurationDidChange() {
+        guard hasPositionedPanel,
+              let size = RecorderPanelPolicy.contentSize(for: currentPhase,
+                recordsMicrophone: model.configuration.recordsMicrophone) else { return }
+        if !notchState.isDocked {
+            RecorderPopoverPresenter.shared.dismiss()
+            if let saved = UserDefaults.standard.string(forKey: RecorderPanelPolicy.savedFrameKey) {
+                panel.setFrame(NSRectFromString(saved), display: false)
+            }
+        }
+        updatePanelLevel()
+        resizeContent(to: measuredWindowLayout ?? .compact(size), for: currentPhase,
+            revision: contentPresentationRevision)
+        notchController.setVisible(panel.isVisible && !hidesSetupForSelection)
+        if notchState.isDocked { notchController.reveal() }
+    }
 }
 
 final class RecorderPanel: NSPanel {
     var presentedPhase: AppPhase = .setup
+    var notchPointerRegions: [CGRect]?
     private lazy var pointerRegion = RecorderPanelPointerRegion(window: self)
 
     func setPointerInteractionEnabled(_ enabled: Bool) {

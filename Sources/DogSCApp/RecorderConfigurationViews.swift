@@ -199,6 +199,7 @@ struct RecorderSavePopover: View {
     @ObservedObject var model: AppModel
     @ObservedObject private var memo = RecorderMemoController.shared
     @State private var expandedQuality = false
+    @AppStorage(RecorderNotchPreference.enabledKey) private var notchHoverEnabled = true
     @Namespace private var codecSelection
     var body: some View {
         RecorderPopoverSurface(width: 300) {
@@ -271,6 +272,9 @@ struct RecorderSavePopover: View {
                     RecorderSaveToggleRow(title: "隐藏桌面文件", symbol: "menubar.dock.rectangle", isOn: Binding(get: { model.configuration.hidesDesktopFiles }, set: { model.setHidesDesktopFiles($0) }))
                     RecorderSaveToggleRow(title: "隐藏 Dock", symbol: "dock.rectangle", isOn: Binding(get: { model.configuration.hidesDock }, set: { model.setHidesDock($0) }))
                 }
+                rule
+                RecorderSaveToggleRow(title: "刘海悬停展开", symbol: "macbook", isOn: $notchHoverEnabled)
+                    .help(appLocalized("鼠标移到屏幕顶部刘海时展开录制条，移开后自动收起；无刘海屏幕使用自由浮窗。"))
                 rule
                 projectAction("打开项目…", symbol: "tray.full") { model.openProjectPicker() }
                 if !model.recentProjects.isEmpty {
