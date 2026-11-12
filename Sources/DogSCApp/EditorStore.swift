@@ -1283,6 +1283,14 @@ final class EditorStore: ObservableObject {
         try perform(ProjectCommand.removingZoom(id: id, from: project), actionName: actionName)
     }
 
+    /// Clears the whole zoom track as one undoable command.
+    func removeAllZooms(actionName: String? = nil) throws {
+        var timeline = project.timeline
+        timeline.zoomClips.removeAll()
+        guard let command = ProjectCommand.replacingTimeline(in: project, with: timeline) else { return }
+        try perform(command, actionName: actionName)
+    }
+
     func replaceZoom(_ clip: ZoomAnimationClip, actionName: String? = nil) throws {
         guard let command = try ProjectCommand.replacingZoom(id: clip.id, in: project, with: clip) else { return }
         try perform(command, actionName: actionName)

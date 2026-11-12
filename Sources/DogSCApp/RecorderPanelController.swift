@@ -343,6 +343,16 @@ final class DogSCApplicationDelegate: NSObject,
             ? .on : .off
         microphone.isEnabled = canChangeRecordingAudioDefaults
         menu.addItem(microphone)
+
+        let automaticZoom = NSMenuItem(
+            title: appLocalized("录制后自动生成缩放"),
+            action: #selector(toggleAutomaticZoomCreation(_:)),
+            keyEquivalent: ""
+        )
+        automaticZoom.target = self
+        automaticZoom.state = AppPreferences.isAutomaticZoomCreationEnabled
+            ? .on : .off
+        menu.addItem(automaticZoom)
         menu.addItem(.separator())
 
         let settings = NSMenuItem(
@@ -401,6 +411,15 @@ final class DogSCApplicationDelegate: NSObject,
         guard canChangeRecordingAudioDefaults else { return }
         let enabled = !AppPreferences.isDefaultMicrophoneRecordingEnabled
         model?.setDefaultMicrophoneRecordingEnabled(enabled)
+        sender.state = enabled ? .on : .off
+    }
+
+    @objc private func toggleAutomaticZoomCreation(_ sender: NSMenuItem) {
+        let enabled = !AppPreferences.isAutomaticZoomCreationEnabled
+        UserDefaults.standard.set(
+            enabled,
+            forKey: AppPreferences.automaticZoomCreationEnabledKey
+        )
         sender.state = enabled ? .on : .off
     }
 

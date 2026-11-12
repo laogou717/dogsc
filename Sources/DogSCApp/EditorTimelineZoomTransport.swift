@@ -105,6 +105,11 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                     } label: {
                         EditorSymbolLabel("删除缩放动画", systemImage: "trash")
                     }
+                    Button(role: .destructive) {
+                        removeAllZoomAnimations()
+                    } label: {
+                        EditorSymbolLabel("删除全部缩放", systemImage: "trash.slash")
+                    }
                 }
                 .onHover { hovering in
                     hoveredZoomID = hovering ? segment.id : (hoveredZoomID == segment.id ? nil : hoveredZoomID)
@@ -479,6 +484,21 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
         if hoveredZoomID == id {
             hoveredZoomID = nil
         }
+    }
+
+    func removeAllZoomAnimations() {
+        guard !editorStore.project.timeline.zoomClips.isEmpty else { return }
+        editorStore.cancelInteraction()
+        do {
+            try editorStore.removeAllZooms(actionName: "删除全部缩放")
+        } catch {
+            onError(error.localizedDescription)
+            return
+        }
+        if selectedZoomID != nil {
+            selectedZoomID = nil
+        }
+        hoveredZoomID = nil
     }
 
     func installDeleteKeyMonitor() {

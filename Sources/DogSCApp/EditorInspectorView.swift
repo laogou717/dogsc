@@ -1583,6 +1583,18 @@ struct EditorInspectorView: View {
                 .buttonStyle(.editorDestructive)
                 .appButtonKeyboardFocus(in: Capsule(style: .continuous))
                 .padding(.top, 4)
+
+                Button("删除全部缩放", role: .destructive) {
+                    do {
+                        try editorStore.removeAllZooms(actionName: "删除全部缩放")
+                    } catch {
+                        onError(error.localizedDescription)
+                    }
+                    selectedZoomID = nil
+                }
+                .buttonStyle(.editorDestructive)
+                .appButtonKeyboardFocus(in: Capsule(style: .continuous))
+                .help("删除全部缩放")
             } else if case .zoom = editorStore.selection {
                 EditorInspectorEmptyState(
                     title: "缩放片段已不存在",
