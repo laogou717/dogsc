@@ -1933,3 +1933,5 @@
 "编辑中" = "Editing";
 "项目已自动保存" = "Project Saved";
 "正在编辑项目" = "Editing Project";
+"删除全部缩放" = "Delete All Zooms";
+"录制后自动生成缩放" = "Auto-Create Zooms After Recording";

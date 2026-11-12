@@ -317,6 +317,8 @@ enum AppPreferences {
     static let exportCompletionSoundEnabledKey =
         "cn.laogou.dogsc.export-completion-sound-enabled"
     static let previewResolutionModeKey = "editor.previewResolutionMode"
+    static let automaticZoomCreationEnabledKey =
+        "capture.automatic-zoom.enabled"
     static let editorTimelineHoverPreviewEnabledKey =
         "editor.timeline.hover-preview-enabled"
     private static let editorTimelineTrackVisibilityPrefix =
@@ -382,6 +384,16 @@ enum AppPreferences {
             return true
         }
         return defaults.bool(forKey: exportCompletionSoundEnabledKey)
+    }
+
+    /// Whether a finished recording gets cursor-follow zoom clips planned for
+    /// it. On by default; turning it off leaves the zoom track empty.
+    static var isAutomaticZoomCreationEnabled: Bool {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: automaticZoomCreationEnabledKey) != nil else {
+            return true
+        }
+        return defaults.bool(forKey: automaticZoomCreationEnabledKey)
     }
 
     static var isTimelineHoverPreviewEnabled: Bool {

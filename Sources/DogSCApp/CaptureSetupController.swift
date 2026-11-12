@@ -212,7 +212,9 @@ final class CaptureSetupController: ObservableObject {
     @Published private(set) var availableScreenDevices: [CaptureDeviceInfo]
     @Published private(set) var isRefreshingWindows = false
     @Published private(set) var readiness: CaptureReadiness
-    @Published private(set) var automaticallyCreatesZooms = true
+    var automaticallyCreatesZooms: Bool {
+        AppPreferences.isAutomaticZoomCreationEnabled
+    }
 
     var onStartRequested: (() -> Void)?
     var onError: ((String?) -> Void)?
