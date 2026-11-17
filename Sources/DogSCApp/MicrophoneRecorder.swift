@@ -547,6 +547,18 @@ final class MicrophoneRecorder: NSObject,
         }
     }
 
+    private static func aacBitRate(sampleRate: Double, channels: Int) -> Int {
+        let preferred = channels > 1 ? 192_000 : 128_000
+        // Verified with CoreAudio: 16 kHz mono AAC accepts <= 48 kbps only.
+        let perChannelCap: Int
+        switch sampleRate {
+        case ..<24_000: perChannelCap = 32_000
+        case ..<32_000: perChannelCap = 64_000
+        default: return preferred
+        }
+        return min(preferred, perChannelCap * channels)
+    }
+
     private func createWriterLocked(from sampleBuffer: CMSampleBuffer) throws {
         dispatchPrecondition(condition: .onQueue(sessionQueue))
         guard let outputURL = recordingOutputURL,
@@ -567,7 +579,10 @@ final class MicrophoneRecorder: NSObject,
                 AVFormatIDKey: kAudioFormatMPEG4AAC,
                 AVSampleRateKey: sampleRate,
                 AVNumberOfChannelsKey: channels,
-                AVEncoderBitRateKey: channels > 1 ? 192_000 : 128_000,
+                // Low sample rates (e.g. 16 kHz Bluetooth HFP mics) reject AAC
+                // bit rates that are fine at 44.1/48 kHz, which surfaced as
+                // "cannot encode media". Cap the rate per channel by sample rate.
+                AVEncoderBitRateKey: Self.aacBitRate(sampleRate: sampleRate, channels: channels),
             ],
             sourceFormatHint: formatDescription
         )
