@@ -316,13 +316,20 @@ final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
                 AVVideoAllowFrameReorderingKey: false,
             ]
             if codec == .hevc {
-                // REC-003: AverageBitRate is only a soft target. The hardware
-                // encoder undershot a requested 130 Mbps to 9.45 Mbps in a
-                // real 5120x2666 recording, visibly softening small UI text
-                // even though the native pixel dimensions survived.
-                // Keep hardware real-time encoding, but make visual quality a
-                // first-class rate-control constraint instead of hoping that a
-                // high soft bitrate target will be consumed.
+                // REC-003: AverageBitRate is only a soft target. On Apple
+                // Silicon the quality hints below keep small UI text crisp.
+                //
+                // Intel (x86_64) + macOS 26: AVAssetWriterInput rejects BOTH
+                // kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality
+                // and kVTCompressionPropertyKey_Quality for hvc1 with
+                // NSInvalidArgumentException ("... not supported for video
+                // codec type hvc1"). That exception leaves the recording
+                // startup hanging forever at "waiting for first frame".
+                // Verified in isolation: the base HEVC compression dictionary
+                // (no quality hints) can startWriting and append frames fine,
+                // while adding either hint throws. Skip them on Intel; keep
+                // the Apple Silicon behaviour unchanged.
+                #if !arch(x86_64)
                 if #available(macOS 14.0, *) {
                     compression[
                         kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality
@@ -342,6 +349,7 @@ final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
                     // a quality constraint, not a lower-resolution substitute.
                     compression[kVTCompressionPropertyKey_Quality as String] = Float(0.90)
                 }
+                #endif
             }
             let encoderSpecification: [String: Any]
             if codec == .hevc {
@@ -573,10 +581,11 @@ final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
     }
 
     private func isCompleteScreenFrame(_ sampleBuffer: CMSampleBuffer) -> Bool {
-        guard let status = ScreenCaptureFrameMetadata.status(of: sampleBuffer) else {
-            return CMSampleBufferGetImageBuffer(sampleBuffer) != nil
-        }
-        return status == .complete
+        // The caller already guarantees the buffer is ready and carries an image.
+        // macOS 26 tags valid frames with statuses other than .complete
+        // (.screenUpdate, and in some cases .idle), so the enum must not gate
+        // writing. An encodable image buffer is the authoritative signal.
+        return CMSampleBufferGetImageBuffer(sampleBuffer) != nil
     }
 
     private func applyCaptureColorAttachments(to pixelBuffer: CVPixelBuffer) {
