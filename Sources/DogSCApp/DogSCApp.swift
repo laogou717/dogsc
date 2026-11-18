@@ -49,8 +49,8 @@ private struct DogSCModernApp: App {
         DogSCSettingsScene()
             // AppKit owns launch and Dock reopening. Settings is never a
             // default or restored main window, even with old saved state.
-            .defaultLaunchBehavior(.suppressed)
-            .restorationBehavior(.disabled)
+            .defaultLaunchBehavior(SceneLaunchBehavior.suppressed)
+            .restorationBehavior(SceneRestorationBehavior.disabled)
     }
 }
 
