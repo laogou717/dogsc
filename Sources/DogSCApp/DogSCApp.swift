@@ -20,6 +20,7 @@ private final class EditorFirstMouseHostingView<Content: View>: NSHostingView<Co
 enum DogSCApplication {
     @MainActor
     static func main() {
+        CrashDiagnostics.install()
         appLog("DogSC Application started", category: "Lifecycle")
         // Resolve the saved language before constructing any presentation.
         _ = AppLanguageSettings.shared
