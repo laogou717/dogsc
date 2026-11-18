@@ -160,8 +160,8 @@ public enum ScreenFrameStyle: String, CaseIterable, Codable, Identifiable, Senda
         switch self {
         case .devicePhone, .deviceTablet, .devicePhonePortrait,
              .devicePhoneLandscape, .deviceTabletPortrait,
-             .deviceTabletLandscape: true
-        case .none, .windowLight, .windowDark, .browserLight, .browserDark: false
+             .deviceTabletLandscape: return true
+        case .none, .windowLight, .windowDark, .browserLight, .browserDark: return false
         }
     }
 
@@ -241,9 +241,9 @@ public struct OpeningSequence: Codable, Equatable, Sendable {
     public func availableElements(hasCamera: Bool, hasOpeningSticker: Bool) -> [OpeningSequenceElement] {
         elementOrder.filter { element in
             switch element {
-            case .screen: true
-            case .camera: hasCamera
-            case .stickers: hasOpeningSticker
+            case .screen: return true
+            case .camera: return hasCamera
+            case .stickers: return hasOpeningSticker
             }
         }
     }
@@ -349,9 +349,9 @@ public enum DynamicBackgroundPreset: String, CaseIterable, Codable, Sendable, Id
     /// describe the current authored look more precisely.
     public var displayName: String {
         switch self {
-        case .cyberDriftGrid: "流金缓移网格"
-        case .starfieldDots: "暖星漫步点阵"
-        case .auroraFluid: "蓝白流体云幕"
+        case .cyberDriftGrid: return "流金缓移网格"
+        case .starfieldDots: return "暖星漫步点阵"
+        case .auroraFluid: return "蓝白流体云幕"
         }
     }
 }

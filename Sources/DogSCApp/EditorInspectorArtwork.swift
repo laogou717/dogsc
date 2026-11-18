@@ -434,23 +434,28 @@ struct EditorCanvasLayoutStage: View {
     var body: some View {
         EditorInspectorStage(height: height) {
             GeometryReader { proxy in
-                let margin = min(
-                    16 + (min(max(padding, 0), 360) / 360) * (proxy.size.height * 0.26),
+                let padNorm: CGFloat = CGFloat(min(max(padding, 0), 360) / 360)
+                let margin: CGFloat = min(
+                    16 + padNorm * (proxy.size.height * 0.26),
                     min(proxy.size.width, proxy.size.height) * 0.42
                 )
                 let screen = editorStageScreenSize(
                     in: CGSize(width: proxy.size.width - margin * 2, height: proxy.size.height - margin * 2),
                     image: image, widthFraction: 1, heightLimit: 1
                 )
+                let radNorm: CGFloat = CGFloat(min(max(cornerRadius, 0), 160) / 160)
+                let screenRadius: CGFloat = 4 + radNorm * 8
+                let strokeW: CGFloat = CGFloat(min(max(borderWidth, 0), 40)) * 0.35
+                let shadowOpacity: Double = 0.2 + 0.35 * min(max(shadowStrength, 0), 1)
                 EditorStageScreen(
                     image: image,
-                    radius: 4 + (min(max(cornerRadius, 0), 160) / 160) * 8
+                    radius: screenRadius
                 )
                 .overlay {
-                    RoundedRectangle(cornerRadius: 4 + (min(max(cornerRadius, 0), 160) / 160) * 8, style: .continuous)
-                        .strokeBorder(.white.opacity(0.9), lineWidth: min(max(borderWidth, 0), 40) * 0.35)
+                    RoundedRectangle(cornerRadius: screenRadius, style: .continuous)
+                        .strokeBorder(.white.opacity(0.9), lineWidth: strokeW)
                 }
-                .shadow(color: .black.opacity(0.2 + 0.35 * min(max(shadowStrength, 0), 1)), radius: 10, y: 5)
+                .shadow(color: .black.opacity(shadowOpacity), radius: 10, y: 5)
                 .frame(width: screen.width, height: screen.height)
                 .position(x: proxy.size.width / 2, y: proxy.size.height / 2 + 3)
             }

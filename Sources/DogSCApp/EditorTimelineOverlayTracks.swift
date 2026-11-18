@@ -264,67 +264,73 @@ extension EditorTimelineView {
         )
     }
 
+    @ViewBuilder
+    private func singleOverlayClipView(
+        clip: TimelineOverlayClip,
+        clipWidth: CGFloat,
+        emphasis: EditorTimelineClipEmphasis
+    ) -> some View {
+        RoundedRectangle(cornerRadius: 7, style: .continuous)
+            .fill(EditorConsole.Track.overlay.timelineSurface(emphasis))
+            .overlay(alignment: .leading) {
+                if clipWidth >= 52 {
+                    Text(clip.title)
+                        .font(.appUI(size: 10, weight: .semibold))
+                        .foregroundStyle(EditorConsole.Track.overlay.softInk)
+                        .lineLimit(1)
+                        .padding(.horizontal, 9)
+                }
+            }
+            .overlay {
+                if emphasis.showsHandles, clipWidth >= 22 {
+                    HStack(spacing: 0) {
+                        Capsule()
+                            .fill(EditorConsole.Track.overlay.stroke)
+                            .frame(width: 3, height: 13)
+                        Spacer(minLength: 0)
+                        Capsule()
+                            .fill(EditorConsole.Track.overlay.stroke)
+                            .frame(width: 3, height: 13)
+                    }
+                    .padding(.horizontal, 2)
+                    .opacity(emphasis.handleOpacity)
+                    .allowsHitTesting(false)
+                }
+            }
+            .editorTimelineClipChrome(cornerRadius: 7, emphasis: emphasis, tint: EditorConsole.Track.overlay.stroke)
+            .contentShape(Rectangle())
+            .frame(width: clipWidth, height: 30)
+    }
+
     private func overlayClipRow(
         clips: [TimelineOverlayClip],
         width: CGFloat,
         duration: TimeInterval
     ) -> some View {
         ZStack(alignment: .topLeading) {
-            // Match the zoom lane's layout contract: the lane itself owns the
-            // complete 0...duration coordinate space.  Offset clip views are
-            // only visual occupants of that space; their intrinsic widths must
-            // never determine the row origin or its gesture coordinates.
             Color.clear
                 .frame(width: width, height: 30)
                 .allowsHitTesting(false)
 
             ForEach(clips) { clip in
-                let x = CGFloat(clip.timing.startTime / max(duration, 0.001)) * width
-                let clipWidth = max(
-                    CGFloat(clip.timing.duration / max(duration, 0.001)) * width,
+                let safeDuration: Double = max(duration, 0.001)
+                let x: CGFloat = CGFloat(clip.timing.startTime / safeDuration) * width
+                let clipWidth: CGFloat = max(
+                    CGFloat(clip.timing.duration / safeDuration) * width,
                     3
                 )
                 let selection = clip.kind.selection(id: clip.id)
-                let isSelected = editorStore.selection == selection
-                let isHovered = hoveredOverlaySelection == selection
+                let isSelected: Bool = editorStore.selection == selection
+                let isHovered: Bool = hoveredOverlaySelection == selection
                 let emphasis = EditorTimelineClipEmphasis.resolve(
                     isEditing: overlayTimelineDrag?.id == clip.id
                         && overlayTimelineDrag?.kind == clip.kind,
                     isSelected: isSelected,
                     isHovered: isHovered
                 )
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(EditorConsole.Track.overlay.timelineSurface(emphasis))
-                    .overlay(alignment: .leading) {
-                        if clipWidth >= 52 {
-                            Text(clip.title)
-                                .font(.appUI(size: 10, weight: .semibold))
-                                .foregroundStyle(EditorConsole.Track.overlay.softInk)
-                                .lineLimit(1)
-                                .padding(.horizontal, 9)
-                        }
-                    }
-                    .overlay {
-                        if emphasis.showsHandles, clipWidth >= 22 {
-                            HStack(spacing: 0) {
-                                Capsule()
-                                    .fill(EditorConsole.Track.overlay.stroke)
-                                    .frame(width: 3, height: 13)
-                                Spacer(minLength: 0)
-                                Capsule()
-                                    .fill(EditorConsole.Track.overlay.stroke)
-                                    .frame(width: 3, height: 13)
-                            }
-                            .padding(.horizontal, 2)
-                            .opacity(emphasis.handleOpacity)
-                            .allowsHitTesting(false)
-                        }
-                    }
-                    .editorTimelineClipChrome(cornerRadius: 7, emphasis: emphasis, tint: EditorConsole.Track.overlay.stroke)
-                    .contentShape(Rectangle())
-                .frame(width: clipWidth, height: 30)
-                .editorClipDragFeedback(overlayTimelineDrag?.id == clip.id && overlayTimelineDrag?.kind == clip.kind
-                    && overlayTimelineDrag?.mode == .move)
+                singleOverlayClipView(clip: clip, clipWidth: clipWidth, emphasis: emphasis)
+                    .editorClipDragFeedback(overlayTimelineDrag?.id == clip.id && overlayTimelineDrag?.kind == clip.kind
+                        && overlayTimelineDrag?.mode == .move)
                 .offset(x: x)
                 .transition(.identity)
                 .zIndex(emphasis == .editing ? 4 : isSelected ? 3 : isHovered ? 1 : 0)

@@ -46,16 +46,16 @@ struct EditorTimelineMergedWaveform: View {
 /// Drawing consumes one immutable draft and the already-decoded peak buffers.
 /// There is no detached sampling task whose stale result can trail a trim,
 /// and no PCM decode or SwiftUI state publication inside the drawing pass.
-private struct WaveformEnvelopeCanvas: View, @MainActor Animatable, @MainActor Equatable {
+private struct WaveformEnvelopeCanvas: View, Animatable, Equatable {
     @State private var envelopeCache = WaveformEnvelopeCache()
 
-    static func == (lhs: Self, rhs: Self) -> Bool {
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.request == rhs.request && lhs.expansion == rhs.expansion
     }
 
     let request: WaveformEnvelopeRequest
     var expansion: CGFloat
-    var animatableData: CGFloat {
+    nonisolated var animatableData: CGFloat {
         get { expansion }
         set { expansion = newValue }
     }

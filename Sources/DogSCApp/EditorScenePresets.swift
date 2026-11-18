@@ -71,6 +71,63 @@ extension EditorView {
         }
     }
 
+    @ViewBuilder
+    private func scenePresetRow(_ preset: EditorStylePreset) -> some View {
+        VStack(spacing: 0) {
+            Button {
+                showsScenePresetPopover = false
+                requestScenePresetApplication(preset)
+            } label: {
+                HStack(spacing: 10) {
+                    EditorSymbol("rectangle.3.group", size: 14)
+                        .foregroundStyle(preset.id == activeStylePresetID ? EditorTheme.primaryText : EditorTheme.secondaryText)
+                        .frame(width: 28, height: 28)
+                        .background(
+                            preset.id == activeStylePresetID ? EditorTheme.selectionWash : EditorTheme.chrome(0.06),
+                            in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous)
+                        )
+                        .accessibilityHidden(true)
+                    Text(preset.name).lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 8)
+                    if preset.id == activeStylePresetID {
+                        EditorSymbol("checkmark", size: 14).foregroundStyle(EditorTheme.primaryText)
+                            .accessibilityHidden(true)
+                    }
+                }.font(.appUI(size: 13, weight: .medium))
+                    .padding(12).contentShape(Rectangle())
+            }.buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: EditorInterfaceRadius.control))
+                .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .accessibilityLabel(preset.name)
+                .accessibilityAddTraits(preset.id == activeStylePresetID ? .isSelected : [])
+            HStack(spacing: 8) {
+                Button {
+                    setDefaultScenePreset(defaultStylePresetID == preset.id ? nil : preset.id)
+                } label: {
+                    EditorSymbolLabel(appLocalized(defaultStylePresetID == preset.id ? "新录制默认" : "设为新录制默认"),
+                          systemImage: defaultStylePresetID == preset.id ? "checkmark.circle.fill" : "circle")
+                    .padding(.horizontal, 4).frame(height: 26)
+                }.buttonStyle(.editorToolbarPress)
+                .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                Spacer(minLength: 4)
+                Button {
+                    deleteStylePreset(preset)
+                } label: { EditorSymbol("trash", size: 14).frame(width: 26, height: 24) }
+                .buttonStyle(.editorToolbarPress).help(String(format: appLocalized("删除预设：%@"), preset.name))
+                .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .accessibilityLabel(String(format: appLocalized("删除预设：%@"), preset.name))
+            }
+            .font(.appUI(size: 11)).foregroundStyle(EditorTheme.popoverSecondaryText)
+            .padding(.horizontal, 8).padding(.bottom, 8)
+        }
+        .background(EditorTheme.cardFill,
+                    in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous)
+                .strokeBorder(EditorTheme.platinumAccent.opacity(preset.id == activeStylePresetID ? 1 : 0), lineWidth: 1.5)
+                .allowsHitTesting(false)
+        }
+    }
+
     private var scenePresetMenu: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -87,59 +144,7 @@ extension EditorView {
             ScrollView {
                 VStack(spacing: 8) {
                     ForEach(savedStylePresets) { preset in
-                        VStack(spacing: 0) {
-                            Button {
-                                showsScenePresetPopover = false
-                                requestScenePresetApplication(preset)
-                            } label: {
-                                HStack(spacing: 10) {
-                                    EditorSymbol("rectangle.3.group", size: 14)
-                                        .foregroundStyle(preset.id == activeStylePresetID ? EditorTheme.primaryText : EditorTheme.secondaryText)
-                                        .frame(width: 28, height: 28)
-                                        .background(
-                                            preset.id == activeStylePresetID ? EditorTheme.selectionWash : EditorTheme.chrome(0.06),
-                                            in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous)
-                                        )
-                                        .accessibilityHidden(true)
-                                    Text(preset.name).lineLimit(1).truncationMode(.middle)
-                                    Spacer(minLength: 8)
-                                    if preset.id == activeStylePresetID {
-                                        EditorSymbol("checkmark", size: 14).foregroundStyle(EditorTheme.primaryText)
-                                            .accessibilityHidden(true)
-                                    }
-                                }.font(.appUI(size: 13, weight: .medium))
-                                    .padding(12).contentShape(Rectangle())
-                            }.buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: EditorInterfaceRadius.control))
-                                .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                                .accessibilityLabel(preset.name)
-                                .accessibilityAddTraits(preset.id == activeStylePresetID ? .isSelected : [])
-                            HStack(spacing: 8) {
-                                Button {
-                                    setDefaultScenePreset(defaultStylePresetID == preset.id ? nil : preset.id)
-                                } label: {
-                                    EditorSymbolLabel(appLocalized(defaultStylePresetID == preset.id ? "新录制默认" : "设为新录制默认"),
-                                          systemImage: defaultStylePresetID == preset.id ? "checkmark.circle.fill" : "circle")
-                                    .padding(.horizontal, 4).frame(height: 26)
-                                }.buttonStyle(.editorToolbarPress)
-                                .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                                Spacer(minLength: 4)
-                                Button {
-                                    deleteStylePreset(preset)
-                                } label: { EditorSymbol("trash", size: 14).frame(width: 26, height: 24) }
-                                .buttonStyle(.editorToolbarPress).help(String(format: appLocalized("删除预设：%@"), preset.name))
-                                .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                                .accessibilityLabel(String(format: appLocalized("删除预设：%@"), preset.name))
-                            }
-                            .font(.appUI(size: 11)).foregroundStyle(EditorTheme.popoverSecondaryText)
-                            .padding(.horizontal, 8).padding(.bottom, 8)
-                        }
-                        .background(EditorTheme.cardFill,
-                                    in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous)
-                                .strokeBorder(EditorTheme.platinumAccent.opacity(preset.id == activeStylePresetID ? 1 : 0), lineWidth: 1.5)
-                                .allowsHitTesting(false)
-                        }
+                        scenePresetRow(preset)
                     }
                 }
             }
@@ -209,9 +214,10 @@ extension EditorView {
         )
         isSavingStylePreset = true
         stylePresetError = nil
+        let isSavingBinding = $isSavingStylePreset
         stylePresetTask = Task { @MainActor in
             var copiedAsset: ScenePresetBackgroundAsset?
-            defer { isSavingStylePreset = false }
+            defer { isSavingBinding.wrappedValue = false }
             do {
                 if project.canvas.backgroundSource.usesWallpaperMedia {
                     guard let sourceURL else { throw CocoaError(.fileReadNoSuchFile) }
@@ -253,9 +259,10 @@ extension EditorView {
             && activeStyleSnapshot?.backgroundAsset == preset.backgroundAsset
             ? activeStylePresetBackgroundSources : []
         isSavingStylePreset = true
+        let isSavingBinding = $isSavingStylePreset
         stylePresetTask = Task { @MainActor in
             var imported: ImportedProjectOverlayAsset?
-            defer { isSavingStylePreset = false }
+            defer { isSavingBinding.wrappedValue = false }
             do {
                 var background: BackgroundSource?
                 if let asset = preset.backgroundAsset, asset.isAvailable, let url = asset.url {

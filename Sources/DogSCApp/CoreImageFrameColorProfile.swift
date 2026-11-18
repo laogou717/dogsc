@@ -11,9 +11,9 @@ enum FrameColorProfileError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .unsupported:
-            "当前版本只支持桌面 SDR 成片。"
+            return "当前版本只支持桌面 SDR 成片。"
         case .unavailableColorSpace:
-            "系统无法建立 sRGB 色彩空间。"
+            return "系统无法建立 sRGB 色彩空间。"
         }
     }
 }
@@ -64,7 +64,7 @@ struct CoreImageFrameColorProfile: @unchecked Sendable {
     var avVideoColorProperties: [String: String] {
         [
             AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
-            AVVideoTransferFunctionKey: kCVImageBufferTransferFunction_sRGB as String,
+            AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
             AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2,
         ]
     }

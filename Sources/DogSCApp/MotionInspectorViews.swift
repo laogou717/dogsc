@@ -489,7 +489,7 @@ enum CameraTargetLayoutChoice: String, CaseIterable, Hashable {
     case fullscreen
 }
 
-struct MotionValueSlider: View {
+@MainActor struct MotionValueSlider: View {
     let title: String
     let value: Double
     let range: ClosedRange<Double>

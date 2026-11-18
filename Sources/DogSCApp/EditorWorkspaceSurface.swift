@@ -210,12 +210,12 @@ extension InspectorTab {
     /// Hand-drawn counterpart of `icon`, sharing the recorder's stroke.
     var lineIcon: AppLineIcon.Kind {
         switch self {
-        case .frame: .scene
-        case .opening: .opening
-        case .zoom: .zoom
-        case .cursor: .cursorMotion
-        case .camera: .camera
-        case .audio: .speaker
+        case .frame: return .scene
+        case .opening: return .opening
+        case .zoom: return .zoom
+        case .cursor: return .cursorMotion
+        case .camera: return .camera
+        case .audio: return .speaker
         }
     }
 }

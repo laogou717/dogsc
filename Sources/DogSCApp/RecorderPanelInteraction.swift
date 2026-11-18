@@ -13,6 +13,7 @@ struct RecorderDragGrip: View {
         .foregroundStyle(RecorderStyle.faint)
         .frame(width: 22, height: 40)
         .contentShape(Rectangle())
+        .overlay(RecorderWindowDragArea())
         .help(appLocalized("拖动录制条"))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(appLocalized("拖动录制条"))
@@ -33,6 +34,36 @@ struct RecorderDragGrip: View {
 /// to focus and its WindowDragGesture cannot start until the next attempt.
 final class RecorderHostingView<Content: View>: NSHostingView<Content> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+/// A deterministic drag target for the grip. SwiftUI's window drag gesture is
+/// the surface-wide path, but it is a no-op whenever anything shadows or
+/// intercepts it. Driving `performDrag` from AppKit keeps the grip working on
+/// every macOS version and matches how the memo and editor chrome are moved.
+struct RecorderWindowDragArea: NSViewRepresentable {
+    func makeNSView(context: Context) -> RecorderWindowDragView {
+        RecorderWindowDragView()
+    }
+
+    func updateNSView(_ view: RecorderWindowDragView, context: Context) {}
+}
+
+final class RecorderWindowDragView: NSView {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    // The window itself must not also start a background drag; this view owns
+    // the gesture once the press lands on the grip.
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .openHand)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let window else { return }
+        window.performDrag(with: event)
+    }
 }
 
 /// The window includes shadow drawing room, but only the visible island may

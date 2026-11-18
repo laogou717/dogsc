@@ -110,7 +110,9 @@ final class MicrophoneRecorder: NSObject,
     }
 
     func startMonitoring(deviceUniqueID: String? = nil) async throws {
+        appLog("MicrophoneRecorder.startMonitoring: deviceID=\(deviceUniqueID ?? "default")", category: "Microphone")
         guard await requestPermission() else {
+            appLog("MicrophoneRecorder.startMonitoring: permission DENIED", level: "ERROR", category: "Microphone")
             throw MicrophoneRecorderError.permissionDenied
         }
         try Task.checkCancellation()
@@ -137,8 +139,10 @@ final class MicrophoneRecorder: NSObject,
                         }
                         activity = .livePreview(requestID)
                         if !session.isRunning { session.startRunning() }
+                        appLog("MicrophoneRecorder.startMonitoring: session running successfully", category: "Microphone")
                         continuation.resume()
                     } catch {
+                        appLog("MicrophoneRecorder.startMonitoring: FAILED with error: \(error)", level: "ERROR", category: "Microphone")
                         continuation.resume(throwing: error)
                     }
                 }
@@ -237,7 +241,7 @@ final class MicrophoneRecorder: NSObject,
                         }
                         recordingOutputURL = outputURL
                         activity = .starting(requestID)
-                        startContinuation = (requestID, continuation)
+                        self.startContinuation = (requestID, continuation)
                         if !session.isRunning { session.startRunning() }
                         Self.logger.notice(
                             "microphone start requested device=\(deviceUniqueID ?? "automatic", privacy: .public)"
@@ -601,7 +605,7 @@ final class MicrophoneRecorder: NSObject,
         scheduleStopTimeoutLocked(requestID: requestID)
         writer.finishWriting { [weak self] in
             self?.sessionQueue.async { [weak self] in
-                guard let self else { return }
+                guard let self = self else { return }
                 guard let completedWriter = self.writer else {
                     self.completeStopLocked(
                         requestID: requestID,
@@ -749,31 +753,31 @@ final class MicrophoneRecorder: NSObject,
     private func scheduleStartTimeoutLocked(requestID: UUID) {
         dispatchPrecondition(condition: .onQueue(sessionQueue))
         sessionQueue.asyncAfter(deadline: .now() + 5) { [weak self] in
-            guard let self,
-                  case let .starting(activeRequestID) = activity,
+            guard let self = self else { return }
+            guard case let .starting(activeRequestID) = self.activity,
                   activeRequestID == requestID,
-                  let pending = startContinuation,
+                  let pending = self.startContinuation,
                   pending.0 == requestID else { return }
-            startContinuation = nil
+            self.startContinuation = nil
             pending.1.resume(
                 throwing: MicrophoneRecorderError.recordingFailed(
                     "5 秒内没有收到并写入首个有效音频样本"
                 )
             )
-            activity = .idle
-            if session.isRunning { session.stopRunning() }
-            resetRecordingStateLocked(cancelWriter: true)
+            self.activity = .idle
+            if self.session.isRunning { self.session.stopRunning() }
+            self.resetRecordingStateLocked(cancelWriter: true)
         }
     }
 
     private func scheduleStopTimeoutLocked(requestID: UUID) {
         dispatchPrecondition(condition: .onQueue(sessionQueue))
         sessionQueue.asyncAfter(deadline: .now() + 10) { [weak self] in
-            guard let self,
-                  case let .stopping(activeRequestID) = activity,
+            guard let self = self else { return }
+            guard case let .stopping(activeRequestID) = self.activity,
                   activeRequestID == requestID else { return }
-            writer?.cancelWriting()
-            completeStopLocked(
+            self.writer?.cancelWriting()
+            self.completeStopLocked(
                 requestID: requestID,
                 result: .failure(MicrophoneRecorderError.recordingFailed(
                     "10 秒内没有完成音频文件封装"

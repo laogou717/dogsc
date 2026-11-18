@@ -239,7 +239,7 @@ final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
     /// pixel conversion lifts the midtones and produces the observed grey look.
     private static let captureVideoColorProperties: [String: String] = [
         AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
-        AVVideoTransferFunctionKey: kCVImageBufferTransferFunction_sRGB as String,
+        AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
         AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2,
     ]
 
@@ -253,6 +253,7 @@ final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
         recordsSystemAudio: Bool,
         onTerminalFailure: @escaping (CaptureOutputTerminalEvent) -> Void
     ) throws {
+        appLog("CaptureOutput.init: url=\(outputURL.path), \(width)x\(height), codec=\(codec)", category: "CaptureOutput")
         self.run = run
         self.outputURL = outputURL
         self.targetFrameRate = frameRate
@@ -315,17 +316,26 @@ final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
                 AVVideoAllowFrameReorderingKey: false,
             ]
             if codec == .hevc {
-                // REC-003: AverageBitRate is only a soft target. The hardware
-                // encoder undershot a requested 130 Mbps to 9.45 Mbps in a
-                // real 5120x2666 recording, visibly softening small UI text
-                // even though the native pixel dimensions survived.
-                // Keep hardware real-time encoding, but make visual quality a
-                // first-class rate-control constraint instead of hoping that a
-                // high soft bitrate target will be consumed.
-                compression[
-                    kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality
-                        as String
-                ] = false
+                // REC-003: AverageBitRate is only a soft target. On Apple
+                // Silicon the quality hints below keep small UI text crisp.
+                //
+                // Intel (x86_64) + macOS 26: AVAssetWriterInput rejects BOTH
+                // kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality
+                // and kVTCompressionPropertyKey_Quality for hvc1 with
+                // NSInvalidArgumentException ("... not supported for video
+                // codec type hvc1"). That exception leaves the recording
+                // startup hanging forever at "waiting for first frame".
+                // Verified in isolation: the base HEVC compression dictionary
+                // (no quality hints) can startWriting and append frames fine,
+                // while adding either hint throws. Skip them on Intel; keep
+                // the Apple Silicon behaviour unchanged.
+                #if !arch(x86_64)
+                if #available(macOS 14.0, *) {
+                    compression[
+                        kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality
+                            as String
+                    ] = false
+                }
                 if #available(macOS 27.0, *) {
                     // Unlike the older generic Quality hint, CQF is explicitly
                     // defined to maintain consistent visual quality across
@@ -339,6 +349,7 @@ final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
                     // a quality constraint, not a lower-resolution substitute.
                     compression[kVTCompressionPropertyKey_Quality as String] = Float(0.90)
                 }
+                #endif
             }
             let encoderSpecification: [String: Any]
             if codec == .hevc {
@@ -393,6 +404,7 @@ final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
             }
             writer.add(audioInput)
         }
+        appLog("CaptureOutput.init: writer configured with videoInput and audioInput successfully", category: "CaptureOutput")
         let message = "capture writer started size=\(width)x\(height) "
             + "qualityTarget=\(frameRate.rawValue)fps "
             + "codec=\(codec.rawValue) "
@@ -408,6 +420,9 @@ final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
         guard sampleBuffer.isValid else { return }
         switch outputType {
         case .screen:
+            if receivedFrameCount < 5 {
+                appLog("stream(didOutputSampleBuffer:screen): frame arrived, pts=\(sampleBuffer.presentationTimeStamp.seconds)", category: "CaptureOutput")
+            }
             guard videoIngress.claim() else { return }
             let receivedAt = Date()
             let retained = RetainedSampleBuffer(value: sampleBuffer)
@@ -424,8 +439,6 @@ final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
                 guard !isFinishing, terminalError == nil else { return }
                 appendAudio(retained.value)
             }
-        case .microphone:
-            break
         @unknown default:
             break
         }
@@ -533,12 +546,14 @@ final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
         if videoInput.append(adjustedBuffer) {
             deliveredFrameCount += 1
             if firstFrameWallTime == nil, let wallTime = deliveredWallTimeCandidate {
+                appLog("appendVideo: FIRST FRAME DELIVERED! wallTime=\(wallTime)", category: "CaptureOutput")
                 firstFrameWallTime = wallTime
                 let continuation = firstFrameContinuation
                 firstFrameContinuation = nil
                 continuation?.resume(returning: wallTime)
             }
         } else if writer.status == .failed || writer.error != nil {
+            appLog("appendVideo: FAILED to append frame! writerStatus=\(writer.status.rawValue), error=\(String(describing: writer.error))", level: "ERROR", category: "CaptureOutput")
             writerDroppedFrameCount += 1
             // 记录失败帧的元数据：SCK 区域采集可能交付尺寸/格式异常的帧。
             let frameWidth = adjustedBuffer.imageBuffer.flatMap {
@@ -566,7 +581,11 @@ final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
     }
 
     private func isCompleteScreenFrame(_ sampleBuffer: CMSampleBuffer) -> Bool {
-        ScreenCaptureFrameMetadata.status(of: sampleBuffer) == .complete
+        // The caller already guarantees the buffer is ready and carries an image.
+        // macOS 26 tags valid frames with statuses other than .complete
+        // (.screenUpdate, and in some cases .idle), so the enum must not gate
+        // writing. An encodable image buffer is the authoritative signal.
+        return CMSampleBufferGetImageBuffer(sampleBuffer) != nil
     }
 
     private func applyCaptureColorAttachments(to pixelBuffer: CVPixelBuffer) {
@@ -936,17 +955,21 @@ final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
     }
 
     func waitForFirstFrame(timeout: TimeInterval = 5) async throws -> Date {
-        try await withCheckedThrowingContinuation { continuation in
+        appLog("waitForFirstFrame: entered with timeout=\(timeout)s", category: "CaptureOutput")
+        return try await withCheckedThrowingContinuation { continuation in
             writerQueue.async { [self] in
                 if let terminalError {
+                    appLog("waitForFirstFrame: terminalError already present: \(terminalError)", level: "ERROR", category: "CaptureOutput")
                     continuation.resume(throwing: terminalError)
                     return
                 }
                 if let firstFrameWallTime {
+                    appLog("waitForFirstFrame: firstFrameWallTime already available: \(firstFrameWallTime)", category: "CaptureOutput")
                     continuation.resume(returning: firstFrameWallTime)
                     return
                 }
                 guard firstFrameContinuation == nil else {
+                    appLog("waitForFirstFrame: already awaiting first frame", level: "WARN", category: "CaptureOutput")
                     continuation.resume(
                         throwing: ScreenRecorderError.recordingFailed("正在等待首帧")
                     )
@@ -956,6 +979,7 @@ final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
                 writerQueue.asyncAfter(deadline: .now() + timeout) { [self] in
                     guard let continuation = firstFrameContinuation else { return }
                     firstFrameContinuation = nil
+                    appLog("waitForFirstFrame: TIMEOUT after \(timeout)s! No frames received", level: "ERROR", category: "CaptureOutput")
                     continuation.resume(throwing: ScreenRecorderError.noFrames)
                 }
             }

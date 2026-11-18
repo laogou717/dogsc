@@ -115,9 +115,9 @@ struct EditorActionMenu<Label: View>: View {
     private var menuContentHeight: CGFloat {
         min(items.reduce(CGFloat(0)) { result, item in
             switch item.kind {
-            case .separator: result + 15
-            case .info: result + 40
-            case .action: result + (item.detail == nil ? 40 : 56)
+            case .separator: return result + 15
+            case .info: return result + 40
+            case .action: return result + (item.detail == nil ? 40 : 56)
             }
         }, 360)
     }

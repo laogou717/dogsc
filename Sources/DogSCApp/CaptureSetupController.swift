@@ -524,18 +524,18 @@ final class CaptureSetupController: ObservableObject {
             _ = self?.confirmWindow(window, token: token)
         }
         presenter.onWindowUnlock = { [weak self] token in
-            guard let self, selection.unlock(token: token) else { return }
-            var updated = configuration
-            clearTarget(for: .window, in: &updated)
-            publishConfiguration(updated)
-            onError?(nil)
+            guard let self = self, self.selection.unlock(token: token) else { return }
+            var updated = self.configuration
+            self.clearTarget(for: .window, in: &updated)
+            self.publishConfiguration(updated)
+            self.onError?(nil)
         }
         presenter.onWindowStart = { [weak self] window, token in
-            guard let self, confirmWindow(window, token: token) else { return }
-            if isDesignReview {
-                presenter.beginRecordingPresentation(configuration: configuration)
+            guard let self = self, self.confirmWindow(window, token: token) else { return }
+            if self.isDesignReview {
+                self.presenter.beginRecordingPresentation(configuration: self.configuration)
             } else {
-                requestStart(token: token)
+                self.requestStart(token: token)
             }
         }
         presenter.onWindowCancel = { [weak self] token in self?.cancel(token: token) }
@@ -698,10 +698,10 @@ final class CaptureSetupController: ObservableObject {
         focusRestorationGeneration &+= 1
         let generation = focusRestorationGeneration
         DispatchQueue.main.async { [weak self] in
-            guard let self,
-                  focusRestorationGeneration == generation,
-                  allowingSelectedSource || selectedSource == nil else { return }
-            onFocusRestorationRequested?()
+            guard let self = self,
+                  self.focusRestorationGeneration == generation,
+                  allowingSelectedSource || self.selectedSource == nil else { return }
+            self.onFocusRestorationRequested?()
         }
     }
 

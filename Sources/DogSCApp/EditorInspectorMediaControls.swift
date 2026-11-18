@@ -1094,48 +1094,53 @@ struct CursorClickEffectStylePicker: View {
         }
     }
 
+    @ViewBuilder
+    private func styleButton(for style: CursorClickEffectStyle) -> some View {
+        let isSelected = selection == style
+        let isPreviewing = hoveredStyle == style
+        Button {
+            onSelect(style)
+        } label: {
+            VStack(spacing: 4) {
+                CursorClickEffectPreviewGlyph(
+                    style: style,
+                    isActive: isPreviewing,
+                    color: isSelected ? (palette?.ink ?? EditorTheme.primaryText) : Color.secondary
+                )
+                Text(appLocalized(shortName(for: style)))
+                    .font(.appUI(size: 11, weight: isSelected ? .medium : .regular))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(
+                isSelected ? (palette?.ink ?? EditorTheme.primaryText) : Color.secondary
+            )
+            .frame(maxWidth: .infinity)
+            .frame(height: 50)
+            .background {
+                if isSelected {
+                    EditorRaisedThumb(shape: RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous))
+                } else {
+                    RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous)
+                        .fill(hoveredStyle == style ? EditorChoiceStyle.hover : .clear)
+                }
+            }
+            .animation(SpringMotion.settle, value: isSelected)
+        }
+        .buttonStyle(.editorThumbnail)
+        .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous))
+        .onHover { isHovering in
+            hoveredStyle = isHovering ? style : (hoveredStyle == style ? nil : hoveredStyle)
+        }
+        .help(appLocalized(style.displayName))
+        .accessibilityLabel("\(appLocalized("点击动画"))：\(appLocalized(style.displayName))")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 4) {
                 ForEach(CursorClickEffectStyle.allCases, id: \.self) { style in
-                    let isSelected = selection == style
-                    let isPreviewing = hoveredStyle == style
-                    Button {
-                        onSelect(style)
-                    } label: {
-                        VStack(spacing: 4) {
-                            CursorClickEffectPreviewGlyph(
-                                style: style,
-                                isActive: isPreviewing,
-                                color: isSelected ? (palette?.ink ?? EditorTheme.primaryText) : Color.secondary
-                            )
-                            Text(appLocalized(shortName(for: style)))
-                                .font(.appUI(size: 11, weight: isSelected ? .medium : .regular))
-                                .lineLimit(1)
-                        }
-                        .foregroundStyle(
-                            isSelected ? (palette?.ink ?? EditorTheme.primaryText) : Color.secondary
-                        )
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 50)
-                        .background {
-                            if isSelected {
-                                EditorRaisedThumb(shape: RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous))
-                            } else {
-                                RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous)
-                                    .fill(hoveredStyle == style ? EditorChoiceStyle.hover : .clear)
-                            }
-                        }
-                        .animation(SpringMotion.settle, value: isSelected)
-                    }
-                    .buttonStyle(.editorThumbnail)
-                    .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous))
-                    .onHover { isHovering in
-                        hoveredStyle = isHovering ? style : (hoveredStyle == style ? nil : hoveredStyle)
-                    }
-                    .help(appLocalized(style.displayName))
-                    .accessibilityLabel("\(appLocalized("点击动画"))：\(appLocalized(style.displayName))")
-                    .accessibilityAddTraits(isSelected ? .isSelected : [])
+                    styleButton(for: style)
                 }
             }
             .padding(3)
@@ -1178,46 +1183,65 @@ struct CursorClickEffectPreviewGlyph: View {
     }
 
     @ViewBuilder
-    private func glyph(phase: Double) -> some View {
-        let wave = (sin(phase * .pi * 2 - .pi / 2) + 1) / 2
-
-        switch style {
-        case .ripple:
-            let trailingPhase = (phase + 0.48).truncatingRemainder(dividingBy: 1)
-            ZStack {
-                rippleRing(phase: phase)
-                rippleRing(phase: trailingPhase)
-                Circle()
-                    .fill(color.opacity(0.92))
-                    .frame(width: 4, height: 4)
-            }
-
-        case .glow:
+    private func rippleGlyph(phase: Double) -> some View {
+        let trailingPhase: Double = (phase + 0.48).truncatingRemainder(dividingBy: 1)
+        ZStack {
+            rippleRing(phase: phase)
+            rippleRing(phase: trailingPhase)
             Circle()
-                .fill(color.opacity(0.34 + wave * 0.18))
-                .frame(width: 10, height: 10)
-                .scaleEffect(0.86 + wave * 0.22)
-                .shadow(color: color.opacity(0.64), radius: 2.5 + wave * 4)
+                .fill(color.opacity(0.92))
+                .frame(width: 4, height: 4)
+        }
+    }
 
-        case .pulse:
-            ZStack {
-                Circle()
-                    .stroke(color.opacity(0.78), lineWidth: 1.4)
-                    .scaleEffect(0.62 + wave * 0.48)
-                Circle()
-                    .stroke(color.opacity(0.42), lineWidth: 1.2)
-                    .scaleEffect(1.06 - wave * 0.32)
-            }
-            .frame(width: 16, height: 16)
+    @ViewBuilder
+    private func glowGlyph(wave: Double) -> some View {
+        let op: Double = 0.34 + wave * 0.18
+        let sc: CGFloat = CGFloat(0.86 + wave * 0.22)
+        let rad: CGFloat = CGFloat(2.5 + wave * 4)
+        Circle()
+            .fill(color.opacity(op))
+            .frame(width: 10, height: 10)
+            .scaleEffect(sc)
+            .shadow(color: color.opacity(0.64), radius: rad)
+    }
 
-        case .burst:
-            EditorSymbol("sparkles", size: 19.5)
-                .font(.appUI(size: 15, weight: .medium))
-                .foregroundStyle(color)
-                .rotationEffect(.degrees(-8 + wave * 16))
-                .scaleEffect(0.84 + wave * 0.24)
-                .shadow(color: color.opacity(0.44), radius: 1.5 + wave * 2)
+    @ViewBuilder
+    private func pulseGlyph(wave: Double) -> some View {
+        let sc1: CGFloat = CGFloat(0.62 + wave * 0.48)
+        let sc2: CGFloat = CGFloat(1.06 - wave * 0.32)
+        ZStack {
+            Circle()
+                .stroke(color.opacity(0.78), lineWidth: 1.4)
+                .scaleEffect(sc1)
+            Circle()
+                .stroke(color.opacity(0.42), lineWidth: 1.2)
+                .scaleEffect(sc2)
+        }
+        .frame(width: 16, height: 16)
+    }
 
+    @ViewBuilder
+    private func burstGlyph(wave: Double) -> some View {
+        let deg: Double = -8 + wave * 16
+        let sc: CGFloat = CGFloat(0.84 + wave * 0.24)
+        let rad: CGFloat = CGFloat(1.5 + wave * 2)
+        EditorSymbol("sparkles", size: 19.5)
+            .font(.appUI(size: 15, weight: .medium))
+            .foregroundStyle(color)
+            .rotationEffect(.degrees(deg))
+            .scaleEffect(sc)
+            .shadow(color: color.opacity(0.44), radius: rad)
+    }
+
+    @ViewBuilder
+    private func glyph(phase: Double) -> some View {
+        let wave: Double = (sin(phase * Double.pi * 2.0 - Double.pi / 2.0) + 1.0) / 2.0
+        switch style {
+        case .ripple: rippleGlyph(phase: phase)
+        case .glow: glowGlyph(wave: wave)
+        case .pulse: pulseGlyph(wave: wave)
+        case .burst: burstGlyph(wave: wave)
         case .none:
             EditorSymbol("slash.circle", size: 19.5)
                 .font(.appUI(size: 15, weight: .medium))

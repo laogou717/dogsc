@@ -103,11 +103,12 @@ private struct EditorSubpagePhase: ViewModifier {
 extension AnyTransition {
     static func editorSubpage(edge: Edge) -> AnyTransition {
         guard !RecorderMotion.reduces else { return .opacity }
-        let incoming: CGSize = switch edge {
-        case .leading: CGSize(width: -26, height: 0)
-        case .trailing: CGSize(width: 26, height: 0)
-        case .top: CGSize(width: 0, height: -14)
-        case .bottom: CGSize(width: 0, height: 14)
+        let incoming: CGSize
+        switch edge {
+        case .leading: incoming = CGSize(width: -26, height: 0)
+        case .trailing: incoming = CGSize(width: 26, height: 0)
+        case .top: incoming = CGSize(width: 0, height: -14)
+        case .bottom: incoming = CGSize(width: 0, height: 14)
         }
         let outgoing = CGSize(width: -incoming.width * 18 / 26,
                               height: -incoming.height * 18 / 26)
@@ -198,13 +199,13 @@ private struct RollingGlyph: View {
                     if let previous {
                         glyph(previous)
                             .offset(y: -travel * progress)
-                            .opacity(max(0, 1 - progress * 3))
-                            .blur(radius: 6 * progress)
+                            .opacity(Double(max(0, 1.0 - progress * 3.0)))
+                            .blur(radius: 6.0 * progress)
                     }
                     glyph(shown)
-                        .offset(y: travel * (1 - progress))
-                        .opacity(min(1, progress * 2.4))
-                        .blur(radius: 8 * (1 - min(progress, 1)))
+                        .offset(y: travel * (1.0 - progress))
+                        .opacity(Double(min(1.0, progress * 2.4)))
+                        .blur(radius: 8.0 * (1.0 - min(progress, 1.0)))
                 }
             }
         .onChange(of: character) { old, new in

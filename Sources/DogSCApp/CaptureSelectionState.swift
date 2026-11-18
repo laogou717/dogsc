@@ -24,10 +24,10 @@ enum CaptureSelectionTarget: Equatable, Sendable {
 
     var source: CaptureSource {
         switch self {
-        case .display: .display
-        case .window: .window
-        case .area: .area
-        case .device: .device
+        case .display: return .display
+        case .window: return .window
+        case .area: return .area
+        case .device: return .device
         }
     }
 
@@ -88,9 +88,9 @@ enum CaptureSelectionState: Equatable, Sendable {
     var session: CaptureSelectionSession? {
         switch self {
         case .idle:
-            nil
+            return nil
         case let .selecting(session), let .ready(session, _):
-            session
+            return session
         }
     }
 

@@ -50,111 +50,13 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
             }
 
             ForEach(visibleClipIndices.map { (index: $0, clip: clips[$0]) }, id: \.clip.id) { item in
-                let index = item.index
-                let clip = item.clip
-                let visibleStart = min(max(clip.timing.startTime, 0), duration)
-                let visibleEnd = min(max(clip.timing.endTime, visibleStart), duration)
-                let startX = CGFloat(visibleStart / max(duration, 0.001)) * width
-                let clipWidth = max(
-                    CGFloat((visibleEnd - visibleStart) / max(duration, 0.001)) * width,
-                    7
-                )
-                let selected = isMotionClipSelected(clip)
-                let hovered = hoveredMotionClip?.id == clip.id
-                    && hoveredMotionClip?.track == clip.track
-                let emphasis = EditorTimelineClipEmphasis.resolve(
-                    isEditing: isMotionClipEditing(clip),
-                    isSelected: selected,
-                    isHovered: hovered
-                )
-                // 片段全部保留圆角；首尾相接处在交界处画一条分割线，
-                // 既能看出是两段，又不会像两个圆角叠在一起那样脏。
-                let touchesPrevious = index > 0
-                    && clips[index - 1].timing.endTime
-                        >= clip.timing.startTime - ZoomInterpolator.adjacencyTolerance
-
-                if touchesPrevious {
-                    Rectangle()
-                        .fill(EditorTheme.panelSurface)
-                        .frame(width: 1.5, height: 24)
-                        .offset(x: startX - 0.75)
-                        .allowsHitTesting(false)
-                }
-
-                ZStack {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        // One flat wash of the lane's hue, like the zoom lane.
-                        .fill(motionTrackPalette(track).timelineSurface(emphasis))
-                        .overlay {
-                            if clipWidth > 72 {
-                                HStack(spacing: 5) {
-                                    EditorSymbol(track == .screen ? "move.3d" : "video.badge.ellipsis", size: 14)
-                                    Text("过渡 \(index + 1)")
-                                    if clipWidth > 116 {
-                                        Text(timelineTimestamp(clip.timing.duration))
-                                    }
-                                }
-                                .font(.appUI(size: 10, weight: .semibold))
-                                .foregroundStyle(motionTrackInk(track))
-                                .lineLimit(1)
-                                .padding(.horizontal, 9)
-                            }
-                        }
-                        .editorTimelineClipChrome(cornerRadius: 6, emphasis: emphasis, tint: motionTrackPalette(track).stroke)
-
-                    if emphasis.showsHandles {
-                        HStack(spacing: 0) {
-                            motionResizeHandle(leading: true, track: track)
-                            Spacer(minLength: 0)
-                            motionResizeHandle(leading: false, track: track)
-                        }
-                        .padding(.horizontal, 0.5)
-                        .opacity(emphasis.handleOpacity)
-                        .allowsHitTesting(false)
-                    }
-                }
-                .frame(width: clipWidth, height: 36)
-                .editorClipDragFeedback(motionTrackDrag == .move(clip.id) && motionGestureOrigin?.clip.track == clip.track)
-                .offset(x: startX)
-                .transition(.identity)
-                .zIndex(emphasis == .editing ? 4 : selected ? 3 : hovered ? 1 : 0)
-                .contentShape(Rectangle())
-                .contextMenu {
-                    clipClipboardMenu(for: track == .screen ? .screenMotion(clip.id) : .cameraMotion(clip.id))
-                    Divider()
-                    Button(role: .destructive) {
-                        removeMotionClip(clip)
-                    } label: {
-                        EditorSymbolLabel("删除动画", systemImage: "trash")
-                    }
-                }
-                .onHover { hovering in
-                    if hovering {
-                        hoveredMotionClip = clip
-                    } else if hoveredMotionClip?.id == clip.id,
-                              hoveredMotionClip?.track == clip.track {
-                        hoveredMotionClip = nil
-                    }
-                }
-                .accessibilityElement(children: .ignore)
-                .help("单击选中；拖动移动过渡；拖两端调整时长；右键可删除")
-                .accessibilityLabel(String(format: appLocalized(track == .screen ? "屏幕 3D %d" : "摄像运动 %d"), index + 1))
-                .accessibilityValue(
-                    String(format: appLocalized("%@ 至 %@"),
-                           timelineTimestamp(clip.timing.startTime), timelineTimestamp(clip.timing.endTime))
-                )
-                .accessibilityAddTraits(
-                    selected ? [.isButton, .isSelected] : .isButton
-                )
-                .accessibilityAction {
-                    activateTimelineSelection(
-                        clip.track == .screen
-                            ? .screenMotion(clip.id)
-                            : .cameraMotion(clip.id)
-                    )
-                }
-                .accessibilityIdentifier(
-                    "editor.timeline.motion.\(track == .screen ? "screen" : "camera").\(clip.id.uuidString)"
+                motionClipItemRow(
+                    index: item.index,
+                    clip: item.clip,
+                    clips: clips,
+                    track: track,
+                    width: width,
+                    duration: duration
                 )
             }
 
@@ -205,6 +107,120 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
         }
     }
 
+    @ViewBuilder
+    private func motionClipItemRow(
+        index: Int,
+        clip: EditorMotionTimelineClip,
+        clips: [EditorMotionTimelineClip],
+        track: EditorMotionTimelineTrack,
+        width: CGFloat,
+        duration: TimeInterval
+    ) -> some View {
+        let visibleStart = min(max(clip.timing.startTime, 0), duration)
+        let visibleEnd = min(max(clip.timing.endTime, visibleStart), duration)
+        let startX = CGFloat(visibleStart / max(duration, 0.001)) * width
+        let clipWidth = max(
+            CGFloat((visibleEnd - visibleStart) / max(duration, 0.001)) * width,
+            7
+        )
+        let selected = isMotionClipSelected(clip)
+        let hovered = hoveredMotionClip?.id == clip.id
+            && hoveredMotionClip?.track == clip.track
+        let emphasis = EditorTimelineClipEmphasis.resolve(
+            isEditing: isMotionClipEditing(clip),
+            isSelected: selected,
+            isHovered: hovered
+        )
+        let touchesPrevious = index > 0
+            && clips[index - 1].timing.endTime
+                >= clip.timing.startTime - ZoomInterpolator.adjacencyTolerance
+
+        Group {
+            if touchesPrevious {
+                Rectangle()
+                    .fill(EditorTheme.panelSurface)
+                    .frame(width: 1.5, height: 24)
+                    .offset(x: startX - 0.75)
+                    .allowsHitTesting(false)
+            }
+
+            ZStack {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(motionTrackPalette(track).timelineSurface(emphasis))
+                    .overlay {
+                        if clipWidth > 72 {
+                            HStack(spacing: 5) {
+                                EditorSymbol(track == .screen ? "move.3d" : "video.badge.ellipsis", size: 14)
+                                Text("过渡 \(index + 1)")
+                                if clipWidth > 116 {
+                                    Text(timelineTimestamp(clip.timing.duration))
+                                }
+                            }
+                            .font(.appUI(size: 10, weight: .semibold))
+                            .foregroundStyle(motionTrackInk(track))
+                            .lineLimit(1)
+                            .padding(.horizontal, 9)
+                        }
+                    }
+                    .editorTimelineClipChrome(cornerRadius: 6, emphasis: emphasis, tint: motionTrackPalette(track).stroke)
+
+                if emphasis.showsHandles {
+                    HStack(spacing: 0) {
+                        motionResizeHandle(leading: true, track: track)
+                        Spacer(minLength: 0)
+                        motionResizeHandle(leading: false, track: track)
+                    }
+                    .padding(.horizontal, 0.5)
+                    .opacity(emphasis.handleOpacity)
+                    .allowsHitTesting(false)
+                }
+            }
+            .frame(width: clipWidth, height: 36)
+            .editorClipDragFeedback(motionTrackDrag == .move(clip.id) && motionGestureOrigin?.clip.track == clip.track)
+            .offset(x: startX)
+            .transition(.identity)
+            .zIndex(emphasis == .editing ? 4 : selected ? 3 : hovered ? 1 : 0)
+            .contentShape(Rectangle())
+            .contextMenu {
+                clipClipboardMenu(for: track == .screen ? .screenMotion(clip.id) : .cameraMotion(clip.id))
+                Divider()
+                Button(role: .destructive) {
+                    removeMotionClip(clip)
+                } label: {
+                    EditorSymbolLabel("删除动画", systemImage: "trash")
+                }
+            }
+            .onHover { hovering in
+                if hovering {
+                    hoveredMotionClip = clip
+                } else if hoveredMotionClip?.id == clip.id,
+                          hoveredMotionClip?.track == clip.track {
+                    hoveredMotionClip = nil
+                }
+            }
+            .accessibilityElement(children: .ignore)
+            .help("单击选中；拖动移动过渡；拖两端调整时长；右键可删除")
+            .accessibilityLabel(String(format: appLocalized(track == .screen ? "屏幕 3D %d" : "摄像运动 %d"), index + 1))
+            .accessibilityValue(
+                String(format: appLocalized("%@ 至 %@"),
+                       timelineTimestamp(clip.timing.startTime), timelineTimestamp(clip.timing.endTime))
+            )
+            .accessibilityAddTraits(
+                selected ? [.isButton, .isSelected] : .isButton
+            )
+            .accessibilityAction {
+                activateTimelineSelection(
+                    clip.track == .screen
+                        ? .screenMotion(clip.id)
+                        : .cameraMotion(clip.id)
+                )
+            }
+            .accessibilityIdentifier(
+                "editor.timeline.motion.\(track == .screen ? "screen" : "camera").\(clip.id.uuidString)"
+            )
+        }
+    }
+
     private func motionRetainedClipIndices(
         for track: EditorMotionTimelineTrack
     ) -> [Int] {
@@ -235,8 +251,8 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
 
     func motionTrackPalette(_ track: EditorMotionTimelineTrack) -> EditorConsolePalette {
         switch track {
-        case .screen: EditorConsole.Track.screenMotion
-        case .camera: EditorConsole.Track.cameraMotion
+        case .screen: return EditorConsole.Track.screenMotion
+        case .camera: return EditorConsole.Track.cameraMotion
         }
     }
 

@@ -156,6 +156,13 @@ final class CameraPreviewWindowController {
     private var sourceAspectRatio: CGFloat?
     private var sourcePixelSize: CGSize?
     private var shapeObserver: NSObjectProtocol?
+    private var moveObserver: NSObjectProtocol?
+
+    /// Where the user last dropped the bubble, as a fraction of the visible
+    /// screen. Storing the ratio keeps the spot meaningful when the display or
+    /// Dock changes between takes.
+    private static let positionXKey = "recording.camera-bubble-x"
+    private static let positionYKey = "recording.camera-bubble-y"
 
     init(session: AVCaptureSession) {
         self.session = session
@@ -166,6 +173,17 @@ final class CameraPreviewWindowController {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.applyPreferredShapeToPanel()
+            }
+        }
+        moveObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didMoveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let window = notification.object as? NSWindow else { return }
+            MainActor.assumeIsolated {
+                guard let self, window === self.panel, self.hasPositionedPanel else { return }
+                self.rememberPosition(of: window)
             }
         }
     }
@@ -329,20 +347,61 @@ final class CameraPreviewWindowController {
         }
     }
 
+    /// The bubble is a guest on the recorded screen, so it parks in the
+    /// bottom-right corner instead of sitting in the middle of the right edge
+    /// where it covered the content being filmed. Once the user drags it, the
+    /// new spot is remembered for the next take.
     private func position(_ panel: NSPanel) {
-        let recorderScreen = NSApplication.shared.windows.first(where: {
-            $0.identifier == recorderMainWindowIdentifier
-        })?.screen
-        guard let visibleFrame = recorderScreen?.visibleFrame
-            ?? NSScreen.main?.visibleFrame
-            ?? NSScreen.screens.first?.visibleFrame
-        else { return }
+        guard let visibleFrame = recorderVisibleFrame() else { return }
+        let inset: CGFloat = 24
+        let edge: CGFloat = 8
         var frame = panel.frame
-        frame.origin = CGPoint(
-            x: visibleFrame.maxX - frame.width - 24,
-            y: visibleFrame.midY - frame.height / 2
+        let defaults = UserDefaults.standard
+        if defaults.object(forKey: Self.positionXKey) != nil,
+           defaults.object(forKey: Self.positionYKey) != nil {
+            let ratioX = CGFloat(defaults.double(forKey: Self.positionXKey))
+            let ratioY = CGFloat(defaults.double(forKey: Self.positionYKey))
+            frame.origin = CGPoint(
+                x: visibleFrame.minX + ratioX * max(visibleFrame.width - frame.width, 0),
+                y: visibleFrame.minY + ratioY * max(visibleFrame.height - frame.height, 0)
+            )
+        } else {
+            frame.origin = CGPoint(
+                x: visibleFrame.maxX - frame.width - inset,
+                y: visibleFrame.minY + inset
+            )
+        }
+        frame.origin.x = min(
+            max(frame.origin.x, visibleFrame.minX + edge),
+            visibleFrame.maxX - frame.width - edge
+        )
+        frame.origin.y = min(
+            max(frame.origin.y, visibleFrame.minY + edge),
+            visibleFrame.maxY - frame.height - edge
         )
         panel.setFrame(frame, display: false)
+    }
+
+    private func recorderVisibleFrame() -> CGRect? {
+        NSApplication.shared.windows.first(where: {
+            $0.identifier == recorderMainWindowIdentifier
+        })?.screen?.visibleFrame
+            ?? NSScreen.main?.visibleFrame
+            ?? NSScreen.screens.first?.visibleFrame
+    }
+
+    private func rememberPosition(of panel: NSWindow) {
+        guard let visibleFrame = (panel.screen ?? NSScreen.main)?.visibleFrame else { return }
+        let spanX = max(visibleFrame.width - panel.frame.width, 1)
+        let spanY = max(visibleFrame.height - panel.frame.height, 1)
+        UserDefaults.standard.set(
+            Double((panel.frame.minX - visibleFrame.minX) / spanX),
+            forKey: Self.positionXKey
+        )
+        UserDefaults.standard.set(
+            Double((panel.frame.minY - visibleFrame.minY) / spanY),
+            forKey: Self.positionYKey
+        )
     }
 }
 

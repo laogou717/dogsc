@@ -73,9 +73,9 @@ extension EditorInspectorView {
                         options: [MosaicTransitionStyle.none, MosaicTransitionStyle.linear, MosaicTransitionStyle.smooth],
                         title: {
                             switch $0 {
-                            case .none: "无"
-                            case .linear: "线性"
-                            case .smooth: "平滑"
+                            case .none: return "无"
+                            case .linear: return "线性"
+                            case .smooth: return "平滑"
                             }
                         },
                         selection: mosaicBinding(
@@ -487,17 +487,17 @@ extension EditorInspectorView {
 
     func stickerAnimationShortLabel(_ preset: StickerAnimationPreset) -> String {
         switch preset {
-        case .none: "无"
-        case .fade: "淡入"
-        case .pop: "弹出"
-        case .slideLeft: "从左"
-        case .slideRight: "从右"
-        case .slideUp: "从上"
-        case .slideDown: "从下"
-        case .slideTopLeft: "左上"
-        case .slideTopRight: "右上"
-        case .slideBottomLeft: "左下"
-        case .slideBottomRight: "右下"
+        case .none: return "无"
+        case .fade: return "淡入"
+        case .pop: return "弹出"
+        case .slideLeft: return "从左"
+        case .slideRight: return "从右"
+        case .slideUp: return "从上"
+        case .slideDown: return "从下"
+        case .slideTopLeft: return "左上"
+        case .slideTopRight: return "右上"
+        case .slideBottomLeft: return "左下"
+        case .slideBottomRight: return "右下"
         }
     }
 
@@ -520,17 +520,17 @@ extension EditorInspectorView {
 
     func stickerAnimationSymbol(_ preset: StickerAnimationPreset) -> String {
         switch preset {
-        case .none: "minus"
-        case .fade: "circle.dotted"
-        case .pop: "sparkles"
-        case .slideLeft: "arrow.right"
-        case .slideRight: "arrow.left"
-        case .slideUp: "arrow.down"
-        case .slideDown: "arrow.up"
-        case .slideTopLeft: "arrow.down.right"
-        case .slideTopRight: "arrow.down.left"
-        case .slideBottomLeft: "arrow.up.right"
-        case .slideBottomRight: "arrow.up.left"
+        case .none: return "minus"
+        case .fade: return "circle.dotted"
+        case .pop: return "sparkles"
+        case .slideLeft: return "arrow.right"
+        case .slideRight: return "arrow.left"
+        case .slideUp: return "arrow.down"
+        case .slideDown: return "arrow.up"
+        case .slideTopLeft: return "arrow.down.right"
+        case .slideTopRight: return "arrow.down.left"
+        case .slideBottomLeft: return "arrow.up.right"
+        case .slideBottomRight: return "arrow.up.left"
         }
     }
 
@@ -625,11 +625,12 @@ extension EditorInspectorView {
         guard let source = orderedIDs.firstIndex(of: id), orderedIDs.count > 1 else {
             return
         }
-        let target: Int = switch move {
-        case .backward: max(source - 1, 0)
-        case .forward: min(source + 1, orderedIDs.count - 1)
-        case .bottom: 0
-        case .top: orderedIDs.count - 1
+        let target: Int
+        switch move {
+        case .backward: target = max(source - 1, 0)
+        case .forward: target = min(source + 1, orderedIDs.count - 1)
+        case .bottom: target = 0
+        case .top: target = orderedIDs.count - 1
         }
         guard target != source else { return }
         orderedIDs.remove(at: source)

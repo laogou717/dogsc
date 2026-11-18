@@ -80,10 +80,10 @@ struct EditorInspectorTabBar: View {
 
     private func isAvailable(_ tab: InspectorTab) -> Bool {
         switch tab {
-        case .camera: cameraAvailable
-        case .audio: audioAvailable
-        case .cursor: cursorAvailable
-        case .frame, .opening, .zoom: true
+        case .camera: return cameraAvailable
+        case .audio: return audioAvailable
+        case .cursor: return cursorAvailable
+        case .frame, .opening, .zoom: return true
         }
     }
 

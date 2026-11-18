@@ -4,7 +4,100 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 extension EditorTimelineView {
-func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
+    @ViewBuilder
+    private func zoomSegmentItem(
+        index: Int,
+        segment: TimelineZoomSegment,
+        duration: TimeInterval,
+        width: CGFloat
+    ) -> some View {
+        let startX = CGFloat(segment.startTime / max(duration, 0.001)) * width
+        let segmentWidth = max(
+            CGFloat((segment.endTime - segment.startTime) / max(duration, 0.001)) * width,
+            14
+        )
+        let originTitle = appLocalized(segment.origin == .manual ? "手动" : "自动")
+        let accessibilityValue = String(
+            format: appLocalized("%@ 至 %@，%@ 倍，%@"),
+            timelineTimestamp(segment.startTime), timelineTimestamp(segment.endTime),
+            EditorSliderValueFormat.compact(segment.scale, digits: 1), originTitle
+        )
+        let accessibilityTraits: AccessibilityTraits = selectedZoomID == segment.id
+            ? [.isButton, .isSelected] : .isButton
+        let isSelected = selectedZoomID == segment.id
+        let isHovered = hoveredZoomID == segment.id
+        let emphasis = EditorTimelineClipEmphasis.resolve(
+            isEditing: isZoomClipEditing(segment.id),
+            isSelected: isSelected,
+            isHovered: isHovered
+        )
+        let label = "\(appLocalized("缩放")) \(EditorSliderValueFormat.compact(segment.scale, unit: "×", digits: 1)) · "
+            + originTitle
+        ZStack {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(EditorConsole.Track.zoom.timelineSurface(emphasis))
+                .overlay {
+                    if segmentWidth > 86 {
+                        Text(label)
+                            .font(.appUI(size: 11, weight: .medium))
+                            .foregroundStyle(EditorConsole.Track.zoom.softInk)
+                            .lineLimit(1)
+                    } else if segmentWidth > 44 {
+                        Text(EditorSliderValueFormat.compact(segment.scale, unit: "×", digits: 1))
+                            .font(.appUI(size: 11, weight: .semibold))
+                            .foregroundStyle(EditorConsole.Track.zoom.softInk)
+                            .lineLimit(1)
+                    } else {
+                        EditorSymbol("magnifyingglass", size: 10.5)
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(EditorConsole.Track.zoom.softInk)
+                    }
+                }
+                .editorTimelineClipChrome(cornerRadius: 8, emphasis: emphasis, tint: EditorConsole.Track.zoom.stroke)
+
+            if emphasis.showsHandles {
+                HStack(spacing: 0) {
+                    zoomResizeHandle(edge: .leading)
+                    Spacer(minLength: 0)
+                    zoomResizeHandle(edge: .trailing)
+                }
+                .padding(.horizontal, 2)
+                .opacity(emphasis.handleOpacity)
+                .allowsHitTesting(false)
+            }
+        }
+        .frame(width: segmentWidth, height: zoomBarHeight)
+        .editorClipDragFeedback(zoomTrackDrag == .move(segment.id))
+        .offset(x: startX)
+        .transition(.identity)
+        .zIndex(emphasis == .editing ? 4 : isSelected ? 3 : isHovered ? 1 : 0)
+        .contentShape(Rectangle())
+        .contextMenu {
+            clipClipboardMenu(for: .zoom(segment.id))
+            Divider()
+            Button(role: .destructive) {
+                removeZoomAnimation(id: segment.id)
+            } label: {
+                EditorSymbolLabel("删除缩放动画", systemImage: "trash")
+            }
+        }
+        .onHover { hovering in
+            hoveredZoomID = hovering ? segment.id : (hoveredZoomID == segment.id ? nil : hoveredZoomID)
+        }
+        .accessibilityElement(children: .ignore)
+        .help("单击选中；拖动移动；拖两端调整保持时间；右键可删除")
+        .accessibilityLabel(String(format: appLocalized("缩放动画 %d"), index + 1))
+        .accessibilityValue(accessibilityValue)
+        .accessibilityAddTraits(accessibilityTraits)
+        .accessibilityAction {
+            activateTimelineSelection(.zoom(segment.id))
+        }
+        .accessibilityIdentifier(
+            "editor.timeline.zoom.\(segment.id.uuidString)"
+        )
+    }
+
+    func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
         let segments = timelineZoomSegments
         let visibleTimeRange = EditorTimelineViewportPresentation.bufferedTimeRange(
             documentWidth: width,
@@ -34,91 +127,11 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                 )
             }
             ForEach(visibleSegments, id: \.clip.id) { item in
-                let index = item.index
-                let segment = item.clip
-                let startX = CGFloat(segment.startTime / max(duration, 0.001)) * width
-                let segmentWidth = max(
-                    CGFloat((segment.endTime - segment.startTime) / max(duration, 0.001)) * width,
-                    14
-                )
-                let originTitle = appLocalized(segment.origin == .manual ? "手动" : "自动")
-                let accessibilityValue = String(
-                    format: appLocalized("%@ 至 %@，%@ 倍，%@"),
-                    timelineTimestamp(segment.startTime), timelineTimestamp(segment.endTime),
-                    EditorSliderValueFormat.compact(segment.scale, digits: 1), originTitle
-                )
-                let accessibilityTraits: AccessibilityTraits = selectedZoomID == segment.id
-                    ? [.isButton, .isSelected] : .isButton
-                let isSelected = selectedZoomID == segment.id
-                let isHovered = hoveredZoomID == segment.id
-                let emphasis = EditorTimelineClipEmphasis.resolve(
-                    isEditing: isZoomClipEditing(segment.id),
-                    isSelected: isSelected,
-                    isHovered: isHovered
-                )
-                let label = "\(appLocalized("缩放")) \(EditorSliderValueFormat.compact(segment.scale, unit: "×", digits: 1)) · "
-                    + originTitle
-                ZStack {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(EditorConsole.Track.zoom.timelineSurface(emphasis))
-                        .overlay {
-                            if segmentWidth > 86 {
-                                Text(label)
-                                    .font(.appUI(size: 11, weight: .medium))
-                                    .foregroundStyle(EditorConsole.Track.zoom.softInk)
-                                    .lineLimit(1)
-                            } else if segmentWidth > 44 {
-                                Text(EditorSliderValueFormat.compact(segment.scale, unit: "×", digits: 1))
-                                    .font(.appUI(size: 11, weight: .semibold))
-                                    .foregroundStyle(EditorConsole.Track.zoom.softInk)
-                                    .lineLimit(1)
-                            } else {
-                                EditorSymbol("magnifyingglass", size: 10.5)
-                                    .font(.system(size: 8, weight: .semibold))
-                                    .foregroundStyle(EditorConsole.Track.zoom.softInk)
-                            }
-                        }
-                        .editorTimelineClipChrome(cornerRadius: 8, emphasis: emphasis, tint: EditorConsole.Track.zoom.stroke)
-
-                    if emphasis.showsHandles {
-                        HStack(spacing: 0) {
-                            zoomResizeHandle(edge: .leading)
-                            Spacer(minLength: 0)
-                            zoomResizeHandle(edge: .trailing)
-                        }
-                        .padding(.horizontal, 2)
-                        .opacity(emphasis.handleOpacity)
-                        .allowsHitTesting(false)
-                    }
-                }
-                .frame(width: segmentWidth, height: zoomBarHeight)
-                .editorClipDragFeedback(zoomTrackDrag == .move(segment.id))
-                .offset(x: startX)
-                .transition(.identity)
-                .zIndex(emphasis == .editing ? 4 : isSelected ? 3 : isHovered ? 1 : 0)
-                .contentShape(Rectangle())
-                .contextMenu {
-                    clipClipboardMenu(for: .zoom(segment.id))
-                    Divider()
-                    Button(role: .destructive) {
-                        removeZoomAnimation(id: segment.id)
-                    } label: {
-                        EditorSymbolLabel("删除缩放动画", systemImage: "trash")
-                    }
-                }
-                .onHover { hovering in
-                    hoveredZoomID = hovering ? segment.id : (hoveredZoomID == segment.id ? nil : hoveredZoomID)
-                }
-                .accessibilityElement(children: .ignore)
-                .help("单击选中；拖动移动；拖两端调整保持时间；右键可删除")
-                .accessibilityLabel(String(format: appLocalized("缩放动画 %d"), index + 1))
-                .accessibilityValue(accessibilityValue)
-                .accessibilityAddTraits(accessibilityTraits)
-                .accessibilityAction {
-                    activateTimelineSelection(.zoom(segment.id))
-                }
-                .accessibilityIdentifier(
-                    "editor.timeline.zoom.\(segment.id.uuidString)"
+                zoomSegmentItem(
+                    index: item.index,
+                    segment: item.clip,
+                    duration: duration,
+                    width: width
                 )
             }
 

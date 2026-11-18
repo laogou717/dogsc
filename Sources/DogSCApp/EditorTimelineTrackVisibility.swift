@@ -290,12 +290,13 @@ extension EditorTimelineView {
         height: CGFloat,
         track: EditorTimelineTrackVisibility
     ) -> some View {
-        let symbol: String = switch track {
-        case .zoom: "plus.magnifyingglass"
-        case .screenMotion: "cube.transparent"
-        case .cameraMotion: "video"
-        case .overlays: "square.3.layers.3d"
-        default: "square.stack"
+        let symbol: String
+        switch track {
+        case .zoom: symbol = "plus.magnifyingglass"
+        case .screenMotion: symbol = "cube.transparent"
+        case .cameraMotion: symbol = "video"
+        case .overlays: symbol = "square.3.layers.3d"
+        default: symbol = "square.stack"
         }
         return EditorTimelineLaneLabel(title: title, symbol: symbol, tint: tint, onHide: {
             setTimelineTrack(track, visible: false)

@@ -432,6 +432,7 @@ struct TimelineScrollViewBridge: NSViewRepresentable {
         coordinator.invalidate()
     }
 
+    @MainActor
     func resolveScrollView(for view: NSView, coordinator: Coordinator) {
         guard !coordinator.resolutionIsScheduled else { return }
         coordinator.resolutionIsScheduled = true
@@ -740,8 +741,8 @@ enum EditorTimelineWaveformLane: Equatable {
 
     var title: String {
         switch self {
-        case .system: appLocalized("系统")
-        case .microphone: appLocalized("麦克风")
+        case .system: return appLocalized("系统")
+        case .microphone: return appLocalized("麦克风")
         }
     }
 

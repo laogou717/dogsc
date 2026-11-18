@@ -1096,27 +1096,27 @@ final class CameraRecorder: NSObject,
     private func scheduleStartTimeoutLocked(requestID: UUID) {
         dispatchPrecondition(condition: .onQueue(sessionQueue))
         sessionQueue.asyncAfter(deadline: .now() + 5) { [weak self] in
-            guard let self,
-                  case let .starting(activeRequestID) = activity,
+            guard let self = self,
+                  case let .starting(activeRequestID) = self.activity,
                   activeRequestID == requestID,
-                  let pending = startContinuation,
+                  let pending = self.startContinuation,
                   pending.0 == requestID else { return }
-            startContinuation = nil
+            self.startContinuation = nil
             pending.1.resume(
                 throwing: CameraRecorderError.recordingFailed(
-                    role.displayName,
+                    self.role.displayName,
                     "5 秒内没有收到启动回调"
                 )
             )
-            activity = .stopping(requestID)
-            if usesSynchronizedSampleWriter {
-                requestSampleWriterFinishLocked(requestID: requestID)
-                scheduleStopTimeoutLocked(requestID: requestID)
-            } else if movieOutput.isRecording {
-                movieOutput.stopRecording()
-                scheduleStopTimeoutLocked(requestID: requestID)
+            self.activity = .stopping(requestID)
+            if self.usesSynchronizedSampleWriter {
+                self.requestSampleWriterFinishLocked(requestID: requestID)
+                self.scheduleStopTimeoutLocked(requestID: requestID)
+            } else if self.movieOutput.isRecording {
+                self.movieOutput.stopRecording()
+                self.scheduleStopTimeoutLocked(requestID: requestID)
             } else {
-                resetMovieOutputLocked()
+                self.resetMovieOutputLocked()
             }
         }
     }
@@ -1124,27 +1124,27 @@ final class CameraRecorder: NSObject,
     private func scheduleStopTimeoutLocked(requestID: UUID) {
         dispatchPrecondition(condition: .onQueue(sessionQueue))
         sessionQueue.asyncAfter(deadline: .now() + 10) { [weak self] in
-            guard let self,
-                  case let .stopping(activeRequestID) = activity,
+            guard let self = self,
+                  case let .stopping(activeRequestID) = self.activity,
                   activeRequestID == requestID else { return }
             let failure = CameraRecorderError.recordingFailed(
-                role.displayName,
+                self.role.displayName,
                 "10 秒内没有完成文件写入"
             )
-            if let pending = startContinuation, pending.0 == requestID {
-                startContinuation = nil
+            if let pending = self.startContinuation, pending.0 == requestID {
+                self.startContinuation = nil
                 pending.1.resume(throwing: failure)
             }
-            let pendingStops = Array(stopContinuations.values)
-            stopContinuations.removeAll()
+            let pendingStops = Array(self.stopContinuations.values)
+            self.stopContinuations.removeAll()
             pendingStops.forEach { $0.resume(throwing: failure) }
-            if usesSynchronizedSampleWriter {
-                sampleWriter?.cancelWriting()
-                resetSampleWriterStateLocked()
-                if session.isRunning { session.stopRunning() }
-                activity = .idle
+            if self.usesSynchronizedSampleWriter {
+                self.sampleWriter?.cancelWriting()
+                self.resetSampleWriterStateLocked()
+                if self.session.isRunning { self.session.stopRunning() }
+                self.activity = .idle
             } else {
-                resetMovieOutputLocked()
+                self.resetMovieOutputLocked()
             }
         }
     }

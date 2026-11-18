@@ -21,10 +21,10 @@ enum RecordingTrackStopTarget: String, Equatable, Sendable {
 
     var displayName: String {
         switch self {
-        case .screen: "屏幕"
-        case .iosDevice: "iPhone/iPad"
-        case .camera: "摄像头"
-        case .microphone: "麦克风"
+        case .screen: return "屏幕"
+        case .iosDevice: return "iPhone/iPad"
+        case .camera: return "摄像头"
+        case .microphone: return "麦克风"
         }
     }
 }
@@ -95,11 +95,11 @@ enum RecordingTrackFinalizerError: LocalizedError, Equatable, Sendable {
     var errorDescription: String? {
         switch self {
         case .staleRun:
-            "这次录制已结束或已被替换，不能再停止它的轨道。"
+            return "这次录制已结束或已被替换，不能再停止它的轨道。"
         case .intentConflict:
-            "这次录制已经按另一种方式结束，不能在写入过程中改变结束意图。"
+            return "这次录制已经按另一种方式结束，不能在写入过程中改变结束意图。"
         case .anotherRunFinalizing:
-            "另一次录制仍在结束写入，不能同时停止新的录制。"
+            return "另一次录制仍在结束写入，不能同时停止新的录制。"
         }
     }
 }

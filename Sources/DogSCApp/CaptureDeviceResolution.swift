@@ -33,14 +33,14 @@ enum CaptureInputDeviceRequest: Equatable, Sendable {
 
     var role: CaptureInputDeviceRole {
         switch self {
-        case let .automatic(role), let .exact(role, _): role
+        case let .automatic(role), let .exact(role, _): return role
         }
     }
 
     var requestedUniqueID: String? {
         switch self {
-        case .automatic: nil
-        case let .exact(_, uniqueID): uniqueID
+        case .automatic: return nil
+        case let .exact(_, uniqueID): return uniqueID
         }
     }
 }
@@ -64,15 +64,15 @@ enum CaptureInputDeviceResolutionError: LocalizedError, Equatable, Sendable {
     var errorDescription: String? {
         switch self {
         case let .cameraUnavailable(requestedUniqueID):
-            requestedUniqueID == nil
+            return requestedUniqueID == nil
                 ? "没有找到可用的摄像头。"
                 : "所选摄像头已断开或不可用，请重新选择。"
         case let .microphoneUnavailable(requestedUniqueID):
-            requestedUniqueID == nil
+            return requestedUniqueID == nil
                 ? "没有找到可用的麦克风。"
                 : "所选麦克风已断开或不可用，请重新选择。"
         case let .iosDeviceUnavailable(requestedUniqueID):
-            requestedUniqueID == nil
+            return requestedUniqueID == nil
                 ? "请先选择要录制的 iPhone 或 iPad。"
                 : "所选 iPhone 或 iPad 已断开或不可用，请重新选择。"
         }

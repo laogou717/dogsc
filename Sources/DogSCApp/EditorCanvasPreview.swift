@@ -763,9 +763,9 @@ struct CanvasPreview: View {
 
     func cropCursor(for handle: CropHandle) -> NSCursor {
         switch handle {
-        case .top, .bottom: .resizeUpDown
-        case .left, .right: .resizeLeftRight
-        case .topLeft, .topRight, .bottomRight, .bottomLeft: .crosshair
+        case .top, .bottom: return .resizeUpDown
+        case .left, .right: return .resizeLeftRight
+        case .topLeft, .topRight, .bottomRight, .bottomLeft: return .crosshair
         }
     }
 

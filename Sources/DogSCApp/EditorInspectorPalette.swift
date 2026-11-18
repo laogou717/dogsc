@@ -105,23 +105,23 @@ enum EditorConsole {
     /// 侧栏页面点缀色（只给滑块与分段子选项使用）。
     static func palette(for tab: InspectorTab) -> EditorConsolePalette {
         switch tab {
-        case .frame: frame
-        case .opening: opening
-        case .zoom: zoom
-        case .cursor: cursor
-        case .camera: camera
-        case .audio: audio
+        case .frame: return frame
+        case .opening: return opening
+        case .zoom: return zoom
+        case .cursor: return cursor
+        case .camera: return camera
+        case .audio: return audio
         }
     }
 
     /// 画布／时间线上被选中对象的身份色 = 它所在轨道的颜色。
     static func palette(for selection: EditorSelection) -> EditorConsolePalette {
         switch selection {
-        case .canvas, .screen, .primarySegment, .crop, .cursor, .audio: Track.primary
-        case .zoomTrack, .zoom: Track.zoom
-        case .screenMotionTrack, .screenMotion: Track.screenMotion
-        case .camera, .cameraMotion: Track.cameraMotion
-        case .mosaic, .sticker: Track.overlay
+        case .canvas, .screen, .primarySegment, .crop, .cursor, .audio: return Track.primary
+        case .zoomTrack, .zoom: return Track.zoom
+        case .screenMotionTrack, .screenMotion: return Track.screenMotion
+        case .camera, .cameraMotion: return Track.cameraMotion
+        case .mosaic, .sticker: return Track.overlay
         }
     }
 }

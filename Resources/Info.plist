@@ -55,7 +55,7 @@
         </dict>
     </array>
     <key>LSMinimumSystemVersion</key>
-    <string>14.0</string>
+    <string>13.0</string>
     <key>NSCameraUsageDescription</key>
     <string>用于在录屏中添加摄像头画面，并使用已连接的连续互通相机。</string>
     <key>NSCameraReactionEffectGesturesEnabledDefault</key>

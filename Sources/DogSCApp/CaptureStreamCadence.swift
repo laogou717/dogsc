@@ -13,9 +13,9 @@ enum CaptureStreamTimingPolicy {
     static func minimumFrameInterval(for source: CaptureSource) -> CMTime {
         switch source {
         case .display, .window, .area:
-            CMTime(value: 1, timescale: 60)
+            return CMTime(value: 1, timescale: 60)
         case .device:
-            .zero
+            return .zero
         }
     }
 }

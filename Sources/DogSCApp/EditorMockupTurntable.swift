@@ -173,17 +173,17 @@ private extension Array {
 private extension ScreenFrameStyle {
     var turntableName: String {
         switch self {
-        case .none: "无边框"
-        case .windowLight: "macOS 窗口·浅色"
-        case .windowDark: "macOS 窗口·深色"
-        case .browserLight: "浏览器·浅色"
-        case .browserDark: "浏览器·深色"
-        case .devicePhone: "自适应设备框"
-        case .deviceTablet: "通用平板样机"
-        case .devicePhonePortrait: "手机·竖屏"
-        case .devicePhoneLandscape: "手机·横屏"
-        case .deviceTabletPortrait: "平板·竖屏"
-        case .deviceTabletLandscape: "平板·横屏"
+        case .none: return "无边框"
+        case .windowLight: return "macOS 窗口·浅色"
+        case .windowDark: return "macOS 窗口·深色"
+        case .browserLight: return "浏览器·浅色"
+        case .browserDark: return "浏览器·深色"
+        case .devicePhone: return "自适应设备框"
+        case .deviceTablet: return "通用平板样机"
+        case .devicePhonePortrait: return "手机·竖屏"
+        case .devicePhoneLandscape: return "手机·横屏"
+        case .deviceTabletPortrait: return "平板·竖屏"
+        case .deviceTabletLandscape: return "平板·横屏"
         }
     }
 }

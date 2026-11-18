@@ -5,10 +5,10 @@ enum ExportStage: Int, Sendable {
 
     func title(audioOnly: Bool) -> String {
         switch self {
-        case .preparing: appLocalized("正在准备素材")
-        case .processing: appLocalized(audioOnly ? "正在处理音频" : "正在合成与编码")
-        case .finishing: appLocalized("正在完成文件")
-        case .cancelling: appLocalized("正在取消导出")
+        case .preparing: return appLocalized("正在准备素材")
+        case .processing: return appLocalized(audioOnly ? "正在处理音频" : "正在合成与编码")
+        case .finishing: return appLocalized("正在完成文件")
+        case .cancelling: return appLocalized("正在取消导出")
         }
     }
 }

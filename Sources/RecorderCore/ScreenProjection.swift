@@ -288,12 +288,11 @@ public enum ScreenProjection {
         let safeWidth = max(rect.width, 0)
         let safeHeight = max(rect.height, 0)
         let fallbackAnchor = CompositionPoint(x: rect.midX, y: rect.midY)
-        let pivot = if let anchor,
-                       anchor.x.isFinite,
-                       anchor.y.isFinite {
-            anchor
+        let pivot: CompositionPoint
+        if let anchor, anchor.x.isFinite, anchor.y.isFinite {
+            pivot = anchor
         } else {
-            fallbackAnchor
+            pivot = fallbackAnchor
         }
         let maximumDimension = max(rect.width, rect.height, 1)
         let depth = min(max(perspective, 0), 2)

@@ -17,9 +17,9 @@ enum NativeScreenRecordingBackendPolicy {
     static func captureResolution(for source: CaptureSource) -> SCCaptureResolutionType {
         switch source {
         case .window, .area:
-            .best
+            return .best
         case .display, .device:
-            .nominal
+            return .nominal
         }
     }
 
@@ -41,6 +41,13 @@ enum NativeScreenRecordingBackendPolicy {
         nativeAPIIsAvailable: Bool
     ) -> Bool {
         _ = recordsSystemAudio
+        // Intel Mac + macOS 26: SCRecordingOutput's delegate
+        // (recordingOutputDidStartRecording) never fires, so the native writer
+        // always times out with noFrames. Force the AVAssetWriter-based capture
+        // output backend, which consumes SCK sample buffers directly.
+        #if arch(x86_64)
+        return false
+        #endif
         guard nativeAPIIsAvailable else { return false }
         if codec == .h264 {
             return requestedFramesPerSecond <= 30
@@ -52,16 +59,16 @@ enum NativeScreenRecordingBackendPolicy {
 
     static func videoCodecType(for codec: CaptureCodec) -> AVVideoCodecType? {
         switch codec {
-        case .h264: .h264
-        case .hevc: .hevc
-        case .proRes422: nil
+        case .h264: return .h264
+        case .hevc: return .hevc
+        case .proRes422: return nil
         }
     }
 
     @available(macOS 15.0, *)
     static func nativeCodecIsAvailable(_ codec: CaptureCodec) -> Bool {
         guard let codecType = videoCodecType(for: codec) else { return false }
-        return SCRecordingOutputConfiguration().availableVideoCodecTypes.contains(codecType)
+        return SCRecordingOutputConfiguration.availableVideoCodecTypes.contains(codecType)
     }
 
     /// REC-001/REC-003: compatibility H.264 stays inside the hardware
@@ -347,38 +354,38 @@ final class NativeScreenFrameMonitor: NSObject, SCStreamOutput, @unchecked Senda
             return
         }
 
-        switch status {
-        case .complete:
-            guard CMSampleBufferGetImageBuffer(sampleBuffer) != nil else {
-                lock.unlock()
-                return
+        // macOS 26 can deliver perfectly valid, image-bearing frames whose
+        // SCFrameStatus is not .complete (e.g. .screenUpdate). Gating first-frame
+        // detection on the exact enum stalls forever on those systems. Treat any
+        // frame carrying a real image buffer as a usable frame; only buffers with
+        // no encodable image count as idle transition samples.
+        guard CMSampleBufferGetImageBuffer(sampleBuffer) != nil else {
+            if firstFrame != nil {
+                lastObservedHostTime = hostTime
+                idleFrames += 1
             }
-            if firstFrame == nil {
-                let observed = NativeScreenFirstFrame(wallTime: Date(), hostTime: hostTime)
-                firstFrame = observed
-                firstHostTime = hostTime
-                observedFirstFrame = observed
-                waiters = Array(firstFrameWaiters.values)
-                firstFrameWaiters.removeAll(keepingCapacity: false)
+            lock.unlock()
+            return
+        }
+        if firstFrame == nil {
+            let observed = NativeScreenFirstFrame(wallTime: Date(), hostTime: hostTime)
+            firstFrame = observed
+            firstHostTime = hostTime
+            observedFirstFrame = observed
+            waiters = Array(firstFrameWaiters.values)
+            firstFrameWaiters.removeAll(keepingCapacity: false)
+        }
+        if let lastCompleteHostTime {
+            let interval = hostTime - lastCompleteHostTime
+            if interval.isFinite, interval > 0 {
+                maximumFrameInterval = max(maximumFrameInterval, interval)
             }
-            if let lastCompleteHostTime {
-                let interval = hostTime - lastCompleteHostTime
-                if interval.isFinite, interval > 0 {
-                    maximumFrameInterval = max(maximumFrameInterval, interval)
-                }
-            }
-            lastCompleteHostTime = hostTime
-            lastObservedHostTime = hostTime
-            receivedFrames += 1
-        case .idle:
-            guard firstFrame != nil else {
-                lock.unlock()
-                return
-            }
-            lastObservedHostTime = hostTime
+        }
+        lastCompleteHostTime = hostTime
+        lastObservedHostTime = hostTime
+        receivedFrames += 1
+        if status == .idle {
             idleFrames += 1
-        default:
-            break
         }
         lock.unlock()
 

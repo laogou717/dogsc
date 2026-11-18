@@ -266,31 +266,31 @@ private final class CaptureAreaSelectionView: NSView {
 
         var title: String {
             switch self {
-            case .free: "自由"
-            case .landscape16x9: "16:9"
-            case .landscape4x3: "4:3"
-            case .square: "1:1"
-            case .portrait9x16: "9:16"
+            case .free: return "自由"
+            case .landscape16x9: return "16:9"
+            case .landscape4x3: return "4:3"
+            case .square: return "1:1"
+            case .portrait9x16: return "9:16"
             }
         }
 
         var symbolName: String {
             switch self {
-            case .free: "viewfinder"
-            case .landscape16x9: "rectangle"
-            case .landscape4x3: "rectangle.inset.filled"
-            case .square: "square"
-            case .portrait9x16: "rectangle.portrait"
+            case .free: return "viewfinder"
+            case .landscape16x9: return "rectangle"
+            case .landscape4x3: return "rectangle.inset.filled"
+            case .square: return "square"
+            case .portrait9x16: return "rectangle.portrait"
             }
         }
 
         var ratio: CGFloat? {
             switch self {
-            case .free: nil
-            case .landscape16x9: 16 / 9
-            case .landscape4x3: 4 / 3
-            case .square: 1
-            case .portrait9x16: 9 / 16
+            case .free: return nil
+            case .landscape16x9: return 16 / 9
+            case .landscape4x3: return 4 / 3
+            case .square: return 1
+            case .portrait9x16: return 9 / 16
             }
         }
     }
@@ -307,21 +307,21 @@ private final class CaptureAreaSelectionView: NSView {
 
         func point(in rect: CGRect) -> CGPoint {
             switch self {
-            case .bottomLeft: CGPoint(x: rect.minX, y: rect.minY)
-            case .bottom: CGPoint(x: rect.midX, y: rect.minY)
-            case .bottomRight: CGPoint(x: rect.maxX, y: rect.minY)
-            case .left: CGPoint(x: rect.minX, y: rect.midY)
-            case .right: CGPoint(x: rect.maxX, y: rect.midY)
-            case .topLeft: CGPoint(x: rect.minX, y: rect.maxY)
-            case .top: CGPoint(x: rect.midX, y: rect.maxY)
-            case .topRight: CGPoint(x: rect.maxX, y: rect.maxY)
+            case .bottomLeft: return CGPoint(x: rect.minX, y: rect.minY)
+            case .bottom: return CGPoint(x: rect.midX, y: rect.minY)
+            case .bottomRight: return CGPoint(x: rect.maxX, y: rect.minY)
+            case .left: return CGPoint(x: rect.minX, y: rect.midY)
+            case .right: return CGPoint(x: rect.maxX, y: rect.midY)
+            case .topLeft: return CGPoint(x: rect.minX, y: rect.maxY)
+            case .top: return CGPoint(x: rect.midX, y: rect.maxY)
+            case .topRight: return CGPoint(x: rect.maxX, y: rect.maxY)
             }
         }
 
         var isCorner: Bool {
             switch self {
-            case .bottomLeft, .bottomRight, .topLeft, .topRight: true
-            case .bottom, .left, .right, .top: false
+            case .bottomLeft, .bottomRight, .topLeft, .topRight: return true
+            case .bottom, .left, .right, .top: return false
             }
         }
     }

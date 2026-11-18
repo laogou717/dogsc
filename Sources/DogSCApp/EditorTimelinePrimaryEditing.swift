@@ -346,59 +346,94 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
             visibleRange: clampedTimelineVisibleDocumentRange(width: width)
         )
         return ZStack(alignment: .leading) {
-            if let draggedPrimarySegmentID,
-               let floating = primaryDisplaySegments.first(where: { $0.id == draggedPrimarySegmentID }) {
-                clipWaveforms(
-                    width: visibleWindow.width,
-                    outputStart: visibleWindow.outputStart,
-                    outputDuration: visibleWindow.outputDuration
-                )
-                .mask {
-                    clipWaveformMask(
-                        width: width,
-                        duration: duration,
-                        visibleWindow: visibleWindow,
-                        including: { $0.id != draggedPrimarySegmentID },
-                        excludingFloatingSegment: true
-                    )
-                }
-                .offset(x: visibleWindow.documentOriginX)
+            primaryWaveformContent(
+                width: width,
+                duration: duration,
+                visibleWindow: visibleWindow
+            )
+        }
+    }
 
-                let floatingWidth = max(CGFloat(floating.outputDuration / max(duration, 0.001)) * width, 1)
-                let floatingOrigin = CGFloat(floating.outputStart / max(duration, 0.001)) * width
-                    + primaryFloatingTranslation(width: width, duration: duration)
-                let drawStart = max(floatingOrigin, visibleWindow.documentOriginX)
-                let drawEnd = min(floatingOrigin + floatingWidth,
-                    visibleWindow.documentOriginX + visibleWindow.width)
-                if drawEnd > drawStart {
-                    let drawWidth = drawEnd - drawStart
-                    let sourceFraction = Double((drawStart - floatingOrigin) / floatingWidth)
-                    clipWaveforms(width: drawWidth,
-                        outputStart: floating.outputStart + floating.outputDuration * sourceFraction,
-                        outputDuration: floating.outputDuration * Double(drawWidth / floatingWidth))
-                        .mask {
-                            RoundedRectangle(cornerRadius: 4)
-                                .padding(.leading, drawStart <= floatingOrigin ? min(5, floatingWidth * 0.22) : 0)
-                                .padding(.trailing, drawEnd >= floatingOrigin + floatingWidth ? min(5, floatingWidth * 0.22) : 0)
-                                .padding(.top, 3).padding(.bottom, 2)
-                        }
-                        .offset(x: drawStart)
-                }
-            } else {
-                clipWaveforms(
-                    width: visibleWindow.width,
-                    outputStart: visibleWindow.outputStart,
-                    outputDuration: visibleWindow.outputDuration
+    @ViewBuilder
+    private func primaryWaveformContent(
+        width: CGFloat,
+        duration: TimeInterval,
+        visibleWindow: EditorTimelineWaveformPresentation.VisibleWindow
+    ) -> some View {
+        if let draggedPrimarySegmentID,
+           let floating = primaryDisplaySegments.first(where: { $0.id == draggedPrimarySegmentID }) {
+            draggedPrimaryFloatingWaveform(
+                floating: floating,
+                draggedID: draggedPrimarySegmentID,
+                width: width,
+                duration: duration,
+                visibleWindow: visibleWindow
+            )
+        } else {
+            clipWaveforms(
+                width: visibleWindow.width,
+                outputStart: visibleWindow.outputStart,
+                outputDuration: visibleWindow.outputDuration
+            )
+            .mask {
+                clipWaveformMask(
+                    width: width,
+                    duration: duration,
+                    visibleWindow: visibleWindow,
+                    including: { _ in true }
                 )
-                .mask {
-                    clipWaveformMask(
-                        width: width,
-                        duration: duration,
-                        visibleWindow: visibleWindow,
-                        including: { _ in true }
-                    )
-                }
-                .offset(x: visibleWindow.documentOriginX)
+            }
+            .offset(x: visibleWindow.documentOriginX)
+        }
+    }
+
+    @ViewBuilder
+    private func draggedPrimaryFloatingWaveform(
+        floating: ResolvedRecordingSegment,
+        draggedID: UUID,
+        width: CGFloat,
+        duration: TimeInterval,
+        visibleWindow: EditorTimelineWaveformPresentation.VisibleWindow
+    ) -> some View {
+        let safeDuration: Double = max(duration, 0.001)
+        let floatingWidth: CGFloat = max(CGFloat(floating.outputDuration / safeDuration) * width, 1)
+        let floatingOrigin: CGFloat = CGFloat(floating.outputStart / safeDuration) * width
+            + primaryFloatingTranslation(width: width, duration: duration)
+        let drawStart: CGFloat = max(floatingOrigin, visibleWindow.documentOriginX)
+        let drawEnd: CGFloat = min(floatingOrigin + floatingWidth, visibleWindow.documentOriginX + visibleWindow.width)
+
+        ZStack(alignment: .leading) {
+            clipWaveforms(
+                width: visibleWindow.width,
+                outputStart: visibleWindow.outputStart,
+                outputDuration: visibleWindow.outputDuration
+            )
+            .mask {
+                clipWaveformMask(
+                    width: width,
+                    duration: duration,
+                    visibleWindow: visibleWindow,
+                    including: { $0.id != draggedID },
+                    excludingFloatingSegment: true
+                )
+            }
+            .offset(x: visibleWindow.documentOriginX)
+
+            if drawEnd > drawStart {
+                let drawWidth: CGFloat = drawEnd - drawStart
+                let sourceFraction: Double = Double((drawStart - floatingOrigin) / floatingWidth)
+                let clipOutputStart: Double = floating.outputStart + floating.outputDuration * sourceFraction
+                let clipOutputDur: Double = floating.outputDuration * Double(drawWidth / floatingWidth)
+                clipWaveforms(width: drawWidth,
+                    outputStart: clipOutputStart,
+                    outputDuration: clipOutputDur)
+                    .mask {
+                        RoundedRectangle(cornerRadius: 4)
+                            .padding(.leading, drawStart <= floatingOrigin ? min(5, floatingWidth * 0.22) : 0)
+                            .padding(.trailing, drawEnd >= floatingOrigin + floatingWidth ? min(5, floatingWidth * 0.22) : 0)
+                            .padding(.top, 3).padding(.bottom, 2)
+                    }
+                    .offset(x: drawStart)
             }
         }
         .frame(width: width, height: waveformContentHeight, alignment: .leading)
@@ -1027,9 +1062,10 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
             primaryTrimDraft = nil
             primaryRetimeDraft = nil
         }
-        let finalPlayheadTime: TimeInterval = switch draft.edge {
-        case .left: draft.original.outputStart
-        case .right: draft.proposedOutputTime
+        let finalPlayheadTime: TimeInterval
+        switch draft.edge {
+        case .left: finalPlayheadTime = draft.original.outputStart
+        case .right: finalPlayheadTime = draft.proposedOutputTime
         }
         do {
             try editorStore.trimPrimarySegment(

@@ -65,36 +65,36 @@ enum ScreenFrameMetadataKind {
 
     var title: String {
         switch self {
-        case .windowTitle: "窗口标题"
-        case .browserAddress: "网址或文字"
+        case .windowTitle: return "窗口标题"
+        case .browserAddress: return "网址或文字"
         }
     }
 
     var placeholder: String {
         switch self {
-        case .windowTitle: "可留空"
-        case .browserAddress: "example.com"
+        case .windowTitle: return "可留空"
+        case .browserAddress: return "example.com"
         }
     }
 
     var actionName: String {
         switch self {
-        case .windowTitle: "修改窗口标题"
-        case .browserAddress: "修改浏览器地址"
+        case .windowTitle: return "修改窗口标题"
+        case .browserAddress: return "修改浏览器地址"
         }
     }
 
     var maximumLength: Int {
         switch self {
-        case .windowTitle: 120
-        case .browserAddress: 240
+        case .windowTitle: return 120
+        case .browserAddress: return 240
         }
     }
 
     func value(in canvas: CanvasStyle) -> String {
         switch self {
-        case .windowTitle: canvas.screenFrameTitle
-        case .browserAddress: canvas.screenFrameBrowserAddress
+        case .windowTitle: return canvas.screenFrameTitle
+        case .browserAddress: return canvas.screenFrameBrowserAddress
         }
     }
 
@@ -446,33 +446,33 @@ private struct ScreenFrameMiniature: View {
 private extension ScreenFrameStyle {
     var editorDisplayName: String {
         switch self {
-        case .none: "无边框"
-        case .windowLight: "macOS 窗口·浅色"
-        case .windowDark: "macOS 窗口·深色"
-        case .browserLight: "浏览器·浅色"
-        case .browserDark: "浏览器·深色"
-        case .devicePhone: "自适应设备框"
-        case .deviceTablet: "通用平板样机"
-        case .devicePhonePortrait: "手机·竖屏"
-        case .devicePhoneLandscape: "手机·横屏"
-        case .deviceTabletPortrait: "平板·竖屏"
-        case .deviceTabletLandscape: "平板·横屏"
+        case .none: return "无边框"
+        case .windowLight: return "macOS 窗口·浅色"
+        case .windowDark: return "macOS 窗口·深色"
+        case .browserLight: return "浏览器·浅色"
+        case .browserDark: return "浏览器·深色"
+        case .devicePhone: return "自适应设备框"
+        case .deviceTablet: return "通用平板样机"
+        case .devicePhonePortrait: return "手机·竖屏"
+        case .devicePhoneLandscape: return "手机·横屏"
+        case .deviceTabletPortrait: return "平板·竖屏"
+        case .deviceTabletLandscape: return "平板·横屏"
         }
     }
 
     var editorShortName: String {
         switch self {
-        case .none: "无"
-        case .windowLight: "窗口浅色"
-        case .windowDark: "窗口深色"
-        case .browserLight: "浏览器浅色"
-        case .browserDark: "浏览器深色"
-        case .devicePhone: "设备框"
-        case .deviceTablet: "通用平板"
-        case .devicePhonePortrait: "手机竖屏"
-        case .devicePhoneLandscape: "手机横屏"
-        case .deviceTabletPortrait: "平板竖屏"
-        case .deviceTabletLandscape: "平板横屏"
+        case .none: return "无"
+        case .windowLight: return "窗口浅色"
+        case .windowDark: return "窗口深色"
+        case .browserLight: return "浏览器浅色"
+        case .browserDark: return "浏览器深色"
+        case .devicePhone: return "设备框"
+        case .deviceTablet: return "通用平板"
+        case .devicePhonePortrait: return "手机竖屏"
+        case .devicePhoneLandscape: return "手机横屏"
+        case .deviceTabletPortrait: return "平板竖屏"
+        case .deviceTabletLandscape: return "平板横屏"
         }
     }
 
@@ -484,8 +484,8 @@ private extension ScreenFrameStyle {
         switch self {
         case .devicePhone, .deviceTablet, .devicePhonePortrait,
              .devicePhoneLandscape, .deviceTabletPortrait,
-             .deviceTabletLandscape: true
-        default: false
+             .deviceTabletLandscape: return true
+        default: return false
         }
     }
 
@@ -500,13 +500,13 @@ private extension ScreenFrameStyle {
 
     var devicePreviewAspectRatio: CGFloat? {
         switch self {
-        case .devicePhonePortrait: 9.0 / 19.5
-        case .devicePhoneLandscape: 19.5 / 9.0
-        case .deviceTabletPortrait: 3.0 / 4.0
-        case .deviceTabletLandscape: 4.0 / 3.0
-        case .devicePhone: 4.0 / 3.0
-        case .deviceTablet: 4.0 / 3.0
-        default: nil
+        case .devicePhonePortrait: return 9.0 / 19.5
+        case .devicePhoneLandscape: return 19.5 / 9.0
+        case .deviceTabletPortrait: return 3.0 / 4.0
+        case .deviceTabletLandscape: return 4.0 / 3.0
+        case .devicePhone: return 4.0 / 3.0
+        case .deviceTablet: return 4.0 / 3.0
+        default: return nil
         }
     }
 }

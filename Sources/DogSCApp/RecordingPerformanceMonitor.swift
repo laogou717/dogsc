@@ -3,6 +3,10 @@ import Foundation
 import Metal
 import RecorderCore
 
+@_silgen_name("proc_pidinfo")
+private func proc_pidinfo(_ pid: Int32, _ flavor: Int32, _ arg: UInt64, _ buffer: UnsafeMutableRawPointer?, _ buffersize: Int32) -> Int32
+private let PROC_PIDTASKINFO: Int32 = 4
+
 /// Samples only public, low-cost counters once per recovery heartbeat. It does
 /// no process enumeration and never runs on a media callback queue.
 final class RecordingPerformanceMonitor: @unchecked Sendable {
@@ -126,11 +130,11 @@ final class RecordingPerformanceMonitor: @unchecked Sendable {
         _ state: ProcessInfo.ThermalState
     ) -> RecordingThermalState {
         switch state {
-        case .nominal: .nominal
-        case .fair: .fair
-        case .serious: .serious
-        case .critical: .critical
-        @unknown default: .unknown
+        case .nominal: return .nominal
+        case .fair: return .fair
+        case .serious: return .serious
+        case .critical: return .critical
+        @unknown default: return .unknown
         }
     }
 }

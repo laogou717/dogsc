@@ -68,12 +68,12 @@ func appErrorDescription(_ error: any Error) -> String {
 
 private func appTimelineTrackName(_ track: ProjectTimelineTrack) -> String {
     switch track {
-    case .primaryRecording: appLocalized("主片段")
-    case .zoom: appLocalized("缩放")
-    case .screenMotion: appLocalized("屏幕 3D")
-    case .cameraMotion: appLocalized("摄像运动")
-    case .mosaic: appLocalized("打码")
-    case .sticker: appLocalized("贴图")
+    case .primaryRecording: return appLocalized("主片段")
+    case .zoom: return appLocalized("缩放")
+    case .screenMotion: return appLocalized("屏幕 3D")
+    case .cameraMotion: return appLocalized("摄像运动")
+    case .mosaic: return appLocalized("打码")
+    case .sticker: return appLocalized("贴图")
     }
 }
 
@@ -86,9 +86,9 @@ enum AppLanguagePreference: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .system: appLocalized("跟随系统")
-        case .simplifiedChinese: appLocalized("简体中文")
-        case .english: "English"
+        case .system: return appLocalized("跟随系统")
+        case .simplifiedChinese: return appLocalized("简体中文")
+        case .english: return "English"
         }
     }
 
@@ -160,25 +160,25 @@ enum AppAppearancePreference: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .system: appLocalized("跟随系统")
-        case .light: appLocalized("浅色")
-        case .dark: appLocalized("深色")
+        case .system: return appLocalized("跟随系统")
+        case .light: return appLocalized("浅色")
+        case .dark: return appLocalized("深色")
         }
     }
 
     var colorScheme: ColorScheme? {
         switch self {
-        case .system: nil
-        case .light: .light
-        case .dark: .dark
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
         }
     }
 
     var appKitAppearance: NSAppearance? {
         switch self {
-        case .system: nil
-        case .light: NSAppearance(named: .aqua)
-        case .dark: NSAppearance(named: .darkAqua)
+        case .system: return nil
+        case .light: return NSAppearance(named: .aqua)
+        case .dark: return NSAppearance(named: .darkAqua)
         }
     }
 }

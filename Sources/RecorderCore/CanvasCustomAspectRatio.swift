@@ -18,15 +18,15 @@ public struct CanvasCustomAspectRatio: Codable, Equatable, Sendable {
 public extension CanvasStyle {
     var resolvedFixedAspectRatio: Double? {
         switch aspectRatio {
-        case .adaptive: nil
-        case .landscape: 16 / 9
-        case .portrait: 9 / 16
-        case .standard: 4 / 3
-        case .standardPortrait: 3 / 4
-        case .cinema: 2.39
-        case .cinemaPortrait: 1 / 2.39
-        case .square: 1
-        case .custom: customAspectRatio.value
+        case .adaptive: return nil
+        case .landscape: return 16 / 9
+        case .portrait: return 9 / 16
+        case .standard: return 4 / 3
+        case .standardPortrait: return 3 / 4
+        case .cinema: return 2.39
+        case .cinemaPortrait: return 1 / 2.39
+        case .square: return 1
+        case .custom: return customAspectRatio.value
         }
     }
 }

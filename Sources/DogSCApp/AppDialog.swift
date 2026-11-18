@@ -206,7 +206,7 @@ struct AppDialogCard: View {
     /// then backing out.
     private var stackedActions: [AppDialog.Action] {
         func rank(_ role: AppDialog.Action.Role) -> Int {
-            switch role { case .primary: 0; case .destructive: 1; case .secondary: 2; case .cancel: 3 }
+            switch role { case .primary: return 0; case .destructive: return 1; case .secondary: return 2; case .cancel: return 3 }
         }
         return dialog.actions.enumerated().sorted {
             (rank($0.element.role), $0.offset) < (rank($1.element.role), $1.offset)
@@ -266,9 +266,9 @@ private struct AppDialogButtonStyle: ButtonStyle {
 
     private var foreground: Color {
         switch role {
-        case .primary: EditorTheme.onAccent
-        case .destructive: RecorderStyle.destructiveInk
-        default: EditorTheme.primaryText
+        case .primary: return EditorTheme.onAccent
+        case .destructive: return RecorderStyle.destructiveInk
+        default: return EditorTheme.primaryText
         }
     }
 

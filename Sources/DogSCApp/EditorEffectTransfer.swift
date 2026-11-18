@@ -11,19 +11,19 @@ private enum EditorClipPayload: Codable {
 
     var duration: TimeInterval {
         switch self {
-        case let .zoom(clip): clip.duration
-        case let .screen(clip): clip.timing.duration
-        case let .camera(clip): clip.timing.duration
-        case let .mosaic(clip): clip.timing.duration
-        case let .sticker(clip): clip.timing.duration
+        case let .zoom(clip): return clip.duration
+        case let .screen(clip): return clip.timing.duration
+        case let .camera(clip): return clip.timing.duration
+        case let .mosaic(clip): return clip.timing.duration
+        case let .sticker(clip): return clip.timing.duration
         }
     }
 
     func supportsAttributes(_ selection: EditorSelection?) -> Bool {
         switch (self, selection) {
         case (.zoom, .zoom), (.screen, .screenMotion), (.camera, .cameraMotion),
-             (.mosaic, .mosaic), (.sticker, .sticker): true
-        default: false
+             (.mosaic, .mosaic), (.sticker, .sticker): return true
+        default: return false
         }
     }
 }
@@ -37,11 +37,11 @@ private enum EditorClipPasteError: LocalizedError {
     case insufficientSpace, occupiedLane, unavailableImage, unavailableCamera, changedDuringImport
     var errorDescription: String? {
         switch self {
-        case .insufficientSpace: appLocalized("此位置到片尾的时长不足，无法粘贴完整片段。请选择更靠前的位置。")
-        case .occupiedLane: appLocalized("此处已有同轨道动画，无法粘贴完整片段。请在足够长的空白处粘贴。")
-        case .unavailableImage: appLocalized("复制的贴图源文件已不可用，请重新复制该贴图。")
-        case .unavailableCamera: appLocalized("当前项目没有摄像头素材，无法粘贴摄像运动片段。")
-        case .changedDuringImport: appLocalized("导入贴图期间时间线已改变，请重新粘贴。")
+        case .insufficientSpace: return appLocalized("此位置到片尾的时长不足，无法粘贴完整片段。请选择更靠前的位置。")
+        case .occupiedLane: return appLocalized("此处已有同轨道动画，无法粘贴完整片段。请在足够长的空白处粘贴。")
+        case .unavailableImage: return appLocalized("复制的贴图源文件已不可用，请重新复制该贴图。")
+        case .unavailableCamera: return appLocalized("当前项目没有摄像头素材，无法粘贴摄像运动片段。")
+        case .changedDuringImport: return appLocalized("导入贴图期间时间线已改变，请重新粘贴。")
         }
     }
 }
@@ -60,8 +60,8 @@ final class EditorClipClipboard {
 
     static func isClip(_ selection: EditorSelection?) -> Bool {
         switch selection {
-        case .zoom, .screenMotion, .cameraMotion, .mosaic, .sticker: true
-        default: false
+        case .zoom, .screenMotion, .cameraMotion, .mosaic, .sticker: return true
+        default: return false
         }
     }
 
@@ -366,8 +366,9 @@ extension EditorTimelineView {
         let duration = timelineDuration
         let edgeTolerance = isSnappingEnabled ? 7 * duration / Double(max(timelineContentWidth, 1)) : 0
         playbackController.pause()
+        let clipPasteBinding = $clipPasteTask
         clipPasteTask = Task { @MainActor in
-            defer { clipPasteTask = nil }
+            defer { clipPasteBinding.wrappedValue = nil }
             do {
                 guard let pasted = try await EditorClipClipboard.shared.pasteClip(
                     into: editorStore, context: context, at: time, outputDuration: duration,

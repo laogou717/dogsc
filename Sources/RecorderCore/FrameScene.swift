@@ -92,9 +92,9 @@ public enum FrameScreenChromeKind: Equatable, Sendable {
 
     public var isDevice: Bool {
         switch self {
-        case .window, .browser: false
+        case .window, .browser: return false
         case .devicePhonePortrait, .devicePhoneLandscape,
-             .deviceTabletPortrait, .deviceTabletLandscape: true
+             .deviceTabletPortrait, .deviceTabletLandscape: return true
         }
     }
 
@@ -164,8 +164,8 @@ public enum FrameScreenDecoration: Equatable, Sendable {
 
     public var projectionRect: CompositionRect? {
         switch self {
-        case .none: nil
-        case let .chrome(chrome): chrome.outerRect
+        case .none: return nil
+        case let .chrome(chrome): return chrome.outerRect
         }
     }
 }
@@ -1170,19 +1170,20 @@ public enum FrameSceneEvaluator {
             || style == .devicePhone || style == .deviceTablet
             || style == .devicePhonePortrait || style == .devicePhoneLandscape
             || style == .deviceTabletPortrait || style == .deviceTabletLandscape
-        let kind: FrameScreenChromeKind = switch style {
-        case .browserLight, .browserDark: .browser
+        let kind: FrameScreenChromeKind
+        switch style {
+        case .browserLight, .browserDark: kind = .browser
         case .devicePhone:
-            geometry.finalRect.width >= geometry.finalRect.height
+            kind = geometry.finalRect.width >= geometry.finalRect.height
                 ? .devicePhoneLandscape : .devicePhonePortrait
         case .deviceTablet:
-            geometry.finalRect.width >= geometry.finalRect.height
+            kind = geometry.finalRect.width >= geometry.finalRect.height
                 ? .deviceTabletLandscape : .deviceTabletPortrait
-        case .devicePhonePortrait: .devicePhonePortrait
-        case .devicePhoneLandscape: .devicePhoneLandscape
-        case .deviceTabletPortrait: .deviceTabletPortrait
-        case .deviceTabletLandscape: .deviceTabletLandscape
-        case .windowLight, .windowDark, .none: .window
+        case .devicePhonePortrait: kind = .devicePhonePortrait
+        case .devicePhoneLandscape: kind = .devicePhoneLandscape
+        case .deviceTabletPortrait: kind = .deviceTabletPortrait
+        case .deviceTabletLandscape: kind = .deviceTabletLandscape
+        case .windowLight, .windowDark, .none: kind = .window
         }
         let authoredOuterRadius = min(max(
             outerCornerRadius ?? (kind.isDevice ? min(outerRect.width, outerRect.height) * (kind.isPhone ? 0.11 : 0.065) / max(scale, 0.0001) : style.defaultOuterCornerRadius),

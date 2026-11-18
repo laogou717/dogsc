@@ -739,37 +739,41 @@ struct EditorView: View {
                 .fixedSize(horizontal: true, vertical: false)
                 persistenceIndicator
                 EditorToolbarDivider()
-                Button { undoManager?.undo() } label: {
-                    EditorToolbarIconSurface(systemName: "arrow.uturn.backward")
+                Group {
+                    Button { undoManager?.undo() } label: {
+                        EditorToolbarIconSurface(systemName: "arrow.uturn.backward")
+                    }
+                    .buttonStyle(EditorToolbarPressButtonStyle())
+                    .disabled(isCropping || undoManager?.canUndo != true)
+                    .help("撤销（⌘Z）").accessibilityLabel("撤销")
+                    Button { undoManager?.redo() } label: {
+                        EditorToolbarIconSurface(systemName: "arrow.uturn.forward")
+                    }
+                    .buttonStyle(EditorToolbarPressButtonStyle())
+                    .disabled(isCropping || undoManager?.canRedo != true)
+                    .help("重做（⌘⇧Z）").accessibilityLabel("重做")
                 }
-                .buttonStyle(EditorToolbarPressButtonStyle())
-                .disabled(isCropping || undoManager?.canUndo != true)
-                .help("撤销（⌘Z）").accessibilityLabel("撤销")
-                Button { undoManager?.redo() } label: {
-                    EditorToolbarIconSurface(systemName: "arrow.uturn.forward")
-                }
-                .buttonStyle(EditorToolbarPressButtonStyle())
-                .disabled(isCropping || undoManager?.canRedo != true)
-                .help("重做（⌘⇧Z）").accessibilityLabel("重做")
                 Spacer(minLength: 16)
-                stylePresetControl(compact: layout.isCompact)
-                    .disabled(isCropping || isSavingStylePreset)
-                    .help("保存或复用完整场景配置")
-                EditorAppearanceToggleButton()
-                Button { AppSettingsWindowController.shared.show() } label: {
-                    EditorToolbarIconSurface(systemName: "gearshape")
+                Group {
+                    stylePresetControl(compact: layout.isCompact)
+                        .disabled(isCropping || isSavingStylePreset)
+                        .help("保存或复用完整场景配置")
+                    EditorAppearanceToggleButton()
+                    Button { AppSettingsWindowController.shared.show() } label: {
+                        EditorToolbarIconSurface(systemName: "gearshape")
+                    }
+                    .buttonStyle(EditorToolbarPressButtonStyle())
+                    .help("设置（⌘,）").accessibilityLabel("设置")
+                    .accessibilityIdentifier("editor.app-settings")
+                    Button { hostActions.deleteProject() } label: {
+                        EditorToolbarIconSurface(systemName: "trash")
+                    }
+                    .buttonStyle(EditorToolbarPressButtonStyle())
+                    .disabled(isCropping || isEditingTitle)
+                    .help("删除当前项目…")
+                    .accessibilityLabel("删除当前项目")
+                    .accessibilityIdentifier("editor.project.delete")
                 }
-                .buttonStyle(EditorToolbarPressButtonStyle())
-                .help("设置（⌘,）").accessibilityLabel("设置")
-                .accessibilityIdentifier("editor.app-settings")
-                Button { hostActions.deleteProject() } label: {
-                    EditorToolbarIconSurface(systemName: "trash")
-                }
-                .buttonStyle(EditorToolbarPressButtonStyle())
-                .disabled(isCropping || isEditingTitle)
-                .help("删除当前项目…")
-                .accessibilityLabel("删除当前项目")
-                .accessibilityIdentifier("editor.project.delete")
                 EditorToolbarDivider()
                 Button { presentExport(scope: .fullProject) } label: {
                     HStack(spacing: 6) {

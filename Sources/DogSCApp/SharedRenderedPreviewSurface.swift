@@ -7,6 +7,7 @@ import QuartzCore
 import RecorderCore
 import SwiftUI
 
+@MainActor
 struct SharedRenderedPreviewView: NSViewRepresentable {
     var presentationMode = 0
     let screenOutput: AVPlayerItemVideoOutput?
@@ -172,9 +173,21 @@ final class SharedRenderedPreviewNSView: NSView {
         qos: .userInitiated,
         autoreleaseFrequency: .workItem
     )
-    /// 主线程写入、renderQueue 读取（仅作过期启发式判断，UInt64 对齐读写在
-    /// ARM 上是原子的；最严格的一致性由主线程应用前的最终比较兜底）。
-    nonisolated(unsafe) var renderGeneration: UInt64 = 0
+    final class PreviewQueueStorage: @unchecked Sendable {
+        var renderGeneration: UInt64 = 0
+        var presentationEpochID: UInt64 = 0
+        var previewRetirementGeneration: UInt64 = 0
+        var queueContext: CIContext?
+        var queueColorContract: FrameColorContract?
+        var queueCommandQueue: MTLCommandQueue?
+        var queuePreparedEffectSignatures = Set<PreviewEffectPrewarmSignature>()
+    }
+    let queueStorage = PreviewQueueStorage()
+
+    nonisolated var renderGeneration: UInt64 {
+        get { queueStorage.renderGeneration }
+        set { queueStorage.renderGeneration = newValue }
+    }
     /// Identity is main-actor state; the aligned UInt64 token is the only value
     /// read by the render queue. Do not share the multi-word identity itself
     /// across queues, because a pause could otherwise be observed half-written.
@@ -183,17 +196,30 @@ final class SharedRenderedPreviewNSView: NSView {
         discontinuityID: nil,
         isPlaying: false
     )
-    nonisolated(unsafe) var presentationEpochID: UInt64 = 0
-    /// Main actor issues/cancels retirement generations; the render queue reads
-    /// this aligned token before touching a layer whose window may have resumed.
-    nonisolated(unsafe) var previewRetirementGeneration: UInt64 = 0
-    /// 仅 renderQueue 访问的上下文缓存。
-    nonisolated(unsafe) var queueContext: CIContext?
-    nonisolated(unsafe) var queueColorContract: FrameColorContract?
-    nonisolated(unsafe) var queueCommandQueue: MTLCommandQueue?
-    nonisolated(unsafe) var queuePreparedEffectSignatures = Set<
-        PreviewEffectPrewarmSignature
-    >()
+    nonisolated var presentationEpochID: UInt64 {
+        get { queueStorage.presentationEpochID }
+        set { queueStorage.presentationEpochID = newValue }
+    }
+    nonisolated var previewRetirementGeneration: UInt64 {
+        get { queueStorage.previewRetirementGeneration }
+        set { queueStorage.previewRetirementGeneration = newValue }
+    }
+    nonisolated var queueContext: CIContext? {
+        get { queueStorage.queueContext }
+        set { queueStorage.queueContext = newValue }
+    }
+    nonisolated var queueColorContract: FrameColorContract? {
+        get { queueStorage.queueColorContract }
+        set { queueStorage.queueColorContract = newValue }
+    }
+    nonisolated var queueCommandQueue: MTLCommandQueue? {
+        get { queueStorage.queueCommandQueue }
+        set { queueStorage.queueCommandQueue = newValue }
+    }
+    nonisolated var queuePreparedEffectSignatures: Set<PreviewEffectPrewarmSignature> {
+        get { queueStorage.queuePreparedEffectSignatures }
+        set { queueStorage.queuePreparedEffectSignatures = newValue }
+    }
 
     override func makeBackingLayer() -> CALayer {
         Self.makePreviewMetalLayer()

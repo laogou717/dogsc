@@ -206,72 +206,76 @@ struct EditorSegmentedControl<Option: Hashable>: View {
     @Environment(\.editorInsideTile) private var insideTile
     @State private var hoveredOption: Option?
 
+    @ViewBuilder
+    private func optionButton(_ option: Option) -> some View {
+        let isSelected = selection == option
+        let localizedTitle = appLocalized(title(option))
+        AppChoiceButton(isSelected: isSelected) {
+            withAnimation(SpringMotion.settle) {
+                selection = option
+            }
+        } label: {
+            ZStack {
+                if isSelected {
+                    // The settings thumb: one raised slab travelling in a recessed track.
+                    EditorRaisedThumb(shape: Capsule(style: .continuous))
+                        .matchedGeometryEffect(id: "segmentActiveIndicator", in: segmentNamespace)
+                }
+                Group {
+                    if let systemName = icon(option) {
+                        HStack(spacing: 6) {
+                            Group {
+                                if let kind = EditorToolbarIconSurface.lineIcon(for: systemName) {
+                                    AppLineIcon(kind: kind, size: 15)
+                                } else {
+                                    EditorSymbol(systemName, size: 14)
+                                }
+                            }
+                            .modifier(AppChoiceIconFeedback())
+                            Text(localizedTitle)
+                        }
+                    } else {
+                        Text(localizedTitle)
+                            .modifier(AppChoiceIconFeedback())
+                    }
+                }
+                .modifier(AppChoiceContentFeedback())
+                .font(.appUI(size: 13, weight: isSelected ? .semibold : .regular))
+                .foregroundStyle(
+                    isSelected
+                        ? (palette?.ink ?? EditorTheme.primaryText)
+                        : hoveredOption == option ? EditorTheme.primaryText : EditorTheme.secondaryText
+                )
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: EditorInterfaceHeight.selection)
+            // The whole segment is the target. Without an explicit
+            // shape only the glyphs hit-test, and the pressed glyph
+            // shrinks, so a release could land "outside" the button.
+            .contentShape(Capsule(style: .continuous))
+        }
+        .appButtonKeyboardFocus(in: Capsule(style: .continuous))
+        .frame(maxWidth: .infinity)
+        .frame(height: EditorInterfaceHeight.selection)
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            withAnimation(SpringMotion.hover) {
+                if hovering { hoveredOption = option }
+                else if hoveredOption == option { hoveredOption = nil }
+            }
+        }
+        .help(appLocalized(optionHelp?(option) ?? title(option)))
+        .accessibilityLabel(accessibilityTitle.map { appLocalized($0(option)) } ?? localizedTitle)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
     var body: some View {
         HStack(spacing: 2) {
             ForEach(options, id: \.self) { option in
-                let isSelected = selection == option
-                let localizedTitle = appLocalized(title(option))
-                AppChoiceButton(isSelected: isSelected) {
-                    withAnimation(SpringMotion.settle) {
-                        selection = option
-                    }
-                } label: {
-                    ZStack {
-                        if isSelected {
-                            // The settings thumb: one raised slab travelling in a recessed track.
-                            EditorRaisedThumb(shape: Capsule(style: .continuous))
-                                .matchedGeometryEffect(id: "segmentActiveIndicator", in: segmentNamespace)
-                        }
-                        Group {
-                            if let systemName = icon(option) {
-                                HStack(spacing: 6) {
-                                    Group {
-                                        if let kind = EditorToolbarIconSurface.lineIcon(for: systemName) {
-                                            AppLineIcon(kind: kind, size: 15)
-                                        } else {
-                                            EditorSymbol(systemName, size: 14)
-                                        }
-                                    }
-                                    .modifier(AppChoiceIconFeedback())
-                                    Text(localizedTitle)
-                                }
-                            } else {
-                                Text(localizedTitle)
-                                    .modifier(AppChoiceIconFeedback())
-                            }
-                        }
-                        .modifier(AppChoiceContentFeedback())
-                        .font(.appUI(size: 13, weight: isSelected ? .semibold : .regular))
-                        .foregroundStyle(
-                            isSelected
-                                ? (palette?.ink ?? EditorTheme.primaryText)
-                                : hoveredOption == option ? EditorTheme.primaryText : EditorTheme.secondaryText
-                        )
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                        .multilineTextAlignment(.center)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .frame(height: EditorInterfaceHeight.selection)
-                    // The whole segment is the target. Without an explicit
-                    // shape only the glyphs hit-test, and the pressed glyph
-                    // shrinks, so a release could land "outside" the button.
-                    .contentShape(Capsule(style: .continuous))
-                }
-
-                .appButtonKeyboardFocus(in: Capsule(style: .continuous))
-                .frame(maxWidth: .infinity)
-                .frame(height: EditorInterfaceHeight.selection)
-                .contentShape(Rectangle())
-                .onHover { hovering in
-                    withAnimation(SpringMotion.hover) {
-                        if hovering { hoveredOption = option }
-                        else if hoveredOption == option { hoveredOption = nil }
-                    }
-                }
-                .help(appLocalized(optionHelp?(option) ?? title(option)))
-                .accessibilityLabel(accessibilityTitle.map { appLocalized($0(option)) } ?? localizedTitle)
-                .accessibilityAddTraits(isSelected ? .isSelected : [])
+                optionButton(option)
             }
         }
         .padding(2)

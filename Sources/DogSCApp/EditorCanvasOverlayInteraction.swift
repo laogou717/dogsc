@@ -111,6 +111,144 @@ extension CanvasPreview {
     }
 
     @ViewBuilder
+    private func stickerSelectedControls(
+        sticker: FrameStickerScene,
+        center: CGPoint,
+        width: CGFloat,
+        height: CGFloat,
+        canvasSize: CGSize,
+        interactionZIndex: Double,
+        selection: EditorSelection
+    ) -> some View {
+        ForEach(OverlayResizeCorner.allCases) { corner in
+            let isResizing = overlayResizeSelection == selection
+            let point = stickerHandlePoint(
+                corner,
+                center: center,
+                size: CGSize(width: width, height: height),
+                rotation: sticker.rotationRadians
+            )
+            EditorCanvasHandle(color: EditorConsole.Track.overlay.fill, active: isResizing)
+                .position(point)
+                .highPriorityGesture(stickerResizeGesture(
+                    id: sticker.id,
+                    center: center,
+                    handle: point
+                ))
+                .zIndex(interactionZIndex + 1)
+        }
+
+        let rotationGeometry = stickerRotationHandleGeometry(
+            center: center,
+            size: CGSize(width: width, height: height),
+            rotation: sticker.rotationRadians,
+            canvasSize: canvasSize
+        )
+        let isRotating = stickerRotationOrigin?.id == sticker.id
+        Path { path in
+            path.move(to: rotationGeometry.anchor)
+            path.addLine(to: rotationGeometry.handle)
+        }
+        .stroke(
+            EditorConsole.Track.overlay.fill.opacity(isRotating ? 1 : 0.8),
+            style: StrokeStyle(lineWidth: isRotating ? 1.75 : 1.25)
+        )
+        .frame(width: canvasSize.width, height: canvasSize.height)
+        .allowsHitTesting(false)
+        .zIndex(interactionZIndex + 1)
+
+        EditorCanvasHandle(color: EditorConsole.Track.overlay.fill, active: isRotating, size: 20)
+            .overlay {
+                AppLineIcon(kind: .refresh, size: 11)
+                    .foregroundStyle(EditorConsole.Track.overlay.ink)
+                    .allowsHitTesting(false)
+            }
+            .frame(width: 34, height: 34)
+            .contentShape(Rectangle())
+            .position(rotationGeometry.handle)
+            .highPriorityGesture(stickerRotationGesture(
+                id: sticker.id,
+                center: center,
+                handle: rotationGeometry.handle
+            ))
+            .help("拖动旋转贴图")
+            .accessibilityHidden(true)
+            .zIndex(interactionZIndex + 2)
+    }
+
+    @ViewBuilder
+    private func frontOverlayStickerItem(
+        _ sticker: FrameStickerScene,
+        canvasSize: CGSize
+    ) -> some View {
+        let width: CGFloat = canvasSize.width * CGFloat(sticker.width) * CGFloat(sticker.scale)
+        let sourceSize = resolvedStickerImages[sticker.relativePath]?.size
+            ?? NSSize(width: 1, height: 1)
+        let sourceH: CGFloat = max(sourceSize.height, 1)
+        let sourceW: CGFloat = max(sourceSize.width, 1)
+        let height: CGFloat = width * sourceH / sourceW
+        let posX: CGFloat = CGFloat(sticker.position.x + sticker.offset.x)
+        let posY: CGFloat = CGFloat(sticker.position.y + sticker.offset.y)
+        let center = CGPoint(
+            x: canvasSize.width * posX,
+            y: canvasSize.height * posY
+        )
+        let selection = EditorSelection.sticker(sticker.id)
+        let selected = editorStore.selection == selection
+        let chrome = canvasObjectChrome(for: selection)
+        let interactionZIndex: Double = selected
+            ? 10_000.0
+            : Double(sticker.layerIndex)
+        Group {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(chrome.fillColor)
+                .contentShape(Rectangle())
+                .overlay {
+                    if chrome.showsOutline {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .stroke(chrome.strokeColor, lineWidth: chrome.lineWidth)
+                    }
+                }
+                .shadow(color: chrome.glowColor, radius: chrome.glowRadius)
+                .frame(width: width, height: height)
+                .rotationEffect(.radians(sticker.rotationRadians))
+                .position(center)
+                .onTapGesture {
+                    onCanvasFocused()
+                    editorStore.selection = selection
+                }
+                .gesture(overlayMoveGesture(
+                    selection: selection,
+                    canvasSize: canvasSize,
+                    elementSize: CGSize(width: width, height: height)
+                ))
+                .onHover {
+                    updateCanvasHover(selection, hovering: $0)
+                }
+                .accessibilityLabel("贴图")
+                .accessibilityHint("点击以选中，拖动以调整位置")
+                .accessibilityAddTraits(
+                    selected ? [.isButton, .isSelected] : .isButton
+                )
+                .accessibilityAction {
+                    editorStore.selection = selection
+                }
+                .zIndex(interactionZIndex)
+            if selected {
+                stickerSelectedControls(
+                    sticker: sticker,
+                    center: center,
+                    width: width,
+                    height: height,
+                    canvasSize: canvasSize,
+                    interactionZIndex: interactionZIndex,
+                    selection: selection
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
     func frontOverlaySelectionTargets(
         scene: FrameScene,
         canvasSize: CGSize,
@@ -118,119 +256,8 @@ extension CanvasPreview {
     ) -> some View {
         ZStack(alignment: .topLeading) {
             ForEach(scene.stickers, id: \.id) { sticker in
-                let width = canvasSize.width * sticker.width * sticker.scale
-                let sourceSize = resolvedStickerImages[sticker.relativePath]?.size
-                    ?? NSSize(width: 1, height: 1)
-                let height = width * max(sourceSize.height, 1)
-                    / max(sourceSize.width, 1)
-                let center = CGPoint(
-                    x: canvasSize.width * (sticker.position.x + sticker.offset.x),
-                    y: canvasSize.height * (sticker.position.y + sticker.offset.y)
-                )
-                let selection = EditorSelection.sticker(sticker.id)
-                let selected = editorStore.selection == selection
-                let chrome = canvasObjectChrome(for: selection)
-                // Keep authored sticker order in the rendered frame, but lift
-                // the selected sticker's transparent interaction chrome above
-                // later stickers and the progress hit surface. Otherwise a
-                // lower sticker selected from the timeline/inspector becomes
-                // impossible to move, resize or rotate wherever it overlaps a
-                // higher layer.
-                let interactionZIndex = selected
-                    ? 10_000.0
-                    : Double(sticker.layerIndex)
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(chrome.fillColor)
-                    .contentShape(Rectangle())
-                    .overlay {
-                        if chrome.showsOutline {
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .stroke(chrome.strokeColor, lineWidth: chrome.lineWidth)
-                        }
-                    }
-                    .shadow(color: chrome.glowColor, radius: chrome.glowRadius)
-                    .frame(width: width, height: height)
-                    .rotationEffect(.radians(sticker.rotationRadians))
-                    .position(center)
-                    .onTapGesture {
-                        onCanvasFocused()
-                        editorStore.selection = selection
-                    }
-                    .gesture(overlayMoveGesture(
-                        selection: selection,
-                        canvasSize: canvasSize,
-                        elementSize: CGSize(width: width, height: height)
-                    ))
-                    .onHover {
-                        updateCanvasHover(selection, hovering: $0)
-                    }
-                    .accessibilityLabel("贴图")
-                    .accessibilityHint("点击以选中，拖动以调整位置")
-                    .accessibilityAddTraits(
-                        selected ? [.isButton, .isSelected] : .isButton
-                    )
-                    .accessibilityAction {
-                        editorStore.selection = selection
-                    }
-                    .zIndex(interactionZIndex)
-                if selected {
-                    ForEach(OverlayResizeCorner.allCases) { corner in
-                        let isResizing = overlayResizeSelection == selection
-                        let point = stickerHandlePoint(
-                            corner,
-                            center: center,
-                            size: CGSize(width: width, height: height),
-                            rotation: sticker.rotationRadians
-                        )
-                        EditorCanvasHandle(color: EditorConsole.Track.overlay.fill, active: isResizing)
-                            .position(point)
-                            .highPriorityGesture(stickerResizeGesture(
-                                id: sticker.id,
-                                center: center,
-                                handle: point
-                            ))
-                            .zIndex(interactionZIndex + 1)
-                    }
-
-                    let rotationGeometry = stickerRotationHandleGeometry(
-                        center: center,
-                        size: CGSize(width: width, height: height),
-                        rotation: sticker.rotationRadians,
-                        canvasSize: canvasSize
-                    )
-                    let isRotating = stickerRotationOrigin?.id == sticker.id
-                    Path { path in
-                        path.move(to: rotationGeometry.anchor)
-                        path.addLine(to: rotationGeometry.handle)
-                    }
-                    .stroke(
-                        EditorConsole.Track.overlay.fill.opacity(isRotating ? 1 : 0.8),
-                        style: StrokeStyle(lineWidth: isRotating ? 1.75 : 1.25)
-                    )
-                    .frame(width: canvasSize.width, height: canvasSize.height)
-                    .allowsHitTesting(false)
-                    .zIndex(interactionZIndex + 1)
-
-                    EditorCanvasHandle(color: EditorConsole.Track.overlay.fill, active: isRotating, size: 20)
-                        .overlay {
-                            AppLineIcon(kind: .refresh, size: 11)
-                                .foregroundStyle(EditorConsole.Track.overlay.ink)
-                                .allowsHitTesting(false)
-                        }
-                        .frame(width: 34, height: 34)
-                        .contentShape(Rectangle())
-                        .position(rotationGeometry.handle)
-                        .highPriorityGesture(stickerRotationGesture(
-                            id: sticker.id,
-                            center: center,
-                            handle: rotationGeometry.handle
-                        ))
-                        .help("拖动旋转贴图")
-                        .accessibilityHidden(true)
-                        .zIndex(interactionZIndex + 2)
-                }
+                frontOverlayStickerItem(sticker, canvasSize: canvasSize)
             }
-
         }
         .frame(width: canvasSize.width, height: canvasSize.height)
     }

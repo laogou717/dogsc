@@ -23,9 +23,9 @@ enum RecorderCameraReadiness: Equatable, Sendable {
     var permitsRecording: Bool {
         switch self {
         case .disabled, .ready:
-            true
+            return true
         case .preparing:
-            false
+            return false
         }
     }
 }

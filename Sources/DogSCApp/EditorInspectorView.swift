@@ -126,13 +126,13 @@ struct EditorInspectorView: View {
            let context = primarySegmentContext(id: id) {
             return ("声音", String(format: appLocalized("第 %lld 段"), context.index + 1))
         }
-        return switch tab {
-        case .frame: ("画面", "全片")
-        case .opening: ("开场", "全片")
-        case .zoom: ("运镜", "缩放")
-        case .cursor: ("光标", "全片")
-        case .camera: ("摄像头", "全片基础布局")
-        case .audio: ("声音", "全片")
+        switch tab {
+        case .frame: return ("画面", "全片")
+        case .opening: return ("开场", "全片")
+        case .zoom: return ("运镜", "缩放")
+        case .cursor: return ("光标", "全片")
+        case .camera: return ("摄像头", "全片基础布局")
+        case .audio: return ("声音", "全片")
         }
     }
 
@@ -392,21 +392,22 @@ struct EditorInspectorView: View {
            (selection == .canvas || selection == .screen) {
             return .frameTab(selectedFrameInspectorTab)
         }
-        let kind: EditorInspectorSelectionKind = switch selection {
-        case .canvas: .canvas
-        case .screen: .screen
-        case .primarySegment: .primarySegment
-        case .crop: .crop
-        case .zoomTrack: .zoomTrack
-        case .zoom: .zoom
-        case .screenMotionTrack: .screenMotionTrack
-        case .screenMotion: .screenMotion
-        case .cursor: .cursor
-        case .camera: .camera
-        case .cameraMotion: .cameraMotion
-        case .audio: .audio
-        case .mosaic: .mosaic
-        case .sticker: .sticker
+        let kind: EditorInspectorSelectionKind
+        switch selection {
+        case .canvas: kind = .canvas
+        case .screen: kind = .screen
+        case .primarySegment: kind = .primarySegment
+        case .crop: kind = .crop
+        case .zoomTrack: kind = .zoomTrack
+        case .zoom: kind = .zoom
+        case .screenMotionTrack: kind = .screenMotionTrack
+        case .screenMotion: kind = .screenMotion
+        case .cursor: kind = .cursor
+        case .camera: kind = .camera
+        case .cameraMotion: kind = .cameraMotion
+        case .audio: kind = .audio
+        case .mosaic: kind = .mosaic
+        case .sticker: kind = .sticker
         }
         return .selection(kind)
     }
@@ -682,17 +683,17 @@ struct EditorInspectorView: View {
 
     func openingPresetIcon(_ preset: OpeningSequencePreset) -> String {
         switch preset {
-        case .converge: "arrow.down.right.and.arrow.up.left"
-        case .sideSlide: "arrow.left.and.right"
-        case .light3D: "cube.transparent"
+        case .converge: return "arrow.down.right.and.arrow.up.left"
+        case .sideSlide: return "arrow.left.and.right"
+        case .light3D: return "cube.transparent"
         }
     }
 
     func openingElementIcon(_ element: OpeningSequenceElement) -> String {
         switch element {
-        case .screen: "rectangle.on.rectangle"
-        case .camera: "video.fill"
-        case .stickers: "photo.on.rectangle.angled"
+        case .screen: return "rectangle.on.rectangle"
+        case .camera: return "video.fill"
+        case .stickers: return "photo.on.rectangle.angled"
         }
     }
 
@@ -968,11 +969,12 @@ struct EditorInspectorView: View {
     func cropMaximumPixelValue(_ edge: CropEdge, pixels: CGFloat) -> Int {
         let dimension = max(Double(pixels), 1)
         let crop = cropDraft.clamped()
-        let opposite: Double = switch edge {
-        case .left: crop.right
-        case .right: crop.left
-        case .top: crop.bottom
-        case .bottom: crop.top
+        let opposite: Double
+        switch edge {
+        case .left: opposite = crop.right
+        case .right: opposite = crop.left
+        case .top: opposite = crop.bottom
+        case .bottom: opposite = crop.top
         }
         let minimum = min(max(24 / dimension, 0.001), 0.5)
         return max(Int(floor((1 - opposite - minimum) * dimension)), 0)

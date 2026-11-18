@@ -86,7 +86,49 @@ final class DogSCApplicationDelegate: NSObject,
         DispatchQueue.main.async { [weak self] in
             self?.refreshMainMenuBindings()
         }
+        #if DEBUG
+        installSettingsDiagnosticsIfRequested()
+        #endif
     }
+
+    #if DEBUG
+    /// Diagnostic hook: opening a specific settings page from the command
+    /// line makes it possible to reproduce a crash in that page without
+    /// driving the UI. Harmless when the variable is absent.
+    private func installSettingsDiagnosticsIfRequested() {
+        guard let rawSection = ProcessInfo.processInfo.environment["DOGSC_OPEN_SETTINGS"],
+              let section = AppSettingsSection(rawValue: rawSection) else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            guard let self else { return }
+            self.settingsWindowController.show(section: .general)
+            let delay = ProcessInfo.processInfo.environment["DOGSC_OPEN_SETTINGS_DELAY"]
+                .flatMap(Double.init) ?? 1.5
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.settingsWindowController.selectSectionAnimated(section)
+            }
+            self.runSettingsStressTestIfRequested()
+        }
+    }
+
+    /// Diagnostic replay of the controls on the recording settings page, so a
+    /// crash tied to one of them can be reproduced without driving the UI.
+    private func runSettingsStressTestIfRequested() {
+        guard ProcessInfo.processInfo.environment["DOGSC_SETTINGS_STRESS"] != nil else { return }
+        let defaults = UserDefaults.standard
+        let steps: [(TimeInterval, () -> Void)] = [
+            (3, { defaults.set("roundedSquare", forKey: AppPreferences.recordingCameraPreviewShapeKey) }),
+            (4, { defaults.set("sourceAspect", forKey: AppPreferences.recordingCameraPreviewShapeKey) }),
+            (5, { defaults.set("circle", forKey: AppPreferences.recordingCameraPreviewShapeKey) }),
+            (6, { defaults.set(true, forKey: CaptureDevicePreferenceKey.systemAudioEnabled) }),
+            (8, { defaults.set(false, forKey: CaptureDevicePreferenceKey.systemAudioEnabled) }),
+            (10, { defaults.set(false, forKey: CaptureDevicePreferenceKey.microphoneEnabled) }),
+            (11, { defaults.set(true, forKey: CaptureDevicePreferenceKey.microphoneEnabled) }),
+        ]
+        for (delay, action) in steps {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: action)
+        }
+    }
+    #endif
 
     func application(_ application: NSApplication, open urls: [URL]) {
         guard let url = urls.first else { return }
@@ -488,7 +530,7 @@ final class DogSCApplicationDelegate: NSObject,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            DispatchQueue.main.async {
+            DispatchQueue.main.async { [weak self] in
                 self?.refreshMainMenuBindings()
             }
         }
@@ -608,13 +650,13 @@ enum RecorderPanelPolicy {
     ) -> NSSize? {
         switch phase {
         case .setup:
-            setupSize
+            return setupSize
         case .preparing, .finishing:
-            progressSize
+            return progressSize
         case .recording:
-            NSSize(width: recordingWindowWidth(recordsMicrophone: recordsMicrophone), height: 48)
+            return NSSize(width: recordingWindowWidth(recordsMicrophone: recordsMicrophone), height: 48)
         case .editor, .recordingComplete:
-            nil
+            return nil
         }
     }
 

@@ -138,10 +138,11 @@ extension EditorTimelineView {
 
     func magneticDelta(_ delta: TimeInterval, start: TimeInterval, end: TimeInterval,
                        mode: EditorMotionTimelineEditMode, width: CGFloat, duration: TimeInterval) -> TimeInterval {
-        let offsets: [TimeInterval] = switch mode {
-        case .move: [0, end - start]
-        case .leading: [0]
-        case .trailing: [end - start]
+        let offsets: [TimeInterval]
+        switch mode {
+        case .move: offsets = [0, end - start]
+        case .leading: offsets = [0]
+        case .trailing: offsets = [end - start]
         }
         return magneticTime(start + delta, width: width, duration: duration,
             offsets: offsets, initial: [start, end]) - start

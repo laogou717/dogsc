@@ -88,7 +88,7 @@ extension EditorTimelineView {
 /// final position immediately, because time-bound geometry rejects implicit
 /// animation. Keep that protection and interpolate its input instead.
 struct EditorTimelineColumnLayout<Content: View>: View, Animatable {
-    nonisolated var labelWidth: CGFloat
+    var labelWidth: CGFloat
     @ViewBuilder var content: (CGFloat) -> Content
 
     nonisolated var animatableData: CGFloat {

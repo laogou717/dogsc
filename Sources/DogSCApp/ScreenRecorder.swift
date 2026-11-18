@@ -93,6 +93,7 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
         configuration: CaptureConfiguration,
         outputURL: URL
     ) async throws {
+        appLog("performStart: begin runID=\(run.runID), source=\(configuration.source)", category: "ScreenRecorder")
         lastSystemAudioDiagnostics = nil
 
         // Authorization is completed by the setup permission gate before any
@@ -105,6 +106,7 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
             // identity from the full catalog rather than the visible subset.
             onScreenWindowsOnly: configuration.source != .window
         )
+        appLog("performStart: SCShareableContent fetched. displays=\(content.displays.count), windows=\(content.windows.count)", category: "ScreenRecorder")
 
         let filter: SCContentFilter
         let sourceWidth: Int
@@ -416,7 +418,9 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
            let tap = coreAudioSystemAudioTap as? CoreAudioSystemAudioTap {
             try tap.start()
         }
+        appLog("performStart: calling stream.startCapture()...", category: "ScreenRecorder")
         try await stream.startCapture()
+        appLog("performStart: stream.startCapture() returned successfully", category: "ScreenRecorder")
         if useNativeRecordingOutput {
             if #available(macOS 15.0, *),
                let nativeRecordingSegment,
@@ -433,13 +437,17 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
                 throw ScreenRecorderError.recordingFailed("苹果原生录制后端不可用")
             }
         } else if let captureOutput {
+            appLog("performStart: calling captureOutput.waitForFirstFrame()...", category: "ScreenRecorder")
             firstFrameStartedAt = try await captureOutput.waitForFirstFrame()
+            appLog("performStart: captureOutput.waitForFirstFrame() returned: \(String(describing: firstFrameStartedAt))", category: "ScreenRecorder")
             nativeFirstFrameHostTime = await captureOutput.firstFrameHostTime()
         } else {
             throw ScreenRecorderError.cannotCreateWriter
         }
         if !useNativeRecordingOutput {
+            appLog("performStart: calling audioStream?.startCapture()...", category: "ScreenRecorder")
             try await audioStream?.startCapture()
+            appLog("performStart: audioStream?.startCapture() returned successfully", category: "ScreenRecorder")
         }
         if let error = await captureOutput?.currentTerminalError() { throw error }
         guard runSafety.markCapturing(run) else {

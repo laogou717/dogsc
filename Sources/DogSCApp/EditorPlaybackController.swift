@@ -1174,7 +1174,7 @@ final class EditorPlaybackController: ObservableObject {
             object: item,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.seek(to: 0, pausing: true) }
+            Task { @MainActor [weak self] in self?.seek(to: 0, pausing: true) }
         }
         failureObserver = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemFailedToPlayToEndTime,
@@ -1183,7 +1183,7 @@ final class EditorPlaybackController: ObservableObject {
         ) { [weak self] notification in
             let message = (notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey]
                 as? Error)?.localizedDescription ?? "预览播放失败"
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.primaryPlayer?.pauseTransport()
                 self.cameraPlayer?.pauseTransport()

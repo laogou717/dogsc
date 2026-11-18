@@ -544,10 +544,11 @@ extension AppModel {
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                let result = if closeAfterSave {
-                    try await workspace.moveAndInvalidate(projectSnapshot, to: destination)
+                let result: ProjectMoveReceipt?
+                if closeAfterSave {
+                    result = try await workspace.moveAndInvalidate(projectSnapshot, to: destination)
                 } else {
-                    try await workspace.move(projectSnapshot, to: destination)
+                    result = try await workspace.move(projectSnapshot, to: destination)
                 }
                 guard let result else { return }
 
@@ -819,8 +820,10 @@ extension AppModel {
         let deadline = ContinuousClock.now.advanced(by: .seconds(12))
         pendingRecordingRestartTask = Task { @MainActor [weak self] in
             defer {
-                if self?.pendingRecordingRestartGeneration == generation {
-                    self?.pendingRecordingRestartTask = nil
+                MainActor.assumeIsolated {
+                    if self?.pendingRecordingRestartGeneration == generation {
+                        self?.pendingRecordingRestartTask = nil
+                    }
                 }
             }
             while !Task.isCancelled {

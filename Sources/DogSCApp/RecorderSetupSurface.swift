@@ -101,10 +101,10 @@ struct RecorderSetupSurface: View {
 
     private static func label(for mode: CaptureSource) -> String {
         switch mode {
-        case .display: "显示器"
-        case .window: "窗口"
-        case .area: "区域"
-        case .device: "设备"
+        case .display: return "显示器"
+        case .window: return "窗口"
+        case .area: return "区域"
+        case .device: return "设备"
         }
     }
 }

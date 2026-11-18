@@ -64,7 +64,7 @@ enum TimelineAudioGainProcessor {
             kCFAllocatorDefault, &callbacks,
             kMTAudioProcessingTapCreationFlag_PostEffects, &tap
         )
-        guard status == noErr, let tap else {
+        guard status == noErr, let tapRef = tap else {
             Unmanaged<State>.fromOpaque(storage).release()
             Logger(subsystem: "cn.laogou.dogsc", category: "timeline-audio")
                 .error("Cannot create segmented gain processor: \(status); silencing track")
@@ -74,7 +74,7 @@ enum TimelineAudioGainProcessor {
             return input
         }
         input.setVolume(1, at: .zero)
-        input.audioTapProcessor = tap
+        input.audioTapProcessor = tapRef
         return input
     }
 

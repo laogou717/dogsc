@@ -86,13 +86,16 @@
 ## 从源码构建
 
 <details>
-<summary>需要 Apple Silicon Mac、Xcode 26+ 和你自己的 Apple Development 证书</summary>
+<summary>需要 macOS 13+、Xcode 26+ 和你自己的 Apple Development 证书（Apple Silicon 与 Intel 均可）</summary>
 
 <br>
 
 ```bash
 git clone https://github.com/laogou717/dogsc.git
 cd dogsc
+
+# 一次性准备 Sparkle 二进制（不入库，缺失时构建会提示）
+./scripts/setup-sparkle.sh
 
 # 找到自己证书的 40 位 SHA-1 指纹
 security find-identity -v -p codesigning
@@ -101,11 +104,17 @@ DOGSC_SIGNING_IDENTITY="<SHA-1 指纹>" bash build-app.sh
 open ".build/local/DogSC Dev.app"
 ```
 
-- 脚本完成 Release 编译，组装图标、字体、本地化与 Sparkle，并签名整个 App。单独 `swift build` 不会生成 `.app`。
+- 脚本完成编译，组装图标、字体、本地化与 Sparkle，并签名整个 App。单独 `swift build` 不会生成 `.app`。
+- 不设置 `DOGSC_SIGNING_IDENTITY` 时使用 ad-hoc 签名，适合本机开发；ad-hoc 构建每次重新编译都会改变签名指纹，系统授权需要重新勾选。
 - 开发版 `DogSC Dev`（`cn.laogou.dogsc.dev`）与正式版的偏好和系统权限相互独立，也不接收正式版更新。
-- Xcode 不在 `/Applications` 时，用 `DEVELOPER_DIR` 指定位置。首次构建需要联网下载 Sparkle。
+- Xcode 不在 `/Applications` 时，用 `DEVELOPER_DIR` 指定位置。
+- 生成可分发的安装包：`./scripts/make-dmg.sh`，产物在 `dist/`。
 
 </details>
+
+### Intel Mac（x86_64）
+
+Intel 机型走同一条构建命令。录制的采集后端、系统声音、HEVC 编码参数在 Intel + 较新 macOS 上有单独处理，涉及的问题与排障方法见 [Intel Mac 支持说明](docs/intel-macos.md)。
 
 ## 许可
 

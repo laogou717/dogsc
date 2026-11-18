@@ -187,15 +187,15 @@ public enum StickerAnimationPreset: String, CaseIterable, Codable, Sendable {
 
     public var automaticExit: Self {
         switch self {
-        case .slideLeft: .slideRight
-        case .slideRight: .slideLeft
-        case .slideUp: .slideDown
-        case .slideDown: .slideUp
-        case .slideTopLeft: .slideBottomRight
-        case .slideTopRight: .slideBottomLeft
-        case .slideBottomLeft: .slideTopRight
-        case .slideBottomRight: .slideTopLeft
-        case .none, .fade, .pop: self
+        case .slideLeft: return .slideRight
+        case .slideRight: return .slideLeft
+        case .slideUp: return .slideDown
+        case .slideDown: return .slideUp
+        case .slideTopLeft: return .slideBottomRight
+        case .slideTopRight: return .slideBottomLeft
+        case .slideBottomLeft: return .slideTopRight
+        case .slideBottomRight: return .slideTopLeft
+        case .none, .fade, .pop: return self
         }
     }
 }

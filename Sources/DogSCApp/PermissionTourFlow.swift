@@ -8,9 +8,9 @@ struct PermissionTourFlow: Equatable {
         var firstRequiredStep: Step { !screen ? .screen : !accessibility ? .accessibility : .ready }
         func grants(_ step: Step) -> Bool {
             switch step {
-            case .screen: screen
-            case .accessibility: accessibility
-            case .ready: allGranted
+            case .screen: return screen
+            case .accessibility: return accessibility
+            case .ready: return allGranted
             }
         }
     }

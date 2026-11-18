@@ -186,31 +186,40 @@ enum CaptureDeviceCatalog {
         switch role {
         case .camera:
             discovery = AVCaptureDevice.DiscoverySession(
-                deviceTypes: [.builtInWideAngleCamera, .external, .continuityCamera],
+                deviceTypes: [.builtInWideAngleCamera, .external, .continuityCamera, .externalUnknown],
                 mediaType: .video,
                 position: .unspecified
             )
         case .microphone:
             discovery = AVCaptureDevice.DiscoverySession(
-                deviceTypes: [.microphone],
+                deviceTypes: [.microphone, .builtInMicrophone, .externalUnknown],
                 mediaType: .audio,
                 position: .unspecified
             )
         case .iosDevice:
             guard enableIOSScreenCaptureDevices() else { return [] }
             discovery = AVCaptureDevice.DiscoverySession(
-                deviceTypes: [.external],
+                deviceTypes: [.external, .externalUnknown],
                 mediaType: .muxed,
                 position: .unspecified
             )
         }
 
-        return discovery.devices.filter { device in
+        var devices = discovery.devices.filter { device in
             guard device.isConnected else { return false }
             if role == .iosDevice {
                 return device.modelID == "iOS Device"
             }
             return true
         }
+        if role == .microphone, let defaultMic = AVCaptureDevice.default(for: .audio), defaultMic.isConnected {
+            devices.removeAll(where: { $0.uniqueID == defaultMic.uniqueID })
+            devices.insert(defaultMic, at: 0)
+        }
+        if role == .camera, let defaultCam = AVCaptureDevice.default(for: .video), defaultCam.isConnected {
+            devices.removeAll(where: { $0.uniqueID == defaultCam.uniqueID })
+            devices.insert(defaultCam, at: 0)
+        }
+        return devices
     }
 }

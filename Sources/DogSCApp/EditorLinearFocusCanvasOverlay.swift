@@ -45,7 +45,7 @@ struct EditorLinearFocusCanvasOverlay: View {
     }
     private func projectedAngle(at point: CGPoint, along direction: CGPoint) -> Double {
         let a = projected(point), b = projected(offset(point, along: direction, by: 2))
-        return atan2(b.y - a.y, b.x - a.x) * 180 / .pi
+        return Double(atan2(b.y - a.y, b.x - a.x)) * 180 / Double.pi
     }
 
     var body: some View {

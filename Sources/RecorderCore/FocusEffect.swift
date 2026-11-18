@@ -87,10 +87,11 @@ public enum FocusEffectEvaluator {
         guard effect.isValid, effect.blur > 0 || effect.dimming > 0 else { return nil }
         let amount = progress(timing: timing, at: time, holds: holds, motion: motion)
         guard amount > 0 else { return nil }
-        let center: NormalizedPoint = switch effect.target {
-        case .animation: anchor
-        case .pointer: pointer ?? anchor
-        case .fixed: effect.center
+        let center: NormalizedPoint
+        switch effect.target {
+        case .animation: center = anchor
+        case .pointer: center = pointer ?? anchor
+        case .fixed: center = effect.center
         }
         return FrameFocusScene(effect: effect, center: center.constrained(to: 0), progress: amount)
     }

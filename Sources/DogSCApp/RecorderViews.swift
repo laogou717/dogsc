@@ -455,9 +455,9 @@ enum FrameInspectorTab: String, CaseIterable, Identifiable {
 
     var icon: String {
         switch self {
-        case .background: "square.3.layers.3d"
-        case .layout: "rectangle.inset.filled"
-        case .mockup: "macwindow"
+        case .background: return "square.3.layers.3d"
+        case .layout: return "rectangle.inset.filled"
+        case .mockup: return "macwindow"
         }
     }
 }
