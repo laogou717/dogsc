@@ -18,3 +18,6 @@ DerivedData/
 # the rest of the archive contents are downloaded by scripts/setup-sparkle.sh.
 Sparkle-local/*
 !Sparkle-local/Package.swift
+
+# Packaged installers
+dist/
