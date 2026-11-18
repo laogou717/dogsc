@@ -92,6 +92,15 @@ final class AppSettingsWindowController {
 
     }
 
+    /// Diagnostic entry point used to replay a settings tab switch from the
+    /// command line while tracking down a crash.
+    func selectSectionAnimated(_ section: AppSettingsSection) {
+        guard navigation.selectedSection != section else { return }
+        withAnimation(RecorderMotion.settle) {
+            navigation.selectedSection = section
+        }
+    }
+
     func hideForFirstLaunchGuide() {
         pendingPresentation = nil
         controller?.window?.orderOut(nil)
@@ -150,22 +159,16 @@ final class AppSettingsWindowController {
     /// travel on the island's morph spring with the top edge held in place.
     private func followContentHeight(_ height: CGFloat) {
         guard let window = controller?.window else { return }
+        guard height.isFinite else { return }
         let target = min(max(height, 240), Self.maximumContentHeight).rounded()
         lastPreferredHeight = target
-        guard window.isVisible, !RecorderMotion.reduces else {
-            heightAnimation?.stop()
-            WindowHeightSpring.apply(target, to: window, width: Self.contentWidth)
-            return
-        }
-        if let heightAnimation, heightAnimation.isRunning {
-            heightAnimation.retarget(target)
-        } else {
-            let current = window.contentRect(forFrameRect: window.frame).height
-            guard abs(current - target) > 0.5 else { return }
-            let spring = WindowHeightSpring(window: window, width: Self.contentWidth, from: current, to: target)
-            heightAnimation = spring
-            spring.start()
-        }
+        // The page island already animates its own height. Driving the window
+        // with a 120 Hz frame timer on top of that made AppKit re-enter
+        // constraint solving while it was collecting baseline views, which
+        // traps the process. Match the page directly instead.
+        heightAnimation?.stop()
+        heightAnimation = nil
+        WindowHeightSpring.apply(target, to: window, width: Self.contentWidth)
     }
 }
 

@@ -100,7 +100,11 @@ struct SettingsIsland<Content: View>: View {
                             .frame(maxWidth: .infinity, alignment: .top)
                             .fixedSize(horizontal: false, vertical: true)
                             .onGeometryChange(for: CGFloat.self) { $0.size.height.rounded(.up) } action: { measured in
-                                guard measured > 0 else { return }
+                                // macOS 26 can report a non-finite height while
+                                // the hosting view is being resized. Passing
+                                // that into a frame triggers an AppKit layout
+                                // trap deep inside baseline collection.
+                                guard measured.isFinite, measured > 0 else { return }
                                 if contentHeight == 0 {
                                     // The first page establishes the island
                                     // without growing from an invented size.
