@@ -32,13 +32,15 @@ if [[ -e "$app_output" ]] && pgrep -x DogSC >/dev/null; then
 fi
 
 build_configuration="${DOGSC_BUILD_CONFIGURATION:-debug}"
-swift build -c "$build_configuration" --product DogSC
-binary_dir="$(swift build -c "$build_configuration" --show-bin-path)"
-sparkle_source="$project_root/.build/artifacts/sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
+swift build --disable-sandbox -c "$build_configuration" --product DogSC
+binary_dir="$(swift build --disable-sandbox -c "$build_configuration" --show-bin-path)"
+sparkle_source="$project_root/Sparkle-local/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
 if [[ ! -d "$sparkle_source" ]]; then
-  sparkle_source="$project_root/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
+  echo "Sparkle.xcframework is missing." >&2
+  echo "Run ./scripts/setup-sparkle.sh once to download the official binary, then rebuild." >&2
+  exit 1
 fi
-[[ -f "$binary_dir/DogSC" && -d "$sparkle_source" ]]
+[[ -f "$binary_dir/DogSC" ]]
 
 staging_dir="$(mktemp -d "${TMPDIR:-/tmp/}dogsc-build.XXXXXX")"
 trap 'rm -rf "$staging_dir"' EXIT

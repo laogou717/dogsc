@@ -13,3 +13,8 @@ DerivedData/
 *.dogscproject/
 *.silkyproject/
 /open-check-project.command
+
+# Local Sparkle mirror: only Package.swift is committed. The xcframework and
+# the rest of the archive contents are downloaded by scripts/setup-sparkle.sh.
+Sparkle-local/*
+!Sparkle-local/Package.swift

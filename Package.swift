@@ -10,10 +10,7 @@ let package = Package(
         .executable(name: "DogSC", targets: ["DogSCApp"]),
     ],
     dependencies: [
-        .package(
-            url: "https://github.com/sparkle-project/Sparkle",
-            exact: "2.9.4"
-        ),
+        .package(path: "Sparkle-local"),
     ],
     targets: [
         .target(
@@ -24,7 +21,7 @@ let package = Package(
             name: "DogSCApp",
             dependencies: [
                 "RecorderCore",
-                .product(name: "Sparkle", package: "Sparkle"),
+                .product(name: "Sparkle", package: "Sparkle-local"),
             ],
             path: "Sources/DogSCApp",
             linkerSettings: [
