@@ -154,7 +154,11 @@ public extension ContentTransition {
 
 // MARK: - SwiftUI WindowDragGesture Compatibility
 
-public typealias WindowDragGesture = TapGesture
+// Intentionally no `WindowDragGesture` alias here. A same-named typealias in
+// this module silently shadows SwiftUI's real gesture, so every
+// `.gesture(WindowDragGesture())` resolved to a TapGesture and the recorder
+// bar could never be moved. Call sites already guard the official gesture with
+// `if #available(macOS 15.0, *)`, which is enough for the macOS 13 runtime.
 
 // MARK: - SwiftUI Scene Launch & Restoration Behavior Compatibility
 
