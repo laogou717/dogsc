@@ -84,7 +84,7 @@ final class RecorderPanelPointerRegion {
         guard NSEvent.pressedMouseButtons == 0 else { return }
         let point = islandView.convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
         let bounds = islandView.bounds
-        let radius = min(bounds.width, bounds.height) / 2
+        let radius = min(RecorderStyle.islandRadius, min(bounds.width, bounds.height) / 2)
         let outline = NSBezierPath(roundedRect: bounds, xRadius: radius, yRadius: radius)
         window.ignoresMouseEvents = !outline.contains(point)
     }

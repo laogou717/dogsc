@@ -23,17 +23,4 @@ public struct MediaTimeRange: Equatable, Sendable {
         start + duration
     }
 
-    /// Maps an absolute presentation timestamp into a fixed-size timeline
-    /// bucket. The range is end-exclusive, matching Core Media time ranges.
-    public func bucketIndex(
-        forPresentationTime timestamp: TimeInterval,
-        bucketCount: Int
-    ) -> Int? {
-        guard bucketCount > 0,
-              timestamp.isFinite,
-              timestamp >= start,
-              timestamp < end else { return nil }
-        let normalized = (timestamp - start) / duration
-        return min(max(Int(normalized * Double(bucketCount)), 0), bucketCount - 1)
-    }
 }

@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// File-system boundary shared by export request validation and final output
@@ -6,7 +7,13 @@ import Foundation
 enum ExportFileTransaction {
     static func collides(outputURL: URL, inputURLs: [URL]) -> Bool {
         let outputPath = canonicalPath(outputURL)
-        return inputURLs.contains { canonicalPath($0) == outputPath }
+        var output = stat()
+        let exists = stat(outputPath, &output) == 0
+        return inputURLs.contains { input in
+            if canonicalPath(input) == outputPath { return true }
+            var file = stat()
+            return exists && stat(input.path, &file) == 0 && file.st_dev == output.st_dev && file.st_ino == output.st_ino
+        }
     }
 
     static func makeTemporaryURL(for finalURL: URL) -> URL {

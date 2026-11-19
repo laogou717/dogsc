@@ -13,16 +13,16 @@ extension EditorInspectorView {
             editorStore.selection = .screenMotion(active.id)
             return
         }
-        let style = editorStore.project.motion.defaultScreenMotion
+        let style = editorStore.sceneEditingProject.motion.defaultScreenMotion
             ?? AppPreferences.rememberedScreenMotionCreationStyle
         guard let timing = EditorTimelineMath.fitMotionTiming(
             start: playbackTime,
             end: playbackTime,
             among: clips.map(\.timing),
             duration: timelineDuration,
-            easing: style?.easing ?? editorStore.project.motion.defaultZoomEasing,
-            returnDuration: style?.returnDuration ?? editorStore.project.motion.defaultZoomTransitionDuration,
-            leadInDuration: style?.leadInDuration ?? editorStore.project.motion.defaultZoomTransitionDuration
+            easing: style?.easing ?? editorStore.sceneEditingProject.motion.defaultZoomEasing,
+            returnDuration: style?.returnDuration ?? editorStore.sceneEditingProject.motion.defaultZoomTransitionDuration,
+            leadInDuration: style?.leadInDuration ?? editorStore.sceneEditingProject.motion.defaultZoomTransitionDuration
         ) else {
             onError("播放头附近没有空间添加屏幕 3D，请先移动播放头。")
             return
@@ -52,9 +52,9 @@ extension EditorInspectorView {
             end: playbackTime,
             among: clips.map(\.timing),
             duration: timelineDuration,
-            easing: editorStore.project.motion.defaultZoomEasing,
-            returnDuration: editorStore.project.motion.defaultZoomTransitionDuration,
-            leadInDuration: editorStore.project.motion.defaultZoomTransitionDuration
+            easing: editorStore.sceneEditingProject.motion.defaultZoomEasing,
+            returnDuration: editorStore.sceneEditingProject.motion.defaultZoomTransitionDuration,
+            leadInDuration: editorStore.sceneEditingProject.motion.defaultZoomTransitionDuration
         ) else {
             onError("播放头附近没有空间添加摄像运动，请先移动播放头。")
             return
@@ -95,7 +95,7 @@ extension EditorInspectorView {
             layout: layout,
             position: position,
             size: size,
-            roundness: roundness ?? editorStore.project.camera.roundness,
+            roundness: roundness ?? editorStore.sceneEditingProject.camera.roundness,
             opacity: 1
         )
 
@@ -130,9 +130,9 @@ extension EditorInspectorView {
                 end: playbackTime,
                 among: among,
                 duration: timelineDuration,
-                easing: editorStore.project.motion.defaultZoomEasing,
-                returnDuration: editorStore.project.motion.defaultZoomTransitionDuration,
-                leadInDuration: editorStore.project.motion.defaultZoomTransitionDuration
+                easing: editorStore.sceneEditingProject.motion.defaultZoomEasing,
+                returnDuration: editorStore.sceneEditingProject.motion.defaultZoomTransitionDuration,
+                leadInDuration: editorStore.sceneEditingProject.motion.defaultZoomTransitionDuration
             ) else {
                 onError("播放头附近没有空间添加布局动画，请先移动播放头。")
                 return
@@ -199,15 +199,15 @@ extension EditorInspectorView {
     func saveCurrentLayoutAsPreset() {
         let name = layoutPresetName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
-        let camera = editorStore.project.camera
+        let camera = editorStore.sceneEditingProject.camera
         let preset = SavedLayoutPreset(
             name: name,
             layout: .shape(camera.shape),
             cameraPosition: camera.position,
             cameraSize: camera.size,
             cameraRoundness: camera.roundness,
-            screenPosition: editorStore.project.canvas.contentPosition,
-            screenScale: editorStore.project.canvas.contentScale
+            screenPosition: editorStore.sceneEditingProject.canvas.contentPosition,
+            screenScale: editorStore.sceneEditingProject.canvas.contentScale
         )
         var presets = savedLayoutPresets.filter { $0.name != name }
         presets.append(preset)
@@ -306,8 +306,8 @@ extension EditorInspectorView {
                     ? time : clip.startTime
                 return pointer.evaluation(
                     at: sampleTime,
-                    motion: editorStore.previewProject.motion,
-                    style: editorStore.previewProject.cursorStyle,
+                    motion: editorStore.sceneEditingPreviewProject.motion,
+                    style: editorStore.sceneEditingPreviewProject.cursorStyle,
                     automaticEntry: clip
                 ).position ?? authoredFocus.wrappedValue
             },
@@ -395,7 +395,7 @@ extension EditorInspectorView {
                         to: value,
                         among: editorStore.previewProject.zoomAnimations,
                         duration: timelineDuration,
-                        defaultExit: editorStore.previewProject.motion.defaultZoomTransitionDuration
+                        defaultExit: editorStore.sceneEditingPreviewProject.motion.defaultZoomTransitionDuration
                     )
                 )
             }
@@ -423,7 +423,7 @@ extension EditorInspectorView {
                         proposedEnd: current.startTime + value,
                         among: editorStore.previewProject.zoomAnimations,
                         duration: timelineDuration,
-                        defaultExit: editorStore.previewProject.motion.defaultZoomTransitionDuration
+                        defaultExit: editorStore.sceneEditingPreviewProject.motion.defaultZoomTransitionDuration
                     )
                 )
             }
@@ -490,7 +490,7 @@ extension EditorInspectorView {
             to: proposed,
             among: editorStore.previewProject.zoomAnimations,
             duration: timelineDuration,
-            defaultExit: editorStore.previewProject.motion.defaultZoomTransitionDuration
+            defaultExit: editorStore.sceneEditingPreviewProject.motion.defaultZoomTransitionDuration
         ).startTime
     }
 
@@ -504,7 +504,7 @@ extension EditorInspectorView {
             proposedEnd: current.startTime + proposed,
             among: editorStore.previewProject.zoomAnimations,
             duration: timelineDuration,
-            defaultExit: editorStore.previewProject.motion.defaultZoomTransitionDuration
+            defaultExit: editorStore.sceneEditingPreviewProject.motion.defaultZoomTransitionDuration
         )
         return resized.duration
     }
@@ -611,7 +611,7 @@ extension EditorInspectorView {
             timeline.zoomClips[index].scale = resolvedScale
         }
         do {
-            var motion = editorStore.project.motion
+            var motion = editorStore.sceneEditingProject.motion
             motion.defaultZoomScale = resolvedScale
             try editorStore.performBatch([
                 ProjectCommand.replacingTimeline(in: editorStore.project, with: timeline),

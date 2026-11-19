@@ -13,6 +13,115 @@ struct EditorCameraSyncCurveSample: Equatable {
 /// change from inside that body evaluation.
 @MainActor
 final class EditorTimelineDerivedPresentationCache {
+    // MARK: Added-material lanes (EDT-061)
+
+    struct OverlayKey: Equatable {
+        let mosaics: [MosaicClip]
+        let stickers: [StickerClip]
+        let animations: [AnimationClip]
+        let animationAssets: [MediaAsset]
+        let audio: [AudioClip]
+        let subtitles: [SubtitleCue]
+        let videos: [VideoClip]
+    }
+    private var overlayKey: OverlayKey?
+    /// Bumps whenever the overlay clip list is rebuilt.
+    private(set) var overlayGeneration: UInt64 = 0
+    private var cachedOverlayClips: [TimelineOverlayClip] = []
+    private var cachedLaneRows: [TimelineLane: [[TimelineOverlayClip]]] = [:]
+
+    private var overlayRevision: UInt64?
+
+    /// `revision` identifies the source timeline (nil when it cannot, e.g.
+    /// during a reorder preview); when unchanged the deep key comparison of
+    /// every subtitle is skipped entirely.
+    func overlayClips(revision: UInt64?, key: () -> OverlayKey,
+                      build: () -> [TimelineOverlayClip]) -> [TimelineOverlayClip] {
+        if let revision, let overlayRevision, overlayRevision == revision { return cachedOverlayClips }
+        overlayRevision = revision
+        return overlayClips(key: key(), build: build)
+    }
+
+    func overlayClips(key: OverlayKey, build: () -> [TimelineOverlayClip]) -> [TimelineOverlayClip] {
+        if overlayKey == key { return cachedOverlayClips }
+        overlayKey = key
+        overlayGeneration &+= 1
+        cachedOverlayClips = build()
+        cachedLaneRows = [:]
+        cachedLaneSummary = nil
+        return cachedOverlayClips
+    }
+
+    /// Per-group counts and occupied layer/audio rows. Every clip view reads
+    /// `trackScale`, which sums lane heights; deriving these from the full
+    /// clip list on each read made one timeline body O(clips²).
+    struct LaneSummary {
+        let counts: [TimelinePostLane: Int]
+        let visualLayers: [Int]
+        let audioLanes: [Int]
+    }
+    private var cachedLaneSummary: LaneSummary?
+
+    /// Hidden post-lane groups, parsed once per stored string.
+    private var hiddenLanesRaw: String?
+    private var hiddenLanes: Set<String> = []
+
+    func hiddenPostLanes(_ raw: String) -> Set<String> {
+        if raw == hiddenLanesRaw { return hiddenLanes }
+        hiddenLanesRaw = raw
+        hiddenLanes = Set(raw.split(separator: ",").map(String.init))
+        return hiddenLanes
+    }
+
+    /// Natural track height for one combination of visible lanes; every clip
+    /// view reads `trackScale`, so this must not re-walk the lanes each time.
+    struct NaturalHeightKey: Equatable {
+        let tracks: Int
+        let hidden: String
+        let cameraSync: Bool
+        let primary: CGFloat
+        let motion: CGFloat
+        let overlays: UInt64
+    }
+    private var naturalHeightKey: NaturalHeightKey?
+    private var naturalHeight: CGFloat = 0
+
+    func naturalTracksHeight(key: NaturalHeightKey, compute: () -> CGFloat) -> CGFloat {
+        if naturalHeightKey == key { return naturalHeight }
+        naturalHeightKey = key
+        naturalHeight = compute()
+        return naturalHeight
+    }
+
+    func laneSummary(for clips: [TimelineOverlayClip]) -> LaneSummary {
+        if let cachedLaneSummary { return cachedLaneSummary }
+        var counts: [TimelinePostLane: Int] = [:]
+        var layers = Set<Int>()
+        var audio = Set<Int>()
+        for clip in clips {
+            switch clip.kind {
+            case .subtitle: counts[.subtitles, default: 0] += 1
+            case .video, .sticker, .animation: counts[.layers, default: 0] += 1
+            case .mosaic: counts[.effects, default: 0] += 1
+            case .audio:
+                counts[.audio, default: 0] += 1
+                audio.insert(clip.audioLane)
+            }
+            if TimelineLane.layer(clip.layer).contains(clip) { layers.insert(clip.layer) }
+        }
+        let summary = LaneSummary(counts: counts, visualLayers: layers.sorted(by: >), audioLanes: audio.sorted())
+        cachedLaneSummary = summary
+        return summary
+    }
+
+    /// Rows of one lane for the current clips (cleared when clips change).
+    func laneRows(_ lane: TimelineLane, build: () -> [[TimelineOverlayClip]]) -> [[TimelineOverlayClip]] {
+        if let rows = cachedLaneRows[lane] { return rows }
+        let rows = build()
+        cachedLaneRows[lane] = rows
+        return rows
+    }
+
     private struct RecordingMarkerInput: Equatable {
         let markers: [RecordingMarker]
         let map: TimelineMap
@@ -24,44 +133,45 @@ final class EditorTimelineDerivedPresentationCache {
         let input = RecordingMarkerInput(markers: markers, map: map)
         guard markerInput != input else { return mappedMarkers }
         markerInput = input
-        mappedMarkers = markers.compactMap { marker in
-            guard let time = map.outputTime(forSourceTime: marker.sourceTime) else { return nil }
-            return EditorRecordingMarker(marker: marker, outputTime: time)
-        }.sorted { $0.outputTime == $1.outputTime ? $0.marker.number < $1.marker.number : $0.outputTime < $1.outputTime }
+        var mapped: [EditorRecordingMarker] = []
+        for marker in markers {
+            for position in map.outputPositions(forSourceTime: marker.sourceTime, sourceID: marker.resolvedSourceID) {
+                mapped.append(EditorRecordingMarker(marker: marker, outputTime: position.time, segmentID: position.segmentID))
+            }
+        }
+        mappedMarkers = mapped.sorted { $0.outputTime == $1.outputTime ? $0.marker.number < $1.marker.number : $0.outputTime < $1.outputTime }
         return mappedMarkers
     }
 
     private struct WaveformPlanInput: Equatable {
         let sequence: SourceSequence
-        let manifest: ProjectMediaManifest?
-        let video: MediaTimeRange
-        let system: MediaTimeRange?
-        let microphone: MediaTimeRange?
+        let sources: [UUID: RecordingSourceMedia]
     }
     private var waveformPlanInput: WaveformPlanInput?
     private var waveformPlan: ProjectTimelineMediaPlan?
 
     /// Pure media-time math over the existing PCM data. A ripple draft must
     /// move every following audio slice with the same displayed segment map.
-    func waveformPlan(segments: [ResolvedRecordingSegment], manifest: ProjectMediaManifest?,
-                      video: MediaTimeRange, system: MediaTimeRange?, microphone: MediaTimeRange?) -> ProjectTimelineMediaPlan? {
+    func waveformPlan(segments: [ResolvedRecordingSegment], sources: [UUID: RecordingSourceMedia]) -> ProjectTimelineMediaPlan? {
+        // Keep `media`: an inserted clip (black, an opening, a video) has no
+        // recording sound. Dropping it made its file time read as recording
+        // time (a waveform under black) or collide with the recording's own
+        // range, which failed the whole plan and blanked every waveform.
         let sequence = SourceSequence.edited(segments.map {
             RecordingSegment(id: $0.id, sourceStart: $0.sourceStart,
-                             sourceDuration: $0.sourceDuration, playbackRate: $0.playbackRate)
+                             sourceDuration: $0.sourceDuration, playbackRate: $0.playbackRate, media: $0.media, sourceID: $0.sourceID, sceneStyle: $0.sceneStyle)
         })
-        let input = WaveformPlanInput(sequence: sequence, manifest: manifest, video: video,
-                                      system: system, microphone: microphone)
+        let input = WaveformPlanInput(sequence: sequence, sources: sources)
         if input != waveformPlanInput {
             waveformPlanInput = input
-            waveformPlan = try? ProjectTimelineMediaPlan(sourceSequence: sequence, mediaManifest: manifest,
-                primaryVideoRange: video, systemAudioRange: system, microphoneRange: microphone)
+            waveformPlan = try? ProjectTimelineMediaPlan(sourceSequence: sequence, sources: sources)
         }
         return waveformPlan
     }
 
     private struct TimelineMapInput: Equatable {
         let sourceSequence: SourceSequence
-        let fullSourceDuration: TimeInterval
+        let sourceDurations: [UUID: TimeInterval]
     }
 
     private struct ZoomInput: Equatable {
@@ -81,6 +191,7 @@ final class EditorTimelineDerivedPresentationCache {
 
     private struct CameraSyncPathInput: Equatable {
         let map: TimelineMap
+        let sourceID: UUID?
         let anchors: [MediaSyncAnchor]
     }
 
@@ -108,17 +219,17 @@ final class EditorTimelineDerivedPresentationCache {
 
     func timelineMap(
         sourceSequence: SourceSequence,
-        fullSourceDuration: TimeInterval
+        sourceDurations: [UUID: TimeInterval]
     ) -> TimelineMap? {
         let nextInput = TimelineMapInput(
             sourceSequence: sourceSequence,
-            fullSourceDuration: fullSourceDuration
+            sourceDurations: sourceDurations
         )
         guard timelineMapInput != nextInput else { return resolvedTimelineMap }
         timelineMapInput = nextInput
         resolvedTimelineMap = try? TimelineMap(
             sourceSequence: sourceSequence,
-            fullSourceDuration: fullSourceDuration
+            sourceDurations: sourceDurations
         )
         return resolvedTimelineMap
     }
@@ -236,16 +347,17 @@ final class EditorTimelineDerivedPresentationCache {
 
     func cameraSyncPathSamples(
         map: TimelineMap,
+        sourceID: UUID?,
         anchors: [MediaSyncAnchor]
     ) -> [EditorCameraSyncCurveSample] {
-        let nextInput = CameraSyncPathInput(map: map, anchors: anchors)
+        let nextInput = CameraSyncPathInput(map: map, sourceID: sourceID, anchors: anchors)
         guard syncPathInput != nextInput else { return syncPathSamples }
         syncPathInput = nextInput
 
         let curve = cameraSyncCurve(for: anchors)
         var samples: [EditorCameraSyncCurveSample] = []
         samples.reserveCapacity(map.segments.count * 2 + curve.anchors.count)
-        for segment in map.segments {
+        for segment in map.segments where segment.media == nil && segment.sourceID == sourceID {
             samples.append(EditorCameraSyncCurveSample(
                 startsSubpath: true,
                 outputTime: segment.outputStart,
@@ -262,7 +374,7 @@ final class EditorTimelineDerivedPresentationCache {
                 samples.append(EditorCameraSyncCurveSample(
                     startsSubpath: false,
                     outputTime: segment.outputStart
-                        + anchor.sourceTime - segment.sourceStart,
+                        + (anchor.sourceTime - segment.sourceStart) / segment.playbackRate,
                     offset: curve.offset(atSourceTime: anchor.sourceTime)
                 ))
                 anchorIndex += 1

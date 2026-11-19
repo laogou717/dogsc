@@ -98,23 +98,6 @@ public struct CameraCaptureDiagnostics: Codable, Equatable, Sendable {
             + systemUnknownDrops
     }
 
-    public var applicationDroppedFrames: Int {
-        encoderBackpressureDrops
-            + nonMonotonicTimestampDrops
-            + invalidSampleDrops
-    }
-
-    public var receivedFramesPerSecond: Double {
-        guard elapsed > 0, receivedFrames > 1 else { return 0 }
-        return Double(receivedFrames - 1) / elapsed
-    }
-
-    public var appendedFramesPerSecond: Double {
-        guard elapsed > 0, appendedFrames > 1 else { return 0 }
-        return Double(appendedFrames - 1) / elapsed
-    }
-
-
     private enum CodingKeys: String, CodingKey {
         case receivedFrames, appendedFrames
         case systemLateDrops, systemOutOfBufferDrops

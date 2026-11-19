@@ -4,14 +4,21 @@ public extension ZoomAnimationClip {
     var requestedEnterDuration: TimeInterval { preferredEnterDuration ?? enterDuration }
 
     func requestedExitDuration(defaultTransition: TimeInterval = 0.7) -> TimeInterval {
-        preferredExitDuration ?? (exitDuration > 0.000_1 ? exitDuration : max(defaultTransition, 0))
+        let requested = preferredExitDuration ?? (exitDuration > 0.000_1 ? exitDuration : max(defaultTransition, 0))
+        // Repair only legacy automatic sub-frame returns. New explicit fast
+        // transitions and manual animation durations remain exact.
+        if transitionIntentVersion == 0, origin == .automatic,
+           requested > 0, requested < 1.0 / 30.0 {
+            return max(defaultTransition, 0)
+        }
+        return requested
     }
 
     mutating func preserveTransitionIntent(defaultTransition: TimeInterval = 0.7) {
+        let exit = requestedExitDuration(defaultTransition: defaultTransition)
         if preferredEnterDuration == nil { preferredEnterDuration = enterDuration }
-        if preferredExitDuration == nil {
-            preferredExitDuration = requestedExitDuration(defaultTransition: defaultTransition)
-        }
+        preferredExitDuration = exit
+        transitionIntentVersion = 1
     }
 }
 
@@ -24,8 +31,17 @@ public enum ZoomTransitionResolution {
         outputDuration: TimeInterval
     ) -> [ZoomAnimationClip] {
         guard outputDuration.isFinite, outputDuration > 0 else { return [] }
-        let ordered = animations.filter { $0.startTime < outputDuration && $0.duration > 0.001 }
+        let sorted = animations.filter { $0.startTime < outputDuration && $0.duration > 0.001 }
             .sorted { $0.startTime == $1.startTime ? $0.id.uuidString < $1.id.uuidString : $0.startTime < $1.startTime }
+        // An isolated automatic entrance reduced by a cut to less than two
+        // 60 Hz frames must not squeeze a full push-in into that fragment.
+        // Keep the authored data, but omit its flash from the evaluated track.
+        let ordered = sorted.enumerated().compactMap { index, clip -> ZoomAnimationClip? in
+            let continues = index > 0 && abs(sorted[index - 1].endTime - clip.startTime) <= ZoomInterpolator.adjacencyTolerance
+            if clip.origin == .automatic, !continues, clip.enterProgressOffset == 0,
+               clip.duration < min(clip.requestedEnterDuration, 1.0 / 30.0) { return nil }
+            return clip
+        }
         return ordered.enumerated().map { index, authored in
             var clip = authored
             let next = ordered.indices.contains(index + 1) ? ordered[index + 1] : nil
@@ -33,8 +49,14 @@ public enum ZoomTransitionResolution {
             let requestedExit = max(clip.requestedExitDuration(), 0)
             if let next {
                 let gap = max(next.startTime - clip.endTime, 0)
-                clip.exitDuration = gap <= ZoomInterpolator.adjacencyTolerance
+                if clip.origin == .automatic, next.origin == .automatic,
+                   gap > 0, gap < 1.0 / 60.0, requestedExit > gap {
+                    clip.endTime = next.startTime
+                    clip.exitDuration = 0
+                } else {
+                    clip.exitDuration = gap <= ZoomInterpolator.adjacencyTolerance
                     ? 0 : min(requestedExit, gap)
+                }
             } else {
                 let available = max(outputDuration - clip.startTime, 0)
                 // A short final zoom reserves a real entrance and return. For

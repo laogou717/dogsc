@@ -1,6 +1,9 @@
 import AppKit
+import OSLog
 import RecorderCore
 import ScreenCaptureKit
+
+let captureSurfaceFilterLogger = Logger(subsystem: "cn.laogou.dogsc", category: "capture-filter")
 
 /// One policy for initial capture, visibility controls and editor appearance.
 /// The exception API includes windows of excluded apps and excludes windows of
@@ -35,6 +38,12 @@ struct CaptureSurfaceFilter {
             display: display,
             excludingApplications: excludedApplications,
             exceptingWindows: exceptingWindows
+        )
+        let filterStyle = filter.style.rawValue
+        let contentSize = filter.contentRect.size
+        let editorCount = editorWindowIDs.count
+        captureSurfaceFilterLogger.notice(
+            "filter prepared: requested=\(configuration.source.rawValue, privacy: .public), style=\(filterStyle), display=\(display.displayID), editorExceptions=\(editorCount), width=\(contentSize.width), height=\(contentSize.height)"
         )
     }
 

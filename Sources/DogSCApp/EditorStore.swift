@@ -35,6 +35,10 @@ enum EditorSelection: Equatable, Hashable, Sendable {
     case audio(EditorAudioTrack)
     case mosaic(UUID)
     case sticker(UUID)
+    case animation(UUID)
+    case audioClip(UUID)
+    case subtitle(UUID)
+    case videoClip(UUID)
 }
 
 enum EditorTool: String, CaseIterable, Codable, Sendable {
@@ -229,6 +233,7 @@ struct EditorInteractionDraft: Equatable, Sendable {
     var replacementPolicy: EditorInteractionReplacementPolicy
     let baselineProject: RecorderProject
     var previewProject: RecorderProject
+    var sceneSegmentID: UUID?
 
     init(
         id: UUID = UUID(),
@@ -456,6 +461,7 @@ enum ProjectCommand: Equatable, Sendable {
     static func committing(_ draft: EditorInteractionDraft) throws -> ProjectCommand? {
         let before = draft.baselineProject
         let after = draft.previewProject
+        if draft.sceneSegmentID != nil { return replacingProject(before, with: after) }
 
         switch draft.commandScope {
         case .project:
@@ -485,7 +491,7 @@ enum ProjectCommand: Equatable, Sendable {
             return replacingCursor(in: before, with: after.cursorStyle)
         case .zoomTrack, .screenMotionTrack:
             return nil
-        case .primarySegment, .mosaic, .sticker:
+        case .primarySegment, .mosaic, .sticker, .animation, .audioClip, .subtitle, .videoClip:
             return replacingTimeline(in: before, with: after.timeline)
         case .zoom:
             // 缩放手势可能同时改动相邻片段（相接修复/回落时长归一），按整段
@@ -531,21 +537,21 @@ enum ProjectCommandError: Error, Equatable, LocalizedError, Sendable {
     var errorDescription: String? {
         switch self {
         case let .staleState(domain):
-            return "无法应用命令：\(domain) 已被其他编辑修改。"
+            return String(format: appLocalized("无法应用命令：%@ 已被其他编辑修改。"), appLocalized(domain))
         case .duplicateZoomID:
-            return "无法添加缩放：轨道中已存在相同片段。"
+            return appLocalized("无法添加缩放：轨道中已存在相同片段。")
         case .missingZoom:
-            return "无法修改缩放：片段已不存在，请重新选择后再试。"
+            return appLocalized("无法修改缩放：片段已不存在，请重新选择后再试。")
         case .mismatchedZoomID:
-            return "无法替换缩放：片段已发生变化，请重新选择后再试。"
+            return appLocalized("无法替换缩放：片段已发生变化，请重新选择后再试。")
         case let .invalidZoom(_, reason):
-            return "缩放片段无效：\(reason)"
+            return String(format: appLocalized("缩放片段无效：%@"), appLocalized(reason))
         case .overlappingZoom:
-            return "缩放片段的生效区间发生重叠。"
+            return appLocalized("缩放片段的生效区间发生重叠。")
         case let .invalidTimeline(reason):
-            return "时间线无效：\(reason)"
+            return String(format: appLocalized("时间线无效：%@"), appLocalized(reason))
         case let .invalidProjectDomain(domain, reason):
-            return "\(domain)参数无效：\(reason)"
+            return String(format: appLocalized("%@参数无效：%@"), appLocalized(domain), appLocalized(reason))
         }
     }
 }
@@ -717,17 +723,109 @@ enum ProjectReducer {
 
 @MainActor
 final class EditorStore: ObservableObject {
+    /// EDT-054: places a bin asset at the playhead; installed by EditorView,
+    /// which owns playback time, media duration and project file import.
+    @Published var revealedRecordingID: UUID?
+    /// Library keyboard commands must not delete/copy the last timeline selection.
+    var mediaLibraryHasKeyboardFocus = false
+    var isRemovingProjectMedia = false
+    var recordingDurations: () -> [UUID: TimeInterval] = { [:] }
+    /// Inserts a recording into the main track: at an output time (nil = the
+    /// playhead) and, when the monitor marked one, only the span marked.
+    var insertRecordingSourceHook: (UUID, TimeInterval?, ClosedRange<TimeInterval>?) -> Void = { _, _, _ in }
+    var cropRecording: (UUID) -> Void = { _ in }
+    var revealRecording: (UUID) -> Void = { _ in }
+    var recordingImportGeneration: UInt64 = 0
+    var requestRecordingImports: ([URL], TimeInterval?) -> Void = { _, _ in }
+    /// Places a bin file as `EditorMediaPlacement` describes; installed by
+    /// EditorView, which owns playback time, media duration and file import.
+    var placeMedia: (EditorMediaPlacement) -> Void = { _ in }
+    /// Current playhead and program length, installed by EditorView.
+    var playheadTime: () -> TimeInterval = { 0 }
+    /// Moves the playhead (set by the editor; used by lists that jump to an item).
+    var seekPlayhead: (TimeInterval) -> Void = { _ in }
+    /// Shows an error banner (installed by EditorView).
+    var reportError: ((String) -> Void)?
+    var outputDuration: () -> TimeInterval = { 0 }
+
+    func insertRecording(_ id: UUID, at time: TimeInterval? = nil,
+                         sourceRange: ClosedRange<TimeInterval>? = nil) {
+        insertRecordingSourceHook(id, time, sourceRange)
+    }
+
+    func placeMediaAsset(_ asset: MediaAsset, at time: TimeInterval? = nil,
+                         lane: EditorDropLane = .newLayer,
+                         sourceRange: ClosedRange<TimeInterval>? = nil) {
+        placeMedia(EditorMediaPlacement(asset: asset, time: time, lane: lane, sourceRange: sourceRange))
+    }
+
+    func placeMediaAssetAt(_ id: UUID, _ time: TimeInterval, lane: EditorDropLane = .newLayer,
+                           sourceRange: ClosedRange<TimeInterval>? = nil) {
+        guard let asset = project.timeline.mediaAssets.first(where: { $0.id == id }) else { return }
+        placeMediaAsset(asset, at: time, lane: lane, sourceRange: sourceRange)
+    }
+
+    /// Puts a picture/motion/video clip on a stacking layer, or an audio clip
+    /// on an audio row, as the drop target says (inside the current edit).
+    func assign(_ selection: EditorSelection?, to lane: EditorDropLane, in timeline: inout ProjectTimeline) {
+        let lowest = (timeline.stickerClips.map(\.layerIndex) + timeline.animationClips.map(\.layerIndex)
+            + timeline.videoClips.map(\.layerIndex)).min() ?? 0
+        let layer: Int? = switch lane {
+        case let .layer(n): n
+        case .newLayer: nil
+        case .newLayerBelow: lowest - 1
+        default: nil
+        }
+        switch selection {
+        case let .sticker(id):
+            if let layer, let i = timeline.stickerClips.firstIndex(where: { $0.id == id }) { timeline.stickerClips[i].layerIndex = layer }
+        case let .animation(id):
+            if let layer, let i = timeline.animationClips.firstIndex(where: { $0.id == id }) { timeline.animationClips[i].layerIndex = layer }
+        case let .videoClip(id):
+            if let layer, let i = timeline.videoClips.firstIndex(where: { $0.id == id }) { timeline.videoClips[i].layerIndex = layer }
+        case let .audioClip(id):
+            guard let i = timeline.audioClips.firstIndex(where: { $0.id == id }) else { return }
+            switch lane {
+            case let .audio(n): timeline.audioClips[i].lane = n
+            case .newAudio: timeline.audioClips[i].lane = (timeline.audioClips.map(\.lane).max() ?? 0) + 1
+            default: break
+            }
+        default:
+            break
+        }
+    }
     let sessionID: EditorSessionID
 
     private let document: ProjectDocument
     var project: RecorderProject { document.project }
+    /// EDT-079: clips picked together on the timeline (marquee or ⇧/⌘
+    /// click). The inspector shows their shared properties when two or
+    /// more are picked.
+    @Published var scenePresetPreviewSegmentIDs: Set<UUID>?
+    @Published var sceneEditingSegmentID: UUID?
+    /// The clip appearance edits are routed *through* while an appearance page
+    /// is open and something else is selected (the canvas, the camera bubble).
+    /// The timeline marks it so the edit always has a visible target; it is
+    /// deliberately not `selection`, which stays what the user picked.
+    @Published var sceneEditingMarkerSegmentID: UUID?
+    @Published var groupSelection: Set<EditorSelection> = []
+
     @Published var selection: EditorSelection? {
         willSet {
             guard newValue != selection, interaction != nil else { return }
             resolveInteractionBeforeReplacement()
         }
     }
-    @Published private(set) var interaction: EditorInteractionDraft?
+    @Published private(set) var interaction: EditorInteractionDraft? {
+        didSet {
+            if interaction?.id != oldValue?.id { timelinePreview.clear() }
+            previewRevision &+= 1
+        }
+    }
+    let timelinePreview = EditorTimelineInteractionState()
+    /// Bumps whenever `previewProject` may have changed: a draft update or a
+    /// committed document change. Lets derived caches skip deep comparisons.
+    private(set) var previewRevision: UInt64 = 0
 
     private(set) var revision: UInt64
     private weak var undoManager: UndoManager?
@@ -737,19 +835,23 @@ final class EditorStore: ObservableObject {
     init(
         sessionID: EditorSessionID = EditorSessionID(),
         document: ProjectDocument,
+        selection: EditorSelection? = nil,
         undoManager: UndoManager? = nil,
         projectSink: ((RecorderProject) -> Void)? = nil
     ) {
         self.sessionID = sessionID
         self.document = document
-        self.selection = nil
+        self.selection = selection
         self.interaction = nil
         self.revision = 0
         self.undoManager = undoManager
         self.projectSink = projectSink
 
         document.objectWillChange
-            .sink { [weak self] in self?.objectWillChange.send() }
+            .sink { [weak self] in
+                self?.previewRevision &+= 1
+                self?.objectWillChange.send()
+            }
             .store(in: &documentSubscriptions)
         document.$project
             .dropFirst()
@@ -760,24 +862,16 @@ final class EditorStore: ObservableObject {
             .store(in: &documentSubscriptions)
     }
 
-    convenience init(
-        sessionID: EditorSessionID = EditorSessionID(),
-        project: RecorderProject,
-        undoManager: UndoManager? = nil,
-        projectSink: ((RecorderProject) -> Void)? = nil
-    ) {
-        self.init(
-            sessionID: sessionID,
-            document: ProjectDocument(project: project),
-            undoManager: undoManager,
-            projectSink: projectSink
-        )
-    }
 
     /// Render this value while a gesture is active; serialize `project` only.
     var previewProject: RecorderProject {
-        interaction?.previewProject ?? project
+        timelinePreview.project(for: interaction?.id) ?? interactionBaseProject
     }
+
+    var interactionBaseProject: RecorderProject { interaction?.previewProject ?? project }
+
+    var sceneEditingProject: RecorderProject { project.sceneProject(forSegmentID: sceneEditingSegmentID) }
+    var sceneEditingPreviewProject: RecorderProject { previewProject.sceneProject(forSegmentID: sceneEditingSegmentID) }
 
     func attachUndoManager(_ manager: UndoManager?) {
         guard undoManager !== manager else { return }
@@ -811,6 +905,14 @@ final class EditorStore: ObservableObject {
             replacementPolicy: replacementPolicy,
             project: project
         )
+        let editsScene: Bool = switch commandScope {
+        case .canvas, .camera, .cursor, .motion: true
+        case .selection: selection == .screen || selection == .camera || selection == .cursor || selection == .canvas
+        default: false
+        }
+        if editsScene, let id = sceneEditingSegmentID, project.timeline.recordingSegment(id: id) != nil {
+            interaction?.sceneSegmentID = id
+        }
     }
 
     /// Idempotent begin used by controls whose first value callback can arrive
@@ -896,8 +998,21 @@ final class EditorStore: ObservableObject {
 
     func updateInteraction(_ update: (inout RecorderProject) -> Void) {
         guard var draft = interaction else { return }
-        update(&draft.previewProject)
+        draft.previewProject = previewProject
+        timelinePreview.clear()
+        if let id = draft.sceneSegmentID {
+            var presented = draft.previewProject.sceneProject(forSegmentID: id)
+            update(&presented)
+            draft.previewProject = Self.storingSceneEdit(presented, in: draft.previewProject, segmentID: id)
+        } else {
+            update(&draft.previewProject)
+        }
         interaction = draft
+    }
+
+    func updateTimelineInteraction(_ update: (inout RecorderProject) -> Void) {
+        guard let draft = interaction else { return }
+        timelinePreview.update(id: draft.id, base: draft.previewProject, update)
     }
 
     func cancelInteraction() {
@@ -927,7 +1042,8 @@ final class EditorStore: ObservableObject {
 
     @discardableResult
     func commitInteraction(actionName: String? = nil) throws -> Bool {
-        guard let draft = interaction else { return false }
+        guard var draft = interaction else { return false }
+        draft.previewProject = previewProject
         guard let command = try ProjectCommand.committing(draft) else {
             endInteraction()
             return false
@@ -951,11 +1067,23 @@ final class EditorStore: ObservableObject {
     }
 
     func replaceCanvas(with style: CanvasStyle, actionName: String? = nil) throws {
+        if let id = sceneEditingSegmentID, project.timeline.recordingSegment(id: id) != nil {
+            var presented = sceneEditingProject
+            presented.canvas = style
+            try replaceProject(with: Self.storingSceneEdit(presented, in: project, segmentID: id), actionName: actionName)
+            return
+        }
         guard let command = ProjectCommand.replacingCanvas(in: project, with: style) else { return }
         try perform(command, actionName: actionName)
     }
 
     func replaceCamera(with style: CameraStyle, actionName: String? = nil) throws {
+        if let id = sceneEditingSegmentID, project.timeline.recordingSegment(id: id) != nil {
+            var presented = sceneEditingProject
+            presented.camera = style
+            try replaceProject(with: Self.storingSceneEdit(presented, in: project, segmentID: id), actionName: actionName)
+            return
+        }
         guard let command = ProjectCommand.replacingCamera(in: project, with: style) else { return }
         try perform(command, actionName: actionName)
     }
@@ -966,11 +1094,23 @@ final class EditorStore: ObservableObject {
     }
 
     func replaceCursor(with style: CursorStyle, actionName: String? = nil) throws {
+        if let id = sceneEditingSegmentID, project.timeline.recordingSegment(id: id) != nil {
+            var presented = sceneEditingProject
+            presented.cursorStyle = style
+            try replaceProject(with: Self.storingSceneEdit(presented, in: project, segmentID: id), actionName: actionName)
+            return
+        }
         guard let command = ProjectCommand.replacingCursor(in: project, with: style) else { return }
         try perform(command, actionName: actionName)
     }
 
     func replaceMotion(with style: MotionStyle, actionName: String? = nil) throws {
+        if let id = sceneEditingSegmentID, project.timeline.recordingSegment(id: id) != nil {
+            var presented = sceneEditingProject
+            presented.motion = style
+            try replaceProject(with: Self.storingSceneEdit(presented, in: project, segmentID: id), actionName: actionName)
+            return
+        }
         guard let command = ProjectCommand.replacingMotion(in: project, with: style) else { return }
         try perform(command, actionName: actionName)
     }
@@ -996,7 +1136,7 @@ final class EditorStore: ObservableObject {
 
     func splitPrimarySegment(
         atOutputTime outputTime: TimeInterval,
-        fullSourceDuration: TimeInterval,
+        sourceDurations: [UUID: TimeInterval],
         newRightSegmentID: UUID = UUID(),
         actionName: String? = nil
     ) throws {
@@ -1004,7 +1144,7 @@ final class EditorStore: ObservableObject {
             in: project.timeline,
             atOutputTime: outputTime,
             newRightSegmentID: newRightSegmentID,
-            fullSourceDuration: fullSourceDuration
+            sourceDurations: sourceDurations
         )
         try replaceTimeline(with: timeline, actionName: actionName ?? "拆分主片段")
     }
@@ -1012,14 +1152,14 @@ final class EditorStore: ObservableObject {
     func setPrimarySegmentPlaybackRate(
         id: UUID,
         rate: Double,
-        fullSourceDuration: TimeInterval,
+        sourceDurations: [UUID: TimeInterval],
         actionName: String? = nil
     ) throws {
         let timeline = try ProjectTimelineEditing.settingPlaybackRate(
             rate,
             for: id,
             in: project.timeline,
-            fullSourceDuration: fullSourceDuration
+            sourceDurations: sourceDurations
         )
         try replaceTimeline(with: timeline, actionName: actionName ?? "调整片段速度")
     }
@@ -1053,6 +1193,7 @@ final class EditorStore: ObservableObject {
     @discardableResult
     func addSticker(
         relativePath: String,
+        assetName: String? = nil,
         preferredDuration: TimeInterval? = nil,
         at time: TimeInterval,
         outputDuration: TimeInterval,
@@ -1104,13 +1245,51 @@ final class EditorStore: ObservableObject {
             relativePath: relativePath,
             position: position,
             width: activeStickers.isEmpty ? 0.38 : 0.28,
-            layerIndex: (project.timeline.stickerClips.map(\.layerIndex).max() ?? -1) + 1
+            layerIndex: 0
         )
+        clip.layerIndex = project.timeline.visualLayer(for: clip.timing)
         AppPreferences.applyRememberedStickerCreationDefaults(to: &clip)
         var timeline = project.timeline
         timeline.stickerClips.append(clip)
+        // The bin and the placed clip share one portable project file and
+        // one undo step. Reusing a picture must not create another bin tile.
+        let path = ProjectFiles.portable(ProjectFiles.resolve(relativePath))
+        if !timeline.mediaAssets.contains(where: {
+            $0.kind == .image && ProjectFiles.portable(ProjectFiles.resolve($0.path)) == path
+        }) {
+            timeline.mediaAssets.append(MediaAsset(path: path, kind: .image,
+                name: assetName ?? URL(fileURLWithPath: relativePath).lastPathComponent))
+        }
         try replaceTimeline(with: timeline, actionName: actionName)
         selection = .sticker(clip.id)
+        return clip.id
+    }
+
+    /// EDT-053: a Rive file referenced where it lives (not copied).
+    func addAnimation(
+        sourcePath: String,
+        at time: TimeInterval,
+        outputDuration: TimeInterval,
+        sourceRange: ClosedRange<TimeInterval>? = nil,
+        actionName: String = "添加动效"
+    ) throws -> UUID {
+        let safeStart = min(max(time, 0), max(outputDuration - min(0.25, max(outputDuration, 0)), 0))
+        let wanted = sourceRange.map { max($0.upperBound - $0.lowerBound, 0.05) } ?? 3
+        let timing = OverlayTiming(
+            startTime: safeStart,
+            duration: max(min(wanted, outputDuration - safeStart), min(0.25, max(outputDuration, 0)))
+        )
+        var clip = AnimationClip(
+            timing: timing,
+            sourcePath: sourcePath,
+            layerIndex: project.timeline.visualLayer(for: timing)
+        )
+        // The marked in point is where the motion starts playing from.
+        clip.timeOffset = max(sourceRange?.lowerBound ?? 0, 0)
+        var timeline = project.timeline
+        timeline.animationClips.append(clip)
+        try replaceTimeline(with: timeline, actionName: actionName)
+        selection = .animation(clip.id)
         return clip.id
     }
 
@@ -1121,6 +1300,14 @@ final class EditorStore: ObservableObject {
             timeline.mosaicClips.removeAll { $0.id == id }
         case let .sticker(id):
             timeline.stickerClips.removeAll { $0.id == id }
+        case let .animation(id):
+            timeline.animationClips.removeAll { $0.id == id }
+        case let .audioClip(id):
+            timeline.audioClips.removeAll { $0.id == id }
+        case let .subtitle(id):
+            timeline.subtitleCues.removeAll { $0.id == id }
+        case let .videoClip(id):
+            timeline.videoClips.removeAll { $0.id == id }
         default:
             return
         }
@@ -1132,7 +1319,7 @@ final class EditorStore: ObservableObject {
         id: UUID,
         edge: RecordingSegmentTrimEdge,
         toOutputTime outputTime: TimeInterval,
-        fullSourceDuration: TimeInterval,
+        sourceDurations: [UUID: TimeInterval],
         actionName: String? = nil
     ) throws {
         let timeline = try ProjectTimelineEditing.trimPrimarySegment(
@@ -1140,7 +1327,7 @@ final class EditorStore: ObservableObject {
             segmentID: id,
             edge: edge,
             toOutputTime: outputTime,
-            fullSourceDuration: fullSourceDuration,
+            sourceDurations: sourceDurations,
             defaultTransitionDuration: project.motion.defaultZoomTransitionDuration
         )
         try replaceTimeline(with: timeline, actionName: actionName ?? "裁切主片段")
@@ -1148,13 +1335,13 @@ final class EditorStore: ObservableObject {
 
     func removePrimarySegment(
         id: UUID,
-        fullSourceDuration: TimeInterval,
+        sourceDurations: [UUID: TimeInterval],
         actionName: String? = nil
     ) throws {
         let timeline = try ProjectTimelineEditing.removePrimarySegment(
             from: project.timeline,
             segmentID: id,
-            fullSourceDuration: fullSourceDuration,
+            sourceDurations: sourceDurations,
             defaultTransitionDuration: project.motion.defaultZoomTransitionDuration
         )
         try replaceTimeline(with: timeline, actionName: actionName ?? "删除主片段")
@@ -1163,14 +1350,14 @@ final class EditorStore: ObservableObject {
     func movePrimarySegment(
         id: UUID,
         toIndex: Int,
-        fullSourceDuration: TimeInterval,
+        sourceDurations: [UUID: TimeInterval],
         actionName: String? = nil
     ) throws {
         let timeline = try ProjectTimelineEditing.movePrimarySegment(
             in: project.timeline,
             segmentID: id,
             toIndex: toIndex,
-            fullSourceDuration: fullSourceDuration
+            sourceDurations: sourceDurations
         )
         try replaceTimeline(with: timeline, actionName: actionName ?? "调整主片段顺序")
     }
@@ -1179,7 +1366,7 @@ final class EditorStore: ObservableObject {
         previousSegmentID: UUID,
         nextSegmentID: UUID,
         restoredSegmentID: UUID = UUID(),
-        fullSourceDuration: TimeInterval,
+        sourceDurations: [UUID: TimeInterval],
         actionName: String? = nil
     ) throws {
         let timeline = try ProjectTimelineEditing.restorePrimaryGap(
@@ -1187,33 +1374,33 @@ final class EditorStore: ObservableObject {
             previousSegmentID: previousSegmentID,
             nextSegmentID: nextSegmentID,
             restoredSegmentID: restoredSegmentID,
-            fullSourceDuration: fullSourceDuration
+            sourceDurations: sourceDurations
         )
         try replaceTimeline(with: timeline, actionName: actionName ?? "还原该处剪切")
     }
 
     func restorePrimaryLeadingGap(
         restoredSegmentID: UUID = UUID(),
-        fullSourceDuration: TimeInterval,
+        sourceDurations: [UUID: TimeInterval],
         actionName: String? = nil
     ) throws {
         let timeline = try ProjectTimelineEditing.restorePrimaryLeadingGap(
             in: project.timeline,
             restoredSegmentID: restoredSegmentID,
-            fullSourceDuration: fullSourceDuration
+            sourceDurations: sourceDurations
         )
         try replaceTimeline(with: timeline, actionName: actionName ?? "还原开头剪切")
     }
 
     func restorePrimaryTrailingGap(
         restoredSegmentID: UUID = UUID(),
-        fullSourceDuration: TimeInterval,
+        sourceDurations: [UUID: TimeInterval],
         actionName: String? = nil
     ) throws {
         let timeline = try ProjectTimelineEditing.restorePrimaryTrailingGap(
             in: project.timeline,
             restoredSegmentID: restoredSegmentID,
-            fullSourceDuration: fullSourceDuration
+            sourceDurations: sourceDurations
         )
         try replaceTimeline(with: timeline, actionName: actionName ?? "还原结尾剪切")
     }
@@ -1221,14 +1408,14 @@ final class EditorStore: ObservableObject {
     func mergeAdjacentPrimarySegments(
         previousSegmentID: UUID,
         nextSegmentID: UUID,
-        fullSourceDuration: TimeInterval,
+        sourceDurations: [UUID: TimeInterval],
         actionName: String? = nil
     ) throws {
         let timeline = try ProjectTimelineEditing.mergeAdjacentPrimarySegments(
             in: project.timeline,
             previousSegmentID: previousSegmentID,
             nextSegmentID: nextSegmentID,
-            fullSourceDuration: fullSourceDuration
+            sourceDurations: sourceDurations
         )
         try replaceTimeline(with: timeline, actionName: actionName ?? "合并相邻主片段")
     }
@@ -1288,6 +1475,135 @@ final class EditorStore: ObservableObject {
         try perform(command, actionName: actionName)
     }
 
+    @TaskLocal static var isAgentMutation = false
+
+    private struct UndoBatchSnapshot {
+        var project: RecorderProject
+        var selection: EditorSelection?
+    }
+
+    private struct AgentUndoBatchState {
+        var project: RecorderProject
+        var selection: EditorSelection?
+        let actionName: String
+    }
+
+    /// Short synchronous UI batch (for example multi-selection delete or media drop).
+    private var undoBatchStart: UndoBatchSnapshot?
+    /// Long-lived AI turn batch (`EDT-054`): coalesces AI tool mutations
+    /// (`Self.isAgentMutation == true`) into one undo step while keeping manual
+    /// user edits and undo/redo independent.
+    private var agentUndoBatch: AgentUndoBatchState?
+
+    var hasPendingAgentUndoChanges: Bool {
+        guard let batch = agentUndoBatch else { return false }
+        return batch.project != project
+    }
+
+    var pendingAgentUndoActionName: String? {
+        hasPendingAgentUndoChanges ? agentUndoBatch?.actionName : nil
+    }
+
+    func beginUndoBatch() {
+        guard undoBatchStart == nil else { return }
+        let safeSelection: EditorSelection? = selection == .crop ? .screen : selection
+        undoBatchStart = UndoBatchSnapshot(project: project, selection: safeSelection)
+    }
+
+    func endUndoBatch(actionName: String) {
+        guard let start = undoBatchStart else { return }
+        undoBatchStart = nil
+        guard start.project != project else { return }
+        if agentUndoBatch != nil && Self.isAgentMutation {
+            return
+        }
+        if agentUndoBatch != nil {
+            flushAgentUndoBatch(upTo: start.project)
+        }
+        if let undoManager {
+            let inverse = ProjectCommand.replaceProject(before: start.project, after: project).inverse
+            let restoredSelection = start.selection
+            registerDiscreteUndoGroup(on: undoManager, actionName: actionName) { store in
+                store.performFromUndo(
+                    inverse,
+                    actionName: actionName,
+                    restoredSelection: restoredSelection
+                )
+            }
+        }
+        if agentUndoBatch != nil {
+            let safeSelection: EditorSelection? = selection == .crop ? .screen : selection
+            agentUndoBatch?.project = project
+            agentUndoBatch?.selection = safeSelection
+        }
+        revision &+= 1
+    }
+
+    func beginAgentUndoBatch(actionName: String) {
+        if agentUndoBatch != nil {
+            endAgentUndoBatch()
+        }
+        let safeSelection: EditorSelection? = selection == .crop ? .screen : selection
+        agentUndoBatch = AgentUndoBatchState(
+            project: project,
+            selection: safeSelection,
+            actionName: actionName
+        )
+    }
+
+    func prepareForUserUndoOrRedo() {
+        flushAgentUndoBatch(upTo: project)
+    }
+
+    func endAgentUndoBatch() {
+        guard agentUndoBatch != nil else { return }
+        let flushed = hasPendingAgentUndoChanges
+        flushAgentUndoBatch(upTo: project)
+        agentUndoBatch = nil
+        if flushed {
+            revision &+= 1
+        }
+    }
+
+    private func flushAgentUndoBatch(upTo targetProject: RecorderProject) {
+        guard let batch = agentUndoBatch, batch.project != targetProject else { return }
+        let safeSelection: EditorSelection? = selection == .crop ? .screen : selection
+        agentUndoBatch?.project = targetProject
+        agentUndoBatch?.selection = safeSelection
+        guard let undoManager else { return }
+        let inverse = ProjectCommand.replaceProject(before: batch.project, after: targetProject).inverse
+        let actionName = batch.actionName
+        let restoredSelection = batch.selection
+        registerDiscreteUndoGroup(on: undoManager, actionName: actionName) { store in
+            store.performFromUndo(
+                inverse,
+                actionName: actionName,
+                restoredSelection: restoredSelection
+            )
+        }
+    }
+
+    private func registerDiscreteUndoGroup(
+        on undoManager: UndoManager,
+        actionName: String,
+        handler: @escaping (EditorStore) -> Void
+    ) {
+        if undoManager.groupingLevel == 0 {
+            let savedGroupsByEvent = undoManager.groupsByEvent
+            undoManager.groupsByEvent = false
+            undoManager.beginUndoGrouping()
+            defer {
+                undoManager.endUndoGrouping()
+                undoManager.groupsByEvent = savedGroupsByEvent
+            }
+            undoManager.registerUndo(withTarget: self, handler: handler)
+            undoManager.setActionName(actionName)
+        } else {
+            undoManager.registerUndo(withTarget: self, handler: handler)
+            undoManager.setActionName(actionName)
+        }
+    }
+
     func replaceTimeline(
         with timeline: ProjectTimeline,
         actionName: String? = nil
@@ -1306,6 +1622,7 @@ final class EditorStore: ObservableObject {
         // Crop is a transient tool, not a restorable document selection.
         // Undoing its command must return to screen settings without leaving
         // a stale crop header or hiding the frame subnavigation.
+        let projectBeforeApply = project
         let selectionBeforeApply: EditorSelection? = selection == .crop ? .screen : selection
         var appliedCommand = command
         var nextProject = project
@@ -1364,21 +1681,63 @@ final class EditorStore: ObservableObject {
         endInteraction()
         document.replace(with: nextProject)
         projectSink?(nextProject)
-        revision &+= 1
         if restoresSelection {
             selection = restoredSelection
         }
 
-        guard registersUndo, let undoManager else { return }
-        let inverse = appliedCommand.inverse
-        undoManager.registerUndo(withTarget: self) { store in
-            store.performFromUndo(
-                inverse,
-                actionName: actionName,
-                restoredSelection: selectionBeforeApply
-            )
+        let isUndoOrRedo = undoManager?.isUndoing == true || undoManager?.isRedoing == true
+        if isUndoOrRedo {
+            if registersUndo, let undoManager {
+                let inverse = appliedCommand.inverse
+                undoManager.registerUndo(withTarget: self) { store in
+                    store.performFromUndo(
+                        inverse,
+                        actionName: actionName,
+                        restoredSelection: selectionBeforeApply
+                    )
+                }
+                undoManager.setActionName(actionName)
+            }
+            if agentUndoBatch != nil {
+                let safeSelection: EditorSelection? = selection == .crop ? .screen : selection
+                agentUndoBatch?.project = nextProject
+                agentUndoBatch?.selection = safeSelection
+            }
+        } else if undoBatchStart != nil {
+            // Short synchronous UI batch registers one combined undo in endUndoBatch.
+        } else if agentUndoBatch != nil {
+            if Self.isAgentMutation {
+                // Coalesce into the active AI turn's undo batch.
+            } else if registersUndo {
+                flushAgentUndoBatch(upTo: projectBeforeApply)
+                if let undoManager {
+                    let inverse = appliedCommand.inverse
+                    undoManager.registerUndo(withTarget: self) { store in
+                        store.performFromUndo(
+                            inverse,
+                            actionName: actionName,
+                            restoredSelection: selectionBeforeApply
+                        )
+                    }
+                    undoManager.setActionName(actionName)
+                }
+                let safeSelection: EditorSelection? = selection == .crop ? .screen : selection
+                agentUndoBatch?.project = nextProject
+                agentUndoBatch?.selection = safeSelection
+            }
+        } else if registersUndo, let undoManager {
+            let inverse = appliedCommand.inverse
+            undoManager.registerUndo(withTarget: self) { store in
+                store.performFromUndo(
+                    inverse,
+                    actionName: actionName,
+                    restoredSelection: selectionBeforeApply
+                )
+            }
+            undoManager.setActionName(actionName)
         }
-        undoManager.setActionName(actionName)
+
+        revision &+= 1
     }
 
     private func performFromUndo(
@@ -1420,4 +1779,31 @@ final class EditorStore: ObservableObject {
             }
         }
     }
+}
+
+/// Where a dragged clip or library item lands on the timeline.
+/// Where a bin file lands and how much of it: the one request every placement
+/// path shares — the bin's add button, a double-click, a drag onto a layer, a
+/// drag onto the main track. A drop point and a source span are stated
+/// together, so the in and out marks set in the monitor travel with the file
+/// instead of being a property of the playhead.
+struct EditorMediaPlacement {
+    let asset: MediaAsset
+    /// The output time it lands at; nil means wherever the playhead is.
+    var time: TimeInterval?
+    /// The row it lands on. `.mainTrack` inserts a segment and ripples.
+    var lane: EditorDropLane = .newLayer
+    /// The span of the source file to place; nil means the whole file. Every
+    /// `add…`/`insert…` call takes it from here, so one missing file check and
+    /// one clamp serve them all.
+    var sourceRange: ClosedRange<TimeInterval>?
+}
+
+enum EditorDropLane: Equatable {
+    case layer(Int)
+    case newLayer
+    case newLayerBelow
+    case audio(Int)
+    case newAudio
+    case mainTrack
 }

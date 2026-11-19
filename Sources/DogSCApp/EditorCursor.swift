@@ -58,24 +58,23 @@ struct EditorTrimGrip: View {
     }
 }
 
-/// The one handle every canvas object uses: a dot in the object's colour
-/// with a white rim. It grows under the pointer and glows while dragged.
+/// The one handle every canvas object uses: a white square with the
+/// selection accent as its rim. Its size never changes, so the point being
+/// dragged stays exactly under the pointer; hover and drag fill it.
 struct EditorCanvasHandle: View {
-    let color: Color
+    private let color = EditorTheme.selectionTint
     var active = false
-    var size: CGFloat = 14
+    var size: CGFloat = 10
     @State private var hovered = false
 
     var body: some View {
-        Circle()
-            .fill(color)
-            .overlay(Circle().strokeBorder(.white, lineWidth: 2))
+        RoundedRectangle(cornerRadius: 2, style: .continuous)
+            .fill(active || hovered ? color : .white)
+            .overlay(RoundedRectangle(cornerRadius: 2, style: .continuous).strokeBorder(active || hovered ? .white : color, lineWidth: 1.5))
             .frame(width: size, height: size)
-            .shadow(color: active ? color.opacity(0.5) : .black.opacity(0.32), radius: active ? 6 : 2, y: active ? 0 : 1)
-            .scaleEffect(RecorderMotion.reduces ? 1 : active ? 1.2 : hovered ? 1.12 : 1)
-            .animation(SpringMotion.snappy, value: active)
-            .animation(SpringMotion.hover, value: hovered)
-            .frame(width: 30, height: 30)
+            .shadow(color: .black.opacity(0.3), radius: 1.5, y: 0.5)
+            .animation(SpringMotion.micro, value: hovered)
+            .frame(width: 26, height: 26)
             .contentShape(Rectangle())
             .onHover { hovered = $0 }
             .editorCursor(.crosshair)
@@ -89,9 +88,7 @@ extension View {
     /// Fade only the ink: a centre-anchored scale moves both endpoints away
     /// from the snapping guide and a drag shadow spills into the next lane.
     func editorClipDragFeedback(_ dragged: Bool) -> some View {
-        animation(RecorderMotion.reduces ? nil : .easeOut(duration: 0.12)) { clip in
-            clip.opacity(dragged ? 0.9 : 1)
-        }
+        opacity(dragged ? 0.9 : 1)
     }
 
     /// Add, split, delete and undo update at the authored positions. Do not
@@ -121,18 +118,23 @@ final class EditorDragFrameCoalescer: NSObject {
     private var pending: [String: () -> Void] = [:]
     private var order: [String] = []
     private var link: CADisplayLink?
+    private weak var linkedScreen: NSScreen?
 
     func submit(file: String = #fileID, line: Int = #line, _ work: @escaping () -> Void) {
         let key = "\(file):\(line)"
         if pending.updateValue(work, forKey: key) == nil { order.append(key) }
-        guard link == nil else { return }
         guard let screen = NSApp.keyWindow?.screen ?? NSScreen.main else {
             flush()
             return
         }
+        if let link, linkedScreen === screen { link.isPaused = false; return }
+        link?.invalidate()
         let link = screen.displayLink(target: self, selector: #selector(displayLinkDidFire(_:)))
+        let rate = Float(max(screen.maximumFramesPerSecond, 1))
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)
         link.add(to: .main, forMode: .common)
         self.link = link
+        linkedScreen = screen
     }
 
     @objc private func displayLinkDidFire(_ link: CADisplayLink) {
@@ -140,8 +142,7 @@ final class EditorDragFrameCoalescer: NSObject {
     }
 
     func flush() {
-        link?.invalidate()
-        link = nil
+        link?.isPaused = true
         let keys = order
         let works = pending
         order.removeAll()

@@ -50,27 +50,27 @@ enum VideoExporterError: LocalizedError, Equatable, Sendable {
     var errorDescription: String? {
         switch self {
         case .cancelled:
-            return "已取消导出。"
+            return appLocalized("已取消导出。")
         case .cannotCreateSession:
-            return "无法创建导出会话。"
+            return appLocalized("无法创建导出会话。")
         case .noAudioToExport:
-            return "当前剪辑没有可导出的声音。"
+            return appLocalized("当前剪辑没有可导出的声音。")
         case let .missingAssetReference(role):
-            return "项目声明录制了\(role.displayName)，但项目中没有对应的素材路径。请恢复素材后重试。"
+            return String(format: appLocalized("项目声明录制了%@，但项目中没有对应的素材路径。请恢复素材后重试。"), appLocalized(role.displayName))
         case let .missingAssetFile(role, path):
-            return "\(role.displayName)素材不存在：\(path)。请恢复或重新定位素材后再导出。"
+            return String(format: appLocalized("%@素材不存在：%@。请恢复或重新定位素材后再导出。"), appLocalized(role.displayName), path)
         case let .unreadableAsset(role, path, reason):
-            return "无法读取\(role.displayName)素材 \(path)：\(reason)"
+            return String(format: appLocalized("无法读取%@素材 %@：%@"), appLocalized(role.displayName), path, appLocalized(reason))
         case let .missingMediaTrack(role, media):
-            return "\(role.displayName)素材中没有可用的\(media.displayName)轨，导出已停止以避免静默丢失内容。"
+            return String(format: appLocalized("%@素材中没有可用的%@轨，导出已停止以避免静默丢失内容。"), appLocalized(role.displayName), appLocalized(media.displayName))
         case let .invalidVideoGeometry(role):
-            return "\(role.displayName)素材的显示方向或尺寸无效，无法安全导出。"
+            return String(format: appLocalized("%@素材的显示方向或尺寸无效，无法安全导出。"), appLocalized(role.displayName))
         case let .unusableMediaRange(role):
-            return "\(role.displayName)素材在成片时间线上没有可用内容，导出已停止。"
+            return String(format: appLocalized("%@素材在成片时间线上没有可用内容，导出已停止。"), appLocalized(role.displayName))
         case let .cannotReadMediaTrack(role, media):
-            return "无法为\(role.displayName)素材创建\(media.displayName)读取器，导出已停止。"
+            return String(format: appLocalized("无法为%@素材创建%@读取器，导出已停止。"), appLocalized(role.displayName), appLocalized(media.displayName))
         case let .exportFailed(reason):
-            return "导出失败：\(reason)"
+            return String(format: appLocalized("导出失败：%@"), appLocalized(reason))
         }
     }
 }
@@ -211,7 +211,7 @@ final class VideoExporter: ObservableObject {
         resetResultForNewEditorSession()
     }
 
-    nonisolated private static func performExport(
+    nonisolated static func performExport(
         request: EditorExportRequest,
         cursorSources: [CursorAssetID: CursorRenderSource],
         progressHandler: (@Sendable (Double) -> Void)?,
@@ -226,74 +226,40 @@ final class VideoExporter: ObservableObject {
             throw VideoExporterError.missingAssetReference(.screenRecording)
         }
         let requiredMedia = RequiredProjectMedia(project: project)
-        let sourceURL = request.assets.source.url
-        let cameraURL = request.assets.camera?.url
-        let microphoneURL = request.assets.microphone?.url
         let wallpaperURL = request.assets.wallpaper?.url
-        let source = try await loadRequiredVideo(
-            at: sourceURL,
-            role: .screenRecording
-        )
-        let displayedSourceSize = displayedVideoSize(
-            naturalSize: source.naturalSize,
-            preferredTransform: source.preferredTransform
-        )
+        var frozenSources = request.assets.additionalSources
+        frozenSources[RecordingSource.primaryID] = EditorExportRecordingAssets(
+            source: request.assets.source, camera: request.assets.camera,
+            microphone: request.assets.microphone)
+        var sourceTracks: [UUID: TimelineRecordingSourceTracks] = [:]
+        for (id, assets) in frozenSources {
+            try Task.checkCancellation()
+            guard let source = project.source(id) else {
+                throw EditorExportRequestError.mediaManifestMismatch
+            }
+            let required = RequiredProjectMedia(project: project, sourceID: id)
+            sourceTracks[id] = try await TimelinePreviewCompositionLoader.loadRecording(
+                screenURL: assets.source.url, cameraURL: assets.camera?.url,
+                microphoneURL: assets.microphone?.url, manifest: source.media,
+                pointerEvents: request.mediaPlan.sources[id]?.pointerEvents ?? [],
+                cameraContentCrop: source.cameraContentCrop,
+                needsCamera: request.outputKind == .video && required.cameraVideo,
+                needsMicrophone: required.microphoneAudio, needsSystemAudio: required.systemAudio)
+        }
+        guard let displayedSourceSize = sourceTracks[RecordingSource.primaryID]?.screen.displaySize else {
+            throw VideoExporterError.missingAssetReference(.screenRecording)
+        }
         let crop = project.canvas.crop.clamped()
-        let sourceAspectRatio = Double(
-            displayedSourceSize.width / max(displayedSourceSize.height, 1)
-        ) * crop.width / crop.height
-        let canvasSize = outputSize(
-            for: project.canvas,
-            resolution: project.exportSettings.resolution,
-            sourceAspectRatio: sourceAspectRatio,
-            sourcePixelSize: displayedSourceSize
+        let sourceAspectRatio = Double(displayedSourceSize.width / max(displayedSourceSize.height, 1))
+            * crop.width / crop.height
+        let nativeSize = EditorRecordingCanvasGeometry.sourceSize(project: project,
+            sizes: sourceTracks.compactMapValues { $0.screen.displaySize })
+        let requestedSize = outputSize(for: project.canvas, resolution: project.exportSettings.resolution,
+            sourceAspectRatio: sourceAspectRatio, sourcePixelSize: nativeSize)
+        let outputDimensions = project.exportSettings.outputDimensions(
+            for: CanvasDimensions(width: Int(requestedSize.width), height: Int(requestedSize.height))
         )
-
-        let audioTrack: AVAssetTrack?
-        let systemAudioTimeRange: CMTimeRange?
-        let audioTracks = requiredMedia.systemAudio
-            ? try await loadTracks(
-                from: source.asset,
-                mediaType: .audio,
-                role: .screenRecording,
-                url: sourceURL
-            )
-            : []
-        if let embeddedAudioTrack = audioTracks.first {
-            audioTrack = embeddedAudioTrack
-            do {
-                systemAudioTimeRange = try await embeddedAudioTrack.load(.timeRange)
-            } catch {
-                throw unreadableAssetError(role: .screenRecording, url: sourceURL, error: error)
-            }
-        } else {
-            audioTrack = nil
-            systemAudioTimeRange = nil
-        }
-        // The file inventory is authoritative in post-production. Capture
-        // preferences can be stale after recovery, import, or an older project
-        // migration; they must not make an otherwise valid video-only screen
-        // recording impossible to export.
-
-        let camera: LoadedVideoAsset?
-        if request.outputKind == .video, requiredMedia.cameraVideo {
-            guard let cameraURL else {
-                throw VideoExporterError.missingAssetReference(.cameraRecording)
-            }
-            camera = try await loadRequiredVideo(at: cameraURL, role: .cameraRecording)
-        } else {
-            camera = nil
-        }
-
-        let microphone: LoadedAudioAsset?
-        if requiredMedia.microphoneAudio {
-            guard let microphoneURL else {
-                throw VideoExporterError.missingAssetReference(.microphoneRecording)
-            }
-            microphone = try await loadRequiredAudio(at: microphoneURL, role: .microphoneRecording)
-        } else {
-            microphone = nil
-        }
+        let canvasSize = CGSize(width: outputDimensions.width, height: outputDimensions.height)
 
         let wallpaperImage: CIImage?
         if request.outputKind == .video, requiredMedia.backgroundImage {
@@ -327,6 +293,19 @@ final class VideoExporter: ObservableObject {
         } else {
             wallpaperVideo = nil
         }
+        var sceneWallpaperImages: [String: CIImage] = [:]
+        var sceneWallpaperVideos: [String: LoadedVideoAsset] = [:]
+        for source in project.sceneBackgroundSources {
+            guard let key = source.sceneResourceKey, let asset = request.assets.sceneWallpapers[key] else { continue }
+            if source.isVideo {
+                sceneWallpaperVideos[key] = try await loadRequiredVideo(at: asset.url, role: .wallpaper)
+            } else {
+                guard let image = CIImage(contentsOf: asset.url, options: [.applyOrientationProperty: true]) else {
+                    throw VideoExporterError.unreadableAsset(role: .wallpaper, path: asset.url.path, reason: "文件不是可解码的图片。")
+                }
+                sceneWallpaperImages[key] = image
+            }
+        }
         var stickerImages: [String: CIImage] = [:]
         stickerImages.reserveCapacity(request.assets.stickers.count)
         for (relativePath, asset) in request.assets.stickers
@@ -353,30 +332,11 @@ final class VideoExporter: ObservableObject {
            mediaPlan.microphone?.playableDuration ?? 0 <= 0 {
             throw VideoExporterError.unusableMediaRange(.microphoneRecording)
         }
+        let insertedVideo = await TimelineCompositionBuilder.loadInsertedVideo(for: mediaPlan.primary)
         let compositionBundle = try TimelineCompositionBuilder.build(
-            plan: mediaPlan,
-            primaryVideoTrack: source.track,
-            primaryVideoRange: source.timeRange,
-            primaryVideoPreferredTransform: source.preferredTransform,
-            systemAudioTrack: audioTrack,
-            systemAudioRange: systemAudioTimeRange,
-            cameraTrack: camera?.track,
-            cameraRange: camera?.timeRange,
-            cameraPreferredTransform: camera?.preferredTransform ?? .identity,
-            microphoneTrack: microphone?.track,
-            microphoneRange: microphone?.timeRange
-        )
-        // 与编辑预览一致：摄像头素材带黑边时统一裁掉，保证导出与预览一致。
-        let cameraContentCrop: NormalizedCrop?
-        if request.outputKind == .video,
-           requiredMedia.cameraVideo,
-           let cameraURL {
-            cameraContentCrop = await CameraLetterboxAnalysis.normalizedContentCrop(
-                for: cameraURL
-            )
-        } else {
-            cameraContentCrop = nil
-        }
+            plan: mediaPlan, sources: sourceTracks,
+            audioClips: project.timeline.programAudioClips,
+            speech: project.timeline.subtitleCues.map(\.timing), insertedVideo: insertedVideo)
         let finalOutputURL = request.outputURL
         // Write to a sibling temporary file and promote it atomically only
         // after the writer completes, so an export failure or cancellation
@@ -384,52 +344,54 @@ final class VideoExporter: ObservableObject {
         let temporaryOutputURL = ExportFileTransaction.makeTemporaryURL(
             for: finalOutputURL
         )
-        do {
-            try Task.checkCancellation()
-            switch request.outputKind {
-            case .video:
-                let pipeline = try DirectExportPipeline(
-                    media: compositionBundle,
-                    wallpaperImage: wallpaperImage,
-                    wallpaperVideo: wallpaperVideo,
-                    stickerImages: stickerImages,
-                    outputURL: temporaryOutputURL,
-                    canvasSize: canvasSize,
-                    project: project,
-                    cursorSources: cursorSources,
-                    frameRate: project.exportSettings.frameRate,
-                    outputRange: request.outputRange,
-                    cameraContentCrop: cameraContentCrop,
-                    stageHandler: stageHandler,
-                    progressHandler: progressHandler
-                )
-                stageHandler(.processing)
-                try await pipeline.run()
-            case .audio:
-                let pipeline = try AudioOnlyExportPipeline(
-                    media: compositionBundle,
-                    outputURL: temporaryOutputURL,
-                    project: project,
-                    outputRange: request.outputRange,
-                    progressHandler: progressHandler
-                )
-                stageHandler(.processing)
-                try await pipeline.run()
-            }
-        } catch {
-            try? FileManager.default.removeItem(at: temporaryOutputURL)
-            throw error
+        defer { try? FileManager.default.removeItem(at: temporaryOutputURL) }
+        try Task.checkCancellation()
+        switch request.outputKind {
+        case .video:
+            let preparedAudio = try await RenderedExportAudio.prepare(media: compositionBundle,
+                project: project, outputRange: request.outputRange,
+                normalizesLoudness: request.normalizesAudioLoudness)
+            let pipeline = try await DirectExportPipeline(
+                media: compositionBundle,
+                wallpaperImage: wallpaperImage,
+                wallpaperVideo: wallpaperVideo,
+                sceneWallpaperImages: sceneWallpaperImages,
+                sceneWallpaperVideos: sceneWallpaperVideos,
+                stickerImages: stickerImages,
+                imageURLs: request.assets.stickers.mapValues(\.url),
+                outputURL: temporaryOutputURL,
+                canvasSize: canvasSize,
+                project: project,
+                cursorSources: cursorSources,
+                frameRate: project.exportSettings.frameRate,
+                outputRange: request.outputRange,
+                preparedAudio: preparedAudio,
+                stageHandler: stageHandler,
+                progressHandler: progressHandler
+            )
+            stageHandler(.processing)
+            try await pipeline.run()
+        case .audio:
+            let pipeline = try AudioOnlyExportPipeline(
+                media: compositionBundle,
+                outputURL: temporaryOutputURL,
+                project: project,
+                outputRange: request.outputRange,
+                normalizesAudioLoudness: request.normalizesAudioLoudness,
+                progressHandler: progressHandler
+            )
+            stageHandler(.processing)
+            try await pipeline.run()
         }
         stageHandler(.finishing)
+        try Task.checkCancellation()
         do {
-            try Task.checkCancellation()
             try ExportFileTransaction.promote(
                 temporaryURL: temporaryOutputURL,
                 to: finalOutputURL
             )
         } catch {
-            try? FileManager.default.removeItem(at: temporaryOutputURL)
-            throw VideoExporterError.exportFailed("写入最终文件失败：\(error.localizedDescription)")
+            throw VideoExporterError.exportFailed(String(format: appLocalized("写入最终文件失败：%@"), error.localizedDescription))
         }
     }
 
@@ -589,65 +551,6 @@ final class VideoExporter: ObservableObject {
         )
     }
 
-    nonisolated static func render(
-        source: CIImage,
-        cameraSource: CIImage? = nil,
-        wallpaperSource: CIImage? = nil,
-        cursorSource: CursorRenderSource? = nil,
-        cursorSources: [CursorAssetID: CursorRenderSource] = [:],
-        pointerEvents: [PointerEventRecord] = [],
-        pointerTrack: PointerTrack? = nil,
-        projectPointerTrack: ProjectPointerTrack? = nil,
-        zoomTrack: ZoomAnimationTrack? = nil,
-        at time: TimeInterval,
-        canvasSize: CGSize,
-        project: RecorderProject
-    ) -> CIImage {
-        let normalizedSource = source.transformed(
-            by: CGAffineTransform(translationX: -source.extent.minX, y: -source.extent.minY)
-        )
-        let pointerEvaluation = projectPointerTrack?.evaluation(
-            at: time,
-            motion: project.motion,
-            style: project.cursorStyle
-        ) ?? (pointerTrack ?? PointerTrack(pointerEvents)).evaluation(
-            at: time,
-            motion: project.motion,
-            style: project.cursorStyle
-        )
-        let activeCameraSource = project.media?.camera == nil ? nil : cameraSource
-        let recordedAssetID = pointerEvaluation.cursor?.recordedCursorAssetID
-        let effectiveAssetID = project.cursorStyle.assetID == .automatic
-            ? (recordedAssetID ?? .systemArrow)
-            : project.cursorStyle.assetID
-        let effectiveCursorSource = cursorSources[effectiveAssetID] ?? cursorSource
-        let frameScene = FrameSceneEvaluator.scene(
-            project: project,
-            time: time,
-            canvasSize: CompositionSize(
-                width: canvasSize.width,
-                height: canvasSize.height
-            ),
-            sourceAspectRatio: normalizedSource.extent.width / max(normalizedSource.extent.height, 1),
-            cameraSourceSize: activeCameraSource.map {
-                CompositionSize(width: $0.extent.width, height: $0.extent.height)
-            },
-            pointerTrack: projectPointerTrack,
-            pointerEvaluation: pointerEvaluation,
-            cursorMetrics: effectiveCursorSource?.metrics,
-            cursorMetricsByAssetID: cursorSources.mapValues(\.metrics),
-            zoomTrack: zoomTrack
-        )
-        return SharedFrameRenderer.render(
-            scene: frameScene,
-            resources: SharedFrameRenderResources(
-                screen: source,
-                camera: activeCameraSource,
-                wallpaper: wallpaperSource,
-                cursor: effectiveCursorSource?.image
-            )
-        )
-    }
 
     nonisolated private static func outputSize(
         for style: CanvasStyle,

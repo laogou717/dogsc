@@ -1,12 +1,63 @@
 import SwiftUI
 
-/// Direct 3D orientation control for the screen-motion target. Vertical drag
-/// controls X tilt, horizontal drag controls Y tilt; exact angles live beside
-/// the same surface and share its draft/commit lifecycle.
+/// The four everyday screen-3D poses (屏幕 3D · 姿态). The inspector's preset
+/// tiles and the canvas float bar both offer exactly these.
+enum EditorScreenTiltPreset: CaseIterable, Identifiable {
+    case leanLeft, leanRight, topDown, front
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .leanLeft: "左倾"
+        case .leanRight: "右倾"
+        case .topDown: "俯视"
+        case .front: "正面"
+        }
+    }
+
+    var rotationX: Double {
+        switch self {
+        case .leanLeft: 0
+        case .leanRight: 6
+        case .topDown: 22
+        case .front: 0
+        }
+    }
+
+    var rotationY: Double {
+        switch self {
+        case .leanLeft: 16
+        case .leanRight: -14
+        case .topDown: 0
+        case .front: 0
+        }
+    }
+
+    /// The small card inside the preset tile, tilted the way the pose leans.
+    var thumbnailAxis: (x: CGFloat, y: CGFloat, angle: Double) {
+        switch self {
+        case .leanLeft: (0, 1, 18)
+        case .leanRight: (0, 1, -18)
+        case .topDown: (1, 0, 30)
+        case .front: (0, 1, 0)
+        }
+    }
+
+    /// The preset the current pose matches (within half a degree), if any.
+    static func matching(rotationX: Double, rotationY: Double) -> Self? {
+        allCases.first { abs($0.rotationX - rotationX) < 0.5 && abs($0.rotationY - rotationY) < 0.5 }
+    }
+}
+
+/// Direct 3D orientation control for the screen-motion target (屏幕 3D ·
+/// 姿态): a 132-high well holding a card in perspective — drag anywhere to
+/// tilt it — four pose presets under it, then exact X / Y / Z angles.
 struct EditorTiltPad: View {
-    @GestureState private var isDragging = false
-    @Environment(\.consolePalette) private var palette
-    @State private var isAngleEditing = false
+    @State private var dragOrigin: (x: Double, y: Double)?
+    @State private var activeAxis: Axis?
+    @State private var hasPreview = false
+    @State private var hoveredPreset: EditorScreenTiltPreset?
 
     let rotationX: Double
     let rotationY: Double
@@ -14,225 +65,190 @@ struct EditorTiltPad: View {
     let onEnded: () -> Void
     let onCancelled: () -> Void
     var onTextPreviewValidityChanged: (Bool) -> Void = { _ in }
+    /// Z (in-plane) rotation; the third box appears when it is supplied.
+    var rotationZ: Double? = nil
+    var onZChanged: ((Double) -> Void)? = nil
 
-    private var tint: Color { palette?.fill ?? EditorTheme.platinumAccent }
+    static let maximumX = 28.0
+    static let maximumY = 32.0
+    static let maximumZ = 30.0
+    /// Degrees of tilt per point of pointer travel.
+    static let dragGain = 0.3
 
-    private let maximumX = 28.0
-    private let maximumY = 32.0
+    private enum Axis: Hashable { case x, y, z }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("3D 倾斜")
-                        .font(.appUI(size: 11, weight: .semibold))
-                        .foregroundStyle(EditorTheme.chrome(0.84))
-                }
-
-                Spacer(minLength: 8)
-
-                Button {
-                    withAnimation(SpringMotion.snappy) {
-                        onChanged(0, 0)
-                        onEnded()
-                    }
-                } label: {
-                    EditorSymbolLabel("归零", systemImage: "scope")
-                        .font(.appUI(size: 10, weight: .semibold))
-                }
-                .buttonStyle(.editorGhost)
-                .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous))
-                .controlSize(.small)
-                .disabled(isNeutral)
-                .accessibilityLabel("归零 3D 倾斜")
-            }
-
-            tiltSurface
-
-            EditorPairedParameterReadouts(
-                first: EditorPairedParameterValue(
-                    title: "X",
-                    accessibilityTitle: "3D 倾斜 X 角度",
-                    value: clamped(rotationX, to: -maximumX...maximumX),
-                    range: -maximumX...maximumX,
-                    displayText: EditorSliderValueFormat.compact(rotationX, unit: "°", digits: 1),
-                    inputFormat: .decimal1
-                ),
-                second: EditorPairedParameterValue(
-                    title: "Y",
-                    accessibilityTitle: "3D 倾斜 Y 角度",
-                    value: clamped(rotationY, to: -maximumY...maximumY),
-                    range: -maximumY...maximumY,
-                    displayText: EditorSliderValueFormat.compact(rotationY, unit: "°", digits: 1),
-                    inputFormat: .decimal1
-                ),
-                onChanged: onChanged,
-                onEnded: onEnded,
-                onCancelled: onCancelled,
-                onEditingChanged: { isAngleEditing = $0 },
-                onTextPreviewValidityChanged: onTextPreviewValidityChanged
-            )
+        VStack(alignment: .leading, spacing: 8) {
+            poseWell
+            presets
+            rotationRow
         }
     }
 
-    private var tiltSurface: some View {
-        GeometryReader { proxy in
-            let inset: CGFloat = 12
-            let point = handlePoint(in: proxy.size, inset: inset)
-            let active = isDragging || isAngleEditing
+    // MARK: Pose well
 
-            ZStack {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color.black.opacity(0.38),
-                                Color.black.opacity(0.20),
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
+    private var poseWell: some View {
+        ZStack(alignment: .bottom) {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(EditorTheme.chrome(0.045))
+            GeometryReader { proxy in
+                let width = proxy.size.width * 0.46
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(LinearGradient(
+                        colors: [Color(red: 0.624, green: 0.702, blue: 0.773), Color(red: 0.875, green: 0.902, blue: 0.925)],
+                        startPoint: .topLeading, endPoint: .bottomTrailing
+                    ))
                     .overlay {
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .stroke(
-                                active
-                                    ? tint.opacity(0.22)
-                                    : EditorTheme.chrome(0.075),
-                                lineWidth: 0.75
-                            )
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.4), lineWidth: 1)
                     }
-
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                tint.opacity(0.11),
-                                EditorTheme.chrome(0.025),
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 9, style: .continuous)
-                            .stroke(
-                                LinearGradient(
-                                    colors: [
-                                        EditorTheme.chrome(0.34),
-                                        tint.opacity(0.10),
-                                    ],
-                                    startPoint: .top,
-                                    endPoint: .bottom
-                                ),
-                                lineWidth: 0.8
-                            )
-                    }
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 18)
-                    .rotation3DEffect(
-                        .degrees(clamped(rotationX, to: -maximumX...maximumX) * 0.55),
-                        axis: (x: 1, y: 0, z: 0),
-                        perspective: 0.72
-                    )
-                    .rotation3DEffect(
-                        .degrees(clamped(rotationY, to: -maximumY...maximumY) * 0.55),
-                        axis: (x: 0, y: 1, z: 0),
-                        perspective: 0.72
-                    )
-                    .allowsHitTesting(false)
-
-                Path { path in
-                    path.move(to: CGPoint(x: proxy.size.width / 2, y: inset))
-                    path.addLine(to: CGPoint(x: proxy.size.width / 2, y: proxy.size.height - inset))
-                    path.move(to: CGPoint(x: inset, y: proxy.size.height / 2))
-                    path.addLine(to: CGPoint(x: proxy.size.width - inset, y: proxy.size.height / 2))
-                }
-                .stroke(
-                    tint.opacity(0.13),
-                    style: StrokeStyle(lineWidth: 0.75, dash: [3, 4])
-                )
-                .allowsHitTesting(false)
-
-                if active {
-                    Path { path in
-                        path.move(to: CGPoint(x: point.x, y: inset))
-                        path.addLine(to: CGPoint(x: point.x, y: proxy.size.height - inset))
-                        path.move(to: CGPoint(x: inset, y: point.y))
-                        path.addLine(to: CGPoint(x: proxy.size.width - inset, y: point.y))
-                    }
-                    .stroke(
-                        tint.opacity(0.27),
-                        style: StrokeStyle(lineWidth: 0.75, dash: [2.5, 3.5])
-                    )
-                    .allowsHitTesting(false)
-                }
-
-                ZStack {
-                    Circle()
-                        .fill(tint.opacity(active ? 0.20 : 0.09))
-                        .frame(width: active ? 28 : 24, height: active ? 28 : 24)
-                    Circle()
-                        .fill(tint)
-                        .frame(width: active ? 16 : 14, height: active ? 16 : 14)
-                        .overlay {
-                            Circle().stroke(EditorTheme.chrome(0.78), lineWidth: 0.75)
-                        }
-                        .shadow(color: Color.black.opacity(0.42), radius: 3, y: 1.5)
-                }
-                .position(point)
-                .transaction { $0.animation = nil }
+                    .frame(width: width, height: width * 10 / 16)
+                    .shadow(color: .black.opacity(0.18), radius: 12, y: 10)
+                    .rotation3DEffect(.degrees(clamped(rotationX, Self.maximumX)), axis: (x: 1, y: 0, z: 0), perspective: 0.6)
+                    .rotation3DEffect(.degrees(clamped(rotationY, Self.maximumY)), axis: (x: 0, y: 1, z: 0), perspective: 0.6)
+                    .rotationEffect(.degrees(rotationZ ?? 0))
+                    .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
+                    .transaction { $0.animation = nil }
             }
-            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .updating($isDragging) { _, state, _ in state = true }
-                    .onChanged { gesture in
-                        let tilt = tilt(at: gesture.location, in: proxy.size, inset: inset)
-                        onChanged(tilt.x, tilt.y)
-                    }
-                    .onEnded { _ in onEnded() }
-            )
-            .allowsHitTesting(!isAngleEditing)
-            .accessibilityHidden(true)
+            .allowsHitTesting(false)
+            Text(appLocalized("拖动倾斜"))
+                .font(.appUI(size: 11))
+                .foregroundStyle(EditorTheme.tertiaryText)
+                .padding(.bottom, 6)
+                .allowsHitTesting(false)
         }
-        .frame(width: 184, height: 126)
+        .frame(height: 132)
         .frame(maxWidth: .infinity)
+        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .gesture(
+            DragGesture(minimumDistance: 1)
+                .onChanged { value in
+                    let origin = dragOrigin ?? (rotationX, rotationY)
+                    if dragOrigin == nil { dragOrigin = origin }
+                    let x = clamped(origin.x - Double(value.translation.height) * Self.dragGain, Self.maximumX)
+                    let y = clamped(origin.y + Double(value.translation.width) * Self.dragGain, Self.maximumY)
+                    onChanged(x, y)
+                }
+                .onEnded { _ in
+                    guard dragOrigin != nil else { return }
+                    dragOrigin = nil
+                    onEnded()
+                }
+        )
+        .editorCursor(dragOrigin == nil ? .openHand : .closedHand)
+        .accessibilityElement()
+        .accessibilityLabel(appLocalized("3D 姿态"))
+        .accessibilityHint(appLocalized("拖动倾斜"))
         .accessibilityIdentifier("screen-motion.tilt-pad")
     }
 
-    private var isNeutral: Bool {
-        abs(rotationX) < 0.000_5 && abs(rotationY) < 0.000_5
+    // MARK: Presets
+
+    private var presets: some View {
+        let current = EditorScreenTiltPreset.matching(rotationX: rotationX, rotationY: rotationY)
+        return HStack(spacing: 6) {
+            ForEach(EditorScreenTiltPreset.allCases) { preset in
+                presetTile(preset, isSelected: current == preset)
+            }
+        }
     }
 
-    private func handlePoint(in size: CGSize, inset: CGFloat) -> CGPoint {
-        let width = max(size.width - inset * 2, 1)
-        let height = max(size.height - inset * 2, 1)
-        let x = (clamped(rotationY, to: -maximumY...maximumY) / (maximumY * 2)) + 0.5
-        let y = 0.5 - (clamped(rotationX, to: -maximumX...maximumX) / (maximumX * 2))
-        return CGPoint(
-            x: inset + CGFloat(x) * width,
-            y: inset + CGFloat(y) * height
+    private func presetTile(_ preset: EditorScreenTiltPreset, isSelected: Bool) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
+        let axis = preset.thumbnailAxis
+        return Button {
+            withAnimation(SpringMotion.standard) {
+                onChanged(preset.rotationX, preset.rotationY)
+                onEnded()
+            }
+        } label: {
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .fill(EditorConsole.Track.screenMotion.fill.opacity(0.55))
+                .frame(width: 24, height: 15)
+                .rotation3DEffect(.degrees(axis.angle), axis: (x: axis.x, y: axis.y, z: 0), perspective: 0.8)
+                .frame(maxWidth: .infinity)
+                .frame(height: 44)
+                .background(shape.fill(EditorTheme.chrome(hoveredPreset == preset ? 0.08 : 0.045)))
+                // The chosen pose: a 1.5-pt accent ring standing 2 pt off the tile.
+                .overlay {
+                    if isSelected {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(EditorTheme.accent, lineWidth: 1.5)
+                            .padding(-3.5)
+                    }
+                }
+                .contentShape(shape)
+        }
+        .buttonStyle(.plain)
+        .onHover { inside in
+            if inside { hoveredPreset = preset } else if hoveredPreset == preset { hoveredPreset = nil }
+        }
+        .animation(SpringMotion.micro, value: hoveredPreset)
+        .help(appLocalized(preset.title))
+        .accessibilityLabel(appLocalized(preset.title))
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    // MARK: Exact angles
+
+    private var rotationRow: some View {
+        HStack(spacing: EditorPropertyRowMetrics.gap) {
+            Text(appLocalized("旋转"))
+                .font(.appUI(size: 13))
+                .foregroundStyle(EditorTheme.secondaryText)
+                .lineLimit(1)
+                .frame(width: EditorPropertyRowMetrics.labelWidth, alignment: .leading)
+            HStack(spacing: 6) {
+                angleField("X", accessibility: "3D 倾斜 X 角度", axis: .x, value: rotationX, limit: Self.maximumX)
+                angleField("Y", accessibility: "3D 倾斜 Y 角度", axis: .y, value: rotationY, limit: Self.maximumY)
+                if let rotationZ, onZChanged != nil {
+                    angleField("Z", accessibility: "平面旋转角度", axis: .z, value: rotationZ, limit: Self.maximumZ)
+                }
+            }
+        }
+        .frame(minHeight: EditorPropertyRowMetrics.height)
+    }
+
+    private func angleField(_ title: String, accessibility: String, axis: Axis, value: Double, limit: Double) -> some View {
+        let format = EditorSliderValueFormat.degrees
+        return EditorScrubField(
+            title: title,
+            accessibilityTitle: accessibility,
+            displayText: "\(Int(value.rounded()))°",
+            editingText: format.editingText(for: value),
+            value: clamped(value, limit),
+            range: -limit...limit,
+            isActive: activeAxis == axis,
+            onBegin: { activeAxis = axis; hasPreview = false },
+            onScrub: { apply($0, axis: axis) },
+            onPreviewText: { text in
+                guard let parsed = format.value(from: text) else {
+                    onTextPreviewValidityChanged(false)
+                    return false
+                }
+                onTextPreviewValidityChanged(true)
+                apply(clamped(parsed, limit), axis: axis)
+                return true
+            },
+            onFinish: { commits in
+                guard activeAxis == axis else { return }
+                activeAxis = nil
+                if hasPreview { commits ? onEnded() : onCancelled() }
+                hasPreview = false
+            }
         )
     }
 
-    private func tilt(
-        at location: CGPoint,
-        in size: CGSize,
-        inset: CGFloat
-    ) -> (x: Double, y: Double) {
-        let width = max(size.width - inset * 2, 1)
-        let height = max(size.height - inset * 2, 1)
-        let horizontal = min(max(Double((location.x - inset) / width), 0), 1)
-        let vertical = min(max(Double((location.y - inset) / height), 0), 1)
-        var x = (0.5 - vertical) * maximumX * 2
-        var y = (horizontal - 0.5) * maximumY * 2
-        if abs(x) <= 1.4 { x = 0 }
-        if abs(y) <= 1.4 { y = 0 }
-        return (x, y)
+    private func apply(_ value: Double, axis: Axis) {
+        hasPreview = true
+        switch axis {
+        case .x: onChanged(value, rotationY)
+        case .y: onChanged(rotationX, value)
+        case .z: onZChanged?(value)
+        }
     }
 
-    private func clamped(_ value: Double, to range: ClosedRange<Double>) -> Double {
-        min(max(value.isFinite ? value : 0, range.lowerBound), range.upperBound)
+    private func clamped(_ value: Double, _ limit: Double) -> Double {
+        min(max(value.isFinite ? value : 0, -limit), limit)
     }
 }

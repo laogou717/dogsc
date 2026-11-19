@@ -3,7 +3,6 @@ import RecorderCore
 import SwiftUI
 
 struct ZoomFocusMap: View {
-    @Environment(\.consolePalette) private var palette
     @ObservedObject var mediaSession: EditorMediaSession
     let outputTime: TimeInterval
     let sourcePixelSize: CGSize
@@ -64,7 +63,7 @@ struct ZoomFocusMap: View {
                             endFocusEditing()
                         } label: {
                             EditorSymbol("scope", size: 18)
-                                .font(.appUI(size: 14))
+                                .font(.appUI(size: 13))
                                 .frame(width: 32, height: 30)
                         }
                         .buttonStyle(EditorSoftRaisedButtonStyle())
@@ -105,9 +104,9 @@ struct ZoomFocusMap: View {
                         .scaledToFit()
                         .frame(width: mapRect.width, height: mapRect.height)
                         .position(x: mapRect.midX, y: mapRect.midY)
-                        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                 } else {
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .fill(EditorTheme.chrome(0.035))
                         .frame(width: mapRect.width, height: mapRect.height)
                         .position(x: mapRect.midX, y: mapRect.midY)
@@ -139,7 +138,7 @@ struct ZoomFocusMap: View {
                         path.addLine(to: CGPoint(x: mapRect.maxX, y: point.y))
                     }
                     .stroke(
-                        (palette?.fill ?? EditorTheme.platinumAccent).opacity(0.7),
+                        EditorTheme.selectionTint.opacity(0.7),
                         style: StrokeStyle(lineWidth: 0.75, dash: [2.5, 3.5])
                     )
                     .allowsHitTesting(false)
@@ -164,16 +163,16 @@ struct ZoomFocusMap: View {
                 .transaction { $0.animation = nil }
                 }
             }
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .strokeBorder(
-                        (palette?.fill ?? EditorTheme.platinumAccent).opacity(isActive ? 0.8 : isMapHovered ? 0.35 : 0),
+                        EditorTheme.selectionTint.opacity(isActive ? 0.8 : isMapHovered ? 0.35 : 0),
                         lineWidth: 0.5
                     )
                     .animation(SpringMotion.hover, value: isMapHovered)
             }
-            .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in

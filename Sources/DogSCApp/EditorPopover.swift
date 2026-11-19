@@ -15,6 +15,7 @@ extension View {
         isPresented: Binding<Bool>,
         arrowEdge: Edge = .top,
         establishesKeyboardEntry: Bool = true,
+        background: Color = EditorTheme.panelSurface,
         @ViewBuilder content: @escaping () -> Content
     ) -> some View {
         popover(isPresented: isPresented, arrowEdge: arrowEdge) {
@@ -22,7 +23,22 @@ extension View {
                 establishesKeyboardEntry: establishesKeyboardEntry, content: content())
                 // The editor's own panel tone instead of the system's grey
                 // material, so a popover reads as a piece of the editor.
-                .presentationBackground(EditorTheme.panelSurface)
+                .presentationBackground(background)
+        }
+    }
+
+    /// For menus whose row count changes while open. The measured content
+    /// drives an owned window, rather than a cached SwiftUI popover proposal.
+    func editorContentSizedPopover<Content: View>(
+        isPresented: Binding<Bool>,
+        width: CGFloat,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        background {
+            EditorContentSizedPopoverAnchor(isPresented: isPresented, width: width,
+                content: EditorPopoverFocusScope(isPresented: isPresented,
+                    establishesKeyboardEntry: true, content: content()))
+                .allowsHitTesting(false)
         }
     }
 }

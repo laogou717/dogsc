@@ -5,9 +5,11 @@ import Foundation
 /// A silent looping AVPlayer dedicated to the canvas background. It follows
 /// the editor's canonical output clock; it never creates a second independent
 /// animation clock that could drift from the recording and camera tracks.
-@MainActor
-final class PreviewWallpaperVideoPlayback {
-    var onFrameAvailable: (() -> Void)?
+final class PreviewWallpaperVideoPlayback: @unchecked Sendable {
+    var onFrameAvailable: (@Sendable () -> Void)?
+
+    private let enqueue: @Sendable (@escaping @Sendable () -> Void) -> Void
+    init(enqueue: @escaping @Sendable (@escaping @Sendable () -> Void) -> Void) { self.enqueue = enqueue }
 
     private var url: URL?
     private var player: AVPlayer?
@@ -16,6 +18,7 @@ final class PreviewWallpaperVideoPlayback {
     private var preferredTransform = CGAffineTransform.identity
     private var lastDiscontinuityID: UInt64?
     private var lastCopiedItemTime = CMTime.invalid
+    private var audioClock: CMTimebase?
     private var latestTick: EditorPlaybackRenderTick?
     private var isPrimed = false
     private var seekIsInFlight = false
@@ -49,50 +52,33 @@ final class PreviewWallpaperVideoPlayback {
         self.output = output
         self.player = player
 
-        preparationTask = Task { [weak self] in
+        let initialTime = latestTick?.outputTime ?? 0
+        preparationTask = Task.detached { [weak self] in
             do {
                 guard try await asset.load(.isPlayable) else { return }
                 let tracks = try await asset.loadTracks(withMediaType: .video)
                 guard let track = tracks.first else { return }
                 let transform = try await track.load(.preferredTransform)
-                let timeRange = try await track.load(.timeRange)
-                guard let self, self.url == standardized else { return }
-                preferredTransform = transform
-                duration = max(timeRange.duration.seconds, 0)
-                guard duration > 0 else { return }
-
-                // A completed seek does not guarantee that
-                // AVPlayerItemVideoOutput owns a decoded frame. Prime the
-                // hardware decoder while the cached poster stays visible,
-                // then join the editor's latest output time in one operation.
-                let initialTarget = localTime(for: latestTick?.outputTime ?? 0)
-                _ = await seekPlayer(
-                    player,
-                    to: initialTarget,
-                    exact: latestTick?.isPlaying != true
-                )
-                guard self.url == standardized else { return }
-                guard await waitUntilReady(player) else { return }
-                guard self.url == standardized else { return }
-                await preroll(player)
-                guard self.url == standardized else { return }
-                isPrimed = true
-                if let latestTick, latestTick.isPlaying {
-                    applySynchronization(latestTick, force: true)
-                } else {
-                    player.pause()
-                    lastDiscontinuityID = latestTick?.discontinuityID
+                let range = try await track.load(.timeRange)
+                let length = max(range.duration.seconds, 0)
+                guard length > 0, !Task.isCancelled else { return }
+                _ = await Self.seekPlayer(player, to: initialTime.truncatingRemainder(dividingBy: length), exact: true)
+                guard !Task.isCancelled, await Self.waitUntilReady(player) else { return }
+                await Self.preroll(player)
+                guard !Task.isCancelled else { return }
+                self?.enqueue { [weak self] in
+                    guard let self, self.url == standardized, self.player === player else { return }
+                    self.preferredTransform = transform; self.duration = length; self.isPrimed = true
+                    if let tick = self.latestTick { self.applySynchronization(tick, force: true) }
+                    else { player.pause() }
+                    self.onFrameAvailable?()
                 }
-                onFrameAvailable?()
-            } catch {
-                // The inspector still keeps the chosen file and export will
-                // report a precise media error. Preview simply remains on the
-                // previously presented drawable instead of flashing black.
-            }
+            } catch { /* Keep the cached poster until a valid resource is ready. */ }
         }
     }
 
-    func synchronize(to tick: EditorPlaybackRenderTick?) {
+    func synchronize(to tick: EditorPlaybackRenderTick?, audioClock: CMTimebase? = nil) {
+        self.audioClock = audioClock
         latestTick = tick
         if tick == nil {
             player?.pause()
@@ -107,7 +93,7 @@ final class PreviewWallpaperVideoPlayback {
         force: Bool
     ) {
         guard duration > 0, let player else { return }
-        let target = localTime(for: tick.outputTime)
+        let target = localTime(for: audioClock.map { CMTimebaseGetTime($0).seconds } ?? tick.outputTime)
         let current = player.currentTime().seconds
         let discontinuity = lastDiscontinuityID != tick.discontinuityID
         lastDiscontinuityID = tick.discontinuityID
@@ -162,6 +148,7 @@ final class PreviewWallpaperVideoPlayback {
         lastDiscontinuityID = nil
         lastCopiedItemTime = .invalid
         latestTick = nil
+        audioClock = nil
         isPrimed = false
         seekIsInFlight = false
         queuedPausedSeek = nil
@@ -197,7 +184,7 @@ final class PreviewWallpaperVideoPlayback {
             toleranceBefore: .zero,
             toleranceAfter: .zero
         ) { [weak self, weak player] _ in
-            Task { @MainActor [weak self, weak player] in
+            self?.enqueue { [weak self, weak player] in
                 guard let self, let player, self.player === player else { return }
                 self.seekIsInFlight = false
                 self.onFrameAvailable?()
@@ -209,7 +196,7 @@ final class PreviewWallpaperVideoPlayback {
         }
     }
 
-    private func seekPlayer(
+    private static func seekPlayer(
         _ player: AVPlayer,
         to time: TimeInterval,
         exact: Bool
@@ -226,7 +213,7 @@ final class PreviewWallpaperVideoPlayback {
         }
     }
 
-    private func preroll(_ player: AVPlayer) async {
+    private static func preroll(_ player: AVPlayer) async {
         await withCheckedContinuation { continuation in
             player.preroll(atRate: 1) { _ in
                 continuation.resume()
@@ -238,7 +225,7 @@ final class PreviewWallpaperVideoPlayback {
     /// items can still report `.unknown` for a short interval. Calling preroll
     /// before the player itself reaches `.readyToPlay` raises an Objective-C
     /// exception, so yield asynchronously until the actual readiness gate.
-    private func waitUntilReady(_ player: AVPlayer) async -> Bool {
+    private static func waitUntilReady(_ player: AVPlayer) async -> Bool {
         for _ in 0..<500 {
             guard !Task.isCancelled else { return false }
             switch player.status {

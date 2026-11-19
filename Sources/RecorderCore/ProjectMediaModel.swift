@@ -163,6 +163,7 @@ public struct RecorderProject: Codable, Equatable, Sendable {
     public var exportSettings: ExportSettings
     public var timeline: ProjectTimeline
     public var media: ProjectMediaManifest?
+    public var additionalSources: [RecordingSource]
     public var recordingMarkers: [RecordingMarker]
 
     /// Source-compatibility bridge while app call sites migrate to
@@ -187,6 +188,7 @@ public struct RecorderProject: Codable, Equatable, Sendable {
         zoomAnimations: [ZoomAnimationClip] = [],
         timeline: ProjectTimeline? = nil,
         media: ProjectMediaManifest? = nil,
+        additionalSources: [RecordingSource] = [],
         recordingMarkers: [RecordingMarker] = []
     ) {
         self.version = version
@@ -202,6 +204,7 @@ public struct RecorderProject: Codable, Equatable, Sendable {
         self.exportSettings = exportSettings
         self.timeline = timeline ?? ProjectTimeline(zoomClips: zoomAnimations)
         self.media = media
+        self.additionalSources = additionalSources
         self.recordingMarkers = recordingMarkers
     }
 
@@ -218,33 +221,26 @@ public struct RecorderProject: Codable, Equatable, Sendable {
         case cursorStyle
         case exportSettings
         case timeline
-        case zoomKeyframes
-        case zoomAnimations
         case media
+        case additionalSources
         case recordingMarkers
-        // v1/v2 decode-only fields.
-        case screenRecordingRelativePath
-        case cameraRecordingRelativePath
-        case microphoneRecordingRelativePath
-        case pointerEventsRelativePath
-        case cameraStartOffset
-        case microphoneStartOffset
-        case pointerStartOffset
     }
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let decodedVersion = try container.decodeIfPresent(Int.self, forKey: .version) ?? 1
         try ProjectSchema.validateForDecoding(decodedVersion)
-        let legacyCaptureExport = try container.decodeIfPresent(
-            LegacyCaptureExportFields.self,
-            forKey: .capture
-        )
-        let legacyCanvasExport = try container.decodeIfPresent(
-            LegacyCanvasExportFields.self,
-            forKey: .canvas
-        )
         version = ProjectSchema.currentVersion
+        additionalSources = try container.decodeIfPresent([RecordingSource].self, forKey: .additionalSources) ?? []
+        var sourceIDs: Set<UUID> = [RecordingSource.primaryID]
+        for source in additionalSources {
+            guard sourceIDs.insert(source.id).inserted else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .additionalSources, in: container,
+                    debugDescription: "Recording source IDs must be unique and cannot use the reserved primary ID."
+                )
+            }
+        }
         var markerIDs = Set<UUID>()
         recordingMarkers = try container.decodeIfPresent([RecordingMarker].self, forKey: .recordingMarkers)?
             .filter { $0.sourceTime.isFinite && $0.sourceTime >= 0 && $0.number > 0 && markerIDs.insert($0.id).inserted } ?? []
@@ -268,113 +264,16 @@ public struct RecorderProject: Codable, Equatable, Sendable {
             forKey: .openingSequence
         ) ?? OpeningSequence()
         cursorStyle = try container.decodeIfPresent(CursorStyle.self, forKey: .cursorStyle) ?? CursorStyle()
-        if decodedVersion >= 5 {
-            var decodedSettings = try container.decode(
-                ExportSettings.self,
-                forKey: .exportSettings
-            )
-            // Before v7, 1080p was the implicit project default. It must not
-            // keep silently downscaling a native 4K/5K recording after the
-            // product switched to source-driven full quality.
-            if decodedVersion < 7, decodedSettings.resolution == .fullHD {
-                decodedSettings.resolution = .source
-            }
-            exportSettings = decodedSettings
-        } else {
-            let legacyResolution = legacyCanvasExport?.resolution ?? .fullHD
-            exportSettings = ExportSettings(
-                frameRate: legacyCaptureExport?.exportFrameRate ?? .fps60,
-                resolution: legacyResolution == .fullHD ? .source : legacyResolution
-            )
-        }
-        if decodedVersion >= 4 {
-            timeline = try container.decode(ProjectTimeline.self, forKey: .timeline)
-        } else {
-            let decodedAnimations = try container.decodeIfPresent(
-                [ZoomAnimationClip].self,
-                forKey: .zoomAnimations
-            )
-            let migratedAnimations: [ZoomAnimationClip]
-            if decodedVersion == 1, !container.contains(.zoomAnimations) {
-                let legacyKeyframes = try container.decodeIfPresent(
-                    [ZoomKeyframe].self,
-                    forKey: .zoomKeyframes
-                ) ?? []
-                migratedAnimations = ZoomAnimationClip.migrating(
-                    keyframes: legacyKeyframes,
-                    defaultEasing: motion.defaultZoomEasing
-                )
-            } else {
-                // An explicitly empty animation array is authoritative, even
-                // when a v1 file also contains stale legacy keyframes.
-                migratedAnimations = decodedAnimations ?? []
-            }
-            timeline = ProjectTimeline(zoomClips: migratedAnimations)
-        }
-        if decodedVersion >= 3 {
-            // Current projects never consult stale flat paths. An absent media
-            // manifest means the project intentionally has no recording yet.
-            media = try container.decodeIfPresent(
-                ProjectMediaManifest.self,
-                forKey: .media
-            )
-        } else {
-            let screenPath = try container.decodeIfPresent(
-                String.self,
-                forKey: .screenRecordingRelativePath
-            )
-            if let screenPath, !screenPath.isEmpty {
-                let cameraPath = try container.decodeIfPresent(
-                    String.self,
-                    forKey: .cameraRecordingRelativePath
-                )
-                let microphonePath = try container.decodeIfPresent(
-                    String.self,
-                    forKey: .microphoneRecordingRelativePath
-                )
-                let pointerPath = try container.decodeIfPresent(
-                    String.self,
-                    forKey: .pointerEventsRelativePath
-                )
-                let cameraOffset = try container.decodeIfPresent(
-                    TimeInterval.self,
-                    forKey: .cameraStartOffset
-                ) ?? 0
-                let microphoneOffset = try container.decodeIfPresent(
-                    TimeInterval.self,
-                    forKey: .microphoneStartOffset
-                ) ?? 0
-                let pointerOffset = try container.decodeIfPresent(
-                    TimeInterval.self,
-                    forKey: .pointerStartOffset
-                ) ?? 0
-                media = ProjectMediaManifest(
-                    screen: ProjectMediaReference(relativePath: screenPath),
-                    camera: cameraPath.flatMap { path in
-                        path.isEmpty ? nil : ProjectMediaReference(
-                            relativePath: path,
-                            startOffset: cameraOffset
-                        )
-                    },
-                    microphone: microphonePath.flatMap { path in
-                        path.isEmpty ? nil : ProjectMediaReference(
-                            relativePath: path,
-                            startOffset: microphoneOffset
-                        )
-                    },
-                    pointerEvents: pointerPath.flatMap { path in
-                        path.isEmpty ? nil : ProjectMediaReference(
-                            relativePath: path,
-                            startOffset: pointerOffset
-                        )
-                    }
-                )
-            } else {
-                // Camera/audio/event paths without a screen are orphaned and
-                // cannot form a valid recorded project manifest.
-                media = nil
-            }
-        }
+        exportSettings = try container.decode(ExportSettings.self, forKey: .exportSettings)
+        timeline = try container.decode(ProjectTimeline.self, forKey: .timeline)
+        media = try container.decodeIfPresent(ProjectMediaManifest.self, forKey: .media)
+        // Only a project saved before per-source screen decoration needs the
+        // shared look frozen onto its sources. Running this on every decode
+        // made encode/decode non-idempotent, and running it on every
+        // construction rewrote sources a caller had deliberately left
+        // inheriting. An appearance edit freezes the others itself, in
+        // `setScreenAppearance`.
+        if decodedVersion < 28 { preserveLegacyScreenAppearances() }
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -393,18 +292,11 @@ public struct RecorderProject: Codable, Equatable, Sendable {
         try container.encode(exportSettings, forKey: .exportSettings)
         try container.encode(timeline, forKey: .timeline)
         try container.encodeIfPresent(media, forKey: .media)
+        // Keep legacy single-recording payloads unchanged apart from the schema.
+        if !additionalSources.isEmpty {
+            try container.encode(additionalSources, forKey: .additionalSources)
+        }
         try container.encode(recordingMarkers, forKey: .recordingMarkers)
     }
 
-}
-
-/// Decode-only access to export fields persisted before project schema v5.
-/// Keeping these compatibility records outside `CaptureConfiguration` and
-/// `CanvasStyle` prevents either domain type from retaining a second owner.
-private struct LegacyCaptureExportFields: Decodable {
-    let exportFrameRate: OutputFrameRate?
-}
-
-private struct LegacyCanvasExportFields: Decodable {
-    let resolution: CanvasResolution?
 }

@@ -7,6 +7,7 @@ import VideoToolbox
 /// The writer therefore keeps one aspect-preserving contract for the whole file.
 final class CameraSampleWriterFrameNormalizer {
     private var transferSession: VTPixelTransferSession?
+    private var fitsSourceInsideCanvas = false
     private(set) var width: Int?
     private(set) var height: Int?
     private(set) var pixelFormat: OSType?
@@ -37,9 +38,11 @@ final class CameraSampleWriterFrameNormalizer {
         sourceWidth: Int,
         sourceHeight: Int,
         sourcePixelFormat: OSType,
-        roleName: String
+        roleName: String,
+        fitsSourceInsideCanvas: Bool = false
     ) throws {
         reset()
+        self.fitsSourceInsideCanvas = fitsSourceInsideCanvas
         self.width = width
         self.height = height
         self.pixelFormat = pixelFormat
@@ -105,7 +108,7 @@ final class CameraSampleWriterFrameNormalizer {
         guard allocationStatus == kCVReturnSuccess, let destination else {
             throw CameraRecorderError.recordingFailed(
                 roleName,
-                "无法申请摄像头等比裁切缓冲（\(allocationStatus)）"
+                String(format: appLocalized("无法申请摄像头等比裁切缓冲（%@）"), "\(allocationStatus)")
             )
         }
         CVBufferPropagateAttachments(imageBuffer, destination)
@@ -117,7 +120,7 @@ final class CameraSampleWriterFrameNormalizer {
         guard transferStatus == noErr else {
             throw CameraRecorderError.recordingFailed(
                 roleName,
-                "无法把摄像头画面等比转换为 \(width)x\(height)（\(transferStatus)）"
+                String(format: appLocalized("无法把摄像头画面等比转换为 %@（%@）"), "\(width)x\(height)", "\(transferStatus)")
             )
         }
         return destination
@@ -143,13 +146,13 @@ final class CameraSampleWriterFrameNormalizer {
         guard creationStatus == noErr, let createdSession else {
             throw CameraRecorderError.recordingFailed(
                 roleName,
-                "无法创建摄像头画面规格转换器（\(creationStatus)）"
+                String(format: appLocalized("无法创建摄像头画面规格转换器（%@）"), "\(creationStatus)")
             )
         }
         let scalingStatus = VTSessionSetProperty(
             createdSession,
             key: kVTPixelTransferPropertyKey_ScalingMode,
-            value: kVTScalingMode_Trim
+            value: fitsSourceInsideCanvas ? kVTScalingMode_Letterbox : kVTScalingMode_Trim
         )
         let realtimeStatus = VTSessionSetProperty(
             createdSession,
@@ -160,7 +163,7 @@ final class CameraSampleWriterFrameNormalizer {
             VTPixelTransferSessionInvalidate(createdSession)
             throw CameraRecorderError.recordingFailed(
                 roleName,
-                "无法配置摄像头等比裁切（\(scalingStatus)/\(realtimeStatus)）"
+                String(format: appLocalized("无法配置摄像头等比裁切（%@）"), "\(scalingStatus)/\(realtimeStatus)")
             )
         }
         transferSession = createdSession

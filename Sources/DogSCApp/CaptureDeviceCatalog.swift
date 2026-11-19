@@ -57,10 +57,6 @@ enum CaptureDeviceCatalog {
         }
     }
 
-    static func showSystemVideoEffects() {
-        AVCaptureDevice.showSystemUserInterface(.videoEffects)
-    }
-
     @discardableResult
     static func enableIOSScreenCaptureDevices() -> Bool {
         var address = CMIOObjectPropertyAddress(
@@ -153,8 +149,7 @@ enum CaptureDeviceCatalog {
         let descriptors = devices.map {
             CaptureInputDeviceDescriptor(
                 role: role,
-                uniqueID: $0.uniqueID,
-                localizedName: $0.localizedName
+                uniqueID: $0.uniqueID
             )
         }
         let descriptor = try CaptureInputDeviceResolutionPolicy.resolve(

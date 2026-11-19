@@ -163,8 +163,8 @@ struct AppChoiceContentFeedback: ViewModifier {
     func body(content: Content) -> some View {
         let engaged = press.pressed && press.wasSelected
         content
-            .scaleEffect(engaged && !RecorderMotion.reduces ? 0.96 : 1)
-            .animation(engaged ? .easeOut(duration: 0.09) : RecorderMotion.quick, value: engaged)
+            .opacity(engaged ? 0.7 : 1)
+            .animation(SpringMotion.micro, value: engaged)
     }
 }
 
@@ -176,7 +176,7 @@ struct AppChoiceIconFeedback: ViewModifier {
     func body(content: Content) -> some View {
         let engaged = press.pressed && !press.wasSelected
         content
-            .scaleEffect(engaged && !RecorderMotion.reduces ? 0.90 : 1)
-            .animation(engaged ? .easeOut(duration: 0.09) : RecorderMotion.quick, value: engaged)
+            .opacity(engaged ? 0.6 : 1)
+            .animation(SpringMotion.micro, value: engaged)
     }
 }

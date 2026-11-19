@@ -60,7 +60,7 @@ enum CameraCaptureDeviceConfigurator {
         }) else {
             throw CameraRecorderError.recordingFailed(
                 role.displayName,
-                "摄像头不再支持所选分辨率 \(resolution.label)"
+                String(format: appLocalized("摄像头不再支持所选分辨率 %@"), resolution.label)
             )
         }
         try apply(format, to: device, role: role, label: resolution.label)
@@ -92,11 +92,11 @@ enum CameraCaptureDeviceConfigurator {
             device.activeFormat = format
             device.unlockForConfiguration()
         } catch {
-            let reason = label.map { "无法选择 \($0)" }
-                ?? "无法锁定设备采集格式"
+            let reason = label.map { String(format: appLocalized("无法选择 %@"), $0) }
+                ?? appLocalized("无法锁定设备采集格式")
             throw CameraRecorderError.recordingFailed(
                 role.displayName,
-                "\(reason)：\(error.localizedDescription)"
+                String(format: appLocalized("%@：%@"), reason, error.localizedDescription)
             )
         }
     }

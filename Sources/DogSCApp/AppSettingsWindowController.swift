@@ -7,9 +7,10 @@ import SwiftUI
 /// disabled while the editor's AppKit window is key.
 @MainActor
 final class AppSettingsWindowController {
-    private static let contentWidth: CGFloat = 560
-    private static let maximumContentHeight: CGFloat = 640
-    private static let initialContentHeight: CGFloat = 540
+    static let contentWidth: CGFloat = 820
+    static let contentHeight: CGFloat = 560
+    private static let maximumContentHeight: CGFloat = 560
+    private static let initialContentHeight: CGFloat = 560
 
     static let windowIdentifier = NSUserInterfaceItemIdentifier(
         "cn.laogou.dogsc.settings-window"
@@ -76,7 +77,7 @@ final class AppSettingsWindowController {
             window.contentView?.layoutSubtreeIfNeeded()
             let bounds = screen.visibleFrame
             // Centre a typical page; later pages grow and shrink from the top edge.
-            let typical = window.frameRect(forContentRect: NSRect(x: 0, y: 0, width: Self.contentWidth, height: 540)).height
+            let typical = window.frameRect(forContentRect: NSRect(x: 0, y: 0, width: Self.contentWidth, height: 560)).height
             window.setFrameOrigin(NSPoint(x: bounds.midX - window.frame.width / 2,
                                           y: bounds.midY + typical / 2 - window.frame.height))
         }

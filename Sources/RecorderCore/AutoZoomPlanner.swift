@@ -1,15 +1,58 @@
 import Foundation
 
 public enum AutoZoomPlanner {
+    /// Plan each retained occurrence independently. Drop the physical stop
+    /// click once per recording, before cuts, then keep every authored camera
+    /// envelope inside its segment so focus never follows a different source.
+    public static func makeAnimations(
+        in timelineMap: TimelineMap,
+        eventsBySource: [UUID: [PointerEventRecord]],
+        zoomScale: Double = 1.6,
+        easing: ZoomEasingPreset = .spring,
+        transitionDuration: TimeInterval = 0.7
+    ) -> [ZoomAnimationClip] {
+        let contentEvents = eventsBySource.mapValues { events in
+            var events = PointerEventTimelineOrdering.normalized(events)
+            if let stop = events.lastIndex(where: { $0.kind == .leftClick || $0.kind == .rightClick }) {
+                events.remove(at: stop)
+            }
+            return events
+        }
+        return timelineMap.mapPointerEventSegments(eventsBySource: contentEvents).flatMap { segment in
+            let clicks = segment.events.compactMap { event -> PointerClick? in
+                guard event.kind == .leftClick || event.kind == .rightClick else { return nil }
+                return PointerClick(time: event.time, location: event.location)
+            }
+            let transition = min(max(transitionDuration, 0), 5)
+            let clips = makeAnimations(for: clicks, zoomScale: zoomScale,
+                enterDuration: transition, exitDuration: transition, easing: easing)
+            return clips.compactMap { clip -> ZoomAnimationClip? in
+                var clip = clip
+                clip.preserveTransitionIntent(defaultTransition: transition)
+                clip.startTime = max(clip.startTime, segment.outputRange.start)
+                clip.endTime = min(clip.endTime, segment.outputRange.end)
+                guard clip.endTime > clip.startTime else { return nil }
+                clip.enterDuration = min(clip.enterDuration, clip.duration)
+                clip.exitDuration = min(clip.exitDuration, max(segment.outputRange.end - clip.endTime, 0))
+                return clip
+            }
+        }
+    }
+
     public static func makeAnimations(
         for pointerEvents: [PointerEventRecord],
         zoomScale: Double = 1.6,
         easing: ZoomEasingPreset = .spring,
         transitionDuration: TimeInterval = 0.7
     ) -> [ZoomAnimationClip] {
-        let clicks = pointerEvents.compactMap { event -> PointerClick? in
+        var clicks = pointerEvents.compactMap { event -> PointerClick? in
             guard event.kind == .leftClick || event.kind == .rightClick else { return nil }
             return PointerClick(time: event.time, location: event.location)
+        }
+        // The last click of a recording is the one that stops it (the stop
+        // button or shortcut menu). It is not content and gets no zoom.
+        if let last = clicks.indices.max(by: { clicks[$0].time < clicks[$1].time }) {
+            clicks.remove(at: last)
         }
         let duration = min(max(transitionDuration, 0), 5)
         let planned = makeAnimations(
@@ -255,7 +298,11 @@ public enum AutoZoomPlanner {
             ? normalizedEvents
             : normalizedEvents.filter { $0.time >= 0 }
         let orderedClicks = orderedValidClicks(clicks)
-        var result = planned
+        var result = planned.map { clip in
+            var clip = clip
+            clip.preserveTransitionIntent()
+            return clip
+        }
 
         for index in result.indices where result[index].exitDuration > 0.001 {
             let clip = result[index]
@@ -396,6 +443,7 @@ public enum AutoZoomPlanner {
 
             previous.endTime = max(previous.endTime, animation.endTime)
             previous.exitDuration = animation.exitDuration
+            previous.preferredExitDuration = animation.requestedExitDuration()
             result[result.index(before: result.endIndex)] = previous
         }
         return result
@@ -469,7 +517,9 @@ public enum AutoZoomPlanner {
                         origin: .automatic,
                         easing: easing,
                         enterDuration: enterDuration,
-                        exitDuration: isLast ? exitDuration : 0
+                        exitDuration: isLast ? exitDuration : 0,
+                        preferredEnterDuration: enterDuration,
+                        preferredExitDuration: exitDuration
                     )
                 )
             }
@@ -548,6 +598,7 @@ public enum AutoZoomPlanner {
         return animations.compactMap { animation in
             guard animation.startTime < duration else { return nil }
             var clipped = animation
+            clipped.preserveTransitionIntent()
             clipped.endTime = min(animation.endTime, duration)
             clipped.exitDuration = min(
                 animation.exitDuration,
@@ -557,94 +608,8 @@ public enum AutoZoomPlanner {
         }
     }
 
-    public static func clipped(
-        _ keyframes: [ZoomKeyframe],
-        to duration: TimeInterval,
-        motion: MotionStyle = MotionStyle()
-    ) -> [ZoomKeyframe] {
-        guard duration.isFinite, duration > 0 else { return [] }
-        let endSample = ZoomInterpolator.sample(
-            keyframes: keyframes,
-            at: duration,
-            motion: motion
-        )
-        var clipped = keyframes.filter { $0.time >= 0 && $0.time < duration }
-        clipped.append(
-            ZoomKeyframe(
-                time: duration,
-                scale: endSample.scale,
-                focus: endSample.focus
-            )
-        )
-        return clipped.sorted { $0.time < $1.time }
-    }
 
-    public static func makeKeyframes(
-        for pointerEvents: [PointerEventRecord],
-        baseScale: Double = 1,
-        zoomScale: Double = 1.6
-    ) -> [ZoomKeyframe] {
-        let clicks = pointerEvents.compactMap { event -> PointerClick? in
-            guard event.kind == .leftClick || event.kind == .rightClick else { return nil }
-            return PointerClick(time: event.time, location: event.location)
-        }
-        return makeKeyframes(for: clicks, baseScale: baseScale, zoomScale: zoomScale)
-    }
 
-    public static func makeKeyframes(
-        for clicks: [PointerClick],
-        baseScale: Double = 1,
-        zoomScale: Double = 1.6,
-        enterDuration: TimeInterval = 0.42,
-        holdDuration: TimeInterval = 0.9,
-        exitDuration: TimeInterval = 0.44,
-        clickGroupGap: TimeInterval = 1.4,
-        safeInset: Double = 0.12
-    ) -> [ZoomKeyframe] {
-        let center = NormalizedPoint(x: 0.5, y: 0.5)
-        var keyframes = [ZoomKeyframe(time: 0, scale: baseScale, focus: center)]
-
-        let orderedClicks = clicks.sorted(by: { $0.time < $1.time })
-        var groups: [[PointerClick]] = []
-        for click in orderedClicks {
-            if let previous = groups.last?.last,
-               click.time - previous.time <= clickGroupGap {
-                groups[groups.count - 1].append(click)
-            } else {
-                groups.append([click])
-            }
-        }
-
-        for group in groups {
-            guard let first = group.first, let last = group.last else { continue }
-            let firstFocus = first.location.constrained(to: safeInset)
-            let start = max(first.time - enterDuration * 0.18, 0)
-            let zoomed = start + enterDuration
-            let release = max(last.time + holdDuration, zoomed + holdDuration)
-
-            keyframes.append(ZoomKeyframe(time: start, scale: baseScale, focus: firstFocus))
-            keyframes.append(ZoomKeyframe(time: zoomed, scale: zoomScale, focus: firstFocus))
-            for click in group.dropFirst() {
-                keyframes.append(
-                    ZoomKeyframe(
-                        time: max(click.time, zoomed),
-                        scale: zoomScale,
-                        focus: click.location.constrained(to: safeInset)
-                    )
-                )
-            }
-            keyframes.append(
-                ZoomKeyframe(
-                    time: release,
-                    scale: zoomScale,
-                    focus: last.location.constrained(to: safeInset)
-                )
-            )
-            keyframes.append(ZoomKeyframe(time: release + exitDuration, scale: baseScale, focus: center))
-        }
-
-        return keyframes.sorted { $0.time < $1.time }
-    }
 }
 
 /// Lock-protected exact-match cache for the sorted zoom track used by the

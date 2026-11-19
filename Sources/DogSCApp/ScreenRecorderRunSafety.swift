@@ -1,5 +1,30 @@
 import Foundation
 
+/// One resume boundary for every track. Native video segments are concatenated
+/// at their actual file durations; rebuilding a stream must not count its
+/// startup latency as microphone/camera/pointer recording time.
+struct RecordingResumeTiming: Sendable {
+    let hostTime: TimeInterval
+    let accumulatedPauseDuration: TimeInterval
+
+    init?(
+        videoStartedAtHostTime: TimeInterval,
+        resumedAtHostTime: TimeInterval,
+        completedVideoDuration: TimeInterval
+    ) {
+        guard videoStartedAtHostTime.isFinite,
+              resumedAtHostTime.isFinite,
+              completedVideoDuration.isFinite,
+              resumedAtHostTime >= videoStartedAtHostTime,
+              completedVideoDuration >= 0 else { return nil }
+        hostTime = resumedAtHostTime
+        accumulatedPauseDuration = max(
+            resumedAtHostTime - videoStartedAtHostTime - completedVideoDuration,
+            0
+        )
+    }
+}
+
 struct ScreenRecorderRunToken: Equatable, Hashable, Sendable {
     let runID: RecordingRunID
     let streamGeneration: UInt64
@@ -75,6 +100,20 @@ struct ScreenRecorderRunSafetyState: Sendable {
         active?.primaryStreamIdentity = primary
         active?.streamIdentities = [primary]
         if let secondary { active?.streamIdentities.insert(secondary) }
+        return true
+    }
+
+    /// Retire an intentionally stopped primary before awaiting framework
+    /// callbacks. A paused native run remains active, but no old stream may
+    /// terminate its replacement or accept a queued surface update.
+    @discardableResult
+    mutating func retirePrimaryStream(for token: ScreenRecorderRunToken) -> Bool {
+        guard active?.token == token else { return false }
+        if let primary = active?.primaryStreamIdentity {
+            active?.streamIdentities.remove(primary)
+        }
+        active?.primaryStreamIdentity = nil
+        active?.latestSurfaceRevision &+= 1
         return true
     }
 

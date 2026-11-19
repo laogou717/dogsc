@@ -30,6 +30,25 @@ enum WindowAppearanceTransition {
     /// once they have settled does the snapshot fade away, so nothing pops
     /// in late or flashes through a half-updated layout.
     static func crossfade(_ window: NSWindow?, duration: TimeInterval = 0.26, change: () -> Void) {
+        crossfade(window, duration: duration, waitsForPreviewFrame: false, change: change)
+    }
+
+    /// Notified by the preview surface each time it presents a frame; a
+    /// crossfade that waits for the preview fades only after that.
+    static func previewFramePresented() {
+        let waiting = pendingReveals
+        pendingReveals.removeAll()
+        waiting.forEach { $0() }
+    }
+
+    private static var pendingReveals: [() -> Void] = []
+
+    /// `waitsForPreviewFrame`: hold the snapshot until the Metal preview
+    /// has presented a frame of the new state (crop enter/exit rebuilds a
+    /// 5K frame, which can take longer than the fixed beat), capped at
+    /// 0.6 s so nothing can stay frozen.
+    static func crossfade(_ window: NSWindow?, duration: TimeInterval = 0.26,
+                          waitsForPreviewFrame: Bool, change: () -> Void) {
         guard let window, let frameView = window.contentView,
               window.isVisible, window.occlusionState.contains(.visible),
               !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
@@ -39,15 +58,30 @@ enum WindowAppearanceTransition {
         }
         frameView.addSubview(snapshot, positioned: .above, relativeTo: nil)
         change()
-        // Two short beats let SwiftUI commit and late-drawing layers catch up.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = duration
-                context.timingFunction = CAMediaTimingFunction(controlPoints: 0.4, 0, 0.2, 1)
-                snapshot.animator().alphaValue = 0
-            } completionHandler: {
-                MainActor.assumeIsolated { snapshot.removeFromSuperview() }
+        var revealed = false
+        let reveal = {
+            guard !revealed else { return }
+            revealed = true
+            // One more beat so SwiftUI overlays (veil, handles) commit too.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) {
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = duration
+                    context.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0, 0, 1)
+                    snapshot.animator().alphaValue = 0
+                } completionHandler: {
+                    MainActor.assumeIsolated { snapshot.removeFromSuperview() }
+                }
             }
+        }
+        if waitsForPreviewFrame {
+            // Skip frames already in flight for the old state.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) {
+                guard !revealed else { return }
+                pendingReveals.append(reveal)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { reveal() }
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { reveal() }
         }
     }
 }

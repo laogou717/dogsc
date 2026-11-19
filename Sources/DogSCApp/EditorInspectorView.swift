@@ -25,6 +25,10 @@ private enum EditorInspectorSelectionKind: Hashable {
     case audio
     case mosaic
     case sticker
+    case animation
+    case audioClip
+    case subtitle
+    case videoClip
 }
 
 private enum EditorInspectorScrollContext: Hashable {
@@ -38,22 +42,24 @@ private enum EditorInspectorScrollContext: Hashable {
 /// parent editor coordinates crop completion and provides system-facing work.
 struct EditorInspectorView: View {
     @ObservedObject var editorStore: EditorStore
+    @ObservedObject private var timelinePreview: EditorTimelineInteractionState
     @ObservedObject var mediaSession: EditorMediaSession
     @ObservedObject var playbackController: EditorPlaybackController
+    @ObservedObject private var restingClock: EditorPlaybackRestingClock
 
-    let pointerEvents: [PointerEventRecord]
     let cursorAssets: [ResolvedCursorAsset]
     @Binding var selectedInspector: InspectorTab
     @Binding var isCameraSyncEditing: Bool
     @Binding var visibleTimelineTracks: EditorTimelineTrackVisibility
     let isCropping: Bool
     @Binding var cropDraft: NormalizedCrop
+    let cropSourceID: UUID?
     /// Parameter panel width. Tool navigation is owned by the workspace.
     let contentWidth: CGFloat
     let contentHeight: CGFloat
     /// Direction of the last tool change on the rail, so pages arrive from it.
     var tabMovesDown = true
-    let onChooseWallpaper: () -> BackgroundSource?
+    let onChooseWallpaper: () async -> BackgroundSource?
     let onError: (String) -> Void
 
     @State var savedLayoutPresets: [SavedLayoutPreset] = []
@@ -61,40 +67,45 @@ struct EditorInspectorView: View {
     @State var layoutPresetName = ""
     @State var motionInspectorMode = EditorMotionInspectorMode.zoom
     @State var selectedFrameInspectorTab = FrameInspectorTab.background
-    @State var savedLayoutPresetMenuHovered = false
+    /// The settings page pushed from 全片设置; nil shows the overview.
+    @Binding var settingsPage: EditorSettingsPage?
     @State private var scrollPositions = AppScrollPositionMemory<EditorInspectorScrollContext>()
-    @StateObject private var systemWallpaperCatalog = SystemWallpaperCatalog()
+    /// The page "forward" returns to after going back to 全片设置.
+    @State private var forwardPage: EditorSettingsPage?
+    @State private var swipeProgress: CGFloat?
+    @ObservedObject private var systemWallpaperCatalog = SystemWallpaperCatalog.shared
     /// Set only while a frame sub-page change is being presented.
-    @State private var frameTabDrift: CGFloat?
-    @State private var settledPageKey = ""
-
 
     init(
         editorStore: EditorStore,
         mediaSession: EditorMediaSession,
         playbackController: EditorPlaybackController,
-        pointerEvents: [PointerEventRecord],
         selectedInspector: Binding<InspectorTab>,
         isCameraSyncEditing: Binding<Bool>,
+        settingsPage: Binding<EditorSettingsPage?>,
         visibleTimelineTracks: Binding<EditorTimelineTrackVisibility>,
         isCropping: Bool,
         cropDraft: Binding<NormalizedCrop>,
+        cropSourceID: UUID? = nil,
         contentWidth: CGFloat = EditorInspectorSizing.defaultContentWidth,
         contentHeight: CGFloat = .infinity,
         tabMovesDown: Bool = true,
-        onChooseWallpaper: @escaping () -> BackgroundSource?,
+        onChooseWallpaper: @escaping () async -> BackgroundSource?,
         onError: @escaping (String) -> Void
     ) {
         _editorStore = ObservedObject(wrappedValue: editorStore)
+        _timelinePreview = ObservedObject(wrappedValue: editorStore.timelinePreview)
         _mediaSession = ObservedObject(wrappedValue: mediaSession)
         _playbackController = ObservedObject(wrappedValue: playbackController)
-        self.pointerEvents = pointerEvents
+        _restingClock = ObservedObject(wrappedValue: playbackController.restingClock)
         cursorAssets = CursorAssetLibrary.availableAssets
         _selectedInspector = selectedInspector
         _isCameraSyncEditing = isCameraSyncEditing
+        _settingsPage = settingsPage
         _visibleTimelineTracks = visibleTimelineTracks
         self.isCropping = isCropping
         _cropDraft = cropDraft
+        self.cropSourceID = cropSourceID
         self.contentWidth = EditorInspectorSizing.clampedContentWidth(contentWidth)
         self.contentHeight = contentHeight
         self.tabMovesDown = tabMovesDown
@@ -102,21 +113,53 @@ struct EditorInspectorView: View {
         self.onError = onError
     }
 
-    var playbackTime: TimeInterval { playbackController.outputTime }
+    var playbackTime: TimeInterval { restingClock.time }
 
-    var sourceInventory: MediaAssetInventory { mediaSession.inventories.source }
-    var cameraInventory: MediaAssetInventory { mediaSession.inventories.camera }
-    var microphoneInventory: MediaAssetInventory { mediaSession.inventories.microphone }
-    var sourcePixelSize: CGSize { mediaSession.sourceDisplaySize }
+    var playheadSourcePosition: RecordingSourcePosition? {
+        guard let map = try? TimelineMap(sourceSequence: editorStore.project.timeline.sourceSequence,
+            sourceDurations: mediaSession.sourceDurations) else { return nil }
+        return map.sourcePosition(atOutputTime: EditorPlaybackClockPolicy.frameLookupTime(playbackTime, duration: map.outputDuration))
+    }
+    var playheadSourceID: UUID? { playheadSourcePosition?.sourceID }
+    var inspectedRecordingSourceID: UUID? {
+        if case let .primarySegment(id) = editorStore.selection {
+            switch editorStore.project.timeline.sourceSequence {
+            case .fullRecording: return RecordingSource.primaryID
+            case let .edited(segments):
+                guard let segment = segments.first(where: { $0.id == id }), segment.media == nil else { return nil }
+                return segment.resolvedSourceID
+            }
+        }
+        return playheadSourceID
+    }
+    var inspectedInventories: EditorMediaInventories {
+        inspectedRecordingSourceID.map { mediaSession.inventories(for: $0) } ?? .empty
+    }
+    var sourceInventory: MediaAssetInventory { inspectedInventories.source }
+    var cameraInventory: MediaAssetInventory { inspectedInventories.camera }
+    var microphoneInventory: MediaAssetInventory { inspectedInventories.microphone }
+    var sourcePixelSize: CGSize {
+        (isCropping ? cropSourceID : inspectedRecordingSourceID).flatMap { mediaSession.sourceDisplaySize(for: $0) } ?? mediaSession.primarySourceDisplaySize
+    }
     var timelineDuration: TimeInterval { mediaSession.outputDuration }
     var sourceHasAudio: Bool { sourceInventory.hasAudio }
     var cameraHasVideo: Bool { cameraInventory.hasVideo }
     var microphoneHasAudio: Bool { microphoneInventory.hasAudio }
+    /// Whole-video pages describe the programme, not the clip under the
+    /// playhead: an inserted clip has no recording source, but the project
+    /// still owns every camera, microphone and pointer track it recorded.
+    var projectHasSystemAudio: Bool { mediaSession.hasSystemAudio }
+    var projectHasMicrophoneAudio: Bool { mediaSession.hasMicrophoneAudio }
+    var projectHasCameraVideo: Bool { mediaSession.hasCameraVideo }
+    var projectHasPointerEvents: Bool {
+        editorStore.project.sources.contains { $0.media.pointerEvents != nil }
+    }
 
-    /// Primary-clip selection normally routes to audio. The selected task owns
-    /// its panel content; audio uses the selected clip as its editing scope.
+    /// A clip's own page is the clip, not whichever tool was last used: the
+    /// rail tool only owns the panel once a settings page has been pushed
+    /// under that clip (声音 then still scopes itself to the clip).
     private var primarySelectionKeepsInspectorTask: Bool {
-        guard case .primarySegment = editorStore.selection else { return false }
+        guard case .primarySegment = editorStore.selection, settingsPage != nil else { return false }
         return selectedInspector != .frame
     }
 
@@ -127,13 +170,63 @@ struct EditorInspectorView: View {
             return ("声音", String(format: appLocalized("第 %lld 段"), context.index + 1))
         }
         return switch tab {
-        case .frame: ("画面", "全片")
+        case .frame: ("画面", nil)
         case .opening: ("开场", "全片")
         case .zoom: ("运镜", "缩放")
-        case .cursor: ("光标", "全片")
-        case .camera: ("摄像头", "全片基础布局")
+        case .cursor: ("光标", sceneScopeLabel ?? "全片")
+        case .camera: ("摄像头", sceneScopeLabel ?? "全片基础布局")
         case .audio: ("声音", "全片")
         }
+    }
+
+    /// Appearance edits land on one occurrence. The header must say so
+    /// instead of claiming the whole programme.
+    var sceneScopeLabel: String? {
+        guard let id = sceneEditingCandidateID, let context = primarySegmentContext(id: id) else { return nil }
+        return String(format: appLocalized("第 %lld 段"), Int64(context.index + 1))
+    }
+
+    /// The clip whose framing no longer follows its recording, for the pages
+    /// a crop is visible on. Separate from the appearance scope: a clip can be
+    /// framed on its own without carrying an appearance override.
+    var segmentCropScopeID: UUID? {
+        guard !isCropping, !isGroupSelection else { return nil }
+        let candidate: UUID?
+        if case let .primarySegment(selected) = editorStore.selection {
+            candidate = selected
+        } else {
+            candidate = editorStore.previewProject.timeline.recordingSegment(atOutputTime: playbackTime)?.id
+        }
+        guard let candidate,
+              editorStore.previewProject.timeline.recordingSegment(id: candidate)?.crop != nil else { return nil }
+        if stackLevel == .settings, let page = settingsPage, page == .sound || page == .opening { return nil }
+        if stackLevel == .object, selectedInspector == .audio || selectedInspector == .opening { return nil }
+        return candidate
+    }
+
+    /// Which clip the appearance controls are routed to while the page
+    /// itself still presents as whole-video.
+    var sceneScopeContextSegmentID: UUID? {
+        guard !isCropping, !isGroupSelection, let id = sceneEditingCandidateID else { return nil }
+        switch stackLevel {
+        case .overview:
+            return id
+        case .settings:
+            guard let page = settingsPage, page != .sound, page != .opening else { return nil }
+            return id
+        case .object:
+            guard case .primarySegment = editorStore.selection else { return nil }
+            return id
+        }
+    }
+
+    /// The clip the timeline has to mark. Only while the clip is edited
+    /// *through* an appearance page: once it is the selection, the timeline's
+    /// own selection ring already says which clip the controls are on.
+    var sceneEditingMarkerTarget: UUID? {
+        guard let id = sceneScopeContextSegmentID else { return nil }
+        if case let .primarySegment(selected) = editorStore.selection, selected == id { return nil }
+        return id
     }
 
     var selectedZoomID: UUID? {
@@ -148,7 +241,36 @@ struct EditorInspectorView: View {
 
     var body: some View {
         inspector
-        .onChange(of: editorStore.selection) { _, selection in
+        .onChange(of: sceneEditingCandidateID, initial: true) { _, id in
+            if editorStore.interaction == nil { editorStore.sceneEditingSegmentID = id }
+        }
+        .onChange(of: editorStore.interaction == nil) { _, finished in
+            if finished { editorStore.sceneEditingSegmentID = sceneEditingCandidateID }
+        }
+        .onChange(of: sceneEditingMarkerTarget, initial: true) { _, id in
+            editorStore.sceneEditingMarkerSegmentID = id
+        }
+        .onDisappear { editorStore.sceneEditingMarkerSegmentID = nil }
+        .onChange(of: editorStore.selection) { previous, selection in
+            // Selecting a whole-video object on the canvas or timeline (the
+            // camera bubble, the zoom track…) opens its settings page.
+            let page: EditorSettingsPage? = switch selection {
+            case .screen: .layout
+            case .camera: .camera
+            case .cursor: .cursor
+            case .audio: .sound
+            case .zoomTrack, .screenMotionTrack: .motion
+            default: nil
+            }
+            if let page, settingsPage != page {
+                withAnimation(SpringMotion.panel) { settingsPage = page }
+            }
+            // Entering a clip shows what that clip has, not whichever page the
+            // programme was left on. Hopping between clips keeps the page, so
+            // tuning the same setting clip by clip stays one click each.
+            if case .primarySegment = selection, settingsPage != nil {
+                if case .primarySegment = previous {} else { closeSettingsPage() }
+            }
             switch selection {
             case .screen:
                 selectedFrameInspectorTab = .layout
@@ -162,50 +284,16 @@ struct EditorInspectorView: View {
         }
     }
 
+    /// The 画面 page's own controls show (as opposed to an object page).
     private var showsFrameInspectorNavigation: Bool {
         guard selectedInspector == .frame, !isCropping else { return false }
         switch editorStore.selection {
         case .canvas, .screen, nil:
             return true
+        case .primarySegment:
+            return stackLevel == .settings
         default:
             return false
-        }
-    }
-
-    private var frameInspectorNavigation: some View {
-        EditorSegmentedControl(
-            options: FrameInspectorTab.allCases,
-            title: { $0.localizedLabel },
-            icon: { $0.icon },
-            selection: Binding(
-                get: { selectedFrameInspectorTab },
-                set: { next in
-                    // Sub-pages sit side by side: the next one arrives from its side.
-                    let order = FrameInspectorTab.allCases
-                    let forward = (order.firstIndex(of: next) ?? 0) > (order.firstIndex(of: selectedFrameInspectorTab) ?? 0)
-                    frameTabDrift = forward ? 18 : -18
-                    selectedFrameInspectorTab = next
-                }
-            )
-        )
-        .padding(.horizontal, EditorInterfaceSpacing.inspectorInset)
-        .padding(.top, EditorInspectorRhythm.scrollTop)
-        .padding(.bottom, EditorInspectorRhythm.titleGap - EditorInspectorRhythm.scrollTop)
-        .accessibilityIdentifier("editor.inspector.frame-subnavigation")
-    }
-
-    private var pageSwapEdge: Edge {
-        if let frameTabDrift { return frameTabDrift > 0 ? .trailing : .leading }
-        return tabMovesDown ? .bottom : .top
-    }
-
-    private var headerIcon: AppLineIcon.Kind {
-        if isCropping { return .crop }
-        switch editorStore.selection {
-        case .mosaic: return .grid
-        case .sticker: return .scene
-        case .crop: return .crop
-        default: return selectedInspector.lineIcon
         }
     }
 
@@ -228,103 +316,293 @@ struct EditorInspectorView: View {
         usesCompactBackgroundLayout || usesCompactSelectedAudioLayout
     }
 
+    /// Which level of the stack is showing. Objects selected on the canvas or
+    /// timeline always win; otherwise a pushed settings page, else the overview.
+    var stackLevel: EditorInspectorStackLevel {
+        if isCropping { return .object }
+        if isGroupSelection { return .object }
+        switch editorStore.selection {
+        case .canvas, .screen, nil, .cursor, .camera, .audio, .zoomTrack, .screenMotionTrack:
+            return settingsPage == nil ? .overview : .settings
+        // A clip is a scope, not a leaf: its own page lists the same settings
+        // rows, and opening one pushes that page scoped to this clip.
+        case .primarySegment:
+            return settingsPage == nil ? .object : .settings
+        default:
+            return .object
+        }
+    }
+
     var inspector: some View {
         VStack(spacing: 0) {
-            VStack(spacing: 0) {
-                HStack(alignment: .lastTextBaseline, spacing: 10) {
-                    EditorRollingTitle(
-                        text: appLocalized(inspectorHeader.title),
-                        size: usesCompactInspectorChrome ? 26 : 34
-                    )
-                    .layoutPriority(1)
-                    Spacer(minLength: 8)
-                    if let scope = inspectorHeader.scope {
-                        Text(appLocalized(scope))
-                            .font(.appUI(size: 12, weight: .medium))
-                            .foregroundStyle(EditorTheme.secondaryText)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.85)
-                            .padding(.horizontal, 10)
-                            .frame(height: 24)
-                            .background(EditorTheme.chrome(0.06), in: Capsule(style: .continuous))
-                            .padding(.bottom, 5)
-                            .id(scope)
-                            .transition(.opacity.combined(with: .offset(y: 4)))
-                    }
-                }
-                .padding(.horizontal, EditorInterfaceSpacing.inspectorInset + 4)
-                .frame(height: usesCompactInspectorChrome ? 42 : 54, alignment: .bottom)
-                // Every page keeps the same 14 pt between its title and the
-                // first thing under it (sub-navigation or content).
-                .padding(.bottom, EditorInspectorRhythm.titleGap - EditorInspectorRhythm.scrollTop)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(inspectorTitle)
-                .accessibilityAddTraits(.isHeader)
-
-                if showsFrameInspectorNavigation {
-                    frameInspectorNavigation
-                        .transition(.opacity.combined(with: .offset(y: -6)))
-                }
-            }
-
+            // Header and page travel together as one page.
             ZStack(alignment: .top) {
-                AppKeyboardFocusScrollView(
-                    savedPosition: scrollPositions.position(for: inspectorScrollContext)
-                ) {
-                    VStack(alignment: .leading, spacing: EditorInterfaceSpacing.sectionGap) { inspectorContent }
+                VStack(spacing: 0) {
+                    inspectorStackHeader
+                    AppKeyboardFocusScrollView(
+                        savedPosition: scrollPositions.position(for: inspectorScrollContext)
+                    ) {
+                        VStack(alignment: .leading, spacing: EditorInterfaceSpacing.sectionGap) {
+                            if let id = sceneScopeContextSegmentID { sceneScopeContext(id) }
+                            else if let id = segmentCropScopeID { segmentCropScopeNote(id) }
+                            if stackLevel == .overview {
+                                EditorSettingsOverview(
+                                    editorStore: editorStore,
+                                    rows: overviewRows,
+                                    open: openSettingsPage
+                                )
+                            } else if isGroupSelection {
+                                EditorGroupInspector(editorStore: editorStore, items: editorStore.groupSelection)
+                            } else {
+                                inspectorContent
+                            }
+                        }
                         .padding(.horizontal, EditorInterfaceSpacing.inspectorInset)
-                        .padding(.top, EditorInspectorRhythm.scrollTop)
-                        .padding(.bottom, usesCompactInspectorChrome ? 10 : 20)
+                        .padding(.top, 4)
+                        .padding(.bottom, 24)
                         .coordinateSpace(name: EditorConsole.scrollSpace)
-                        .consolePageArrival()
+                    }
+                    .scrollIndicators(.hidden)
                 }
-                .scrollIndicators(.hidden)
-                .id(inspectorScrollContext)
-                .transition(.consolePage)
+                .id(stackPageID)
+                .transition(.editorSubpage(edge: stackLevel == .overview ? .leading : .trailing))
             }
-            .modifier(EditorScrollEdgeFade(top: 8, bottom: showsBackgroundFooter ? 10 : 18))
             .clipped()
             if showsBackgroundFooter {
                 backgroundBlurSection
                     .padding(.horizontal, EditorInterfaceSpacing.inspectorInset)
                     .padding(.top, 4)
-                    .padding(.bottom, usesCompactBackgroundLayout ? 10 : 16)
+                    .padding(.bottom, 16)
             }
         }
         .frame(width: contentWidth)
-        // The floating island beneath owns the lit material; an opaque fill
-        // here would flatten its gradient into a single tone.
         .background(Color.clear)
-        .animation(SpringMotion.crossfade, value: inspectorTitle)
-        .animation(SpringMotion.settle, value: showsFrameInspectorNavigation)
-        .environment(\.consoleReveal, settledPageKey != consolePageKey)
-        .task(id: consolePageKey) { await settleConsolePage(consolePageKey) }
-        .onChange(of: selectedFrameInspectorTab) { _, _ in frameTabDrift = nil }
-        .onChange(of: selectedInspector) { _, _ in frameTabDrift = nil }
+        .background(EditorInspectorNavigationGestures(
+            canGoBack: stackLevel != .overview && !isCropping,
+            canGoForward: stackLevel == .overview && forwardPage != nil,
+            onBack: goBack, onForward: goForward, progress: $swipeProgress))
+        .overlay { EditorInspectorSwipeIndicator(progress: swipeProgress) }
+        .background {
+            // ⌘[ goes back one level, ⌘] returns to the page it left. Both are
+            // commands of the panel, not of whichever crumb is on screen.
+            Button("", action: goBack).keyboardShortcut("[", modifiers: .command).hidden()
+            Button("", action: goForward).keyboardShortcut("]", modifiers: .command).hidden()
+        }
     }
 
-    /// Changes with the task (and the frame sub-page): the moment modules
-    /// assemble and knobs sweep. It settles a moment later so selecting a
-    /// different clip inside the same page never replays the arrival.
-    private var consolePageKey: String {
-        "\(selectedInspector.rawValue)|\(selectedInspector == .frame ? String(describing: selectedFrameInspectorTab) : "")"
+    /// One identity per visible page: changing it swaps the page.
+    private var stackPageID: String {
+        "\(stackLevel)|\(settingsPage?.rawValue ?? "")|\(inspectorScrollContext)|\(isGroupSelection)"
     }
 
-    private func settleConsolePage(_ key: String) async {
-        guard !Task.isCancelled, key == consolePageKey else { return }
-        settledPageKey = ""
-        do { try await Task.sleep(for: .milliseconds(1600)) } catch { return }
-        guard !Task.isCancelled, key == consolePageKey else { return }
-        settledPageKey = key
+    /// EDT-079: a breadcrumb (全片设置 › 片段 › 元素, each level clickable),
+    /// the name, and one line of context — time span or scope.
+    private var inspectorStackHeader: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if stackLevel != .overview, !isCropping {
+                HStack(spacing: 2) {
+                    ForEach(Array(breadcrumbCrumbs.enumerated()), id: \.offset) { index, crumb in
+                        if index > 0 {
+                            AppLineIcon(kind: .chevron, size: 10).foregroundStyle(EditorTheme.tertiaryText)
+                        }
+                        crumbView(crumb)
+                    }
+                }
+                .frame(height: 20)
+            }
+            Text(appLocalized(stackTitle))
+                .font(.appUI(size: 19, weight: .semibold))
+                .foregroundStyle(EditorTheme.primaryText)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            if let subtitle = stackSubtitle {
+                Text(appLocalized(subtitle))
+                    .font(.appUI(size: 12.5))
+                    .foregroundStyle(EditorTheme.tertiaryText)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.horizontal, EditorInterfaceSpacing.inspectorInset)
+        .padding(.top, 14)
+        .padding(.bottom, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(alignment: .bottom) { Rectangle().fill(EditorTheme.hairline).frame(height: 1) }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(inspectorTitle)
+    }
+
+    /// One level of the breadcrumb. No action means it is the page you are on.
+    private struct InspectorCrumb {
+        let title: String
+        var action: (() -> Void)?
+        var help: String?
+        var identifier: String?
+    }
+
+    /// The trail to the page on screen. A segment's page is not a child of
+    /// 全片设置 — it *is* that segment, with the same settings rows on it — so
+    /// its trail starts at itself: 「片段 · 第 N 段」, then the page opened from
+    /// it. Everything else still hangs under 全片设置.
+    private var breadcrumbCrumbs: [InspectorCrumb] {
+        if case let .primarySegment(id) = editorStore.selection, !isGroupSelection {
+            let label = primarySegmentContext(id: id)
+                .map { String(format: appLocalized("片段 · 第 %lld 段"), Int64($0.index + 1)) }
+                ?? appLocalized("片段")
+            let editsElement = MotionElementEditor.shared.target != nil
+                && !MotionElementEditor.shared.selected.isEmpty
+            guard settingsPage != nil || editsElement else { return [InspectorCrumb(title: label)] }
+            return [
+                InspectorCrumb(title: label,
+                               action: { MotionElementEditor.shared.selected = []; closeSettingsPage() },
+                               help: "返回这一段（⌘[）", identifier: "editor.segment.back"),
+                InspectorCrumb(title: breadcrumbLeaf),
+            ]
+        }
+        var crumbs = [InspectorCrumb(title: "全片设置", action: { goToOverview() },
+                                     help: "返回全片设置（⌘[）", identifier: "editor.settings.back")]
+        if let parent = breadcrumbParent {
+            crumbs.append(InspectorCrumb(title: parent.title, action: parent.action))
+        }
+        crumbs.append(InspectorCrumb(title: breadcrumbLeaf))
+        return crumbs
+    }
+
+    @ViewBuilder
+    private func crumbView(_ crumb: InspectorCrumb) -> some View {
+        if let action = crumb.action, let help = crumb.help {
+            crumbButton(crumb.title, isCurrent: false, action: action)
+                .help(appLocalized(help))
+                .accessibilityIdentifier(crumb.identifier ?? "")
+        } else if let action = crumb.action {
+            crumbButton(crumb.title, isCurrent: false, action: action)
+        } else {
+            Text(appLocalized(crumb.title))
+                .font(.appUI(size: 12.5))
+                .foregroundStyle(EditorTheme.tertiaryText)
+                .lineLimit(1)
+        }
+    }
+
+    private func crumbButton(_ title: String, isCurrent: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(appLocalized(title))
+                .font(.appUI(size: 12.5))
+                .foregroundStyle(isCurrent ? EditorTheme.tertiaryText : EditorTheme.secondaryText)
+                .lineLimit(1)
+                .padding(.horizontal, 4)
+                .frame(height: 20)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 5))
+        .padding(.leading, -4)
+    }
+
+    /// The middle crumb: the clip an element belongs to, or the settings
+    /// page a clip belongs to (运镜 for zooms and 3D moves).
+    private var breadcrumbParent: (title: String, action: () -> Void)? {
+        if MotionElementEditor.shared.target != nil, !MotionElementEditor.shared.selected.isEmpty {
+            let clip = editorStore.selection
+            return (inspectorHeader.title, { [editorStore] in
+                MotionElementEditor.shared.selected = []
+                editorStore.selection = clip
+            })
+        }
+        switch editorStore.selection {
+        case .zoom, .screenMotion:
+            return ("运镜", { openSettingsPage(.motion) })
+        case .cameraMotion:
+            return ("摄像头", { openSettingsPage(.camera) })
+        default:
+            return nil
+        }
+    }
+
+    private var breadcrumbLeaf: String {
+        if isGroupSelection { return stackTitle }
+        if MotionElementEditor.shared.target != nil, let id = MotionElementEditor.shared.selected.first {
+            return MotionElementEditor.shared.elements.first { $0.id == id }?.name ?? "元素"
+        }
+        return stackLevel == .settings ? (settingsPage?.title ?? inspectorHeader.title) : inspectorHeader.title
+    }
+
+    private var isGroupSelection: Bool { editorStore.groupSelection.count >= 2 }
+
+    private var stackTitle: String {
+        if isGroupSelection {
+            return EditorGroupInspector.title(for: editorStore.groupSelection, timeline: editorStore.previewProject.timeline)
+        }
+        switch stackLevel {
+        case .overview: return "全片设置"
+        case .settings: return settingsPage?.title ?? inspectorHeader.title
+        case .object: return inspectorHeader.title
+        }
+    }
+
+    private var stackSubtitle: String? {
+        if isGroupSelection { return "值不同的显示 —" }
+        switch stackLevel {
+        case .overview:
+            guard let label = sceneScopeLabel else { return "作用于整段视频" }
+            return String(format: appLocalized("画面外观只作用于%@"), label)
+        case .settings:
+            guard sceneScopeContextSegmentID != nil, let label = sceneScopeLabel else { return nil }
+            return String(format: appLocalized("只作用于%@"), label)
+        case .object: return inspectorHeader.scope.flatMap { $0 == "全片" ? nil : $0 }
+        }
+    }
+
+    func openSettingsPage(_ page: EditorSettingsPage) {
+        withAnimation(SpringMotion.panel) {
+            settingsPage = page
+            if let frame = page.frameTab { selectedFrameInspectorTab = frame }
+            if page == .motion { motionInspectorMode = .zoom }
+            selectedInspector = page.tab
+        }
+    }
+
+    func goToOverview() {
+        // Remember where we were so "forward" can come back to it.
+        if stackLevel != .overview {
+            forwardPage = settingsPage ?? EditorSettingsPage.page(for: selectedInspector, frame: selectedFrameInspectorTab)
+        }
+        withAnimation(SpringMotion.panel) {
+            settingsPage = nil
+            if editorStore.selection != .canvas { editorStore.selection = .canvas }
+        }
+    }
+
+    /// Leaves a clip's settings page without leaving the clip.
+    func closeSettingsPage() {
+        withAnimation(SpringMotion.panel) { settingsPage = nil }
+    }
+
+    /// Back: a clip's page returns to that clip, everything else to 全片设置.
+    func goBack() {
+        guard stackLevel != .overview, !isCropping else { return }
+        if case .primarySegment = editorStore.selection, settingsPage != nil {
+            closeSettingsPage()
+            return
+        }
+        goToOverview()
+    }
+
+    /// Forward: from 全片设置 to the page that was last left.
+    func goForward() {
+        guard stackLevel == .overview, let page = forwardPage else { return }
+        forwardPage = nil
+        openSettingsPage(page)
     }
 
     private var showsBackgroundFooter: Bool {
-        showsFrameInspectorNavigation && selectedFrameInspectorTab == .background
-            && editorStore.previewProject.canvas.backgroundSource.usesWallpaperMedia
+        stackLevel == .settings && settingsPage == .background
+            && editorStore.sceneEditingPreviewProject.canvas.backgroundSource.usesWallpaperMedia
     }
 
     var inspectorHeader: (title: String, scope: String?) {
-        if isCropping { return ("裁切", "屏幕素材") }
+        if isCropping {
+            let name = cropSourceID.map { RecordingSourcePresentation.name($0, in: editorStore.project) } ?? ""
+            return (String(format: appLocalized("裁切 · %@"), name), nil)
+        }
         if primarySelectionKeepsInspectorTask {
             return header(for: selectedInspector)
         }
@@ -334,10 +612,15 @@ struct EditorInspectorView: View {
         }
         switch editorStore.selection {
         case .canvas:
-            return ("画面", "全片")
+            return ("画面", sceneScopeLabel ?? "全片")
         case .screen:
-            return ("屏幕素材", "全片基础布局")
-        case .primarySegment:
+            return ("屏幕", sceneScopeLabel ?? "全片")
+        case let .primarySegment(id):
+            if let context = primarySegmentContext(id: id), context.segment.media == nil,
+               let map = mediaSession.mediaPlan?.timelineMap {
+                return (RecordingSourcePresentation.segmentName(context.segment, in: editorStore.project, segments: map.segments),
+                    "\(segmentTimestamp(context.segment.outputStart)) – \(segmentTimestamp(context.segment.outputEnd)) · \(segmentTimestamp(context.segment.outputDuration))")
+            }
             return ("片段", "当前片段")
         case .zoomTrack:
             return ("运镜", "缩放")
@@ -348,11 +631,11 @@ struct EditorInspectorView: View {
         case .screenMotion:
             return ("运镜", "屏幕 3D 片段")
         case .cursor:
-            return ("光标", "全片")
+            return ("光标", sceneScopeLabel ?? "全片")
         case .camera:
-            return ("摄像头", "全片基础布局")
+            return ("摄像头", sceneScopeLabel ?? "全片")
         case .cameraMotion:
-            return ("摄像头", "动画目标")
+            return ("摄像头", "运动片段")
         case .audio:
             return ("声音", "全片")
         case .crop:
@@ -362,6 +645,14 @@ struct EditorInspectorView: View {
             return (style.map { $0 == .spotlight ? "突出" : "柔化" } ?? "区域效果", "选中区域")
         case .sticker:
             return ("贴图", "选中图片")
+        case .animation:
+            return ("动效", "选中动效")
+        case .audioClip:
+            return ("音乐与音效", "选中片段")
+        case .subtitle:
+            return ("字幕", "当前字幕")
+        case .videoClip:
+            return ("视频", "选中视频")
         case nil:
             return (selectedInspector.localizedLabel, nil)
         }
@@ -389,7 +680,7 @@ struct EditorInspectorView: View {
                 : .tab(selectedInspector)
         }
         if selectedInspector == .frame,
-           (selection == .canvas || selection == .screen) {
+           selection == .canvas || selection == .screen || stackLevel == .settings {
             return .frameTab(selectedFrameInspectorTab)
         }
         let kind: EditorInspectorSelectionKind = switch selection {
@@ -407,6 +698,10 @@ struct EditorInspectorView: View {
         case .audio: .audio
         case .mosaic: .mosaic
         case .sticker: .sticker
+        case .animation: .animation
+        case .audioClip: .audioClip
+        case .subtitle: .subtitle
+        case .videoClip: .videoClip
         }
         return .selection(kind)
     }
@@ -419,10 +714,19 @@ struct EditorInspectorView: View {
             overlayInspector
         } else if case .sticker = editorStore.selection {
             overlayInspector
+        } else if case let .animation(id) = editorStore.selection {
+            EditorAnimationInspector(editorStore: editorStore, clipID: id)
+        } else if case let .audioClip(id) = editorStore.selection {
+            EditorAudioClipInspector(editorStore: editorStore, clipID: id)
+        } else if case let .subtitle(id) = editorStore.selection {
+            EditorSubtitleInspector(editorStore: editorStore, selectedID: id)
+        } else if case let .videoClip(id) = editorStore.selection {
+            EditorVideoClipInspector(editorStore: editorStore, clipID: id)
         } else if case let .primarySegment(id) = editorStore.selection,
-                  selectedInspector == .frame {
+                  stackLevel == .object {
             // 选中主片段给真正的片段面板：此前标题写着"当前片段"，内容却是
-            // 全片初始状态控件，名实不符。
+            // 全片初始状态控件，名实不符。这一层现在也列出这一段的外观入口，
+            // 改某一段不必再绕去点画布空白。
             primarySegmentInspector(id: id)
         } else {
             switch selectedInspector {
@@ -448,10 +752,18 @@ struct EditorInspectorView: View {
     var frameInspector: some View {
         VStack(alignment: .leading, spacing: EditorInterfaceSpacing.sectionGap) {
             if !usesCompactBackgroundLayout {
+                let canvasSourceSize = mediaSession.canvasSourceSize(for: editorStore.previewProject)
                 EditorFramePreview(
-                    canvas: editorStore.previewProject.canvas,
+                    canvas: screenAppearanceCanvas,
                     screenImage: playbackController.pausedScreenImage,
-                    wallpaper: currentWallpaperAsset
+                    usesFrameStyle: inspectorUsesFrameStyle,
+                    isMainTrackImage: sceneEditingCandidateID.flatMap {
+                        editorStore.previewProject.timeline.recordingSegment(id: $0)?.media?.imagePath
+                    } != nil,
+                    wallpaper: currentWallpaperAsset,
+                    sourceAspectRatio: Double(sourcePixelSize.width / max(sourcePixelSize.height, 1)),
+                    canvasAspectRatio: screenAppearanceCanvas.resolvedFixedAspectRatio
+                        ?? Double(canvasSourceSize.width / max(canvasSourceSize.height, 1))
                 )
             }
             switch selectedFrameInspectorTab {
@@ -481,7 +793,7 @@ struct EditorInspectorView: View {
     /// the controls shows the same picture the frame is sitting on.
     private var currentWallpaperAsset: SystemWallpaperAsset? {
         let path: String
-        switch editorStore.previewProject.canvas.backgroundSource {
+        switch editorStore.sceneEditingPreviewProject.canvas.backgroundSource {
         case let .systemImage(absolutePath), let .systemVideo(absolutePath): path = absolutePath
         default: return nil
         }
@@ -502,7 +814,10 @@ struct EditorInspectorView: View {
 
     var openingSequenceSection: some View {
         let sequence = editorStore.previewProject.openingSequence
-        let hasOpeningCamera = cameraHasVideo && !editorStore.previewProject.camera.isHidden
+        // Same rule the renderer uses: the roster belongs to the recording the
+        // programme opens on, not to any camera anywhere in the project.
+        let hasOpeningCamera = editorStore.previewProject.openingDeclaresCamera
+            && !editorStore.sceneEditingPreviewProject.camera.isHidden
         let hasOpeningSticker = editorStore.previewProject.timeline.stickerClips.contains {
             $0.timing.startTime <= 0.000_1 && $0.timing.endTime > 0.000_1
         }
@@ -748,11 +1063,9 @@ struct EditorInspectorView: View {
         }
     }
 
-    var canvasLayoutSection: some View {
-        EditorInspectorSection("画面留白") {
-            sliderRow("边距", value: canvasBinding(\.padding, actionName: "调整画布边距"),
-                      range: 0...360, format: .points)
-        }
+    var inspectorUsesFrameStyle: Bool {
+        guard let id = sceneEditingCandidateID else { return true }
+        return editorStore.previewProject.timeline.recordingSegment(id: id)?.media?.usesFrameStyle ?? true
     }
 
     var screenMaterialLayoutSection: some View {
@@ -763,7 +1076,7 @@ struct EditorInspectorView: View {
                 point: canvasBinding(\.contentPosition, actionName: "移动屏幕素材"),
                 commandScope: .canvas,
                 actionName: "移动屏幕素材",
-                compactLayout: true,
+                compactLayout: false,
                 onError: onError
             )
             sliderRow("素材缩放", value: canvasBinding(\.contentScale, actionName: "缩放屏幕素材"),
@@ -771,7 +1084,7 @@ struct EditorInspectorView: View {
             HStack {
                 Spacer(minLength: 8)
                 Button("恢复位置与大小") {
-                    var canvas = editorStore.project.canvas
+                    var canvas = editorStore.sceneEditingProject.canvas
                     canvas.contentScale = 1
                     canvas.contentPosition = NormalizedPoint(x: 0.5, y: 0.5)
                     performEditorCommand {
@@ -786,8 +1099,33 @@ struct EditorInspectorView: View {
 
     /// Padding, corner, stroke and shadow are one family of "how the screen
     /// sits on the canvas": four knobs on one row.
+    var screenAppearanceTarget: ScreenAppearanceTarget {
+        if let id = sceneEditingCandidateID { return .segment(id) }
+        if case let .primarySegment(id) = editorStore.selection,
+           let context = primarySegmentContext(id: id) {
+            return context.segment.media == nil ? .recording(context.segment.sourceID) : .insertedSegment(id)
+        }
+        if let map = try? TimelineMap(sourceSequence: editorStore.previewProject.timeline.sourceSequence,
+                                      sourceDurations: mediaSession.sourceDurations),
+           let segment = map.segment(atOutputTime: EditorPlaybackClockPolicy.frameLookupTime(playbackTime, duration: map.outputDuration)) {
+            return segment.media == nil ? .recording(segment.sourceID) : .insertedSegment(segment.id)
+        }
+        return .recording(RecordingSource.primaryID)
+    }
+
+    var screenAppearanceCanvas: CanvasStyle {
+        editorStore.previewProject.screenCanvas(for: screenAppearanceTarget)
+    }
+
+    private func screenAppearanceBinding<Value>(
+        _ keyPath: WritableKeyPath<CanvasStyle, Value>, actionName: String
+    ) -> Binding<Value> {
+        editorScreenAppearanceBinding(store: editorStore, target: screenAppearanceTarget,
+            keyPath: keyPath, actionName: actionName, onError: onError)
+    }
+
     var screenSurfaceAppearanceSection: some View {
-        let canvas = editorStore.previewProject.canvas
+        let canvas = screenAppearanceCanvas
         return EditorInspectorSection("画面与外观") {
             EditorKnobRow {
                 knob(
@@ -798,8 +1136,8 @@ struct EditorInspectorView: View {
                 if canvas.screenFrame == .none {
                     knob(
                         "画面圆角", label: "圆角",
-                        value: canvasBinding(\.cornerRadius, actionName: "调整画面圆角"),
-                        range: 0...160, format: .points
+                        value: screenAppearanceBinding(\.cornerRadius, actionName: "调整画面圆角"),
+                        range: 0...160, interactionScope: .project, format: .points
                     )
                 } else {
                     knob(
@@ -809,36 +1147,37 @@ struct EditorInspectorView: View {
                             fallback: canvas.screenFrame.defaultContentCornerRadius,
                             actionName: "调整样机内容圆角"
                         ),
-                        range: 0...160, format: .points
+                        range: 0...160, interactionScope: .project, format: .points
                     )
                 }
                 knob(
                     "外描边", label: "描边",
-                    value: canvasBinding(\.borderWidth, actionName: "调整屏幕描边"),
-                    range: 0...40, format: .points
+                    value: screenAppearanceBinding(\.borderWidth, actionName: "调整屏幕描边"),
+                    range: 0...40, interactionScope: .project, format: .points
                 )
                 knob(
                     "阴影强度", label: "阴影",
-                    value: canvasBinding(\.shadowStrength, actionName: "调整屏幕阴影"),
-                    range: 0...1, format: .percent
+                    value: screenAppearanceBinding(\.shadowStrength, actionName: "调整屏幕阴影"),
+                    range: 0...1, interactionScope: .project, format: .percent
                 )
             }
             if canvas.borderWidth > 0 {
                 EditorTransactionalColorInput(
                     editorStore: editorStore,
                     title: "描边颜色",
-                    value: canvasBinding(
+                    value: screenAppearanceBinding(
                         \.borderColor,
                         actionName: "调整描边颜色"
                     ),
-                    commandScope: .canvas,
+                    commandScope: .project,
                     actionName: "调整描边颜色",
                     onError: onError
                 )
                 sliderRow(
                     "描边不透明度",
-                    value: canvasBinding(\.insetOpacity, actionName: "调整描边不透明度"),
+                    value: screenAppearanceBinding(\.insetOpacity, actionName: "调整描边不透明度"),
                     range: 0...1,
+                    interactionScope: .project,
                     format: .percent
                 )
             }
@@ -850,33 +1189,35 @@ struct EditorInspectorView: View {
 
             EditorInspectorSection("样机", showsTitle: false) {
                 EditorScreenFramePicker(editorStore: editorStore,
+                                        target: screenAppearanceTarget,
                                         screenImage: playbackController.pausedScreenImage,
                                         onError: onError)
+                    .id(screenAppearanceTarget)
 
-                if editorStore.previewProject.canvas.screenFrame != .none {
+                if screenAppearanceCanvas.screenFrame != .none {
                     EditorKnobRow {
                         knob(
                             "框体比例",
-                            value: canvasBinding(\.screenFrameScale, actionName: "调整屏幕样机大小"),
-                            range: 0.6...1.6, format: .multiplier
+                            value: screenAppearanceBinding(\.screenFrameScale, actionName: "调整屏幕样机大小"),
+                            range: 0.6...1.6, interactionScope: .project, format: .multiplier
                         )
-                        if editorStore.previewProject.canvas.screenFrame.isWindowFrame
-                            || editorStore.previewProject.canvas.screenFrame.isBrowserFrame {
+                        if screenAppearanceCanvas.screenFrame.isWindowFrame
+                            || screenAppearanceCanvas.screenFrame.isBrowserFrame {
                             knob(
                                 "顶栏高度",
-                                value: canvasBinding(\.screenFrameToolbarScale, actionName: "调整样机顶栏高度"),
-                                range: 0.65...1.6, format: .multiplier
+                                value: screenAppearanceBinding(\.screenFrameToolbarScale, actionName: "调整样机顶栏高度"),
+                                range: 0.65...1.6, interactionScope: .project, format: .multiplier
                             )
                         }
                         knob(
                             "框体外圆角", label: "外圆角",
                             value: screenFrameRadiusBinding(
                                 \.screenFrameOuterCornerRadius,
-                                fallback: editorStore.previewProject.canvas.screenFrame
+                                fallback: screenAppearanceCanvas.screenFrame
                                     .defaultOuterCornerRadius,
                                 actionName: "调整样机外圆角"
                             ),
-                            range: 0...160, format: .points
+                            range: 0...160, interactionScope: .project, format: .points
                         )
                     }
                     .padding(.top, 6)
@@ -890,145 +1231,27 @@ struct EditorInspectorView: View {
         fallback: Double,
         actionName: String
     ) -> Binding<Double> {
-        let optionalBinding = canvasBinding(keyPath, actionName: actionName)
+        let optionalBinding = screenAppearanceBinding(keyPath, actionName: actionName)
         return Binding(
             get: { optionalBinding.wrappedValue ?? fallback },
             set: { optionalBinding.wrappedValue = $0 }
         )
     }
 
-
     var cropInspector: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            EditorSymbolLabel("在画面上拖动边缘或四角，拖动框内可整体移动。", systemImage: "crop")
-                .font(.appUI(size: 11))
-                .foregroundStyle(.secondary)
-
-            HStack(spacing: 8) {
-                cropEdgeStepper("左", edge: .left, pixels: sourcePixelSize.width)
-                cropEdgeStepper("右", edge: .right, pixels: sourcePixelSize.width)
-            }
-            HStack(spacing: 8) {
-                cropEdgeStepper("上", edge: .top, pixels: sourcePixelSize.height)
-                cropEdgeStepper("下", edge: .bottom, pixels: sourcePixelSize.height)
-            }
-
-            Divider().overlay(dividerColor)
-
-            LabeledContent("裁切后尺寸") {
-                Text(cropSizeText).monospacedDigit()
-            }
-            .font(.appUI(size: 11))
-
-        }
+        EditorCropInspector(cropDraft: $cropDraft, sourcePixelSize: sourcePixelSize, scope: cropScope)
     }
 
-    func cropEdgeStepper(_ title: String, edge: CropEdge, pixels: CGFloat) -> some View {
-        let pixelBinding = cropPixelBinding(edge, pixels: pixels)
-        let maximumPixels = cropMaximumPixelValue(edge, pixels: pixels)
-        let current = pixelBinding.wrappedValue
-        return VStack(alignment: .leading, spacing: 4) {
-            Text(appLocalized(title))
-                .font(.appUI(size: 11, weight: .medium))
-                .foregroundStyle(EditorTheme.secondaryText)
-                .fixedSize()
-            EditorNumericStepControl(
-                title,
-                valueText: "\(current) px",
-                accessibilityTitle: "\(title)侧裁切",
-                canDecrease: current > 0,
-                canIncrease: current < maximumPixels,
-                onDecrease: {
-                    pixelBinding.wrappedValue = max(pixelBinding.wrappedValue - 1, 0)
-                },
-                onIncrease: {
-                    pixelBinding.wrappedValue = min(pixelBinding.wrappedValue + 1, maximumPixels)
-                },
-                editConfiguration: EditorNumericStepEditConfiguration(
-                    draftText: "\(current)",
-                    onPreview: { text in
-                        guard let value = cropPixelInputValue(text) else {
-                            return false
-                        }
-                        pixelBinding.wrappedValue = min(max(value, 0), maximumPixels)
-                        return true
-                    },
-                    onCancel: { originText in
-                        guard let value = cropPixelInputValue(originText) else {
-                            return
-                        }
-                        pixelBinding.wrappedValue = min(max(value, 0), maximumPixels)
-                    }
-                ),
-                showsTitle: false
-            )
-        }
-    }
-
-    func cropMaximumPixelValue(_ edge: CropEdge, pixels: CGFloat) -> Int {
-        let dimension = max(Double(pixels), 1)
-        let crop = cropDraft.clamped()
-        let opposite: Double = switch edge {
-        case .left: crop.right
-        case .right: crop.left
-        case .top: crop.bottom
-        case .bottom: crop.top
-        }
-        let minimum = min(max(24 / dimension, 0.001), 0.5)
-        return max(Int(floor((1 - opposite - minimum) * dimension)), 0)
-    }
-
-    func cropPixelInputValue(_ text: String) -> Int? {
-        var normalized = text
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-            .replacingOccurrences(of: "，", with: ".")
-            .replacingOccurrences(of: ",", with: ".")
-        for token in ["像素", "pixels", "pixel", "px"] {
-            normalized = normalized.replacingOccurrences(of: token, with: "")
-        }
-        normalized = normalized.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let value = Double(normalized), value.isFinite else { return nil }
-        return Int(value.rounded())
-    }
-
-    func cropPixelBinding(_ edge: CropEdge, pixels: CGFloat) -> Binding<Int> {
-        Binding(
-            get: { cropPixelValue(edge, pixels: pixels) },
-            set: { newValue in
-                let dimension = max(Double(pixels), 1)
-                let normalized = min(max(Double(newValue) / dimension, 0), 1)
-                let current = cropDraft.clamped()
-                var left = current.left
-                var right = current.right
-                var top = current.top
-                var bottom = current.bottom
-                let minimum = min(max(24 / dimension, 0.001), 0.5)
-                switch edge {
-                case .left:
-                    left = min(normalized, max(1 - right - minimum, 0))
-                case .right:
-                    right = min(normalized, max(1 - left - minimum, 0))
-                case .top:
-                    top = min(normalized, max(1 - bottom - minimum, 0))
-                case .bottom:
-                    bottom = min(normalized, max(1 - top - minimum, 0))
-                }
-                cropDraft = .fromEdges(left: left, right: right, top: top, bottom: bottom)
+    private var cropScope: EditorCropInspector.Scope? {
+        let scope = EditorCropScope.shared
+        guard scope.offersChoice, let id = scope.segmentID,
+              let context = primarySegmentContext(id: id) else { return nil }
+        return EditorCropInspector.Scope(
+            segmentLabel: String(format: appLocalized("第 %lld 段"), Int64(context.index + 1)),
+            onChange: { [editorStore, cropSourceID] segmentOnly in
+                scope.setSegmentOnly(segmentOnly, in: editorStore, sourceID: cropSourceID)
             }
         )
-    }
-
-    func cropPixelValue(_ edge: CropEdge, pixels: CGFloat) -> Int {
-        let crop = cropDraft.clamped()
-        let value: Double
-        switch edge {
-        case .left: value = crop.left
-        case .right: value = crop.right
-        case .top: value = crop.top
-        case .bottom: value = crop.bottom
-        }
-        return max(Int((value * Double(max(pixels, 1))).rounded()), 0)
     }
 
     // MARK: - Primary segment panel
@@ -1041,15 +1264,26 @@ struct EditorInspectorView: View {
         let junctionAfter: EditorTimelineSegmentJunction?
         let leadingGap: EditorTimelineLeadingGap?
         let trailingGap: EditorTimelineTrailingGap?
-        let fullSourceDuration: TimeInterval
+        let sourceDurations: [UUID: TimeInterval]
         let frameDuration: TimeInterval
     }
 
+    func insertedMotionPath(_ id: UUID) -> String? {
+        guard case let .edited(segments) = editorStore.project.timeline.sourceSequence else { return nil }
+        return segments.first { $0.id == id }?.media?.motionPath
+    }
+
+    func insertedUsesFrameStyle(_ id: UUID) -> Bool {
+        guard case let .edited(segments) = editorStore.project.timeline.sourceSequence else { return false }
+        return segments.first { $0.id == id }?.media?.usesFrameStyle ?? false
+    }
+
     func primarySegmentContext(id: UUID) -> PrimarySegmentPanelContext? {
-        guard let map = mediaSession.mediaPlan?.timelineMap,
+        guard let map = try? TimelineMap(sourceSequence: editorStore.project.timeline.sourceSequence,
+            sourceDurations: mediaSession.sourceDurations),
               let index = map.segments.firstIndex(where: { $0.id == id }) else { return nil }
         let junctions = EditorPrimaryTimelinePresentation.segmentJunctions(from: map)
-        let frameRate = max(editorStore.project.capture.captureFrameRate.rawValue, 1)
+        let frameRate = max(editorStore.project.captureFrameRate(for: map.segments[index].sourceID).rawValue, 1)
         return PrimarySegmentPanelContext(
             segment: map.segments[index],
             index: index,
@@ -1058,162 +1292,71 @@ struct EditorInspectorView: View {
             junctionAfter: junctions.first { $0.previousSegmentID == id },
             leadingGap: EditorPrimaryTimelinePresentation.leadingGap(from: map),
             trailingGap: EditorPrimaryTimelinePresentation.trailingGap(from: map),
-            fullSourceDuration: map.fullSourceDuration,
+            sourceDurations: map.sourceDurations,
             frameDuration: 1 / Double(frameRate)
         )
     }
 
-    /// 选中主片段时的专属面板。此前这里显示的是全片初始状态控件，标题却
-    /// 写着"当前片段"，名实不符；现在给片段自己的信息与操作，与时间线
-    /// 手势/快捷键共享同一组 EditorStore 命令。
+    /// 选中主片段时的面板，和「全片设置」是同一个页面：同一套设置行、同一种
+    /// 分区节奏，只是选中时在「这一段的外观」之上多出一块「片段」区，说明这是
+    /// 哪一段、来自哪份录制。读数一类的诊断信息收在「详情」里，破坏性操作在
+    /// 页面最底下、用一条分隔线断开。
     @ViewBuilder
     func primarySegmentInspector(id: UUID) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             if let context = primarySegmentContext(id: id) {
-                EditorInspectorSection("片段信息", icon: "film") {
-                    HStack(alignment: .firstTextBaseline, spacing: 7) {
-                        Text("第 \(context.index + 1) 段")
-                            .font(.appUI(size: 12, weight: .semibold))
-                        Text("共 \(context.total) 段")
-                            .font(.appUI(size: 11))
-                            .foregroundStyle(.secondary)
-                        Spacer(minLength: 8)
-                        Text(playbackRateText(context.segment.playbackRate))
-                            .font(.appUI(size: 11, weight: .semibold, design: .monospaced))
-                            .monospacedDigit()
-                            .padding(.horizontal, 7)
-                            .frame(height: 24)
-                            .background(
-                                EditorTheme.chrome(0.065),
-                                in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                primarySegmentSection(context)
+                if showsPrimarySegmentDetails {
+                    // 这一段的外观：和「全片设置」总览同一套行样式，点进去的页面
+                    // 只作用于这一段，作用范围由面板顶部的范围区块说明。
+                    EditorInspectorSection("这一段的外观") {
+                        EditorSettingsOverview(
+                            editorStore: editorStore,
+                            rows: segmentOverviewRows(context.segment),
+                            open: openSettingsPage
+                        )
+                    }
+                    if context.segment.media == nil {
+                        recordingSourceSoundSection(context.segment)
+                        primarySegmentCropSection(context)
+                    } else if insertedSegmentHasControllableSound(context.segment) {
+                        EditorInspectorSection("声音", icon: "speaker.wave.2") {
+                            VStack(alignment: .leading, spacing: 4) {
+                                insertedSegmentSoundRows(segmentID: id, segment: context.segment)
+                            }
+                        }
+                    }
+                }
+
+                if insertedMotionPath(id) != nil {
+                    EditorMotionElementsSection(editorStore: editorStore, target: .mainTrack(id))
+                    EditorInspectorSection("动效内容", icon: "sparkles") {
+                        EditorInsertedMotionFields(editorStore: editorStore, segmentID: id)
+                    }
+                }
+
+                if showsPrimarySegmentDetails,
+                   context.segment.media != nil, context.segment.media?.imagePath == nil {
+                    EditorInspectorSection("显示方式", icon: "rectangle.inset.filled") {
+                        EditorSegmentedControl(
+                            options: [false, true],
+                            title: { $0 ? "套用画面样式" : "全屏" },
+                            selection: Binding(
+                                get: { insertedUsesFrameStyle(id) },
+                                set: { editorStore.setInsertedSegmentUsesFrameStyle(id, $0) }
                             )
-                    }
-
-                    if let map = mediaSession.mediaPlan?.timelineMap {
-                        EditorSegmentMap(
-                            segments: map.segments,
-                            selectedIndex: context.index,
-                            totalDuration: map.segments.last?.outputEnd
-                                ?? context.fullSourceDuration
                         )
-                        .padding(.vertical, 2)
-                    }
-
-                    VStack(spacing: 8) {
-                        primarySegmentInfoRow(
-                            "输出时长",
-                            value: segmentTimestamp(context.segment.outputDuration),
-                            systemImage: "clock"
-                        )
-                        primarySegmentInfoRow(
-                            "输出区间",
-                            value: "\(segmentTimestamp(context.segment.outputStart)) – "
-                                + segmentTimestamp(context.segment.outputEnd),
-                            systemImage: "rectangle.inset.filled"
-                        )
-                        primarySegmentInfoRow(
-                            "源区间",
-                            value: "\(segmentTimestamp(context.segment.sourceStart)) – "
-                                + segmentTimestamp(context.segment.sourceEnd),
-                            systemImage: "film.stack"
-                        )
+                        Text(appLocalized(insertedUsesFrameStyle(id)
+                            ? "和录屏一样显示在背景上，带边距、圆角和阴影。"
+                            : "铺满整个画面，不带背景和边框，适合开场、标题和黑场。"))
+                            .font(.appUI(size: 13))
+                            .foregroundStyle(EditorTheme.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
 
-                EditorInspectorSection("片段操作", icon: "scissors") {
-                    VStack(spacing: 2) {
-                        segmentActionRow(
-                            "在播放头处分割",
-                            icon: "scissors",
-                            disabled: !canSplitPrimarySegmentFromInspector(context: context),
-                            help: canSplitPrimarySegmentFromInspector(context: context)
-                                ? "在播放头处分割（S）"
-                                : "把播放头移进这个片段内部后才能分割"
-                        ) {
-                            splitPrimarySegmentFromInspector(context: context)
-                        }
-
-                        if let junctionBefore = context.junctionBefore,
-                           junctionBefore.hasRemovedSourceGap {
-                            segmentActionRow(
-                                "还原之前的剪切（已剪 \(segmentTimestamp(junctionBefore.removedDuration))）",
-                                icon: "arrow.uturn.backward"
-                            ) {
-                                restorePrimaryGapFromInspector(
-                                    junction: junctionBefore,
-                                    fullSourceDuration: context.fullSourceDuration
-                                )
-                            }
-                        }
-
-                        if let junctionAfter = context.junctionAfter {
-                            if junctionAfter.hasRemovedSourceGap {
-                                segmentActionRow(
-                                    "还原之后的剪切（已剪 \(segmentTimestamp(junctionAfter.removedDuration))）",
-                                    icon: "arrow.uturn.backward"
-                                ) {
-                                    restorePrimaryGapFromInspector(
-                                        junction: junctionAfter,
-                                        fullSourceDuration: context.fullSourceDuration
-                                    )
-                                }
-                            } else {
-                                segmentActionRow(
-                                    "合并与下一片段",
-                                    icon: "link"
-                                ) {
-                                    mergeWithNextSegmentFromInspector(context: context)
-                                }
-                            }
-                        }
-
-                        if let leadingGap = context.leadingGap,
-                           leadingGap.nextSegmentID == id {
-                            segmentActionRow(
-                                "还原开头剪切（已剪 \(segmentTimestamp(leadingGap.removedDuration))）",
-                                icon: "arrow.uturn.backward"
-                            ) {
-                                do {
-                                    try editorStore.restorePrimaryLeadingGap(
-                                        fullSourceDuration: context.fullSourceDuration,
-                                        actionName: "还原开头剪切"
-                                    )
-                                } catch {
-                                    onError(error.localizedDescription)
-                                }
-                            }
-                        }
-
-                        if let trailingGap = context.trailingGap,
-                           trailingGap.previousSegmentID == id {
-                            segmentActionRow(
-                                "还原结尾剪切（已剪 \(segmentTimestamp(trailingGap.removedDuration))）",
-                                icon: "arrow.uturn.backward"
-                            ) {
-                                do {
-                                    try editorStore.restorePrimaryTrailingGap(
-                                        fullSourceDuration: context.fullSourceDuration,
-                                        actionName: "还原结尾剪切"
-                                    )
-                                } catch {
-                                    onError(error.localizedDescription)
-                                }
-                            }
-                        }
-
-                        segmentActionRow(
-                            "删除这个片段",
-                            icon: "trash",
-                            destructive: true
-                        ) {
-                            deletePrimarySegmentFromInspector(context: context)
-                        }
-                    }
-                    .padding(4)
-                    .background(EditorTheme.cardFill, in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.card, style: .continuous))
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                primarySegmentEditingSection(id: id, context: context)
+                primarySegmentDestructiveFooter(context: context)
             } else {
                 EditorInspectorEmptyState(
                     title: "片段已不存在",
@@ -1227,6 +1370,317 @@ struct EditorInspectorView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    /// 声音 页在底部嵌了一份片段面板。片段页现在自己就有来源、外观和裁切，
+    /// 整份嵌进去就是重复；在那一层只留时间与操作，面包屑的「片段」负责
+    /// 回到完整的片段页。
+    private var showsPrimarySegmentDetails: Bool {
+        !(stackLevel == .settings && settingsPage == .sound)
+    }
+
+    func insertedSegmentHasControllableSound(_ segment: ResolvedRecordingSegment) -> Bool {
+        guard let media = segment.media else { return false }
+        if media.hasEmbeddedAudio { return true }
+        return !editorStore.previewProject.timeline
+            .associatedEffectAudioClips(overlappingStart: segment.outputStart, end: segment.outputEnd)
+            .isEmpty
+    }
+
+    func insertedSegmentSoundSummary(_ segment: ResolvedRecordingSegment) -> String? {
+        guard let media = segment.media else { return nil }
+        let timeline = editorStore.previewProject.timeline
+        let associated = timeline.associatedEffectAudioClips(
+            overlappingStart: segment.outputStart,
+            end: segment.outputEnd
+        )
+        let hasEmbedded = media.hasEmbeddedAudio
+        guard hasEmbedded || !associated.isEmpty else { return nil }
+        var parts: [String] = []
+        if hasEmbedded {
+            let overrides = timeline.primarySegmentAudioOverrides[segment.id] ?? PrimarySegmentAudioOverrides()
+            if overrides.isSystemMuted == true {
+                parts.append(appLocalized("静音"))
+            } else {
+                let defaultVolume = media.transferSound?.volume ?? 1
+                let pct = Int(((overrides.systemVolume ?? defaultVolume) * 100).rounded())
+                parts.append("\(pct)%")
+            }
+        }
+        for clip in associated {
+            if clip.isMuted {
+                parts.append(appLocalized("静音"))
+            } else {
+                parts.append("\(Int((clip.volume * 100).rounded()))%")
+            }
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    @ViewBuilder
+    func insertedSegmentSoundRows(segmentID: UUID, segment: ResolvedRecordingSegment) -> some View {
+        let hasEmbedded = segment.media?.hasEmbeddedAudio == true
+        let defaultEmbeddedVolume = segment.media?.transferSound?.volume ?? 1
+        let associatedClips = editorStore.previewProject.timeline.associatedEffectAudioClips(
+            overlappingStart: segment.outputStart,
+            end: segment.outputEnd
+        )
+        if hasEmbedded {
+            let embeddedTitle = segment.media?.motionPath != nil ? "音效音量" : "音量"
+            let embeddedDetail = (segment.media?.transferSound?.path ?? segment.media?.soundPath)
+                .map { URL(fileURLWithPath: $0).lastPathComponent } ?? ""
+            audioVolumeRow(
+                embeddedTitle,
+                icon: .speaker,
+                detail: embeddedDetail,
+                value: editorPrimarySegmentAudioBinding(
+                    store: editorStore,
+                    segmentID: segmentID,
+                    get: { _, overrides in overrides.systemVolume ?? defaultEmbeddedVolume },
+                    set: { $0.systemVolume = min(max($1, 0), 1) },
+                    actionName: "调整片段音量",
+                    onError: onError
+                ),
+                isMuted: editorPrimarySegmentAudioBinding(
+                    store: editorStore,
+                    segmentID: segmentID,
+                    get: { _, overrides in overrides.isSystemMuted ?? false },
+                    set: { $0.isSystemMuted = $1 },
+                    actionName: "切换片段静音",
+                    onError: onError
+                ),
+                commandScope: .selection,
+                accessibilityStem: "editor.inserted.audio"
+            )
+        }
+        ForEach(associatedClips) { clip in
+            let clipStem = URL(fileURLWithPath: clip.sourcePath).deletingPathExtension().lastPathComponent
+            let rowTitle = (!hasEmbedded && associatedClips.count == 1) ? "音效音量" : clipStem
+            audioVolumeRow(
+                rowTitle,
+                icon: .speaker,
+                detail: URL(fileURLWithPath: clip.sourcePath).lastPathComponent,
+                value: editorAudioClipBinding(
+                    store: editorStore,
+                    clipID: clip.id,
+                    default: clip.volume,
+                    keyPath: \.volume,
+                    actionName: "调整音效音量",
+                    onError: onError
+                ),
+                isMuted: editorAudioClipBinding(
+                    store: editorStore,
+                    clipID: clip.id,
+                    default: clip.isMuted,
+                    keyPath: \.isMuted,
+                    actionName: "切换音效静音",
+                    onError: onError
+                ),
+                commandScope: .selection,
+                accessibilityStem: "editor.inserted.audioClip.\(clip.id.uuidString)"
+            )
+        }
+    }
+
+    /// 「裁切这份录制」在逐片段裁切已经存在的前提下会误导：裁切会话打开时
+    /// 才选范围，这里只说明范围怎么选。
+    @ViewBuilder
+    private func primarySegmentCropSection(_ context: PrimarySegmentPanelContext) -> some View {
+        let occurrences = editorStore.project.segmentCount(forSourceID: context.segment.sourceID)
+        EditorInspectorSection("裁切", icon: "crop") {
+            Button { editorStore.cropRecording(context.segment.sourceID) } label: {
+                EditorSymbolLabel("裁切画面…", systemImage: "crop")
+            }
+            .buttonStyle(.editorQuiet)
+            Text(appLocalized(occurrences > 1
+                ? "这份录制在主轨上出现多次，裁切时可以选择只裁这一段，或整份录制。"
+                : "这份录制只出现这一次，裁切作用于它本身。"))
+                .font(.appUI(size: 11)).foregroundStyle(EditorTheme.tertiaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// 「片段」区：这是第几段、来自哪份录制、在整片的哪个位置，倍速写在右上。
+    /// 区间、时长、录到了什么这些读数谁都不是每次都要看，收进折叠的「详情」。
+    @ViewBuilder
+    private func primarySegmentSection(_ context: PrimarySegmentPanelContext) -> some View {
+        EditorInspectorSection("片段", icon: "film") {
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                Text("第 \(context.index + 1) 段")
+                    .font(.appUI(size: 12, weight: .semibold))
+                Text("共 \(context.total) 段")
+                    .font(.appUI(size: 11))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                Text(playbackRateText(context.segment.playbackRate))
+                    .font(.appUI(size: 11, weight: .semibold, design: .monospaced))
+                    .monospacedDigit()
+                    .padding(.horizontal, 7)
+                    .frame(height: 24)
+                    .background(
+                        EditorTheme.chrome(0.065),
+                        in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    )
+            }
+
+            // 「声音」页底部嵌的是这一块的精简版：那里不重复来源卡片。
+            if context.segment.media == nil, showsPrimarySegmentDetails {
+                recordingSourceCard(context.segment)
+            }
+
+            if let map = mediaSession.mediaPlan?.timelineMap {
+                EditorSegmentMap(
+                    segments: map.segments,
+                    selectedIndex: context.index,
+                    totalDuration: map.segments.last?.outputEnd ?? 0
+                )
+                .padding(.vertical, 2)
+            }
+
+            EditorDisclosure("详情") {
+                VStack(spacing: 8) {
+                    primarySegmentInfoRow(
+                        "输出时长",
+                        value: segmentTimestamp(context.segment.outputDuration),
+                        systemImage: "clock"
+                    )
+                    primarySegmentInfoRow(
+                        "输出区间",
+                        value: "\(segmentTimestamp(context.segment.outputStart)) – "
+                            + segmentTimestamp(context.segment.outputEnd),
+                        systemImage: "rectangle.inset.filled"
+                    )
+                    primarySegmentInfoRow(
+                        "源区间",
+                        value: "\(segmentTimestamp(context.segment.sourceStart)) – "
+                            + segmentTimestamp(context.segment.sourceEnd),
+                        systemImage: "film.stack"
+                    )
+                    if context.segment.media == nil {
+                        recordingAvailabilityRow("麦克风", recorded: microphoneHasAudio)
+                        recordingAvailabilityRow(
+                            "摄像头",
+                            recorded: editorStore.project.source(context.segment.sourceID)?.media.camera != nil
+                        )
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// 分割、合并、还原剪切在时间线上都有手势、快捷键和右键菜单，面板里
+    /// 再铺一遍长列表只是噪音；它们收进「更多剪辑操作」，还原剪切的
+    /// "已剪多少"仍能看到。删除不在这里：破坏性操作在页面最底下。
+    @ViewBuilder
+    private func primarySegmentEditingSection(id: UUID, context: PrimarySegmentPanelContext) -> some View {
+        EditorInspectorSection("剪辑", icon: "scissors") {
+            EditorDisclosure("更多剪辑操作") {
+                VStack(spacing: 2) {
+                    segmentActionRow(
+                        "在播放头处分割",
+                        icon: "scissors",
+                        disabled: !canSplitPrimarySegmentFromInspector(context: context),
+                        help: canSplitPrimarySegmentFromInspector(context: context)
+                            ? "在播放头处分割（S）"
+                            : "把播放头移进这个片段内部后才能分割"
+                    ) {
+                        splitPrimarySegmentFromInspector(context: context)
+                    }
+
+                    if let junctionBefore = context.junctionBefore,
+                       junctionBefore.hasRemovedSourceGap {
+                        segmentActionRow(
+                            String(format: appLocalized("还原之前的剪切（已剪 %@）"),
+                                   segmentTimestamp(junctionBefore.removedDuration)),
+                            icon: "arrow.uturn.backward"
+                        ) {
+                            restorePrimaryGapFromInspector(
+                                junction: junctionBefore,
+                                sourceDurations: context.sourceDurations
+                            )
+                        }
+                    }
+
+                    if let junctionAfter = context.junctionAfter {
+                        if junctionAfter.hasRemovedSourceGap {
+                            segmentActionRow(
+                                String(format: appLocalized("还原之后的剪切（已剪 %@）"),
+                                       segmentTimestamp(junctionAfter.removedDuration)),
+                                icon: "arrow.uturn.backward"
+                            ) {
+                                restorePrimaryGapFromInspector(
+                                    junction: junctionAfter,
+                                    sourceDurations: context.sourceDurations
+                                )
+                            }
+                        } else {
+                            segmentActionRow(
+                                "合并与下一片段",
+                                icon: "link"
+                            ) {
+                                mergeWithNextSegmentFromInspector(context: context)
+                            }
+                        }
+                    }
+
+                    if let leadingGap = context.leadingGap,
+                       leadingGap.nextSegmentID == id {
+                        segmentActionRow(
+                            "还原开头剪切（已剪 \(segmentTimestamp(leadingGap.removedDuration))）",
+                            icon: "arrow.uturn.backward"
+                        ) {
+                            do {
+                                try editorStore.restorePrimaryLeadingGap(
+                                    sourceDurations: context.sourceDurations,
+                                    actionName: "还原开头剪切"
+                                )
+                            } catch {
+                                onError(error.localizedDescription)
+                            }
+                        }
+                    }
+
+                    if let trailingGap = context.trailingGap,
+                       trailingGap.previousSegmentID == id {
+                        segmentActionRow(
+                            "还原结尾剪切（已剪 \(segmentTimestamp(trailingGap.removedDuration))）",
+                            icon: "arrow.uturn.backward"
+                        ) {
+                            do {
+                                try editorStore.restorePrimaryTrailingGap(
+                                    sourceDurations: context.sourceDurations,
+                                    actionName: "还原结尾剪切"
+                                )
+                            } catch {
+                                onError(error.localizedDescription)
+                            }
+                        }
+                    }
+                }
+                .padding(4)
+                .background(EditorTheme.cardFill, in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.card, style: .continuous))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// 删除是这一页唯一不可挽回的操作，所以它不混在别的分区里：它在页面最
+    /// 底下，和上面的内容之间只有「剪辑」那一区收尾的分隔线——页面上每一区
+    /// 之间都是这条线，删除也就读作"这一段结束之后的事"。
+    @ViewBuilder
+    private func primarySegmentDestructiveFooter(context: PrimarySegmentPanelContext) -> some View {
+        segmentActionRow(
+            "删除这个片段",
+            icon: "trash",
+            destructive: true
+        ) {
+            deletePrimarySegmentFromInspector(context: context)
+        }
+        .padding(.top, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+
     func primarySegmentInfoRow(
         _ title: String,
         value: String,
@@ -1237,7 +1691,7 @@ struct EditorInspectorView: View {
                 .font(.appUI(size: 10, weight: .semibold))
                 .foregroundStyle(EditorTheme.chrome(0.52))
                 .frame(width: 14)
-            Text(title)
+            Text(appLocalized(title))
                 .foregroundStyle(.secondary)
             Spacer(minLength: 8)
             Text(value)
@@ -1316,7 +1770,7 @@ struct EditorInspectorView: View {
         do {
             try editorStore.splitPrimarySegment(
                 atOutputTime: playbackTime,
-                fullSourceDuration: context.fullSourceDuration,
+                sourceDurations: context.sourceDurations,
                 newRightSegmentID: rightID,
                 actionName: "分割主片段"
             )
@@ -1332,7 +1786,7 @@ struct EditorInspectorView: View {
         do {
             try editorStore.removePrimarySegment(
                 id: context.segment.id,
-                fullSourceDuration: context.fullSourceDuration,
+                sourceDurations: context.sourceDurations,
                 actionName: "删除主片段"
             )
         } catch {
@@ -1344,13 +1798,13 @@ struct EditorInspectorView: View {
 
     func restorePrimaryGapFromInspector(
         junction: EditorTimelineSegmentJunction,
-        fullSourceDuration: TimeInterval
+        sourceDurations: [UUID: TimeInterval]
     ) {
         do {
             try editorStore.restorePrimaryGap(
                 previousSegmentID: junction.previousSegmentID,
                 nextSegmentID: junction.nextSegmentID,
-                fullSourceDuration: fullSourceDuration,
+                sourceDurations: sourceDurations,
                 actionName: "还原该处剪切"
             )
         } catch {
@@ -1364,7 +1818,7 @@ struct EditorInspectorView: View {
             try editorStore.mergeAdjacentPrimarySegments(
                 previousSegmentID: junctionAfter.previousSegmentID,
                 nextSegmentID: junctionAfter.nextSegmentID,
-                fullSourceDuration: context.fullSourceDuration,
+                sourceDurations: context.sourceDurations,
                 actionName: "合并相邻主片段"
             )
         } catch {
@@ -1397,7 +1851,6 @@ struct EditorInspectorView: View {
                 zoomInspector
             } else if case let .screenMotion(id) = editorStore.selection {
                 ScreenMotionTargetInspector(
-                    sourceImage: playbackController.pausedScreenImage,
                     editorStore: editorStore,
                     clipID: id,
                     onError: onError
@@ -1432,7 +1885,8 @@ struct EditorInspectorView: View {
     }
 
     var motionTypeSelector: some View {
-        EditorInspectorSection("运镜类型") {
+        // A page switch, like 背景/布局/样机 on the 画面 page: no caption,
+        // no card around it.
             EditorSegmentedControl(
                 options: EditorMotionInspectorMode.allCases,
                 title: { $0 == .screen3D ? "屏幕 3D" : "缩放" },
@@ -1456,7 +1910,6 @@ struct EditorInspectorView: View {
                     }
                 )
             )
-        }
     }
 
     var zoomInspector: some View {
@@ -1536,7 +1989,7 @@ struct EditorInspectorView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.editorQuiet)
-                    .appButtonKeyboardFocus(in: Capsule(style: .continuous))
+                    .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
                     .disabled(editorStore.previewProject.zoomAnimations.count < 2)
                     .help("应用倍率到全部缩放")
                 }
@@ -1581,7 +2034,7 @@ struct EditorInspectorView: View {
                     selectedZoomID = nil
                 }
                 .buttonStyle(.editorDestructive)
-                .appButtonKeyboardFocus(in: Capsule(style: .continuous))
+                .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
                 .padding(.top, 4)
             } else if case .zoom = editorStore.selection {
                 EditorInspectorEmptyState(
@@ -1611,14 +2064,15 @@ struct EditorInspectorView: View {
                 } else {
                     HStack(spacing: 10) {
                         EditorSymbolLabel("缩放轨道已隐藏", systemImage: "eye.slash")
-                            .font(.appUI(size: 11))
-                            .foregroundStyle(.secondary)
+                            .font(EditorTypography.controlLabel)
+                            .foregroundStyle(EditorTheme.secondaryText)
                             .fixedSize(horizontal: false, vertical: true)
                         Spacer(minLength: 0)
-                        Button("显示缩放轨道") {
+                        Button("显示") {
                             visibleTimelineTracks.insert(.zoom)
                         }
                         .buttonStyle(.editorQuiet)
+                        .help("显示缩放轨道")
                         .fixedSize(horizontal: true, vertical: false)
                         .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
                         .accessibilityIdentifier("editor.inspector.zoom.show-track")
@@ -1631,7 +2085,8 @@ struct EditorInspectorView: View {
                             return .handled
                         }
                     }
-                    .padding(10)
+                    .padding(.horizontal, EditorInterfaceSpacing.tileInset)
+                    .padding(.vertical, 8)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(EditorTheme.cardFill, in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.card, style: .continuous))
                 }
@@ -1643,12 +2098,7 @@ struct EditorInspectorView: View {
 
     @ViewBuilder
     var motionGlobalDefaults: some View {
-        EditorDisclosure(
-            "新动画过渡",
-            detail: EditorSliderValueFormat.seconds.text(
-                for: editorStore.previewProject.motion.defaultZoomTransitionDuration
-            )
-        ) {
+        EditorInspectorSection("新建片段") {
             sliderRow(
                 "过渡时长",
                 value: motionBinding(

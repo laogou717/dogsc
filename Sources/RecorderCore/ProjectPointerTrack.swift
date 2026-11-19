@@ -5,6 +5,7 @@ import Foundation
 /// joins the two retained endpoints in the final output clock instead.
 public struct ProjectPointerTrackSegment: Equatable, Identifiable, Sendable {
     public let id: UUID
+    public let sourceID: UUID
     public let outputRange: MediaTimeRange
     public let track: PointerTrack
     /// Cached once when the retained segment is built. Cut-bridge evaluation
@@ -17,9 +18,11 @@ public struct ProjectPointerTrackSegment: Equatable, Identifiable, Sendable {
         id: UUID,
         outputRange: MediaTimeRange,
         track: PointerTrack,
-        startsAfterSourceDiscontinuity: Bool = false
+        startsAfterSourceDiscontinuity: Bool = false,
+        sourceID: UUID = RecordingSource.primaryID
     ) {
         self.id = id
+        self.sourceID = sourceID
         self.outputRange = outputRange
         self.track = track
         self.startsAfterSourceDiscontinuity = startsAfterSourceDiscontinuity
@@ -64,6 +67,7 @@ public struct ProjectPointerTrack: Equatable, Sendable {
     private static let endpointEpsilon: TimeInterval = 1.0 / 10_000.0
 
     public let segments: [ProjectPointerTrackSegment]
+    private let automaticCameraRanges: [MediaTimeRange]
     private let cursorActivityTimes: [TimeInterval]
     /// Playback commonly needs the active clip plus its predecessor. Four LRU
     /// entries preserve that locality while discarding transient spring
@@ -73,28 +77,57 @@ public struct ProjectPointerTrack: Equatable, Sendable {
         [AutomaticCameraFocusSample]
     >
 
+    @available(*, deprecated, message: "Use eventsBySource; pointer data must be scoped to a recording.")
     public init(timelineMap: TimelineMap, sourceEvents: [PointerEventRecord]) {
+        self.init(timelineMap: timelineMap, eventsBySource: [RecordingSource.primaryID: sourceEvents])
+    }
+
+    public init(timelineMap: TimelineMap, eventsBySource: [UUID: [PointerEventRecord]]) {
         var discontinuities = Set<UUID>()
-        for (index, segment) in timelineMap.segments.enumerated() {
-            let previousEnd = index > 0 ? timelineMap.segments[index - 1].sourceEnd : 0
-            if abs(segment.sourceStart - previousEnd) > Self.endpointEpsilon {
+        // The pointer resumes after an inserted video exactly where the
+        // recording resumes: discontinuity is judged between recording spans.
+        let recording = timelineMap.segments.filter { $0.media == nil }
+        for (index, segment) in recording.enumerated() {
+            let previousEnd = index > 0 ? recording[index - 1].sourceEnd : 0
+            if abs(segment.sourceStart - previousEnd) > Self.endpointEpsilon
+                || (index > 0 && recording[index - 1].sourceID != segment.sourceID) {
                 discontinuities.insert(segment.id)
             }
         }
-        segments = timelineMap.mapPointerEventSegments(sourceEvents).map {
+        segments = timelineMap.mapPointerEventSegments(eventsBySource: eventsBySource).map {
             ProjectPointerTrackSegment(
                 id: $0.id,
                 outputRange: $0.outputRange,
                 track: PointerTrack($0.events),
-                startsAfterSourceDiscontinuity: discontinuities.contains($0.id)
+                startsAfterSourceDiscontinuity: discontinuities.contains($0.id),
+                sourceID: $0.sourceID
             )
         }
+        // A cut within the same recording preserves the camera's state. A
+        // different recording or inserted-media gap starts an independent run.
+        var ranges: [MediaTimeRange] = []
+        var runStart = 0
+        while runStart < segments.count {
+            var runEnd = runStart
+            while runEnd + 1 < segments.count,
+                  segments[runEnd + 1].sourceID == segments[runStart].sourceID,
+                  abs(segments[runEnd].outputRange.end - segments[runEnd + 1].outputRange.start) <= Self.endpointEpsilon {
+                runEnd += 1
+            }
+            let start = segments[runStart].outputRange.start
+            let range = MediaTimeRange(start: start, duration: segments[runEnd].outputRange.end - start)!
+            ranges.append(contentsOf: repeatElement(range, count: runEnd - runStart + 1))
+            runStart = runEnd + 1
+        }
+        automaticCameraRanges = ranges
         // Cut seeds locate the pointer but are not new physical activity.
         // Build the output-clock activity index once; frame evaluation is O(log n).
         var activity: [TimeInterval] = []
         var previous: NormalizedPoint?
         var previousEnd: TimeInterval?
+        var previousSourceID: UUID?
         for segment in segments {
+            if previousSourceID != segment.sourceID { previous = nil }
             if let previousEnd, segment.outputRange.start > previousEnd + Self.endpointEpsilon {
                 previous = nil
             }
@@ -106,6 +139,7 @@ public struct ProjectPointerTrack: Equatable, Sendable {
                 previous = event.location
             }
             previousEnd = segment.outputRange.end
+            previousSourceID = segment.sourceID
         }
         cursorActivityTimes = activity
         automaticCameraFocusCache = BoundedMemoizationCache(capacity: 4)
@@ -172,13 +206,6 @@ public struct ProjectPointerTrack: Equatable, Sendable {
         )
     }
 
-    public func sample(
-        at outputTime: TimeInterval,
-        motion: MotionStyle = MotionStyle(),
-        style: CursorStyle = CursorStyle()
-    ) -> PointerSample? {
-        evaluation(at: outputTime, motion: motion, style: style).cursor
-    }
 
     public func automaticEntryStartsAfterCut(_ clip: ZoomAnimationClip) -> Bool {
         guard clip.origin == .automatic,
@@ -196,6 +223,22 @@ public struct ProjectPointerTrack: Equatable, Sendable {
         clip: ZoomAnimationClip,
         motion: MotionStyle = MotionStyle()
     ) -> NormalizedPoint {
+        // End samples belong to the outgoing envelope. During its return the
+        // camera keeps that final target, even if media underneath has cut.
+        let lookupTime = min(max(outputTime, clip.startTime), max(clip.startTime, clip.endTime.nextDown))
+        var clip = clip
+        if let index = segmentIndex(at: lookupTime) {
+            let range = automaticCameraRanges[index]
+            if clip.startTime < range.start {
+                clip.startTime = range.start
+                if let first = segmentIndex(at: range.start) {
+                    clip.focus = segments[first].track.events.first?.location ?? clip.focus
+                }
+                clip.enterDuration = 0
+                clip.enterProgressOffset = 0
+            }
+            clip.endTime = min(clip.endTime, range.end)
+        }
         let baseFocus = clip.focus.constrained(to: ZoomViewportTransform.focusEdgeInset)
         guard clip.origin == .automatic,
               outputTime.isFinite,
@@ -283,15 +326,20 @@ public struct ProjectPointerTrack: Equatable, Sendable {
         var target = baseFocus
         var velocityX = 0.0
         var velocityY = 0.0
-        let clipEvents = events(from: clip.startTime, through: clip.endTime)
         var sampleTime = clip.startTime
         var result = [AutomaticCameraFocusSample(time: sampleTime, focus: position)]
         result.reserveCapacity(max(Int(clip.duration / interval) + 2, 1))
 
         while sampleTime < clip.endTime {
-            let nextTime = min(sampleTime + interval, clip.endTime)
+            guard let index = segmentIndex(at: sampleTime) else { break }
+            let segment = segments[index]
+            // Integrate exactly to each cut before reading its incoming
+            // pointer. Flattening events would anticipate the next take.
+            let nextTime = min(sampleTime + interval, clip.endTime, segment.outputRange.end)
+            guard nextTime > sampleTime else { break }
             if nextTime >= followStart,
-               let cursor = Self.interpolatedRawPosition(at: nextTime, in: clipEvents) {
+               let cursor = Self.interpolatedRawPosition(
+                   at: min(nextTime, segment.outputRange.end.nextDown), in: segment.track.events) {
                 if cursor.x < target.x - restAreaHalfSpan
                     || cursor.x > target.x + restAreaHalfSpan {
                     target.x = cursor.x
@@ -387,18 +435,6 @@ public struct ProjectPointerTrack: Equatable, Sendable {
         )
     }
 
-    private func events(
-        from start: TimeInterval,
-        through end: TimeInterval
-    ) -> [PointerEventRecord] {
-        var result: [PointerEventRecord] = []
-        for segment in segments {
-            let events = segment.track.events(from: start, through: end)
-            result.append(contentsOf: events)
-        }
-        return result
-    }
-
     /// CUR-005: connect only the retained endpoints. The deleted source path
     /// remains absent, unlike a naive interpolation on the original source
     /// clock. Quintic smootherstep gives zero velocity and acceleration at
@@ -425,6 +461,8 @@ public struct ProjectPointerTrack: Equatable, Sendable {
               time < start + duration else { return nil }
 
         let previous = segments[segmentIndex - 1]
+        guard previous.sourceID == segment.sourceID,
+              abs(previous.outputRange.end - start) <= Self.endpointEpsilon else { return nil }
         let previousTime = max(
             previous.outputRange.start,
             previous.outputRange.end - Self.endpointEpsilon

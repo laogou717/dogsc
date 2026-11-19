@@ -18,30 +18,17 @@ struct EditorInspectorStage<Content: View>: View {
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: EditorInterfaceRadius.card, style: .continuous)
         ZStack {
-            LinearGradient(colors: [EditorStageBackdrop.top, EditorStageBackdrop.bottom],
-                           startPoint: .top, endPoint: .bottom)
-            RadialGradient(colors: [EditorStageBackdrop.glow, EditorStageBackdrop.glow.opacity(0)],
-                           center: UnitPoint(x: 0.5, y: 0.38), startRadius: 0, endRadius: 220)
-            Canvas { context, size in
-                var dots = Path()
-                for x in stride(from: CGFloat(8), to: size.width, by: 14) {
-                    for y in stride(from: CGFloat(8), to: size.height, by: 14) {
-                        dots.addEllipse(in: CGRect(x: x, y: y, width: 1, height: 1))
-                    }
-                }
-                context.fill(dots, with: .color(EditorStageBackdrop.dot))
-            }
+            EditorStageBackdrop.bottom
             content()
         }
         .frame(maxWidth: .infinity)
         .frame(height: height)
         .clipShape(shape)
-        .overlay { shape.strokeBorder(EditorTheme.chrome(0.05), lineWidth: 0.5) }
+        .overlay { shape.strokeBorder(EditorTheme.hairline, lineWidth: 1) }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
 }
-
 enum EditorStageBackdrop {
     private static func adaptive(_ light: NSColor, _ dark: NSColor) -> Color {
         Color(nsColor: RecorderStyle.adaptive(light, dark))
@@ -248,7 +235,10 @@ struct EditorZoomStage: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var startDate = Date()
 
-    private var animates: Bool { isEditorActive && !reduceMotion }
+    @State private var hovered = false
+
+    /// Illustrations play while the pointer rests on them, never on their own.
+    private var animates: Bool { isEditorActive && !reduceMotion && hovered }
     private static let cycle: Double = 3.6
     /// Focus points in the screen window's own unit space.
     private static let focusA = UnitPoint(x: 0.63, y: 0.38)
@@ -270,6 +260,11 @@ struct EditorZoomStage: View {
                     scene(t: t, cycle: cycleIndex, in: proxy.size)
                 }
             }
+        }
+        .contentShape(Rectangle())
+        .onHover { inside in
+            hovered = inside
+            if inside { startDate = Date() }
         }
     }
 
@@ -325,7 +320,10 @@ struct EditorScreenMotionStage: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var startDate = Date()
 
-    private var animates: Bool { isEditorActive && !reduceMotion }
+    @State private var hovered = false
+
+    /// Illustrations play while the pointer rests on them, never on their own.
+    private var animates: Bool { isEditorActive && !reduceMotion && hovered }
     private static let cycle: Double = 4.8
 
     var body: some View {
@@ -336,6 +334,11 @@ struct EditorScreenMotionStage: View {
                     scene(phase: (elapsed / Self.cycle).truncatingRemainder(dividingBy: 1), in: proxy.size)
                 }
             }
+        }
+        .contentShape(Rectangle())
+        .onHover { inside in
+            hovered = inside
+            if inside { startDate = Date() }
         }
     }
 
@@ -415,50 +418,5 @@ struct EditorSegmentMap: View {
         }
         .frame(height: 14)
         .accessibilityHidden(true)
-    }
-}
-
-// MARK: - Canvas layout
-
-/// The canvas settings drawn, not listed: the project's frame sits inside
-/// the stage at the live margin, corner radius, border and shadow, so a
-/// slider drag repaints the picture instead of a number.
-struct EditorCanvasLayoutStage: View {
-    let image: NSImage?
-    let padding: Double
-    let cornerRadius: Double
-    let borderWidth: Double
-    let shadowStrength: Double
-    var height: CGFloat = 150
-
-    var body: some View {
-        EditorInspectorStage(height: height) {
-            GeometryReader { proxy in
-                let margin = min(
-                    16 + (min(max(padding, 0), 360) / 360) * (proxy.size.height * 0.26),
-                    min(proxy.size.width, proxy.size.height) * 0.42
-                )
-                let screen = editorStageScreenSize(
-                    in: CGSize(width: proxy.size.width - margin * 2, height: proxy.size.height - margin * 2),
-                    image: image, widthFraction: 1, heightLimit: 1
-                )
-                EditorStageScreen(
-                    image: image,
-                    radius: 4 + (min(max(cornerRadius, 0), 160) / 160) * 8
-                )
-                .overlay {
-                    RoundedRectangle(cornerRadius: 4 + (min(max(cornerRadius, 0), 160) / 160) * 8, style: .continuous)
-                        .strokeBorder(.white.opacity(0.9), lineWidth: min(max(borderWidth, 0), 40) * 0.35)
-                }
-                .shadow(color: .black.opacity(0.2 + 0.35 * min(max(shadowStrength, 0), 1)), radius: 10, y: 5)
-                .frame(width: screen.width, height: screen.height)
-                .position(x: proxy.size.width / 2, y: proxy.size.height / 2 + 3)
-            }
-            .padding(.top, 6)
-        }
-        .animation(SpringMotion.settle, value: padding)
-        .animation(SpringMotion.settle, value: cornerRadius)
-        .animation(SpringMotion.settle, value: borderWidth)
-        .animation(SpringMotion.settle, value: shadowStrength)
     }
 }

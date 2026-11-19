@@ -91,7 +91,6 @@ final class CaptureSelectionTransition {
         }
     }
 }
-
 /// Placement follows the chosen target immediately. Only opacity is animated;
 /// a fresh card can never travel from an old or uncommitted layer frame.
 @MainActor
@@ -196,22 +195,5 @@ final class CaptureSelectionCardTransition {
                 self.animatedView = nil
             }
         }
-    }
-}
-
-/// Panel opacity owns the fade; this modifier adds only the card's small
-/// spatial movement, avoiding a second opacity animation on the same card.
-struct CaptureSelectionCardMotion: ViewModifier {
-    var retiring: Bool
-    @State private var appeared = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    func body(content: Content) -> some View {
-        let visible = appeared && !retiring
-        content
-            .offset(y: visible || reduceMotion ? 0 : 6)
-            .scaleEffect(visible || reduceMotion ? 1 : 0.985)
-            .animation(reduceMotion ? nil : .easeOut(duration: retiring ? 0.16 : 0.2), value: visible)
-            .onAppear { appeared = true }
     }
 }

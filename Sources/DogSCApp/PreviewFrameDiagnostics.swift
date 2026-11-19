@@ -37,7 +37,6 @@ final class PreviewFrameDiagnostics: @unchecked Sendable {
         var pixels: Int?
         var submitted = false
         var failed = false
-        var coalesced = false
     }
 
     private struct Capture {
@@ -103,7 +102,6 @@ final class PreviewFrameDiagnostics: @unchecked Sendable {
         }
     }
 
-    func coalesced(_ frame: Frame) { update(frame) { $0.coalesced = true } }
     func failed(_ frame: Frame) { update(frame) { $0.failed = true } }
 
     func presented(_ frame: Frame, at time: CFTimeInterval) {
@@ -158,7 +156,6 @@ final class PreviewFrameDiagnostics: @unchecked Sendable {
             "outputStart": samples.first?.outputTime ?? 0, "outputEnd": samples.last?.outputTime ?? 0,
             "ticks": samples.count, "submitted": samples.filter(\.submitted).count,
             "actuallyPresented": shown.count, "failed": samples.filter(\.failed).count,
-            "coalesced": samples.filter(\.coalesced).count,
             "presentedFPS": span > 0 ? Double(max(shown.count - 1, 0)) / span : 0,
             "displayIntervalMS": stats(intervals),
             "deadlineDelayMS": stats(samples.compactMap { s in s.presentedAt.map { max($0 - s.target, 0) * 1_000 } }),

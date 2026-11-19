@@ -51,6 +51,7 @@ final class DogSCApplicationDelegate: NSObject,
     )
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        AppFilePanel.monitorDevelopmentBuild()
         AppPreferences.applyAppearancePreferenceToOpenWindows()
         NSApplication.shared.setActivationPolicy(.regular)
         // APP-001 / UX-024 / APP-004: 应用图标为单一品牌资产（Info.plist
@@ -60,6 +61,8 @@ final class DogSCApplicationDelegate: NSObject,
         self.model = model
         recordingMarkerHotKey = RecordingMarkerHotKey(model: model)
         WindowCoordinator.install(model: model)
+        // Keep the MCP launcher and installed skills pointing at this copy.
+        AgentIntegrations.shared.refreshStableFiles()
         ProjectStore.synchronizeSystemRecentProjects()
         didFinishLaunching = true
         let launchOpen = Self.projectURLToOpen(
@@ -85,6 +88,7 @@ final class DogSCApplicationDelegate: NSObject,
         AppUpdateController.shared.startIfEligible()
         DispatchQueue.main.async { [weak self] in
             self?.refreshMainMenuBindings()
+            AppFilePanel.prepareOpenPanel()
         }
     }
 
@@ -132,7 +136,10 @@ final class DogSCApplicationDelegate: NSObject,
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let model,
-              model.phase == .recordingComplete || WindowCoordinator.hasRecordingProjectEditor
+              model.phase == .recordingComplete || model.phase == .recording
+                || (model.phase == .finishing && model.recordingRuns.active != nil)
+                || AgentChatModel.shared.needsTerminationWait
+                || WindowCoordinator.hasRecordingProjectEditor
         else { return .terminateNow }
         guard !isWaitingForRecordingCompletionDecision,
               !model.isResolvingCompletedRecording,
@@ -140,6 +147,19 @@ final class DogSCApplicationDelegate: NSObject,
         isWaitingForRecordingCompletionDecision = true
         let owner = sender.keyWindow
         Task { @MainActor [weak self] in
+            if model.phase == .recording { model.stopRecording() }
+            guard await AgentChatModel.shared.prepareForTermination() else {
+                self?.isWaitingForRecordingCompletionDecision = false
+                sender.reply(toApplicationShouldTerminate: false)
+                return
+            }
+            if let finishing = model.finishingTask { await finishing.value }
+            guard model.phase != .recording,
+                  !(model.phase == .finishing && model.recordingRuns.active != nil) else {
+                self?.isWaitingForRecordingCompletionDecision = false
+                sender.reply(toApplicationShouldTerminate: false)
+                return
+            }
             var shouldTerminate = await WindowCoordinator.flushRecordingProjectEditorForTermination()
             if shouldTerminate, model.phase == .recordingComplete {
                 let decisionOwner = owner?.isVisible == true ? owner : sender.keyWindow
@@ -152,6 +172,7 @@ final class DogSCApplicationDelegate: NSObject,
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        AgentChatModel.shared.closeIdleSessionsForTermination()
         recordingMarkerHotKey?.invalidate()
         recordingMarkerHotKey = nil
         if let settingsShortcutMonitor {
@@ -208,10 +229,7 @@ final class DogSCApplicationDelegate: NSObject,
     ) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
         item.target = self
-        item.image = NSImage(
-            systemSymbolName: symbol,
-            accessibilityDescription: title
-        )
+        item.image = EditorSymbolImage.image(symbol, size: 15, description: title)
         return item
     }
 
@@ -535,7 +553,7 @@ final class DogSCApplicationDelegate: NSObject,
         })?.title = appLocalized("导出项目源文件…")
         fileMenu.items.first(where: {
             $0.action == #selector(importCameraReplacement(_:))
-        })?.title = appLocalized("替换当前项目摄像头…")
+        })?.title = appLocalized("替换这份录制的摄像头…")
         guard !fileMenu.items.contains(where: {
             $0.action == #selector(exportProjectSourceMedia(_:))
                 || $0.action == #selector(importCameraReplacement(_:))
@@ -557,7 +575,7 @@ final class DogSCApplicationDelegate: NSObject,
         fileMenu.addItem(exportSources)
 
         let importAligned = NSMenuItem(
-            title: appLocalized("替换当前项目摄像头…"),
+            title: appLocalized("替换这份录制的摄像头…"),
             action: #selector(importCameraReplacement(_:)),
             keyEquivalent: ""
         )
@@ -571,7 +589,8 @@ final class DogSCApplicationDelegate: NSObject,
     }
 
     @objc private func importCameraReplacement(_ sender: NSMenuItem) {
-        WindowCoordinator.activeEditorModel?.importCameraReplacement()
+        guard let sourceID = EditorMenuBridge.shared.currentRecordingSourceID() else { return }
+        WindowCoordinator.activeEditorModel?.importCameraReplacement(sourceID: sourceID)
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
@@ -584,7 +603,7 @@ final class DogSCApplicationDelegate: NSObject,
         guard let model = WindowCoordinator.activeEditorModel,
               !model.isMediaExchangeRunning else { return false }
         if menuItem.action == #selector(importCameraReplacement(_:)) {
-            return model.project.media?.camera != nil
+            return EditorMenuBridge.shared.currentRecordingSourceID().flatMap { model.project.source($0)?.media.camera } != nil
                 && !model.exporter.isExporting
         }
         return model.recordingURL != nil
@@ -603,16 +622,14 @@ enum RecorderPanelPolicy {
     static let savedFrameKey = "recorder.panel.last-frame"
 
     static func contentSize(
-        for phase: AppPhase,
-        recordsMicrophone: Bool
-    ) -> NSSize? {
+        for phase: AppPhase) -> NSSize? {
         switch phase {
         case .setup:
             setupSize
         case .preparing, .finishing:
             progressSize
         case .recording:
-            NSSize(width: recordingWindowWidth(recordsMicrophone: recordsMicrophone), height: 48)
+            NSSize(width: recordingWindowWidth(), height: 48)
         case .editor, .recordingComplete:
             nil
         }
@@ -689,6 +706,12 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
     private var hasPositionedPanel = false
     private var currentPhase: AppPhase
     private var measuredWindowLayout: RecorderIslandLayout?
+    private var transitionSettleDeadline: CFTimeInterval = 0
+
+    var remainingTransitionSettleTime: TimeInterval {
+        guard panel.isVisible else { return 0 }
+        return max(0, transitionSettleDeadline - CACurrentMediaTime())
+    }
     private var contentPresentationRevision: UInt64 = 0
     private var selectionIsActive = false
     private var selectionSource: CaptureSource?
@@ -702,9 +725,7 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
         self.model = model
         currentPhase = model.phase
         let initialSize = RecorderPanelPolicy.contentSize(
-            for: model.phase,
-            recordsMicrophone: model.configuration.recordsMicrophone
-        )
+            for: model.phase)
             ?? RecorderPanelPolicy.setupSize
         hostingView = RecorderHostingView(
             rootView: RecorderMainWindowRoot(
@@ -752,8 +773,7 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
         revision: UInt64
     ) {
         guard revision == contentPresentationRevision, phase == currentPhase,
-              RecorderPanelPolicy.contentSize(for: phase,
-                recordsMicrophone: model.configuration.recordsMicrophone) != nil,
+              RecorderPanelPolicy.contentSize(for: phase) != nil,
               let layout = RecorderPanelPolicy.measuredWindowLayout(requested) else { return }
         measuredWindowLayout = layout
         let destination = RecorderPanelPolicy.frame(
@@ -783,7 +803,6 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
         let shouldActivateSetup = (phaseChanged || !panel.isVisible) && !returnsFromCompletion
         if phaseChanged { RecorderPopoverPresenter.shared.dismiss() }
         currentPhase = phase
-        panel.presentedPhase = phase
         // SwiftUI may rebuild its scene-contributed menu when the editor
         // window closes. Reinstall our AppKit-owned File/Edit commands after
         // the phase transition settles, otherwise returning to the recorder
@@ -793,11 +812,12 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
                 .refreshMainMenuBindings()
         }
         guard let fallbackSize = RecorderPanelPolicy.contentSize(
-            for: phase,
-            recordsMicrophone: model.configuration.recordsMicrophone
-        ) else {
+            for: phase) else {
             transition.hide(panel, animated: false)
             return
+        }
+        if phaseChanged {
+            transitionSettleDeadline = CACurrentMediaTime() + RecorderMotion.handoffSettleDuration
         }
         let layout = measuredWindowLayout ?? .compact(fallbackSize)
         let contentSize = layout.canvasSize
@@ -944,7 +964,6 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
 
     private func configurePanel(initialSize: NSSize) {
         panel.identifier = recorderMainWindowIdentifier
-        panel.presentedPhase = currentPhase
         hostingView.autoresizingMask = [.width, .height]
         panel.contentView = hostingView
         panel.appearance = nil
@@ -1002,7 +1021,6 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
 }
 
 final class RecorderPanel: NSPanel {
-    var presentedPhase: AppPhase = .setup
     private lazy var pointerRegion = RecorderPanelPointerRegion(window: self)
 
     func setPointerInteractionEnabled(_ enabled: Bool) {

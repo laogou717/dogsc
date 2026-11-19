@@ -98,31 +98,6 @@ public enum ZoomEasingPreset: String, CaseIterable, Codable, Identifiable, Senda
 
     public var id: String { rawValue }
 
-    public var shortName: String {
-        switch self {
-        case .linear: return "线性"
-        case .quadratic: return "二次"
-        case .cubic: return "三次"
-        case .quintic: return "五次"
-        case .spring: return "弹簧"
-        case .custom: return "自定义"
-        }
-    }
-
-    public var curve: ZoomBezierCurve {
-        switch self {
-        case .linear:
-            return .linear
-        case .quadratic:
-            return .quadratic
-        case .cubic:
-            return .cubic
-        case .quintic:
-            return .quintic
-        case .spring, .custom:
-            return .cubic
-        }
-    }
 }
 
 public struct ZoomBezierCurve: Codable, Equatable, Sendable {
@@ -218,6 +193,8 @@ public struct ZoomAnimationClip: Codable, Equatable, Identifiable, Sendable {
     /// The ordinary durations remain the resolved windows for existing callers.
     public var preferredEnterDuration: TimeInterval?
     public var preferredExitDuration: TimeInterval?
+    /// Older planners persisted neighbour-clamped windows as transition intent.
+    public var transitionIntentVersion: Int
 
     public init(
         id: UUID = UUID(),
@@ -234,7 +211,8 @@ public struct ZoomAnimationClip: Codable, Equatable, Identifiable, Sendable {
         exitProgressOffset: Double = 0,
         focusEffect: FocusEffect? = nil,
         preferredEnterDuration: TimeInterval? = nil,
-        preferredExitDuration: TimeInterval? = nil
+        preferredExitDuration: TimeInterval? = nil,
+        transitionIntentVersion: Int = 1
     ) {
         self.id = id
         self.startTime = max(startTime, 0)
@@ -251,6 +229,7 @@ public struct ZoomAnimationClip: Codable, Equatable, Identifiable, Sendable {
         self.focusEffect = focusEffect
         self.preferredEnterDuration = preferredEnterDuration
         self.preferredExitDuration = preferredExitDuration
+        self.transitionIntentVersion = transitionIntentVersion
     }
 
     public var duration: TimeInterval {
@@ -267,6 +246,7 @@ public struct ZoomAnimationClip: Codable, Equatable, Identifiable, Sendable {
         case enterProgressOffset, exitProgressOffset
         case focusEffect
         case preferredEnterDuration, preferredExitDuration
+        case transitionIntentVersion
     }
 
     public init(from decoder: any Decoder) throws {
@@ -287,7 +267,8 @@ public struct ZoomAnimationClip: Codable, Equatable, Identifiable, Sendable {
             exitProgressOffset: try container.decodeIfPresent(Double.self, forKey: .exitProgressOffset) ?? 0,
             focusEffect: try container.decodeIfPresent(FocusEffect.self, forKey: .focusEffect),
             preferredEnterDuration: try container.decodeIfPresent(TimeInterval.self, forKey: .preferredEnterDuration),
-            preferredExitDuration: try container.decodeIfPresent(TimeInterval.self, forKey: .preferredExitDuration)
+            preferredExitDuration: try container.decodeIfPresent(TimeInterval.self, forKey: .preferredExitDuration),
+            transitionIntentVersion: try container.decodeIfPresent(Int.self, forKey: .transitionIntentVersion) ?? 0
         )
     }
 
@@ -353,20 +334,6 @@ public struct ZoomKeyframe: Codable, Equatable, Identifiable, Sendable {
     public var focus: NormalizedPoint
     public var origin: ZoomKeyframeOrigin
 
-    public init(
-        id: UUID = UUID(),
-        time: TimeInterval,
-        scale: Double,
-        focus: NormalizedPoint,
-        origin: ZoomKeyframeOrigin = .automatic
-    ) {
-        self.id = id
-        self.time = time
-        self.scale = scale
-        self.focus = focus
-        self.origin = origin
-    }
-
     private enum CodingKeys: String, CodingKey {
         case id, time, scale, focus, origin
     }
@@ -397,14 +364,12 @@ public struct ZoomSample: Equatable, Sendable {
     public var scale: Double
     public var focus: NormalizedPoint
     public var framingProgress: Double
-    public var targetScale: Double
     public var manualViewportTransition: ManualZoomViewportTransition?
 
     public init(
         scale: Double,
         focus: NormalizedPoint,
         framingProgress: Double? = nil,
-        targetScale: Double? = nil,
         manualViewportTransition: ManualZoomViewportTransition? = nil
     ) {
         self.scale = scale
@@ -413,7 +378,6 @@ public struct ZoomSample: Equatable, Sendable {
             max(framingProgress ?? (scale > 1.0001 ? 1 : 0), 0),
             1
         )
-        self.targetScale = max(targetScale ?? scale, 1)
         self.manualViewportTransition = manualViewportTransition
     }
 }
@@ -439,16 +403,6 @@ public struct ZoomViewportTransform: Equatable, Sendable {
     public init(scale: Double, translation: NormalizedPoint) {
         self.scale = scale
         self.translation = translation
-    }
-
-    /// Applies the same normalized, top-left-origin viewport transform used by
-    /// preview and export. Keeping point mapping here prevents cursor and other
-    /// overlays from drifting when the render backends use different axes.
-    public func applying(to point: NormalizedPoint) -> NormalizedPoint {
-        NormalizedPoint(
-            x: 0.5 + scale * (point.x - 0.5) + translation.x,
-            y: 0.5 + scale * (point.y - 0.5) + translation.y
-        )
     }
 
     /// `visibleRect` is the canvas in unzoomed, crop-local screen coordinates.
@@ -593,13 +547,6 @@ public struct ZoomAnimationTrack: Equatable, Sendable {
         activeClipIndex(at: time).map { animations[$0] }
     }
 
-    public func activeAutomaticClip(at time: TimeInterval) -> ZoomAnimationClip? {
-        guard let clip = activeClip(at: time), clip.origin == .automatic else {
-            return nil
-        }
-        return clip
-    }
-
     /// Returns the clip whose held camera state must be inherited by `clip`.
     /// Keeping this lookup on the sorted track lets preview and export resolve
     /// the same boundary state without rebuilding or re-sorting animations.
@@ -678,7 +625,7 @@ public enum ZoomInterpolator {
         let ordered = orderedAnimations
         guard let clipIndex = activeClipIndex,
               ordered.indices.contains(clipIndex) else {
-            return ZoomSample(scale: 1, focus: center, framingProgress: 0, targetScale: 1)
+            return ZoomSample(scale: 1, focus: center, framingProgress: 0)
         }
         let clip = ordered[clipIndex]
         let targetFocus = automaticTargetFocus(for: clip, automaticFocus: automaticFocus)
@@ -703,8 +650,7 @@ public enum ZoomInterpolator {
                     for: previousClip,
                     automaticFocus: inheritedAutomaticFocus
                 ),
-                framingProgress: 1,
-                targetScale: previousClip.scale
+                framingProgress: 1
             )
         }
 
@@ -763,7 +709,6 @@ public enum ZoomInterpolator {
                     y: interpolate(inheritedStart.focus.y, targetFocus.y, zoomProgress)
                 ),
                 framingProgress: 1,
-                targetScale: interpolate(inheritedStart.scale, clip.scale, zoomProgress),
                 manualViewportTransition: manualTransition
             )
         }
@@ -772,8 +717,7 @@ public enum ZoomInterpolator {
             // Keep the same anchor throughout enter, hold and exit. Moving the
             // focus from the centre created the old centre-first zoom-and-slide.
             focus: targetFocus,
-            framingProgress: zoomProgress,
-            targetScale: clip.scale
+            framingProgress: zoomProgress
         )
     }
 
@@ -815,81 +759,6 @@ public enum ZoomInterpolator {
         case .custom:
             return customCurve.value(at: t)
         }
-    }
-
-    public static func sample(
-        keyframes: [ZoomKeyframe],
-        at time: TimeInterval,
-        motion: MotionStyle = MotionStyle()
-    ) -> ZoomSample {
-        let ordered = keyframes.sorted { $0.time < $1.time }
-        guard let first = ordered.first else {
-            return ZoomSample(
-                scale: 1,
-                focus: NormalizedPoint(x: 0.5, y: 0.5),
-                framingProgress: 0,
-                targetScale: 1
-            )
-        }
-        guard time > first.time else {
-            return ZoomSample(
-                scale: first.scale,
-                focus: first.focus,
-                framingProgress: first.scale > 1.0001 ? 1 : 0,
-                targetScale: first.scale
-            )
-        }
-        guard let last = ordered.last, time < last.time else {
-            let finalScale = ordered.last?.scale ?? 1
-            return ZoomSample(
-                scale: finalScale,
-                focus: ordered.last?.focus ?? first.focus,
-                framingProgress: finalScale > 1.0001 ? 1 : 0,
-                targetScale: finalScale
-            )
-        }
-
-        guard let upperIndex = ordered.firstIndex(where: { $0.time >= time }), upperIndex > 0 else {
-            return ZoomSample(
-                scale: first.scale,
-                focus: first.focus,
-                framingProgress: first.scale > 1.0001 ? 1 : 0,
-                targetScale: first.scale
-            )
-        }
-
-        let lower = ordered[upperIndex - 1]
-        let upper = ordered[upperIndex]
-        let duration = max(upper.time - lower.time, .leastNonzeroMagnitude)
-        let linearProgress = min(max((time - lower.time) / duration, 0), 1)
-        let progress: Double
-        switch motion.screen {
-        case .focused:
-            progress = springProgress(
-                linearProgress,
-                mass: motion.screenSpringMass,
-                stiffness: motion.screenSpringStiffness,
-                damping: motion.screenSpringDamping
-            )
-        case .smooth:
-            let t = linearProgress
-            progress = t * t * t * (t * (t * 6 - 15) + 10)
-        }
-
-        let sampledScale = interpolate(lower.scale, upper.scale, progress)
-        let segmentTargetScale = max(lower.scale, upper.scale)
-        let framingProgress = segmentTargetScale > 1.0001
-            ? min(max((sampledScale - 1) / (segmentTargetScale - 1), 0), 1)
-            : 0
-        return ZoomSample(
-            scale: sampledScale,
-            focus: NormalizedPoint(
-                x: interpolate(lower.focus.x, upper.focus.x, progress),
-                y: interpolate(lower.focus.y, upper.focus.y, progress)
-            ),
-            framingProgress: framingProgress,
-            targetScale: segmentTargetScale
-        )
     }
 
     private static func interpolate(_ from: Double, _ to: Double, _ progress: Double) -> Double {

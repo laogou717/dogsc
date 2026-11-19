@@ -2,13 +2,11 @@ import AppKit
 import Combine
 import CoreText
 import QuartzCore
-import RecorderCore
 import ScreenCaptureKit
 import SwiftUI
 
 // Whatever is being framed for capture is outlined in plain white: it reads on
 // any content and leaves colour to the take itself.
-let captureSelectionAccent = RecorderStyle.ink
 let captureSelectionAccentNSColor = NSColor(calibratedWhite: 1, alpha: 1)
 
 // AppKit-drawn capture controls match the recorder's night glass. Their cards
@@ -16,9 +14,8 @@ let captureSelectionAccentNSColor = NSColor(calibratedWhite: 1, alpha: 1)
 // desktop dimming is a separate overlay.
 let captureSelectionInkNSColor = RecorderStyle.inkNSColor
 let captureSelectionSurfaceNSColor = RecorderStyle.baseNSColor
-let captureSelectionRaisedNSColor = RecorderStyle.chromeNSColor.withAlphaComponent(0.1)
 /// The fill of the action that starts a take.
-let captureSelectionPlatinumNSColor = NSColor(calibratedRed: 1.0, green: 0.27, blue: 0.23, alpha: 1)
+let captureSelectionPlatinumNSColor = RecorderStyle.recordingNSColor
 
 /// AppKit-backed capture selectors cannot use SwiftUI ButtonStyle, but they
 /// should still share the same short hover lift and pressed settle as the
@@ -270,41 +267,5 @@ class CaptureSelectionNativeButton: NSButton {
             interactionShadeLayer.add(shade, forKey: "capture-button-shade")
         }
         captureInteractionDidChange(hovering: hovering, pressed: pressed)
-    }
-}
-
-struct CaptureSelectionCardSurface: ViewModifier {
-    func body(content: Content) -> some View {
-        content.recorderSurface(radius: 24, castsShadow: true)
-    }
-}
-
-/// Starting a take is the one red action in every source picker.
-struct CaptureSelectionPrimaryButtonStyle: ButtonStyle {
-    @Environment(\.isEnabled) private var isEnabled
-    func makeBody(configuration: Configuration) -> some View {
-        let pressed = configuration.isPressed && isEnabled
-        return configuration.label.foregroundStyle(.white)
-            .background(RecorderStyle.recording.opacity(pressed ? 0.8 : 1), in: RoundedRectangle(cornerRadius: 12))
-            .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 12), color: RecorderStyle.chrome.opacity(0.65))
-            .modifier(RecorderPressFeedback(isPressed: pressed, cornerRadius: 12))
-            .opacity(isEnabled ? 1 : 0.4)
-    }
-}
-
-struct CaptureSelectionSecondaryButtonStyle: ButtonStyle {
-    @Environment(\.isEnabled) private var isEnabled
-    func makeBody(configuration: Configuration) -> some View {
-        let pressed = configuration.isPressed && isEnabled
-        return configuration.label.foregroundStyle(RecorderStyle.ink)
-            .background(RecorderStyle.well, in: RoundedRectangle(cornerRadius: 12))
-            .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 12), color: RecorderStyle.chrome.opacity(0.65))
-            .modifier(RecorderPressFeedback(isPressed: pressed, cornerRadius: 12))
-    }
-}
-
-extension View {
-    func captureSelectionCardSurface() -> some View {
-        modifier(CaptureSelectionCardSurface())
     }
 }

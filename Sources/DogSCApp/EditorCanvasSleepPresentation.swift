@@ -9,6 +9,8 @@ final class EditorCanvasSleepPresentation: ObservableObject {
     private var isAnimating = false
     private var pendingCompletion: (() -> Void)?
 
+    var isPresenting: Bool { opacity > 0 || isAnimating }
+
     func setCovered(_ covered: Bool, reducesMotion: Bool, completion: @escaping () -> Void) {
         pendingCompletion = completion
         let target = covered ? 1.0 : 0.0

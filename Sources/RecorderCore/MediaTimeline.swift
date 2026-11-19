@@ -41,9 +41,6 @@ public struct MediaTimelinePlacement: Equatable, Sendable {
         )
     }
 
-    public var sourceEnd: TimeInterval {
-        sourceStart + playableDuration * sourceTimeScale
-    }
     public var timelineEnd: TimeInterval { timelineStart + playableDuration }
 
     public func sourceTime(at timelineTime: TimeInterval) -> TimeInterval? {
@@ -53,16 +50,7 @@ public struct MediaTimelinePlacement: Equatable, Sendable {
         return sourceStart + (timelineTime - timelineStart) * sourceTimeScale
     }
 
-    public func timelineTime(forSourceTime sourceTime: TimeInterval) -> TimeInterval? {
-        guard sourceTime.isFinite,
-              sourceTime >= sourceStart,
-              sourceTime < sourceEnd else { return nil }
-        return timelineStart + (sourceTime - sourceStart) / sourceTimeScale
-    }
 
-    public func contains(timelineTime: TimeInterval) -> Bool {
-        sourceTime(at: timelineTime) != nil && playableDuration > 0
-    }
 
     private static func nonnegative(_ value: TimeInterval) -> TimeInterval {
         value.isFinite ? max(value, 0) : 0

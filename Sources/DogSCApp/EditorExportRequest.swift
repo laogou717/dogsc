@@ -88,25 +88,44 @@ struct EditorExportAsset: Equatable, Sendable {
 /// Every URL needed by this particular project snapshot, paired with its file
 /// version. Muted or hidden optional media is intentionally omitted so an
 /// irrelevant file change cannot invalidate an otherwise deterministic job.
+struct EditorExportRecordingAssets: Equatable, Sendable {
+    let source: EditorExportAsset
+    let camera: EditorExportAsset?
+    let microphone: EditorExportAsset?
+
+    var all: [EditorExportAsset] { [source, camera, microphone].compactMap { $0 } }
+    func validateCurrentVersions() throws {
+        try source.validateCurrentVersion(role: .screenRecording)
+        try camera?.validateCurrentVersion(role: .cameraRecording)
+        try microphone?.validateCurrentVersion(role: .microphoneRecording)
+    }
+}
+
 struct EditorExportAssets: Equatable, Sendable {
     let source: EditorExportAsset
     let camera: EditorExportAsset?
     let microphone: EditorExportAsset?
     let wallpaper: EditorExportAsset?
+    let sceneWallpapers: [String: EditorExportAsset]
     let stickers: [String: EditorExportAsset]
+    let additionalSources: [UUID: EditorExportRecordingAssets]
 
     fileprivate init(
         source: EditorExportAsset,
         camera: EditorExportAsset?,
         microphone: EditorExportAsset?,
         wallpaper: EditorExportAsset?,
-        stickers: [String: EditorExportAsset]
+        sceneWallpapers: [String: EditorExportAsset] = [:],
+        stickers: [String: EditorExportAsset],
+        additionalSources: [UUID: EditorExportRecordingAssets] = [:]
     ) {
         self.source = source
         self.camera = camera
         self.microphone = microphone
         self.wallpaper = wallpaper
+        self.sceneWallpapers = sceneWallpapers
         self.stickers = stickers
+        self.additionalSources = additionalSources
     }
 
     /// Called once while building the request and again as the worker starts.
@@ -116,7 +135,9 @@ struct EditorExportAssets: Equatable, Sendable {
         try source.validateCurrentVersion(role: .screenRecording)
         try camera?.validateCurrentVersion(role: .cameraRecording)
         try microphone?.validateCurrentVersion(role: .microphoneRecording)
+        for source in additionalSources.values { try source.validateCurrentVersions() }
         try wallpaper?.validateCurrentVersion(role: .wallpaper)
+        for asset in sceneWallpapers.values { try asset.validateCurrentVersion(role: .wallpaper) }
         for sticker in stickers.values {
             try sticker.validateCurrentVersion(role: .sticker)
         }
@@ -125,7 +146,9 @@ struct EditorExportAssets: Equatable, Sendable {
     fileprivate var inputURLs: [URL] {
         [source, camera, microphone, wallpaper]
             .compactMap { $0?.url.standardizedFileURL }
+            + sceneWallpapers.values.map { $0.url.standardizedFileURL }
             + stickers.values.map { $0.url.standardizedFileURL }
+            + additionalSources.values.flatMap { $0.all.map { $0.url.standardizedFileURL } }
     }
 }
 
@@ -133,33 +156,30 @@ struct EditorExportAssets: Equatable, Sendable {
 /// only Sendable value snapshots: no AVAsset, AVAssetTrack or prepared preview
 /// composition is allowed to escape into the export worker.
 struct EditorExportRequest: Equatable, Sendable {
-    let editorSessionID: EditorSessionID
-    let mediaGeneration: UInt64
     let project: RecorderProject
     let mediaPlan: ProjectTimelineMediaPlan
     let assets: EditorExportAssets
     let outputURL: URL
     let outputKind: ExportOutputKind
     let outputRange: MediaTimeRange?
+    let normalizesAudioLoudness: Bool
 
     fileprivate init(
-        editorSessionID: EditorSessionID,
-        mediaGeneration: UInt64,
         project: RecorderProject,
         mediaPlan: ProjectTimelineMediaPlan,
         assets: EditorExportAssets,
         outputURL: URL,
         outputKind: ExportOutputKind,
-        outputRange: MediaTimeRange?
+        outputRange: MediaTimeRange?,
+        normalizesAudioLoudness: Bool = true
     ) {
-        self.editorSessionID = editorSessionID
-        self.mediaGeneration = mediaGeneration
         self.project = project
         self.mediaPlan = mediaPlan
         self.assets = assets
         self.outputURL = outputURL
         self.outputKind = outputKind
         self.outputRange = outputRange
+        self.normalizesAudioLoudness = normalizesAudioLoudness
     }
 }
 
@@ -179,27 +199,27 @@ enum EditorExportRequestError: LocalizedError, Equatable, Sendable {
     var errorDescription: String? {
         switch self {
         case .editorSessionMismatch:
-            return "导出素材不属于当前编辑会话，请等待预览重新准备。"
+            return appLocalized("导出素材不属于当前编辑会话，请等待预览重新准备。")
         case .mediaGenerationMismatch:
-            return "导出素材已经被新的编辑代次取代，请重新导出。"
+            return appLocalized("导出素材已经被新的编辑代次取代，请重新导出。")
         case .sourceSequenceMismatch:
-            return "剪辑时间线已变化，请等待预览更新后重试。"
+            return appLocalized("剪辑时间线已变化，请等待预览更新后重试。")
         case .mediaManifestMismatch:
-            return "项目素材清单已变化，请等待预览更新后重试。"
+            return appLocalized("项目素材清单已变化，请等待预览更新后重试。")
         case let .missingAssetReference(role):
-            return "项目需要\(role.displayName)素材，但当前编辑会话没有对应文件。"
+            return String(format: appLocalized("项目需要%@素材，但当前编辑会话没有对应文件。"), appLocalized(role.displayName))
         case let .missingAssetFile(role, path):
-            return "\(role.displayName)素材不存在：\(path)。"
+            return String(format: appLocalized("%@素材不存在：%@。"), appLocalized(role.displayName), path)
         case let .nonFileAsset(role, value):
-            return "\(role.displayName)素材不是可用的本地文件：\(value)。"
+            return String(format: appLocalized("%@素材不是可用的本地文件：%@。"), appLocalized(role.displayName), value)
         case let .assetVersionChanged(role, path):
-            return "\(role.displayName)素材在导出前已变化：\(path)。请重新打开或刷新项目。"
+            return String(format: appLocalized("%@素材在导出前已变化：%@。请重新打开或刷新项目。"), appLocalized(role.displayName), path)
         case let .invalidOutputURL(value):
-            return "导出位置不是本地文件路径：\(value)。"
+            return String(format: appLocalized("导出位置不是本地文件路径：%@。"), value)
         case let .outputCollidesWithInput(path):
-            return "导出位置不能覆盖项目素材：\(path)。"
+            return String(format: appLocalized("导出位置不能覆盖项目素材：%@。"), path)
         case .invalidOutputRange:
-            return "所选片段已经变化，无法确定有效的导出范围。请重新选择片段。"
+            return appLocalized("所选片段已经变化，无法确定有效的导出范围。请重新选择片段。")
         }
     }
 }
@@ -211,10 +231,12 @@ enum EditorExportRequestBuilder {
         project: RecorderProject,
         preparedMedia: EditorPreparedMedia,
         wallpaperURL: URL?,
+        sceneWallpaperURLs: [String: URL] = [:],
         stickerURLs: [String: URL] = [:],
         outputURL: URL? = nil,
         outputKind: ExportOutputKind = .video,
-        outputRange: MediaTimeRange? = nil
+        outputRange: MediaTimeRange? = nil,
+        normalizesAudioLoudness: Bool = AppPreferences.isAudioLoudnessNormalizationEnabled
     ) throws -> EditorExportRequest {
         let preparedRequest = preparedMedia.request
         guard preparedRequest.editorSessionID == editorSessionID else {
@@ -229,10 +251,10 @@ enum EditorExportRequestBuilder {
                 actual: preparedMedia.generation
             )
         }
-        guard preparedRequest.sourceSequence == project.timeline.sourceSequence else {
+        guard preparedRequest.sourceSequence.withoutSceneStyles == project.timeline.sourceSequence.withoutSceneStyles else {
             throw EditorExportRequestError.sourceSequenceMismatch
         }
-        guard preparedRequest.matchesPreparationManifest(project.media) else {
+        guard preparedRequest.matchesPreparationManifests(project) else {
             throw EditorExportRequestError.mediaManifestMismatch
         }
         guard project.media != nil else {
@@ -240,37 +262,64 @@ enum EditorExportRequestBuilder {
         }
 
         let requiredMedia = RequiredProjectMedia(project: project)
+        let primaryRequirements = RequiredProjectMedia(project: project, sourceID: RecordingSource.primaryID)
         let source = try requiredAsset(
             preparedRequest.source,
             role: .screenRecording
         )
-        let camera = try outputKind == .video && requiredMedia.cameraVideo
+        let camera = try outputKind == .video && primaryRequirements.cameraVideo
             ? requiredAsset(preparedRequest.camera, role: .cameraRecording)
             : nil
-        let microphone = try requiredMedia.microphoneAudio
+        let microphone = try primaryRequirements.microphoneAudio
             ? requiredAsset(preparedRequest.microphone, role: .microphoneRecording)
             : nil
         let wallpaper = try outputKind == .video
             && (requiredMedia.backgroundImage || requiredMedia.backgroundVideo)
             ? requiredWallpaper(at: wallpaperURL)
             : nil
+        var sceneWallpapers: [String: EditorExportAsset] = [:]
+        if outputKind == .video {
+            for source in project.sceneBackgroundSources where source != project.canvas.backgroundSource {
+                guard let key = source.sceneResourceKey else { continue }
+                sceneWallpapers[key] = try requiredWallpaper(at: sceneWallpaperURLs[key])
+            }
+        }
+        let insertedImages: Set<String>
+        if outputKind == .video, case let .edited(segments) = project.timeline.sourceSequence {
+            insertedImages = Set(segments.compactMap { $0.media?.imagePath })
+        } else { insertedImages = [] }
         let stickerPaths = outputKind == .video
-            ? Set(project.timeline.stickerClips.map(\.relativePath))
-            : []
+            ? Set(project.timeline.stickerClips.map(\.relativePath)).union(insertedImages) : []
         var stickers: [String: EditorExportAsset] = [:]
         stickers.reserveCapacity(stickerPaths.count)
         for relativePath in stickerPaths {
-            guard let url = stickerURLs[relativePath] else {
+            guard let url = stickerURLs[relativePath] ?? (insertedImages.contains(relativePath) ? ProjectFiles.url(relativePath) : nil) else {
                 throw EditorExportRequestError.missingAssetReference(.sticker)
             }
             stickers[relativePath] = try EditorExportAsset(url: url, role: .sticker)
+        }
+        var additionalSources: [UUID: EditorExportRecordingAssets] = [:]
+        for id in TimelinePreviewCompositionLoader.referencedSourceIDs(project.timeline.sourceSequence)
+            where id != RecordingSource.primaryID {
+            guard let input = preparedRequest.additionalSources[id] else {
+                throw EditorExportRequestError.mediaManifestMismatch
+            }
+            let required = RequiredProjectMedia(project: project, sourceID: id)
+            additionalSources[id] = try EditorExportRecordingAssets(
+                source: requiredAsset(input.screen, role: .screenRecording),
+                camera: outputKind == .video && required.cameraVideo
+                    ? requiredAsset(input.camera, role: .cameraRecording) : nil,
+                microphone: required.microphoneAudio
+                    ? requiredAsset(input.microphone, role: .microphoneRecording) : nil)
         }
         let assets = EditorExportAssets(
             source: source,
             camera: camera,
             microphone: microphone,
             wallpaper: wallpaper,
-            stickers: stickers
+            sceneWallpapers: sceneWallpapers,
+            stickers: stickers,
+            additionalSources: additionalSources
         )
 
         // Reject a replacement that occurred after preview preparation.
@@ -289,30 +338,30 @@ enum EditorExportRequestBuilder {
         guard resolvedOutputURL.pathExtension.lowercased()
             == outputKind.fileExtension else {
             throw EditorExportRequestError.invalidOutputURL(
-                "音视频类型与扩展名不匹配：\(resolvedOutputURL.path)"
+                String(format: appLocalized("音视频类型与扩展名不匹配：%@"), resolvedOutputURL.path)
             )
         }
         guard !ExportFileTransaction.collides(
             outputURL: resolvedOutputURL,
-            inputURLs: assets.inputURLs
+            inputURLs: assets.inputURLs + projectMediaURLs(project)
         ) else {
             throw EditorExportRequestError.outputCollidesWithInput(
                 resolvedOutputURL.path
             )
         }
 
-        guard let primaryVideoRange = preparedMedia.inventories.source.videoTimeRange else {
-            throw EditorExportRequestError.mediaManifestMismatch
+        var refreshedSources: [UUID: RecordingSourceMedia] = [:]
+        for (id, source) in preparedMedia.plan.sources {
+            guard let manifest = project.source(id)?.media else {
+                throw EditorExportRequestError.mediaManifestMismatch
+            }
+            refreshedSources[id] = RecordingSourceMedia(manifest: manifest,
+                videoRange: source.videoRange, systemAudioRange: source.systemAudioRange,
+                cameraRange: source.cameraRange, microphoneRange: source.microphoneRange,
+                pointerEvents: source.pointerEvents)
         }
         let currentMediaPlan = try ProjectTimelineMediaPlan(
-            sourceSequence: project.timeline.sourceSequence,
-            mediaManifest: project.media,
-            primaryVideoRange: primaryVideoRange,
-            systemAudioRange: preparedMedia.inventories.source.audioTimeRange,
-            cameraRange: preparedMedia.inventories.camera.videoTimeRange,
-            microphoneRange: preparedMedia.inventories.microphone.audioTimeRange,
-            sourcePointerEvents: preparedRequest.pointerEvents
-        )
+            sourceSequence: project.timeline.sourceSequence, sources: refreshedSources)
         let validatedOutputRange: MediaTimeRange?
         if let outputRange {
             let tolerance = max(currentMediaPlan.outputDuration.ulp * 8, 0.000_001)
@@ -329,15 +378,40 @@ enum EditorExportRequestBuilder {
         }
 
         return EditorExportRequest(
-            editorSessionID: editorSessionID,
-            mediaGeneration: mediaGeneration,
             project: project,
             mediaPlan: currentMediaPlan,
             assets: assets,
             outputURL: resolvedOutputURL,
             outputKind: outputKind,
-            outputRange: validatedOutputRange
+            outputRange: validatedOutputRange,
+            normalizesAudioLoudness: normalizesAudioLoudness
         )
+    }
+
+    /// A cold bin file or a muted track still belongs to the project. Export
+    /// may skip opening it, but replacing it would destroy the original.
+    private static func projectMediaURLs(_ project: RecorderProject) -> [URL] {
+        var paths = Set(project.timeline.mediaAssets.map(\.path))
+        for source in project.sources {
+            let media = source.media
+            paths.formUnion([media.screen, media.camera, media.microphone, media.pointerEvents].compactMap { $0?.relativePath })
+        }
+        for background in project.sceneBackgroundSources {
+            switch background {
+            case let .projectVideo(path), let .systemVideo(path), let .projectImage(path), let .systemImage(path):
+                paths.insert(path)
+            default: break
+            }
+        }
+        paths.formUnion(project.timeline.programAudioClips.map(\.sourcePath))
+        paths.formUnion(project.timeline.stickerClips.map(\.relativePath))
+        paths.formUnion(project.timeline.animationClips.map(\.sourcePath))
+        if case let .edited(segments) = project.timeline.sourceSequence {
+            for media in segments.compactMap(\.media) {
+                paths.formUnion([media.path, media.motionPath, media.imagePath, media.soundPath, media.transferSound?.path].compactMap { $0 })
+            }
+        }
+        return paths.map(ProjectFiles.url)
     }
 
     static func makeDefaultOutputURL(

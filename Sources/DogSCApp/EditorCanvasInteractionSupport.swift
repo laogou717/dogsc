@@ -16,9 +16,8 @@ enum CanvasObjectInteractionPhase: Int, Equatable {
 
 struct CanvasObjectInteractionChrome {
     let phase: CanvasObjectInteractionPhase
-    /// The selected object's identity colour: the screen, the camera and the
-    /// overlays each outline in their own hue instead of the default ink.
-    var color: Color = EditorTheme.platinumAccent
+    /// Track hues identify timeline lanes; canvas selection has one accent.
+    let color: Color = EditorTheme.selectionTint
 
     var showsOutline: Bool { phase != .idle }
 
@@ -57,22 +56,16 @@ struct CanvasObjectInteractionChrome {
         case .idle: return 0
         case .hovered: return 1
         case .selected: return 1.5
-        case .selectedHovered: return 1.75
-        case .editing: return 2
+        case .selectedHovered: return 1.5
+        case .editing: return 1.5
         }
     }
 
-    /// A dark halo rather than a tinted glow: the identity colour is the
-    /// outline itself, and the halo keeps it readable on a wallpaper of the
-    /// same hue (a blue frame outline on a blue wallpaper).
+    /// A subtle halo keeps the accent readable over any source image.
     var glowColor: Color {
         switch phase {
-        case .editing:
-            return Color.black.opacity(0.40)
-        case .selected:
-            return Color.black.opacity(0.28)
-        case .selectedHovered:
-            return Color.black.opacity(0.34)
+        case .editing, .selected, .selectedHovered:
+            return Color.black.opacity(0.3)
         case .idle, .hovered:
             return .clear
         }
@@ -80,9 +73,9 @@ struct CanvasObjectInteractionChrome {
 
     var glowRadius: CGFloat {
         switch phase {
-        case .editing: return 6
-        case .selected: return 3
-        case .selectedHovered: return 4
+        case .editing: return 2
+        case .selected: return 2
+        case .selectedHovered: return 2
         case .idle, .hovered: return 0
         }
     }
@@ -158,16 +151,14 @@ extension CanvasPreview {
         } else {
             phase = .idle
         }
-        return CanvasObjectInteractionChrome(phase: phase, color: EditorConsole.palette(for: selection).fill)
+        return CanvasObjectInteractionChrome(phase: phase)
     }
 
     func updateCanvasHover(_ selection: EditorSelection, hovering: Bool) {
-        withAnimation(SpringMotion.interactive) {
-            if hovering {
-                hoveredCanvasSelection = selection
-            } else if hoveredCanvasSelection == selection {
-                hoveredCanvasSelection = nil
-            }
+        if hovering {
+            hoveredCanvasSelection = selection
+        } else if hoveredCanvasSelection == selection {
+            hoveredCanvasSelection = nil
         }
     }
 
@@ -175,10 +166,14 @@ extension CanvasPreview {
     /// 按黑边检测裁剪，并按项目设置水平镜像——合成器在渲染时才做镜像，
     /// 暂停帧本身是未镜像的原始方向，漏掉这一步拖动时画面会左右翻转。
     func pausedCameraDragImage(canvasSize: CGSize) -> NSImage? {
+        let frameMetadata = mediaSession.prepared?.composition.frameMetadata(at: playbackController.outputTime)
         guard !playbackController.isPlaying,
-              abs(project.camera.contentPosition.x - 0.5) < 0.000_1,
-              abs(project.camera.contentPosition.y - 0.5) < 0.000_1,
-              abs(project.camera.contentScale - 1) < 0.000_1,
+              let sourceID = frameMetadata?.cameraSlice?.sourceID,
+              playbackController.pausedCameraSourceID == sourceID,
+              !interactionSceneProject.camera.beauty.isEnabled,
+              abs(interactionSceneProject.camera.contentPosition.x - 0.5) < 0.000_1,
+              abs(interactionSceneProject.camera.contentPosition.y - 0.5) < 0.000_1,
+              abs(interactionSceneProject.camera.contentScale - 1) < 0.000_1,
               let paused = playbackController.pausedCameraImage else { return nil }
         var proposedRect = NSRect(origin: .zero, size: paused.size)
         guard let cgImage = paused.cgImage(
@@ -187,10 +182,10 @@ extension CanvasPreview {
             hints: nil
         ) else { return paused }
         var frame = CIImage(cgImage: cgImage)
-        if let crop = mediaSession.cameraContentCrop {
+        if let crop = frameMetadata?.cameraContentCrop {
             frame = CameraLetterboxAnalysis.cropped(frame, to: crop)
         }
-        if project.camera.isMirrored {
+        if interactionSceneProject.camera.isMirrored {
             frame = frame.transformed(by: CGAffineTransform(scaleX: -1, y: 1))
             frame = frame.transformed(by: CGAffineTransform(
                 translationX: -frame.extent.minX,
@@ -214,6 +209,7 @@ extension CanvasPreview {
         canvasSize: CGSize
     ) -> NSImage? {
         guard !playbackController.isPlaying,
+              project.timeline.insertedMedia(atOutputTime: playbackController.latestOutputTime)?.imagePath == nil,
               let paused = playbackController.pausedScreenImage else { return nil }
         // 视口恒等（无缩放/平移）时 finalRect 与 baseRect 完全重合
         let base = scene.baseRect
@@ -227,7 +223,7 @@ extension CanvasPreview {
                   abs(target.rotationY) < 0.01,
                   abs(target.rotationZ) < 0.01 else { return nil }
         }
-        let crop = project.canvas.crop.clamped()
+        let crop = interactionSceneProject.canvas.crop.clamped()
         var proposedRect = NSRect(origin: .zero, size: paused.size)
         guard let cgImage = paused.cgImage(
             forProposedRect: &proposedRect,

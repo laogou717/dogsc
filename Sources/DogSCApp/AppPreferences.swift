@@ -74,6 +74,7 @@ private func appTimelineTrackName(_ track: ProjectTimelineTrack) -> String {
     case .cameraMotion: appLocalized("摄像运动")
     case .mosaic: appLocalized("打码")
     case .sticker: appLocalized("贴图")
+    case .animation: appLocalized("动效")
     }
 }
 
@@ -166,13 +167,6 @@ enum AppAppearancePreference: String, CaseIterable, Identifiable {
         }
     }
 
-    var colorScheme: ColorScheme? {
-        switch self {
-        case .system: nil
-        case .light: .light
-        case .dark: .dark
-        }
-    }
 
     var appKitAppearance: NSAppearance? {
         switch self {
@@ -220,8 +214,8 @@ private struct RememberedStickerCreationDefaults: Codable, Equatable {
         animation: .pop,
         animationCurve: .swift,
         exitAnimation: nil,
-        enterDuration: 0.7,
-        exitDuration: 0.22,
+        enterDuration: 0.45,
+        exitDuration: 0.3,
         backdropBlur: 20,
         backdropBlurIncludesCamera: false,
         hidesScreen: false,
@@ -266,8 +260,8 @@ private struct RememberedStickerCreationDefaults: Codable, Equatable {
     }
 
     mutating func normalize() {
-        enterDuration = min(max(enterDuration.isFinite ? enterDuration : 0.7, 0), 2)
-        exitDuration = min(max(exitDuration.isFinite ? exitDuration : 0.22, 0), 2)
+        enterDuration = min(max(enterDuration.isFinite ? enterDuration : 0.45, 0), 2)
+        exitDuration = min(max(exitDuration.isFinite ? exitDuration : 0.3, 0), 2)
         backdropBlur = min(max(backdropBlur.isFinite ? backdropBlur : 20, 0), 60)
     }
 
@@ -316,6 +310,8 @@ enum AppPreferences {
     static let appearancePreferenceKey = "app.appearance"
     static let exportCompletionSoundEnabledKey =
         "cn.laogou.dogsc.export-completion-sound-enabled"
+    static let audioLoudnessNormalizationEnabledKey =
+        "cn.laogou.dogsc.audio-loudness-normalization-enabled"
     static let previewResolutionModeKey = "editor.previewResolutionMode"
     static let editorTimelineHoverPreviewEnabledKey =
         "editor.timeline.hover-preview-enabled"
@@ -325,8 +321,6 @@ enum AppPreferences {
         "editor.timeline.visible-tracks.v2"
     private static let editorTimelineZoomPrefix =
         "editor.timeline.zoom.v1"
-    static let editorInspectorVisibleKey = "editor.inspector.visible"
-    static let editorInspectorWidthKey = "editor.inspector.content-width"
     static let recordingCameraPreviewShapeKey =
         "recording.cameraPreviewShape"
     static let editorWindowFrameAutosaveName =
@@ -339,6 +333,17 @@ enum AppPreferences {
         "editor.sticker.last-used-creation-defaults.v1"
     private static let zoomCreationScaleKey =
         "editor.zoom.last-used-creation-scale.v1"
+    /// Same key the timeline's magnet toggle stores (default off).
+    static let editorTimelineSnappingEnabledKey = "editorTimelineSnappingEnabled"
+    /// Settings-only preferences. Their consumers are not wired yet: the
+    /// export sheet still follows each project's own resolution, capture is
+    /// normalized to 60 fps, the camera preview window always shows, and
+    /// DogSC does not hide desktop icons or the Dock while recording.
+    static let exportDefaultResolutionKey = "export.defaultResolution"
+    static let recordingFrameRateKey = "recording.frameRate"
+    static let recordingCameraPreviewVisibleKey = "recording.cameraPreviewVisible"
+    static let recordingHidesDesktopIconsKey = "recording.hidesDesktopIcons"
+    static let recordingHidesDockKey = "recording.hidesDock"
 
     static var applicationLanguageOverride: [String]? {
         guard let identifier = Bundle.main.bundleIdentifier else { return nil }
@@ -384,13 +389,14 @@ enum AppPreferences {
         return defaults.bool(forKey: exportCompletionSoundEnabledKey)
     }
 
-    static var isTimelineHoverPreviewEnabled: Bool {
+    static var isAudioLoudnessNormalizationEnabled: Bool {
         let defaults = UserDefaults.standard
-        guard defaults.object(forKey: editorTimelineHoverPreviewEnabledKey) != nil else {
-            return false
+        guard defaults.object(forKey: audioLoudnessNormalizationEnabledKey) != nil else {
+            return true
         }
-        return defaults.bool(forKey: editorTimelineHoverPreviewEnabledKey)
+        return defaults.bool(forKey: audioLoudnessNormalizationEnabledKey)
     }
+
 
     static func timelineTrackVisibility(
         for project: RecorderProject
@@ -504,15 +510,6 @@ enum AppPreferences {
         return candidates.max { lhs, rhs in lhs.1 < rhs.1 }?.0
     }
 
-    /// 固定应用图标：直接从 Bundle 加载 AppIcon.icns。
-    /// 图标为单一品牌资产，不再支持运行时更换或自定义导入。
-    static var bundledAppIcon: NSImage? {
-        guard let url = Bundle.main.url(
-            forResource: "AppIcon",
-            withExtension: "icns"
-        ) else { return nil }
-        return NSImage(contentsOf: url)
-    }
 
     static var recordingCameraPreviewShape: RecordingCameraPreviewShape {
         let rawValue = UserDefaults.standard.string(

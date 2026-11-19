@@ -41,37 +41,31 @@ enum EditorPersistenceBadgeState: CaseIterable, Hashable {
     }
 }
 
-/// One 26 pt capsule beside the project title. Hidden labels reserve the
-/// same advance in either language, so saving/saved never shift history.
+/// A quiet status beside the project title. Saved and mid-edit are the
+/// normal states and show nothing (every slider drag is "editing"); only a
+/// failure, which needs the user, takes space. Saving is a dim dot.
 struct EditorPersistenceBadge: View {
     let state: EditorPersistenceBadgeState
     @ObservedObject private var languageSettings = AppLanguageSettings.shared
 
     var body: some View {
-        HStack(spacing: 7) {
-            marker.frame(width: 12, height: 12)
-            ZStack(alignment: .leading) {
-                ForEach(EditorPersistenceBadgeState.allCases, id: \.self) { item in
-                    Text(appLocalized(item.titleKey))
-                        .hidden().accessibilityHidden(true)
-                }
+        HStack(spacing: 5) {
+            switch state {
+            case .failed:
+                marker.frame(width: 12, height: 12)
                 Text(appLocalized(state.titleKey))
-                    .contentTransition(.opacity)
+                    .font(EditorTypography.helper)
+                    .foregroundStyle(RecorderStyle.amberInk)
+                    .fixedSize()
+            case .saving:
+                marker.frame(width: 12, height: 12)
+            case .saved, .editing:
+                EmptyView()
             }
-            .font(.appUI(size: 12, weight: .medium))
-            .foregroundStyle(state == .failed ? RecorderStyle.amberInk : EditorTheme.secondaryText)
         }
-        .padding(.horizontal, 11)
-        .frame(height: 26)
-        .fixedSize(horizontal: true, vertical: false)
-        .background(state == .failed ? RecorderStyle.amberInk.opacity(0.10) : EditorTheme.chrome(0.045),
-            in: Capsule(style: .continuous))
-        .overlay {
-            Capsule(style: .continuous).strokeBorder(
-                state == .failed ? RecorderStyle.amberInk.opacity(0.25) : EditorTheme.chrome(0.06),
-                lineWidth: 0.5)
-        }
-        .animation(SpringMotion.crossfade, value: state)
+        .padding(.horizontal, state == .failed ? 6 : 0)
+        .frame(height: 24)
+        .transaction { $0.animation = nil }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(appLocalized(state.accessibilityKey))
         .accessibilityIdentifier(state.identifier)
@@ -80,30 +74,15 @@ struct EditorPersistenceBadge: View {
     @ViewBuilder private var marker: some View {
         switch state {
         case .saved:
-            AppLineIcon(kind: .check, size: 12)
-                .foregroundStyle(RecorderStyle.positiveInk)
+            AppLineIcon(kind: .check, size: 11)
+                .foregroundStyle(EditorTheme.tertiaryText)
         case .saving:
-            EditorSaveProgressDot()
+            Circle().fill(EditorTheme.tertiaryText).frame(width: 5, height: 5)
         case .editing:
-            AppLineIcon(kind: .pencil, size: 11)
-                .foregroundStyle(EditorTheme.secondaryText)
+            Circle().fill(EditorTheme.secondaryText).frame(width: 5, height: 5)
         case .failed:
             AppLineIcon(kind: .warning, size: 12)
                 .foregroundStyle(RecorderStyle.amberInk)
         }
-    }
-}
-
-private struct EditorSaveProgressDot: View {
-    @State private var breathing = false
-    var body: some View {
-        Circle().fill(EditorTheme.platinumAccent)
-            .frame(width: 6, height: 6)
-            .scaleEffect(breathing ? 1 : 0.6)
-            .opacity(breathing ? 1 : 0.45)
-            .onAppear {
-                guard !RecorderMotion.reduces else { breathing = true; return }
-                withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) { breathing = true }
-            }
     }
 }

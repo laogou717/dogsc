@@ -37,7 +37,7 @@ final class AreaPresetSelectionView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         selectionLayer.frame = frame
-        selectionLayer.cornerRadius = frame.height / 2
+        selectionLayer.cornerRadius = min(8, frame.height / 2)
         selectionLayer.removeAllAnimations()
         CATransaction.commit()
         guard animated, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
@@ -53,7 +53,6 @@ final class AreaPresetSelectionView: NSView {
 
 final class AreaPresetButton: CaptureSelectionNativeButton {
     private let localizationKey: String
-    private let areaSymbolName: String
     private let symbolView = MousePassthroughImageView()
     private let captionLabel = MousePassthroughLabel("")
     private var layoutScale: CGFloat = 1
@@ -62,7 +61,6 @@ final class AreaPresetButton: CaptureSelectionNativeButton {
     init(title: String, symbolName: String) {
         let localizedTitle = appLocalized(title)
         localizationKey = title
-        areaSymbolName = symbolName
         super.init(frame: .zero)
         super.title = ""
         isBordered = false
@@ -73,7 +71,7 @@ final class AreaPresetButton: CaptureSelectionNativeButton {
 
         symbolView.imageAlignment = .alignCenter
         symbolView.imageScaling = .scaleProportionallyDown
-        symbolView.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: localizedTitle)
+        symbolView.image = EditorSymbolImage.image(symbolName, size: 18, description: localizedTitle)
         addSubview(symbolView)
 
         captionLabel.stringValue = localizedTitle
@@ -128,7 +126,7 @@ final class AreaPresetButton: CaptureSelectionNativeButton {
     }
 
     override func layout() {
-        layer?.cornerRadius = bounds.height / 2
+        layer?.cornerRadius = min(8 * layoutScale, bounds.height / 2)
         super.layout()
         guard bounds.width > 0, bounds.height > 0 else {
             symbolView.frame = .zero
@@ -136,7 +134,7 @@ final class AreaPresetButton: CaptureSelectionNativeButton {
             return
         }
         let scale = layoutScale
-        layer?.cornerRadius = bounds.height / 2
+        layer?.cornerRadius = min(8 * layoutScale, bounds.height / 2)
         symbolView.frame = .zero
         let lineHeight = 16 * scale
         captionLabel.frame = CGRect(
@@ -201,7 +199,7 @@ final class AreaActionButton: CaptureSelectionNativeButton {
         layoutScale = scale
         captureKeyboardFocusLineWidth = 1.5 * scale
         buttonTitleLabel.font = .systemFont(ofSize: (plain ? 12 : 13) * scale, weight: .semibold)
-        layer?.cornerRadius = 22 * scale
+        layer?.cornerRadius = RecorderStyle.controlRadius * scale
         layer?.cornerCurve = .continuous
         layer?.borderWidth = 0
         layer?.shadowRadius = 2 * scale
@@ -290,8 +288,7 @@ final class AreaDimensionLinkButton: CaptureSelectionNativeButton {
 
     func updateScale(_ scale: CGFloat) {
         captureKeyboardFocusLineWidth = 1.5 * scale
-        image = NSImage(systemSymbolName: "link", accessibilityDescription: appLocalized("锁定宽高比例"))?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 16 * scale, weight: .medium))
+        image = EditorSymbolImage.image(.link, size: 16 * scale, description: appLocalized("锁定宽高比例"))
         layer?.cornerRadius = 8 * scale
     }
 

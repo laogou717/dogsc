@@ -1,7 +1,8 @@
+import AppKit
 import SwiftUI
 
-/// The editor draws its own line glyphs (AppLineIcon, the recorder's 18 pt
-/// grid) instead of mixing in system symbols. Call sites keep the familiar
+/// The editor draws its own line glyphs (AppLineIcon, the 20-unit grid of
+/// the EDT-078 icon set) instead of mixing in system symbols. Call sites keep the familiar
 /// symbol names; a name without a drawn glyph still renders the system one.
 enum EditorSymbolCatalog {
     static func kind(for systemName: String) -> AppLineIcon.Kind? {
@@ -12,7 +13,7 @@ enum EditorSymbolCatalog {
         case "plus", "plus.circle", "plus.circle.fill": .plus
         case "minus", "minus.circle": .minus
         case "slider.horizontal.3": .sliders
-        case "moon.stars.fill", "moon.fill": .moon
+        case "moon.stars.fill", "moon.fill", "moon": .moon
         case "sun.max.fill", "sun.max": .sun
         case "trash", "trash.fill": .trash
         case "folder": .folder
@@ -85,6 +86,46 @@ enum EditorSymbolCatalog {
         case "circle": .shapeCircle
         case "rectangle.fill": .shapeWide
         case "square", "square.fill": .shapeRounded
+        case "arrow.up.forward.app": .external
+        case "circle.dotted": .shapeCircle
+        case "clock.arrow.circlepath": .clock
+        case "dock.rectangle", "menubar.dock.rectangle": .display
+        case "exclamationmark.circle": .info
+        case "folder.fill": .folder
+        case "lock.shield": .shield
+        case "mic.slash", "mic.slash.fill": .microphone
+        case "music.note": .waveform
+        case "photo.on.rectangle", "photo.stack": .image
+        case "play.rectangle", "play.rectangle.fill": .opening
+        case "square.grid.2x2", "square.grid.2x2.fill": .presets
+        case "text.alignleft": .list
+        case "textformat.size.larger", "textformat.size.smaller": .text
+        case "tray.full", "tray": .box
+        case "power": .close
+        case "record.circle", "record.circle.fill": .record
+        case "square.2.layers.3d.bottom.filled", "square.3.layers.3d.bottom.filled",
+             "square.2.layers.3d.top.filled": .layers
+        case "ellipsis", "ellipsis.circle": .ellipsis
+        case "sidebar.left", "sidebar.right": .sidebar
+        case "star": .star
+        case "star.fill": .starFilled
+        case "square.and.arrow.up": .export
+        case "wand.and.stars", "wand.and.rays": .wand
+        case "xmark.circle", "xmark.circle.fill": .clear
+        case "sparkles.tv": .opening
+        case "textformat", "character.cursor.ibeam", "text.cursor": .text
+        case "captions.bubble", "captions.bubble.fill": .subtitle
+        case "note.text": .note
+        case "eyedropper", "eyedropper.halffull": .eyedropper
+        case "camera.metering.spot": .spotlight
+        case "keyboard": .keyboard
+        case "stop.fill", "stop": .stop
+        case "pause.fill", "pause": .pause
+        case "film.fill": .film
+        case "photo.fill": .image
+        case "square.on.square.dashed", "plus.square.on.square": .duplicate
+        case "ipad", "ipad.landscape", "iphone": .portrait
+        case "arrow.up.square", "square.3.layers.3d.top.filled": .layers
         // Layer order keeps the system glyphs: their front/back distinction
         // has no drawn equivalent yet.
         default: nil
@@ -98,9 +139,9 @@ struct EditorSymbol: View {
     let systemName: String
     var size: CGFloat
 
-    /// The editor's glyph sizes: 12 (inline, badges), 14 (rows, buttons),
-    /// 16 (toolbars, tiles), 18 (large tiles), 20 (empty states).
-    static let scale: [CGFloat] = [12, 14, 16, 18, 20]
+    /// The editor's glyph sizes: 10 (tags), 12 (inline, badges), 14 (rows,
+    /// buttons), 16 (toolbars, tiles), 18 (large tiles), 20 (empty states).
+    static let scale: [CGFloat] = [10, 12, 14, 16, 18, 20, 24, 28]
 
     init(_ systemName: String, size: CGFloat = 14) {
         self.systemName = systemName
@@ -138,5 +179,29 @@ struct EditorSymbolLabel: View {
 
     var body: some View {
         Label { title } icon: { EditorSymbol(systemImage, size: size) }
+    }
+}
+
+/// The same drawn glyph as an AppKit image (menus, capture overlays, status
+/// item). A template image, so AppKit tints it like any symbol. Names
+/// without a drawn glyph fall back to the system symbol.
+enum EditorSymbolImage {
+    @MainActor
+    static func image(_ systemName: String, size: CGFloat = 16, description: String? = nil) -> NSImage? {
+        guard let kind = EditorSymbolCatalog.kind(for: systemName) else {
+            return NSImage(systemSymbolName: systemName, accessibilityDescription: description)
+        }
+        return image(kind, size: size, description: description)
+    }
+
+    @MainActor
+    static func image(_ kind: AppLineIcon.Kind, size: CGFloat = 16, description: String? = nil) -> NSImage? {
+        let renderer = ImageRenderer(content: AppLineIcon(kind: kind, size: size).foregroundStyle(.black))
+        renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
+        guard let cg = renderer.cgImage else { return nil }
+        let image = NSImage(cgImage: cg, size: NSSize(width: size, height: size))
+        image.isTemplate = true
+        image.accessibilityDescription = description
+        return image
     }
 }

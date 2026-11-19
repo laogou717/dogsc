@@ -28,58 +28,111 @@ struct EditorColorPalette: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Text(appLocalized(title)).font(.appUI(size: 13, weight: .semibold))
-                Spacer()
-                Button { dismiss() } label: {
-                    EditorSymbol("xmark", size: 13).font(.appUI(size: 10, weight: .medium))
-                        .frame(width: 24, height: 24)
-                }
-                .buttonStyle(.editorToolbarPress)
-                .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous))
-                .accessibilityLabel("关闭调色面板")
-            }
-
+        VStack(alignment: .leading, spacing: 10) {
             saturationBrightnessPlane
             hueStrip
 
-            HStack(spacing: 10) {
-                RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous)
-                    .fill(Color(hex: lastPreview))
-                    .overlay(RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous).strokeBorder(EditorTheme.hairline))
-                    .frame(width: 32, height: 32)
-                    .accessibilityHidden(true)
-                Text("HEX").font(.appUI(size: 10, weight: .medium))
-                    .foregroundStyle(EditorTheme.popoverSecondaryText)
-                TextField("#RRGGBB", text: $hexText)
-                    .textFieldStyle(.plain)
-                    // Use the system text selection so selected hex values
-                    // remain readable in both appearances.
-                    .tint(nil)
-                    .font(.appUI(size: 12, weight: .medium, design: .monospaced))
-                    .padding(.horizontal, 10).frame(height: 32)
-                    .background(EditorChoiceStyle.track, in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous))
-                    .accessibilityLabel(String(format: appLocalized("%@十六进制值"), appLocalized(title)))
-                    .onChange(of: hexText) { _, text in
-                        guard let color = HexColor(text), color != lastPreview else { return }
-                        rebase(color)
-                        onPreview(color)
-                    }
-                    .onSubmit { hexText = lastPreview.hexString }
+            HStack(spacing: 6) {
+                HStack(spacing: 6) {
+                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                        .fill(Color(hex: lastPreview))
+                        .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(EditorTheme.hairline))
+                        .frame(width: 14, height: 14)
+                        .accessibilityHidden(true)
+                    TextField("#RRGGBB", text: $hexText)
+                        .textFieldStyle(.plain)
+                        // Use the system text selection so selected hex values
+                        // remain readable in both appearances.
+                        .tint(nil)
+                        .font(.appUI(size: 12.5, weight: .medium).monospacedDigit())
+                        .accessibilityLabel(String(format: appLocalized("%@十六进制值"), appLocalized(title)))
+                        .onChange(of: hexText) { _, text in
+                            guard let color = HexColor(text), color != lastPreview else { return }
+                            rebase(color)
+                            onPreview(color)
+                        }
+                        .onSubmit { hexText = lastPreview.hexString; dismiss() }
+                }
+                .padding(.horizontal, 8)
+                .frame(height: 30)
+                .background(EditorTheme.controlWell, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+
+                Button(action: sampleScreen) {
+                    AppLineIcon(kind: .eyedropper, size: 16)
+                        .frame(width: 30, height: 30)
+                        .background(EditorTheme.controlWell, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.editorToolbarPress)
+                .help(appLocalized("从画面取色"))
+                .accessibilityLabel(appLocalized("从画面取色"))
             }
             if HexColor(hexText) == nil {
                 Text("请输入六位色值，例如 #EDA647")
-                    .font(.appUI(size: 10)).foregroundStyle(EditorTheme.popoverSecondaryText)
+                    .font(.appUI(size: 11)).foregroundStyle(EditorTheme.popoverSecondaryText)
             }
+
+            let recent = EditorColorHistory.colors.filter { $0 != lastPreview }.prefix(8)
+            if !recent.isEmpty {
+                chipSection("最近用过", Array(recent))
+            }
+            chipSection("常用", Self.common)
         }
-        .padding(16).frame(width: 272)
+        .padding(12).frame(width: 264)
         .focusEffectDisabled()
         .onChange(of: value) { _, color in
             guard color != lastPreview else { return }
             rebase(color)
         }
+        .onDisappear {
+            if lastPreview != value || EditorColorHistory.colors.first != lastPreview {
+                EditorColorHistory.remember(lastPreview)
+            }
+        }
         .onExitCommand { dismiss() }
+    }
+
+    private static let common: [HexColor] = [
+        "#000000", "#FFFFFF", "#E5484D", "#F5A524", "#30A46C", "#0091FF", "#8E4EC6", "#6B6962"
+    ].compactMap { HexColor($0) }
+
+    private func chipSection(_ heading: String, _ colors: [HexColor]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(appLocalized(heading))
+                .font(.appUI(size: 11.5, weight: .medium))
+                .foregroundStyle(EditorTheme.popoverSecondaryText)
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 8), spacing: 6) {
+                ForEach(colors, id: \.hexString) { color in
+                    Button {
+                        rebase(color)
+                        onPreview(color)
+                    } label: {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(Color(hex: color))
+                            .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(.black.opacity(0.08)))
+                            .aspectRatio(1, contentMode: .fit)
+                    }
+                    .buttonStyle(.editorSwatch)
+                    .accessibilityLabel(color.hexString)
+                }
+            }
+        }
+    }
+
+    /// The system sampler magnifies the screen; a click anywhere — the
+    /// preview included — becomes the colour.
+    private func sampleScreen() {
+        NSColorSampler().show { picked in
+            guard let srgb = picked?.usingColorSpace(.sRGB) else { return }
+            let v = (UInt32((srgb.redComponent * 255).rounded()) << 16)
+                | (UInt32((srgb.greenComponent * 255).rounded()) << 8)
+                | UInt32((srgb.blueComponent * 255).rounded())
+            let color = HexColor(rgb24: min(v, 0xFF_FF_FF))
+            Task { @MainActor in
+                rebase(color)
+                onPreview(color)
+            }
+        }
     }
 
     private var saturationBrightnessPlane: some View {
@@ -105,7 +158,7 @@ struct EditorColorPalette: View {
                 publishColor()
             })
         }
-        .frame(height: 164)
+        .frame(height: 150)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("饱和度与亮度")
         .accessibilityValue(String(format: appLocalized("饱和度 %d%%，亮度 %d%%"), Int(saturation * 100), Int(brightness * 100)))
@@ -126,7 +179,7 @@ struct EditorColorPalette: View {
                     colors: (0...6).map { Color(hue: Double($0) / 6, saturation: 1, brightness: 1) },
                     startPoint: .leading, endPoint: .trailing
                 )
-                .frame(height: 10).clipShape(Capsule()).padding(.horizontal, inset)
+                .frame(height: 12).clipShape(Capsule()).padding(.horizontal, inset)
                 Circle().fill(Color(hue: hue, saturation: 1, brightness: 1))
                     .overlay(Circle().strokeBorder(.white, lineWidth: 2))
                     .shadow(color: .black.opacity(0.20), radius: 2, y: 1)
@@ -174,5 +227,52 @@ struct EditorColorPalette: View {
         let rgb = color.components
         let nsColor = NSColor(srgbRed: rgb.red, green: rgb.green, blue: rgb.blue, alpha: 1)
         return (nsColor.hueComponent, nsColor.saturationComponent, nsColor.brightnessComponent)
+    }
+}
+
+/// Colours settled on recently, newest first, shared by every picker.
+@MainActor
+enum EditorColorHistory {
+    private static let key = "editor.recentColors"
+    static var colors: [HexColor] {
+        (UserDefaults.standard.stringArray(forKey: key) ?? []).compactMap { HexColor($0) }
+    }
+
+    static func remember(_ color: HexColor) {
+        var list = colors.filter { $0 != color }
+        list.insert(color, at: 0)
+        UserDefaults.standard.set(list.prefix(16).map(\.hexString), forKey: key)
+    }
+}
+
+/// A swatch that opens the shared palette beside itself.
+struct EditorColorWell: View {
+    let title: String
+    let value: HexColor
+    let onPreview: (HexColor) -> Void
+    @State private var showsPalette = false
+
+    var body: some View {
+        Button { showsPalette = true } label: {
+            HStack(spacing: 6) {
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(Color(hex: value))
+                    .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(EditorTheme.hairline))
+                    .frame(width: 14, height: 14)
+                Text(value.hexString)
+                    .font(.appUI(size: 12.5, weight: .medium).monospacedDigit())
+                    .foregroundStyle(EditorTheme.primaryText)
+            }
+            .padding(.horizontal, 9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: 30)
+            .background(EditorTheme.chrome(0.045), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.editorSwatch)
+        .accessibilityLabel(String(format: appLocalized("选择%@"), appLocalized(title)))
+        .editorPopover(isPresented: $showsPalette, arrowEdge: .trailing, establishesKeyboardEntry: false) {
+            EditorColorPalette(title: title, value: value, onPreview: onPreview)
+        }
     }
 }

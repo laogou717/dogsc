@@ -6,16 +6,21 @@ import os
 import VideoToolbox
 
 final class CameraRecorder: NSObject,
-    AVCaptureFileOutputRecordingDelegate,
     AVCaptureVideoDataOutputSampleBufferDelegate,
+    AVCaptureAudioDataOutputSampleBufferDelegate,
     @unchecked Sendable {
     private static let logger = Logger(
         subsystem: "cn.laogou.dogsc",
         category: "camera-recorder"
     )
     private let session = AVCaptureSession()
-    private var movieOutput = AVCaptureMovieFileOutput()
     private let synchronizedVideoOutput = AVCaptureVideoDataOutput()
+    private let deviceAudioOutput = AVCaptureAudioDataOutput()
+    private var deviceAudioWriter: NativeSystemAudioCaptureOutput?
+    private var deviceVideoURL: URL?
+    private var deviceLastAudioTime: TimeInterval?
+    private var deviceLastVideoSize: (width: Int, height: Int)?
+    private var captureCodec: CaptureCodec = .h264
     private let sessionQueue = DispatchQueue(label: "cn.laogou.dogsc.camera")
     private let sessionQueueKey = DispatchSpecificKey<UInt8>()
     private let role: MovieCaptureRole
@@ -42,6 +47,7 @@ final class CameraRecorder: NSObject,
     private var sampleWriterOutputURL: URL?
     private var sampleWriterFirstHostTime: TimeInterval?
     private var sampleWriterLastRawHostTime: TimeInterval?
+    private var sampleWriterResumeUsesSharedClock = false
     private var sampleWriterLastOutputTime: TimeInterval?
     private var sampleWriterFrameDuration: TimeInterval = 1.0 / 30.0
     private var sampleWriterAccumulatedPause: TimeInterval = 0
@@ -53,8 +59,6 @@ final class CameraRecorder: NSObject,
     private var reportedCaptureSessionFailure = false
     private let cameraDiagnostics = CameraCaptureDiagnosticsMonitor()
 
-    private var usesSynchronizedSampleWriter: Bool { role == .camera }
-
     init(role: MovieCaptureRole = .camera) {
         self.role = role
         super.init()
@@ -65,17 +69,23 @@ final class CameraRecorder: NSObject,
                 self?.handleCaptureSessionEventLocked(event)
             }
         }
-        if usesSynchronizedSampleWriter {
-            // A real-time capture callback must never build an old-frame backlog.
-            // VFR preserves elapsed time in PTS; dropping a late frame is safer
-            // than delaying every subsequent camera frame and losing lip sync.
-            synchronizedVideoOutput.alwaysDiscardsLateVideoFrames = true
-            synchronizedVideoOutput.videoSettings = [
-                kCVPixelBufferPixelFormatTypeKey as String:
-                    kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
-            ]
-            synchronizedVideoOutput.setSampleBufferDelegate(self, queue: sessionQueue)
-        }
+        // A file output terminates on a device format change. Consume samples
+        // ourselves so iOS renegotiation cannot end the user-visible take.
+        synchronizedVideoOutput.alwaysDiscardsLateVideoFrames = true
+        synchronizedVideoOutput.videoSettings = [
+            kCVPixelBufferPixelFormatTypeKey as String:
+                kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+        ]
+        synchronizedVideoOutput.setSampleBufferDelegate(self, queue: sessionQueue)
+        deviceAudioOutput.audioSettings = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: 48_000,
+            AVNumberOfChannelsKey: 2,
+            AVLinearPCMBitDepthKey: 32,
+            AVLinearPCMIsFloatKey: true,
+            AVLinearPCMIsNonInterleaved: false,
+        ]
+        deviceAudioOutput.setSampleBufferDelegate(self, queue: sessionQueue)
     }
 
     var onUnexpectedStop: (@MainActor (any Error) -> Void)? {
@@ -101,44 +111,22 @@ final class CameraRecorder: NSObject,
         syncOnSessionQueue { recordingStartedAtStorage }
     }
 
-    var configuredVideoDimensions: CameraCaptureResolution? {
-        syncOnSessionQueue {
-            guard let configuredCameraWidth,
-                  let configuredCameraHeight,
-                  configuredCameraWidth > 0,
-                  configuredCameraHeight > 0 else { return nil }
-            return CameraCaptureResolution(
-                width: configuredCameraWidth,
-                height: configuredCameraHeight
-            )
-        }
-    }
-
-    /// Returns the file time that corresponds to a shared host-clock instant.
-    /// Delegate callback wall time is not a media timestamp and can be late;
-    /// back-projecting the writer's real recorded duration onto the host clock
-    /// gives every capture track the same first-frame anchor.
+    /// Returns file time on the host clock, anchored to the first video sample
+    /// and excluding completed pauses for camera and wired-device capture.
     func recordedSourceTime(atHostTime targetHostTime: TimeInterval) -> TimeInterval? {
         syncOnSessionQueue {
             guard activity.ownsRecordingOutput else { return nil }
-            if usesSynchronizedSampleWriter,
-               let firstHostTime = sampleWriterFirstHostTime {
+            if let firstHostTime = sampleWriterFirstHostTime {
                 var paused = sampleWriterAccumulatedPause
-                if let pauseStart = sampleWriterPauseStartedAt,
+                if !sampleWriterResumeUsesSharedClock,
+                   let pauseStart = sampleWriterPauseStartedAt,
                    targetHostTime > pauseStart {
                     paused += targetHostTime - pauseStart
                 }
                 return max(targetHostTime - firstHostTime - paused, 0)
             }
-            let duration = movieOutput.recordedDuration
-            guard duration.isNumeric, duration.seconds.isFinite else { return nil }
-            let sampledHostTime = CMClockGetTime(CMClockGetHostTimeClock()).seconds
-            return max(duration.seconds - (sampledHostTime - targetHostTime), 0)
+            return nil
         }
-    }
-
-    var isRecording: Bool {
-        syncOnSessionQueue { activity.ownsRecordingOutput }
     }
 
     func captureDiagnosticsSnapshot() async -> CameraCaptureDiagnostics? {
@@ -151,10 +139,6 @@ final class CameraRecorder: NSObject,
             }
         }
     }
-
-    /// The preview layer needs the stable session identity. Callers must only bind
-    /// it to AVCaptureVideoPreviewLayer and must never configure or run the session.
-    var previewSession: AVCaptureSession { session }
 
     func startPreview(
         deviceUniqueID: String? = nil,
@@ -252,7 +236,8 @@ final class CameraRecorder: NSObject,
         to outputURL: URL,
         deviceUniqueID: String? = nil,
         capturesDeviceAudio: Bool = false,
-        captureResolution: CameraCaptureResolution? = nil
+        captureResolution: CameraCaptureResolution? = nil,
+        captureCodec: CaptureCodec = .h264
     ) async throws {
         guard await requestPermission() else {
             throw CameraRecorderError.permissionDenied(role.displayName)
@@ -284,21 +269,25 @@ final class CameraRecorder: NSObject,
                         guard !cancellation.isCancelled else {
                             throw CancellationError()
                         }
+                        var audioWriter: NativeSystemAudioCaptureOutput?
+                        if role == .iosDevice, capturesDeviceAudio {
+                            let audioURL = outputURL.deletingLastPathComponent()
+                                .appendingPathComponent(".device-audio-\(UUID().uuidString).m4a")
+                            audioWriter = try NativeSystemAudioCaptureOutput(outputURL: audioURL)
+                        }
                         recordingStartedAtStorage = nil
                         reportedCaptureSessionFailure = false
                         activity = .starting(requestID)
                         startContinuation = (requestID, continuation)
+                        resetSampleWriterStateLocked()
+                        self.captureCodec = role == .iosDevice ? captureCodec : .h264
+                        cameraDiagnostics.beginRecording()
+                        sampleWriterOutputURL = outputURL
+                        deviceAudioWriter = audioWriter
+                        deviceVideoURL = role == .iosDevice ? outputURL : nil
+                        deviceLastAudioTime = nil
+                        deviceLastVideoSize = nil
                         if !session.isRunning { session.startRunning() }
-                        if usesSynchronizedSampleWriter {
-                            resetSampleWriterStateLocked()
-                            cameraDiagnostics.beginRecording()
-                            sampleWriterOutputURL = outputURL
-                        } else {
-                            movieOutput.startRecording(
-                                to: outputURL,
-                                recordingDelegate: self
-                            )
-                        }
                         scheduleStartTimeoutLocked(requestID: requestID)
                     } catch {
                         continuation.resume(throwing: error)
@@ -317,63 +306,55 @@ final class CameraRecorder: NSObject,
     func stop() async throws {
         let waiterID = UUID()
         let cancellation = CaptureCancellationFlag()
-        try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation {
-                (continuation: CheckedContinuation<Void, any Error>) in
-                sessionQueue.async { [self] in
-                    guard !cancellation.isCancelled else {
-                        continuation.resume(throwing: CancellationError())
-                        return
+        var videoFailure: (any Error)?
+        do {
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation {
+                    (continuation: CheckedContinuation<Void, any Error>) in
+                    sessionQueue.async { [self] in
+                        guard !cancellation.isCancelled else {
+                            continuation.resume(throwing: CancellationError())
+                            return
+                        }
+                        requestStopLocked(waiterID: waiterID, continuation: continuation)
                     }
-                    requestStopLocked(waiterID: waiterID, continuation: continuation)
+                }
+                try Task.checkCancellation()
+            } onCancel: {
+                cancellation.cancel()
+                sessionQueue.async { [weak self] in
+                    self?.cancelStopWaiterLocked(waiterID: waiterID)
                 }
             }
-            try Task.checkCancellation()
-        } onCancel: {
-            cancellation.cancel()
-            sessionQueue.async { [weak self] in
-                self?.cancelStopWaiterLocked(waiterID: waiterID)
-            }
+        } catch { videoFailure = error }
+        // Close the independent audio writer even when the video writer fails.
+        // A cancelled waiter leaves an active finalizer for the next stop call.
+        do { try await finishDeviceAudio() }
+        catch {
+            Self.logger.error("device audio finalization failed: \(String(describing: error as NSError), privacy: .public)")
+            if videoFailure == nil { videoFailure = error }
         }
+        if let videoFailure { throw videoFailure }
     }
 
     func pause() {
         sessionQueue.async { [self] in
-            if usesSynchronizedSampleWriter {
-                guard case .recording = activity else { return }
-                sampleWriterIsPaused = true
-                sampleWriterPauseStartedAt = sampleWriterLastRawHostTime
-                return
-            }
-            guard case .recording = activity,
-                  movieOutput.isRecording,
-                  !movieOutput.isRecordingPaused else { return }
-            movieOutput.pauseRecording()
+            guard case .recording = activity else { return }
+            sampleWriterIsPaused = true
+            sampleWriterResumeUsesSharedClock = false
+            sampleWriterPauseStartedAt = sampleWriterLastRawHostTime
         }
     }
 
-    func resume() {
+    func resume(at timing: RecordingResumeTiming? = nil) {
         sessionQueue.async { [self] in
-            if usesSynchronizedSampleWriter {
-                guard case .recording = activity else { return }
-                sampleWriterIsPaused = false
-                return
+            guard case .recording = activity else { return }
+            if let timing {
+                sampleWriterAccumulatedPause = timing.accumulatedPauseDuration
+                sampleWriterPauseStartedAt = timing.hostTime
+                sampleWriterResumeUsesSharedClock = true
             }
-            guard case .recording = activity,
-                  movieOutput.isRecording,
-                  movieOutput.isRecordingPaused else { return }
-            movieOutput.resumeRecording()
-        }
-    }
-
-    nonisolated func fileOutput(
-        _ output: AVCaptureFileOutput,
-        didStartRecordingTo outputFileURL: URL,
-        from connections: [AVCaptureConnection]
-    ) {
-        let outputID = ObjectIdentifier(output)
-        sessionQueue.async { [weak self] in
-            self?.handleDidStartLocked(outputID: outputID)
+            sampleWriterIsPaused = false
         }
     }
 
@@ -386,6 +367,11 @@ final class CameraRecorder: NSObject,
         // satisfies the Objective-C protocol while every mutation remains on
         // the recorder's one serial queue.
         dispatchPrecondition(condition: .onQueue(sessionQueue))
+        if output === deviceAudioOutput {
+            appendDeviceAudioLocked(sampleBuffer)
+            return
+        }
+        guard output === synchronizedVideoOutput else { return }
         guard let validated = sampleIntegrityGate.validatedImageBuffer(
             from: sampleBuffer
         ) else {
@@ -419,7 +405,6 @@ final class CameraRecorder: NSObject,
     ) {
         dispatchPrecondition(condition: .onQueue(sessionQueue))
         guard output === synchronizedVideoOutput,
-              usesSynchronizedSampleWriter,
               activity.ownsRecordingOutput,
               !sampleWriterIsPaused else { return }
         let hostTime = captureSampleHostTime(sampleBuffer, session: session)
@@ -455,8 +440,7 @@ final class CameraRecorder: NSObject,
         rawTime: TimeInterval
     ) {
         dispatchPrecondition(condition: .onQueue(sessionQueue))
-        guard usesSynchronizedSampleWriter,
-              !sampleWriterIsFinishing,
+        guard !sampleWriterIsFinishing,
               activity.ownsRecordingOutput else { return }
         if sampleWriterIsPaused {
             if sampleWriterPauseStartedAt == nil {
@@ -466,11 +450,25 @@ final class CameraRecorder: NSObject,
             return
         }
         if let pauseStart = sampleWriterPauseStartedAt {
-            sampleWriterAccumulatedPause += max(rawTime - pauseStart, 0)
+            if sampleWriterResumeUsesSharedClock {
+                guard rawTime >= pauseStart else { return }
+                sampleWriterResumeUsesSharedClock = false
+            } else {
+                sampleWriterAccumulatedPause += max(rawTime - pauseStart, 0)
+            }
             sampleWriterPauseStartedAt = nil
             cameraDiagnostics.beginNewIntervalRun()
         }
         cameraDiagnostics.recordReceived(hostTime: rawTime, layout: layout)
+
+        if role == .iosDevice {
+            let width = CVPixelBufferGetWidth(imageBuffer)
+            let height = CVPixelBufferGetHeight(imageBuffer)
+            if deviceLastVideoSize?.width != width || deviceLastVideoSize?.height != height {
+                Self.logger.notice("device video sample format=\(width)x\(height); recording continues on fixed writer canvas")
+                deviceLastVideoSize = (width, height)
+            }
+        }
 
         do {
             if sampleWriter == nil {
@@ -554,8 +552,45 @@ final class CameraRecorder: NSObject,
                 }
             }
         } catch {
+            Self.logger.error("capture sample writer failed role=\(String(describing: self.role), privacy: .public) error=\(String(describing: error as NSError), privacy: .public)")
             finishSampleWriterLocked(error: error)
         }
+    }
+
+    private func appendDeviceAudioLocked(_ sampleBuffer: CMSampleBuffer) {
+        dispatchPrecondition(condition: .onQueue(sessionQueue))
+        guard role == .iosDevice, activity.isRecording,
+              !sampleWriterIsPaused, !sampleWriterIsFinishing,
+              sampleWriterPauseStartedAt == nil,
+              let audioWriter = deviceAudioWriter,
+              let firstVideoTime = sampleWriterFirstHostTime,
+              sampleBuffer.isValid, CMSampleBufferDataIsReady(sampleBuffer),
+              let hostTime = captureSampleHostTime(sampleBuffer, session: session) else { return }
+        // Both tracks use the video's pause-free clock. Late device sound may
+        // begin at any point without changing the video writer's track format.
+        let outputTime = hostTime - firstVideoTime - sampleWriterAccumulatedPause
+        guard outputTime.isFinite, outputTime >= 0,
+              deviceLastAudioTime.map({ outputTime > $0 }) ?? true,
+              let sample = SampleBufferTimeRetimer.retimed(sampleBuffer,
+                  to: CMTime(seconds: outputTime, preferredTimescale: 48_000)) else { return }
+        deviceLastAudioTime = outputTime
+        audioWriter.append(sampleBuffer: sample)
+    }
+
+    private func finishDeviceAudio() async throws {
+        let assets = syncOnSessionQueue { () -> (NativeSystemAudioCaptureOutput, URL)? in
+            guard !activity.ownsRecordingOutput else { return nil }
+            defer { deviceAudioWriter = nil; deviceVideoURL = nil; deviceLastAudioTime = nil }
+            guard let audio = deviceAudioWriter, let videoURL = deviceVideoURL else { return nil }
+            return (audio, videoURL)
+        }
+        guard let (audio, videoURL) = assets else { return }
+        if let result = try await audio.finish() {
+            try await RecordingAudioMuxer.muxSystemAudio(
+                result, videoStartedAtHostTime: 0, into: videoURL)
+        }
+        // Keep the separate audio file for recovery if final muxing fails.
+        try? FileManager.default.removeItem(at: audio.outputURL)
     }
 
     private func startSampleWriterLocked(
@@ -572,8 +607,8 @@ final class CameraRecorder: NSObject,
         let sourceWidth = CVPixelBufferGetWidth(imageBuffer)
         let sourceHeight = CVPixelBufferGetHeight(imageBuffer)
         let outputDimensions = CameraSampleWriterFrameNormalizer.outputDimensions(
-            configuredWidth: configuredCameraWidth,
-            configuredHeight: configuredCameraHeight,
+            configuredWidth: role == .camera ? configuredCameraWidth : nil,
+            configuredHeight: role == .camera ? configuredCameraHeight : nil,
             sourceWidth: sourceWidth,
             sourceHeight: sourceHeight
         )
@@ -590,18 +625,27 @@ final class CameraRecorder: NSObject,
         }
         let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mov)
         writer.movieFragmentInterval = CMTime(seconds: 2, preferredTimescale: 600)
+        let codec: AVVideoCodecType = switch captureCodec {
+        case .h264: .h264
+        case .hevc: .hevc
+        case .proRes422: .proRes422
+        }
+        let bitrate = role == .iosDevice
+            ? Int(min(max(Double(width) * Double(height) * 60 * 0.25, 16_000_000), 100_000_000))
+            : 20_000_000
+        let compression: [String: Any] = captureCodec == .proRes422 ? [:] : [
+            AVVideoAverageBitRateKey: bitrate,
+            AVVideoExpectedSourceFrameRateKey: expectedFrameRate,
+            AVVideoMaxKeyFrameIntervalKey: expectedFrameRate * 2,
+            AVVideoAllowFrameReorderingKey: true,
+        ]
         let input = AVAssetWriterInput(
             mediaType: .video,
             outputSettings: [
-                AVVideoCodecKey: AVVideoCodecType.h264,
+                AVVideoCodecKey: codec,
                 AVVideoWidthKey: width,
                 AVVideoHeightKey: height,
-                AVVideoCompressionPropertiesKey: [
-                    AVVideoAverageBitRateKey: 20_000_000,
-                    AVVideoExpectedSourceFrameRateKey: expectedFrameRate,
-                    AVVideoMaxKeyFrameIntervalKey: expectedFrameRate * 2,
-                    AVVideoAllowFrameReorderingKey: true,
-                ],
+                AVVideoCompressionPropertiesKey: compression,
                 AVVideoEncoderSpecificationKey: [
                     kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder as String:
                         true,
@@ -641,29 +685,17 @@ final class CameraRecorder: NSObject,
             sourceWidth: sourceWidth,
             sourceHeight: sourceHeight,
             sourcePixelFormat: CVPixelBufferGetPixelFormatType(imageBuffer),
-            roleName: role.displayName
+            roleName: role.displayName,
+            fitsSourceInsideCanvas: role == .iosDevice
         )
         Self.logger.notice(
-            "camera writer contract=\(width)x\(height) firstSample=\(sourceWidth)x\(sourceHeight)"
+            "capture writer role=\(String(describing: self.role), privacy: .public) contract=\(width)x\(height) firstSample=\(sourceWidth)x\(sourceHeight) codec=\(codec.rawValue, privacy: .public) bitrate=\(bitrate)"
         )
         let duration = sampleBuffer.duration.seconds
         if duration.isFinite,
            duration >= 1.0 / 120.0,
            duration <= 1.0 / 10.0 {
             sampleWriterFrameDuration = duration
-        }
-    }
-
-    nonisolated func fileOutput(
-        _ output: AVCaptureFileOutput,
-        didFinishRecordingTo outputFileURL: URL,
-        from connections: [AVCaptureConnection],
-        error: (any Error)?
-    ) {
-        let outputID = ObjectIdentifier(output)
-        let outcome = CaptureFinishOutcome(error: error)
-        sessionQueue.async { [weak self] in
-            self?.handleDidFinishLocked(outputID: outputID, outcome: outcome)
         }
     }
 
@@ -689,34 +721,37 @@ final class CameraRecorder: NSObject,
             selectedUniqueID: deviceUniqueID
         )
 
-        let hasConnectedInput = session.inputs
-            .compactMap { ($0 as? AVCaptureDeviceInput)?.device }
-            .contains { $0.uniqueID == device.uniqueID && $0.isConnected }
-        let hasCurrentOutput = usesSynchronizedSampleWriter
-            ? session.outputs.contains { $0 === synchronizedVideoOutput }
-            : session.outputs.contains { $0 === movieOutput }
-        // Other camera clients can renegotiate the device without changing
-        // its unique ID. Camera preview/recording boundaries must therefore
-        // verify and apply our format again instead of trusting this cache.
-        if role != .camera,
-           isConfigured,
-           configuredDeviceUniqueID == device.uniqueID,
-           configuredCapturesDeviceAudio == capturesDeviceAudio,
-           configuredCaptureResolution == captureResolution,
-           hasConnectedInput,
-           hasCurrentOutput {
-            return
-        }
-
+        let hasCurrentOutput = session.outputs.contains { $0 === synchronizedVideoOutput }
+        // Both webcams and wired devices can renegotiate their format between
+        // preview and recording, so reapply it at every configuration boundary.
         if session.isRunning { session.stopRunning() }
         let input = try AVCaptureDeviceInput(device: device)
         isConfigured = false
         session.beginConfiguration()
         defer { session.commitConfiguration() }
         session.sessionPreset = .high
-        // sessionPreset 会重置采集格式，必须在设置 preset 之后显式选格式：
-        // 否则默认档位可能选中设备的竖向格式（如竖屏模式的云台相机），
-        // 录出的画面被装进带上下黑边的竖向画框，编辑页里近乎全黑。
+        for existingInput in session.inputs { session.removeInput(existingInput) }
+        guard session.canAddInput(input) else {
+            throw CameraRecorderError.cannotConfigure(role.displayName)
+        }
+        session.addInput(input)
+        if !hasCurrentOutput {
+            guard session.canAddOutput(synchronizedVideoOutput) else {
+                throw CameraRecorderError.cannotConfigure(role.displayName)
+            }
+            session.addOutput(synchronizedVideoOutput)
+        }
+        if session.outputs.contains(where: { $0 === deviceAudioOutput }) {
+            session.removeOutput(deviceAudioOutput)
+        }
+        if role == .iosDevice, capturesDeviceAudio {
+            guard session.canAddOutput(deviceAudioOutput) else {
+                throw CameraRecorderError.cannotConfigure(role.displayName)
+            }
+            session.addOutput(deviceAudioOutput)
+        }
+        // Build the complete graph before fixing the native format. Adding
+        // an input under .high can otherwise choose a smaller device format.
         if role == .camera {
             if let captureResolution {
                 try CameraCaptureDeviceConfigurator.applyCameraFormat(
@@ -737,27 +772,6 @@ final class CameraRecorder: NSObject,
                 to: device,
                 role: role
             )
-        }
-        for existingInput in session.inputs { session.removeInput(existingInput) }
-        guard session.canAddInput(input) else {
-            throw CameraRecorderError.cannotConfigure(role.displayName)
-        }
-        session.addInput(input)
-        if !hasCurrentOutput {
-            if usesSynchronizedSampleWriter {
-                guard session.canAddOutput(synchronizedVideoOutput) else {
-                    throw CameraRecorderError.cannotConfigure(role.displayName)
-                }
-                session.addOutput(synchronizedVideoOutput)
-            } else {
-                guard session.canAddOutput(movieOutput) else {
-                    throw CameraRecorderError.cannotConfigure(role.displayName)
-                }
-                session.addOutput(movieOutput)
-            }
-        }
-        if !usesSynchronizedSampleWriter {
-            configureMovieOutputLocked(capturesDeviceAudio: capturesDeviceAudio)
         }
         if role == .camera {
             // Query locked-duration support only after the output graph exists;
@@ -781,15 +795,6 @@ final class CameraRecorder: NSObject,
         isConfigured = true
     }
 
-    private func configureMovieOutputLocked(capturesDeviceAudio: Bool) {
-        dispatchPrecondition(condition: .onQueue(sessionQueue))
-        movieOutput.movieFragmentInterval = CMTime(seconds: 2, preferredTimescale: 600)
-        for connection in movieOutput.connections
-        where connection.inputPorts.contains(where: { $0.mediaType == .audio }) {
-            connection.isEnabled = capturesDeviceAudio
-        }
-    }
-
     private func handleCaptureSessionEventLocked(
         _ event: CameraCaptureSessionEvent
     ) {
@@ -801,7 +806,7 @@ final class CameraRecorder: NSObject,
                 "camera session runtime error domain=\(error.domain, privacy: .public) code=\(error.code) reason=\(error.localizedDescription, privacy: .public)"
             )
             reportCaptureSessionFailureLocked(
-                reason: "摄像头会话运行失败：\(error.localizedDescription)"
+                reason: String(format: appLocalized("摄像头会话运行失败：%@"), error.localizedDescription)
             )
         case .interrupted:
             cameraDiagnostics.recordSessionInterruption()
@@ -840,23 +845,10 @@ final class CameraRecorder: NSObject,
             if session.isRunning { session.stopRunning() }
             activity = .idle
             continuation.resume()
-        case let .starting(requestID):
+        case let .starting(requestID), let .recording(requestID):
             stopContinuations[waiterID] = continuation
             activity = .stopping(requestID)
-            if usesSynchronizedSampleWriter {
-                requestSampleWriterFinishLocked(requestID: requestID)
-            } else if movieOutput.isRecording {
-                movieOutput.stopRecording()
-            }
-            scheduleStopTimeoutLocked(requestID: requestID)
-        case let .recording(requestID):
-            stopContinuations[waiterID] = continuation
-            activity = .stopping(requestID)
-            if usesSynchronizedSampleWriter {
-                requestSampleWriterFinishLocked(requestID: requestID)
-            } else {
-                movieOutput.stopRecording()
-            }
+            requestSampleWriterFinishLocked(requestID: requestID)
             scheduleStopTimeoutLocked(requestID: requestID)
         case .stopping:
             stopContinuations[waiterID] = continuation
@@ -905,18 +897,8 @@ final class CameraRecorder: NSObject,
             pending.1.resume(throwing: CancellationError())
         }
         activity = .stopping(requestID)
-        if usesSynchronizedSampleWriter {
-            requestSampleWriterFinishLocked(requestID: requestID)
-            scheduleStopTimeoutLocked(requestID: requestID)
-        } else if movieOutput.isRecording {
-            movieOutput.stopRecording()
-            scheduleStopTimeoutLocked(requestID: requestID)
-        } else {
-            let pendingStops = Array(stopContinuations.values)
-            stopContinuations.removeAll()
-            resetMovieOutputLocked()
-            pendingStops.forEach { $0.resume() }
-        }
+        requestSampleWriterFinishLocked(requestID: requestID)
+        scheduleStopTimeoutLocked(requestID: requestID)
     }
 
     private func requestSampleWriterFinishLocked(requestID: UUID) {
@@ -1017,6 +999,7 @@ final class CameraRecorder: NSObject,
         sampleWriterLastOutputTime = nil
         sampleWriterFrameDuration = 1.0 / 30.0
         sampleWriterAccumulatedPause = 0
+        sampleWriterResumeUsesSharedClock = false
         sampleWriterPauseStartedAt = nil
         sampleWriterIsPaused = false
         sampleWriterIsFinishing = false
@@ -1028,69 +1011,6 @@ final class CameraRecorder: NSObject,
         stopContinuations.removeValue(forKey: waiterID)?.resume(
             throwing: CancellationError()
         )
-    }
-
-    private func handleDidStartLocked(outputID: ObjectIdentifier) {
-        dispatchPrecondition(condition: .onQueue(sessionQueue))
-        guard outputID == ObjectIdentifier(movieOutput),
-              let requestID = activity.recordingRequestID else { return }
-        recordingStartedAtStorage = Date()
-        if let pending = startContinuation, pending.0 == requestID {
-            startContinuation = nil
-            pending.1.resume()
-        }
-        switch activity {
-        case .starting:
-            activity = .recording(requestID)
-        case .stopping:
-            if movieOutput.isRecording { movieOutput.stopRecording() }
-        case .idle, .livePreview, .recording:
-            break
-        }
-    }
-
-    private func handleDidFinishLocked(
-        outputID: ObjectIdentifier,
-        outcome: CaptureFinishOutcome
-    ) {
-        dispatchPrecondition(condition: .onQueue(sessionQueue))
-        guard outputID == ObjectIdentifier(movieOutput) else { return }
-
-        let wasStopping: Bool
-        if case .stopping = activity { wasStopping = true } else { wasStopping = false }
-        let stoppedUnexpectedly = recordingStartedAtStorage != nil
-            && !wasStopping
-            && startContinuation == nil
-        let pendingStart = startContinuation
-        startContinuation = nil
-        let pendingStops = Array(stopContinuations.values)
-        stopContinuations.removeAll()
-        if session.isRunning { session.stopRunning() }
-        activity = .idle
-
-        if let pendingStart {
-            let failure = CameraRecorderError.recordingFailed(
-                role.displayName,
-                outcome.succeeded ? "启动完成前采集已结束" : outcome.failureReason
-            )
-            pendingStart.1.resume(throwing: failure)
-        }
-        if outcome.succeeded {
-            pendingStops.forEach { $0.resume() }
-        } else {
-            let failure = CameraRecorderError.recordingFailed(
-                role.displayName,
-                outcome.failureReason
-            )
-            pendingStops.forEach { $0.resume(throwing: failure) }
-        }
-
-        guard stoppedUnexpectedly, let handler = unexpectedStopHandler else { return }
-        let failure = CameraRecorderError.recordingFailed(
-            role.displayName,
-            outcome.succeeded ? "采集连接已结束" : outcome.failureReason
-        )
-        Task { @MainActor in handler(failure) }
     }
 
     private func scheduleStartTimeoutLocked(requestID: UUID) {
@@ -1109,15 +1029,8 @@ final class CameraRecorder: NSObject,
                 )
             )
             activity = .stopping(requestID)
-            if usesSynchronizedSampleWriter {
-                requestSampleWriterFinishLocked(requestID: requestID)
-                scheduleStopTimeoutLocked(requestID: requestID)
-            } else if movieOutput.isRecording {
-                movieOutput.stopRecording()
-                scheduleStopTimeoutLocked(requestID: requestID)
-            } else {
-                resetMovieOutputLocked()
-            }
+            requestSampleWriterFinishLocked(requestID: requestID)
+            scheduleStopTimeoutLocked(requestID: requestID)
         }
     }
 
@@ -1138,40 +1051,11 @@ final class CameraRecorder: NSObject,
             let pendingStops = Array(stopContinuations.values)
             stopContinuations.removeAll()
             pendingStops.forEach { $0.resume(throwing: failure) }
-            if usesSynchronizedSampleWriter {
-                sampleWriter?.cancelWriting()
-                resetSampleWriterStateLocked()
-                if session.isRunning { session.stopRunning() }
-                activity = .idle
-            } else {
-                resetMovieOutputLocked()
-            }
+            sampleWriter?.cancelWriting()
+            resetSampleWriterStateLocked()
+            if session.isRunning { session.stopRunning() }
+            activity = .idle
         }
-    }
-
-    private func resetMovieOutputLocked() {
-        dispatchPrecondition(condition: .onQueue(sessionQueue))
-        let staleOutput = movieOutput
-        if staleOutput.isRecording { staleOutput.stopRecording() }
-        if session.isRunning { session.stopRunning() }
-        session.beginConfiguration()
-        if session.outputs.contains(where: { $0 === staleOutput }) {
-            session.removeOutput(staleOutput)
-        }
-        let replacement = AVCaptureMovieFileOutput()
-        if session.canAddOutput(replacement) { session.addOutput(replacement) }
-        session.commitConfiguration()
-        movieOutput = replacement
-        activity = .idle
-        isConfigured = false
-        configuredDeviceUniqueID = nil
-        configuredCapturesDeviceAudio = false
-        configuredCaptureResolution = nil
-        configuredCameraWidth = nil
-        configuredCameraHeight = nil
-        reportedCaptureSessionFailure = false
-        runtimeFormatMonitor.reset(keepingCapacity: false)
-        sampleIntegrityGate.reset()
     }
 
     private func syncOnSessionQueue<T>(_ operation: () -> T) -> T {

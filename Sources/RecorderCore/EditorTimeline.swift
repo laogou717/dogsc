@@ -6,31 +6,19 @@ public struct TimelineZoomSegment: Equatable, Identifiable, Sendable {
     public let endTime: TimeInterval
     public let scale: Double
     public let origin: ZoomKeyframeOrigin
-    public let representativeKeyframeID: UUID
-    public let easing: ZoomEasingPreset
-    public let enterDuration: TimeInterval
-    public let exitDuration: TimeInterval
 
     public init(
         id: UUID,
         startTime: TimeInterval,
         endTime: TimeInterval,
         scale: Double,
-        origin: ZoomKeyframeOrigin,
-        representativeKeyframeID: UUID,
-        easing: ZoomEasingPreset = .cubic,
-        enterDuration: TimeInterval = 0.7,
-        exitDuration: TimeInterval = 0.7
+        origin: ZoomKeyframeOrigin
     ) {
         self.id = id
         self.startTime = startTime
         self.endTime = endTime
         self.scale = scale
         self.origin = origin
-        self.representativeKeyframeID = representativeKeyframeID
-        self.easing = easing
-        self.enterDuration = enterDuration
-        self.exitDuration = exitDuration
     }
 }
 
@@ -110,63 +98,7 @@ public enum EditorTimelineMath {
         )
     }
 
-    public static func manualZoomAnimation(
-        start: TimeInterval,
-        end: TimeInterval,
-        duration: TimeInterval,
-        scale: Double = 1.6,
-        focus: NormalizedPoint = NormalizedPoint(x: 0.5, y: 0.5),
-        easing: ZoomEasingPreset = .cubic,
-        transitionDuration: TimeInterval = 0.7
-    ) -> ZoomAnimationClip? {
-        guard duration.isFinite, duration > 0 else { return nil }
-        let rawStart = min(max(min(start, end), 0), duration)
-        let draggedDuration = abs(end - start)
-        let requestedEnd = draggedDuration < 0.08
-            ? min(rawStart + min(1.5, max(duration * 0.2, 0.6)), duration)
-            : min(max(max(start, end), 0), duration)
-        let minimumDuration = min(0.24, max(duration - rawStart, 0))
-        let rangeEnd = min(max(requestedEnd, rawStart + minimumDuration), duration)
-        guard rangeEnd - rawStart > 0.01 else { return nil }
-        return ZoomAnimationClip(
-            startTime: rawStart,
-            endTime: rangeEnd,
-            scale: scale,
-            focus: focus,
-            origin: .manual,
-            easing: easing,
-            enterDuration: transitionDuration,
-            exitDuration: transitionDuration
-        )
-    }
 
-    public static func manualZoomRangeKeyframes(
-        start: TimeInterval,
-        end: TimeInterval,
-        duration: TimeInterval,
-        scale: Double = 1.6,
-        focus: NormalizedPoint = NormalizedPoint(x: 0.5, y: 0.5)
-    ) -> [ZoomKeyframe] {
-        guard duration.isFinite, duration > 0 else { return [] }
-        let rawStart = min(max(min(start, end), 0), duration)
-        let draggedDuration = abs(end - start)
-        let requestedEnd = draggedDuration < 0.08
-            ? min(rawStart + min(1.5, max(duration * 0.2, 0.6)), duration)
-            : min(max(max(start, end), 0), duration)
-        let minimumDuration = min(0.6, max(duration - rawStart, 0))
-        let rangeEnd = min(max(requestedEnd, rawStart + minimumDuration), duration)
-        guard rangeEnd - rawStart > 0.01 else { return [] }
-
-        let transition = min(0.28, (rangeEnd - rawStart) * 0.3)
-        let zoomInTime = rawStart + transition
-        let zoomOutTime = max(rangeEnd - transition, zoomInTime + 0.001)
-        return [
-            ZoomKeyframe(time: rawStart, scale: 1, focus: focus, origin: .manual),
-            ZoomKeyframe(time: zoomInTime, scale: max(scale, 1), focus: focus, origin: .manual),
-            ZoomKeyframe(time: zoomOutTime, scale: max(scale, 1), focus: focus, origin: .manual),
-            ZoomKeyframe(time: rangeEnd, scale: 1, focus: focus, origin: .manual),
-        ]
-    }
 
     public static func clampedTime(
         atX x: Double,
@@ -177,14 +109,6 @@ public enum EditorTimelineMath {
         return min(max(x / width, 0), 1) * duration
     }
 
-    public static func xPosition(
-        for time: TimeInterval,
-        width: Double,
-        duration: TimeInterval
-    ) -> Double {
-        guard width.isFinite, width > 0, duration.isFinite, duration > 0 else { return 0 }
-        return min(max(time / duration, 0), 1) * width
-    }
 
     public static func zoomSegments(
         from animations: [ZoomAnimationClip],
@@ -199,11 +123,7 @@ public enum EditorTimelineMath {
                     startTime: min(max(clip.startTime, 0), duration),
                     endTime: min(max(clip.endTime, 0), duration),
                     scale: clip.scale,
-                    origin: clip.origin,
-                    representativeKeyframeID: clip.id,
-                    easing: clip.easing,
-                    enterDuration: clip.enterDuration,
-                    exitDuration: clip.exitDuration
+                    origin: clip.origin
                 )
             }
             .filter { $0.endTime - $0.startTime > 0.001 }
@@ -484,37 +404,6 @@ public enum EditorTimelineMath {
         return .empty
     }
 
-    /// 运动轨道的指针命中测试：与缩放轨同一交互模型（片段条垂直居中、手柄
-    /// 仅对选中/悬停片段出现），供轨道级单一拖动手势分发。
-    public static func motionHitZone(
-        x: Double,
-        y: Double,
-        timings: [(id: UUID, timing: TransitionTiming)],
-        width: Double,
-        duration: TimeInterval,
-        selectedID: UUID?,
-        hoveredID: UUID?,
-        trackHeight: Double = 46,
-        barHeight: Double = 36,
-        minimumClipWidth: Double = 7,
-        itemsAreOrdered: Bool = false
-    ) -> ZoomTrackHitZone {
-        motionHitZone(
-            x: x,
-            y: y,
-            items: timings,
-            id: { $0.id },
-            timing: { $0.timing },
-            width: width,
-            duration: duration,
-            selectedID: selectedID,
-            hoveredID: hoveredID,
-            trackHeight: trackHeight,
-            barHeight: barHeight,
-            minimumClipWidth: minimumClipWidth,
-            itemsAreOrdered: itemsAreOrdered
-        )
-    }
 
     /// Generic fast path used by the editor's already ordered presentation
     /// clips. It avoids mapping the complete track to temporary tuples on every
@@ -765,23 +654,6 @@ public enum EditorTimelineMath {
             : lhsTiming.startTime < rhsTiming.startTime
     }
 
-    /// 运动片段的回落归一：被编辑片段及其前驱一旦不再与后一段相接就成为
-    /// "结尾"——回落时长为 0 时补上默认回落（避免结尾永久保持目标状态）。
-    /// 与缩放同一规则：补上的时长按剩余间隙封顶，否则提交校验失败、拖动被
-    /// 整体回滚（用户看到的是"缩回去了"）。
-    public static func motionReturnNormalizations(
-        afterEditing id: UUID,
-        among timings: [(id: UUID, timing: TransitionTiming)],
-        defaultReturn: TimeInterval
-    ) -> [(id: UUID, timing: TransitionTiming)] {
-        motionReturnNormalizations(
-            afterEditing: id,
-            among: timings,
-            id: { $0.id },
-            timing: { $0.timing },
-            defaultReturn: defaultReturn
-        )
-    }
 
     /// Direct-item overload for drag previews. Updating a motion clip occurs on
     /// every pointer event, so callers should not have to map the complete track
@@ -870,69 +742,4 @@ public enum EditorTimelineMath {
             : lhs.timing.startTime < rhs.timing.startTime
     }
 
-    public static func zoomSegments(
-        from keyframes: [ZoomKeyframe],
-        duration: TimeInterval,
-        baseScale: Double = 1
-    ) -> [TimelineZoomSegment] {
-        guard duration.isFinite, duration > 0 else { return [] }
-        let ordered = keyframes
-            .filter { $0.time.isFinite && $0.time >= 0 && $0.time <= duration }
-            .sorted { lhs, rhs in
-                lhs.time == rhs.time ? lhs.id.uuidString < rhs.id.uuidString : lhs.time < rhs.time
-            }
-        guard !ordered.isEmpty else { return [] }
-
-        let zoomThreshold = baseScale + 0.000_1
-        var segments: [TimelineZoomSegment] = []
-        var index = 0
-        while index < ordered.count {
-            guard ordered[index].scale > zoomThreshold else {
-                index += 1
-                continue
-            }
-
-            let firstZoomedIndex = index
-            let startIndex = max(firstZoomedIndex - 1, 0)
-            var endIndex = firstZoomedIndex
-            while endIndex + 1 < ordered.count,
-                  ordered[endIndex + 1].scale > zoomThreshold {
-                endIndex += 1
-            }
-
-            let startTime = min(max(ordered[startIndex].time, 0), duration)
-            let rawEndTime: TimeInterval
-            if endIndex + 1 < ordered.count {
-                rawEndTime = ordered[endIndex + 1].time
-            } else {
-                rawEndTime = duration
-            }
-            let endTime = min(max(rawEndTime, startTime), duration)
-            let zoomedFrames = Array(ordered[firstZoomedIndex...endIndex])
-            let representative = zoomedFrames.max { lhs, rhs in
-                if lhs.scale == rhs.scale { return lhs.time < rhs.time }
-                return lhs.scale < rhs.scale
-            } ?? ordered[firstZoomedIndex]
-            let origin: ZoomKeyframeOrigin = zoomedFrames.contains { $0.origin == .manual }
-                ? .manual : .automatic
-
-            if endTime - startTime > 0.001 {
-                segments.append(
-                    TimelineZoomSegment(
-                        id: representative.id,
-                        startTime: startTime,
-                        endTime: endTime,
-                        scale: representative.scale,
-                        origin: origin,
-                        representativeKeyframeID: representative.id,
-                        easing: .cubic,
-                        enterDuration: 0.55,
-                        exitDuration: 0.55
-                    )
-                )
-            }
-            index = endIndex + 1
-        }
-        return segments
-    }
 }

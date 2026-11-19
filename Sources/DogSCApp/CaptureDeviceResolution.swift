@@ -14,7 +14,6 @@ enum CaptureInputDeviceRole: String, CaseIterable, Hashable, Sendable {
 struct CaptureInputDeviceDescriptor: Equatable, Sendable {
     let role: CaptureInputDeviceRole
     let uniqueID: String
-    let localizedName: String
 }
 
 enum CaptureInputDeviceRequest: Equatable, Sendable {

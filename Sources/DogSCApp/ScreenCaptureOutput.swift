@@ -75,8 +75,13 @@ enum ScreenRecorderError: LocalizedError {
 
 struct CaptureOutputTerminalEvent: @unchecked Sendable {
     let run: ScreenRecorderRunToken
-    let stage: CaptureOutputTerminalStage
     let error: any Error
+
+    init(run: ScreenRecorderRunToken, stage: CaptureOutputTerminalStage, error: any Error) {
+        self.run = run
+        self.error = (error as? CaptureOutputTerminalFailure)
+            ?? CaptureOutputTerminalFailure(stage: stage, underlyingError: error)
+    }
 }
 
 /// Keeps ScreenCaptureKit's delivery callback non-blocking while bounding the
@@ -284,11 +289,11 @@ final class CaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
             ]
             bitrate = 0
         case .hevc, .h264:
-            // Match capture quality to the same resolution/fps-aware policy
-            // as export. HEVC is the native-resolution default because this
+            // Keep capture's editing-quality budget independent of export.
+            // HEVC is the native-resolution default because this
             // Mac exposes a hardware 5K HEVC encoder but no hardware 5K H.264
             // encoder. H.264 remains an explicit <=4K compatibility mode.
-            bitrate = ExportEncodingPolicy.videoBitrate(
+            bitrate = CaptureEncodingPolicy.videoBitrate(
                 width: width,
                 height: height,
                 frameRate: frameRate.rawValue

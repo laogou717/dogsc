@@ -1,4 +1,5 @@
 import AppKit
+import CoreImage
 import RecorderCore
 import SwiftUI
 
@@ -8,12 +9,30 @@ import SwiftUI
 struct EditorFramePreview: View {
     let canvas: CanvasStyle
     let screenImage: NSImage?
+    var usesFrameStyle = true
+    var isMainTrackImage = false
     let wallpaper: SystemWallpaperAsset?
+    var sourceAspectRatio: Double? = nil
+    var canvasAspectRatio: Double? = nil
     var height: CGFloat = 146
+    @State private var rasterImage: CGImage?
 
     var body: some View {
         EditorInspectorStage(height: height) {
             ZStack {
+                switch canvas.backgroundSource {
+                case let .pattern(preset):
+                    PatternMiniatureView(preset: preset)
+                case let .dynamicFlow(preset):
+                    DynamicFlowMiniatureView(preset: preset)
+                case let .projectImage(relativePath):
+                    if let package = ProjectFiles.package,
+                       let image = NSImage(contentsOf: package.appendingPathComponent(relativePath)) {
+                        Color.clear.overlay { Image(nsImage: image).resizable().scaledToFill() }.clipped()
+                    }
+                default:
+                    EmptyView()
+                }
                 if let wallpaper {
                     Color.clear
                         .overlay { SystemWallpaperThumbnail(asset: wallpaper) }
@@ -27,94 +46,83 @@ struct EditorFramePreview: View {
                     screen(in: proxy.size)
                 }
             }
-            .animation(SpringMotion.fluid, value: wallpaper?.id)
+            .animation(SpringMotion.fade, value: wallpaper?.id)
         }
-        .animation(SpringMotion.settle, value: canvas.padding)
-        .animation(SpringMotion.settle, value: canvas.cornerRadius)
-        .animation(SpringMotion.settle, value: canvas.borderWidth)
-        .animation(SpringMotion.settle, value: canvas.shadowStrength)
-        .animation(SpringMotion.settle, value: canvas.screenFrame)
-        .animation(SpringMotion.settle, value: canvas.screenFrameScale)
-        .animation(SpringMotion.settle, value: canvas.contentPosition)
-        .consoleReveal()
+        // Dragging a slider repaints this live; animating each value would
+        // make the picture trail the pointer.
+        .transaction { $0.animation = nil }
     }
 
-    private var frame: ScreenFrameStyle { canvas.screenFrame }
-    private var isDark: Bool { frame == .windowDark || frame == .browserDark }
+    private struct RasterRequest: Equatable {
+        let canvas: CanvasStyle
+        let sourceIdentity: ObjectIdentifier?
+        let sourceAspect: Double
+        let pixelSize: CGSize
+        let usesFrameStyle: Bool
+        let isMainTrackImage: Bool
+    }
 
     private func screen(in stage: CGSize) -> some View {
-        let margin = min(
-            14 + (min(max(canvas.padding, 0), 360) / 360) * (stage.height * 0.26),
-            min(stage.width, stage.height) * 0.42
-        )
-        let bar: CGFloat = frame.isWindowFrame || frame.isBrowserFrame ? 11 : 0
-        let bezel: CGFloat = frame.isDeviceFrame ? 4.5 : 0
-        let scale = frame == .none ? 1 : min(max(canvas.screenFrameScale, 0.6), 1.6)
-        let available = CGSize(
-            width: max(stage.width - margin * 2 - bezel * 2, 20),
-            height: max(stage.height - margin * 2 - bar - bezel * 2, 20)
-        )
-        let base = editorStageScreenSize(in: available, image: screenImage, widthFraction: 1, heightLimit: 1)
-        let content = CGSize(
-            width: min(base.width * scale, available.width),
-            height: min(base.height * scale, available.height)
-        )
-        let contentRadius = 3 + (min(max(radius, 0), 160) / 160) * 9
-        let total = CGSize(width: content.width + bezel * 2, height: content.height + bar + bezel * 2)
-        let free = CGSize(
-            width: max(stage.width - total.width, 0), height: max(stage.height - total.height, 0)
-        )
-        let position = canvas.contentPosition
-        let shape = RoundedRectangle(
-            cornerRadius: frame.isDeviceFrame ? bezel * 3 : frame == .none ? contentRadius : 6,
-            style: .continuous
-        )
-        return VStack(spacing: 0) {
-            if bar > 0 { chromeBar(height: bar, width: total.width) }
-            EditorStageScreen(image: screenImage, radius: frame == .none ? contentRadius : (frame.isDeviceFrame ? 3 : 0))
-                .shadow(color: .clear, radius: 0)
-                .frame(width: content.width, height: content.height)
-        }
-        .padding(bezel)
-        .background {
-            if frame.isDeviceFrame {
-                shape.fill(Color(white: 0.1))
-                    .overlay { shape.strokeBorder(Color.white.opacity(0.3), lineWidth: 0.75) }
-            }
-        }
-        .clipShape(shape)
-        .overlay {
-            shape.strokeBorder(.white.opacity(0.92), lineWidth: min(max(canvas.borderWidth, 0), 40) * 0.3)
-        }
-        .shadow(color: .black.opacity(0.18 + 0.4 * min(max(canvas.shadowStrength, 0), 1)), radius: 9, y: 5)
-        .position(
-            x: total.width / 2 + free.width * CGFloat(min(max(position.x, 0), 1)),
-            y: total.height / 2 + free.height * CGFloat(min(max(position.y, 0), 1))
-        )
-    }
-
-    private var radius: Double {
-        frame == .none ? canvas.cornerRadius
-            : canvas.screenFrameContentCornerRadius ?? frame.defaultContentCornerRadius
-    }
-
-    private func chromeBar(height: CGFloat, width: CGFloat) -> some View {
-        HStack(spacing: 3) {
-            ForEach([Color(red: 1, green: 0.37, blue: 0.34), Color(red: 1, green: 0.74, blue: 0.18),
-                     Color(red: 0.16, green: 0.78, blue: 0.25)], id: \.self) {
-                Circle().fill($0).frame(width: 4, height: 4)
-            }
-            if frame.isBrowserFrame {
-                Capsule(style: .continuous)
-                    .fill(isDark ? Color.white.opacity(0.12) : Color.black.opacity(0.07))
-                    .frame(height: 5)
-                    .padding(.horizontal, 14)
+        let imageSize = screenImage?.size
+        let aspect = imageSize.map { Double($0.width / max($0.height, 1)) }
+            ?? sourceAspectRatio ?? 16.0 / 9.0
+        let ratio = canvasAspectRatio ?? canvas.resolvedFixedAspectRatio ?? aspect
+        let safeRatio = ratio.isFinite && ratio > 0 ? ratio : 16.0 / 9.0
+        let width = min(max(stage.width - 16, 2), max(stage.height - 16, 2) * safeRatio)
+        let size = CGSize(width: width, height: width / safeRatio)
+        let request = RasterRequest(canvas: canvas, sourceIdentity: screenImage.map(ObjectIdentifier.init),
+            sourceAspect: aspect, pixelSize: CGSize(width: (size.width * 2).rounded(), height: (size.height * 2).rounded()),
+            usesFrameStyle: usesFrameStyle, isMainTrackImage: isMainTrackImage)
+        return Group {
+            if let rasterImage {
+                Image(decorative: rasterImage, scale: 2).resizable().interpolation(.high)
             } else {
-                Spacer(minLength: 0)
+                Color.clear
             }
         }
-        .padding(.horizontal, 6)
-        .frame(width: width, height: height)
-        .background(isDark ? Color(white: 0.17) : Color(white: 0.96))
+        .frame(width: size.width, height: size.height)
+        .position(x: stage.width / 2, y: stage.height / 2)
+        .task(id: request) {
+            let source: CIImage
+            if let cg = screenImage?.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+                source = CIImage(cgImage: cg)
+            } else {
+                source = CIImage(color: CIColor(red: 0.96, green: 0.96, blue: 0.96))
+                    .cropped(to: CGRect(x: 0, y: 0, width: max(aspect * 720, 2), height: 720))
+            }
+            var preview = RecorderProject(canvas: canvas)
+            preview.camera.isHidden = true
+            preview.openingSequence.isEnabled = false
+            if !usesFrameStyle || isMainTrackImage {
+                preview.timeline.sourceSequence = .edited([
+                    RecordingSegment(sourceStart: 0, sourceDuration: 1,
+                        media: InsertedMedia(path: "", fileDuration: 1, name: "", usesFrameStyle: usesFrameStyle,
+                            sourceAspectRatio: aspect, imagePath: isMainTrackImage ? "" : nil),
+                        sceneStyle: SegmentSceneStyle(project: preview))
+                ])
+            }
+            let scene = FrameSceneEvaluator.scene(project: preview, time: 0,
+                canvasSize: CompositionSize(width: request.pixelSize.width, height: request.pixelSize.height),
+                sourceAspectRatio: aspect)
+            let result = await EditorFramePreviewRasterizer.shared.image(
+                scene: scene, resources: SharedFrameRenderResources(screen: source))
+            guard !Task.isCancelled else { return }
+            rasterImage = result
+        }
+    }
+}
+
+/// Inspector and programme use the same crop, bezel, corner radii and shadow.
+/// Raster work stays off the main actor while sliders and splitters are moving.
+private actor EditorFramePreviewRasterizer {
+    static let shared = EditorFramePreviewRasterizer()
+    private let context = CIContext(options: [.cacheIntermediates: false])
+
+    func image(scene: FrameScene, resources: SharedFrameRenderResources) -> CGImage? {
+        let extent = CGRect(x: 0, y: 0, width: scene.canvasSize.width, height: scene.canvasSize.height)
+        let transparent = CIImage(color: .clear).cropped(to: extent)
+        let image = SharedFrameRenderer.render(scene: scene, resources: resources, over: transparent)
+        return context.createCGImage(image, from: extent, format: .RGBA8,
+            colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
     }
 }

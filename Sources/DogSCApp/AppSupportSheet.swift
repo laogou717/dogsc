@@ -16,7 +16,7 @@ struct AppSupportSheet: View {
                     .font(.appUI(size: 16, weight: .medium))
                 Spacer()
                 Button { dismiss() } label: {
-                    Image(systemName: "xmark").font(.system(size: 12))
+                    EditorSymbol("xmark", size: 12).font(.system(size: 12))
                         .frame(width: 28, height: 28)
                 }
                 .buttonStyle(.editorGhost)

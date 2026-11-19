@@ -51,7 +51,22 @@ struct CanvasPreview: View {
     @ObservedObject var editorStore: EditorStore
     @ObservedObject var mediaSession: EditorMediaSession
     @ObservedObject var playbackController: EditorPlaybackController
-    let renderProject: RecorderProject
+    @ObservedObject var motionElementEditor = MotionElementEditor.shared
+    @ObservedObject private var frameClock: EditorPlaybackFrameClock
+    @ObservedObject private var timelinePreview: EditorTimelineInteractionState
+    private let baseRenderProject: RecorderProject
+    var renderProject: RecorderProject {
+        var result = timelinePreview.project(for: editorStore.interaction?.id) ?? baseRenderProject
+        if let transientAspectRatio, !isCropping {
+            result.canvas.aspectRatio = .custom
+            result.canvas.customAspectRatio = .init(width: Double(transientAspectRatio), height: 1)
+        }
+        return result
+    }
+    /// Non-nil only while the stage morphs between two aspect ratios: the
+    /// preview renders `renderProject` with this transient custom ratio.
+    /// Preview-only; the project and undo history never see it.
+    let transientAspectRatio: CGFloat?
     @Binding var previewResolutionMode: EditorPreviewResolutionMode
     let isCropping: Bool
     /// Export thumbnails contain project pixels, never editor selection chrome.
@@ -62,12 +77,15 @@ struct CanvasPreview: View {
     let isSplitterResizing: Bool
     @Binding var cropDraft: NormalizedCrop
     let wallpaperURLResolver: EditorSessionContext.WallpaperURLResolver
+    let assetRootURL: URL?
     let projectAssetURLResolver: EditorSessionContext.ProjectAssetURLResolver
     let onCanvasFocused: () -> Void
     let onError: (String) -> Void
+    @State var resolvedSceneWallpapers: [String: EditorSceneWallpaper] = [:]
     @State var resolvedWallpaperImage: NSImage?
     @State var resolvedWallpaperVideoURL: URL?
     @State var resolvedStickerImages: [String: NSImage] = [:]
+    @State var quickEditorMeasuredWidths: [String: CGFloat] = [:]
     @State var playbackTrackCache: EditorCanvasPlaybackTrackCache
     @State var playbackPlanCache: EditorCanvasPlaybackPlanCache
     @State var effectPrewarmPlanCache: EditorCanvasEffectPrewarmPlanCache
@@ -80,6 +98,9 @@ struct CanvasPreview: View {
     @State var screenDragScope: EditorCanvasEditScope?
     @State var screenScaleOrigin: Double?
     @State var screenScaleScope: EditorCanvasEditScope?
+    /// The 3D gizmo's drag: the screen-motion clip and its pose at press.
+    @State var screenTiltOrigin: (id: UUID, x: Double, y: Double)?
+    @State var isScreenTiltGizmoHovered = false
     @State var cameraDragOrigin: NormalizedPoint?
     @State var cameraDragScope: EditorCanvasEditScope?
     @State var cameraSizeOrigin: Double?
@@ -99,6 +120,7 @@ struct CanvasPreview: View {
     @State var cropDragOrigin: NormalizedCrop?
     @State var overlayDragOrigin: NormalizedPoint?
     @State var overlayDragSelection: EditorSelection?
+    @State var overlayPressPreviousSelection: EditorSelection?
     @State var mosaicDragOrigin: NormalizedOverlayRect?
     @State var mosaicResizeOrigin: NormalizedOverlayRect?
     @State var mosaicResizeCorner: OverlayResizeCorner?
@@ -119,6 +141,7 @@ struct CanvasPreview: View {
         mediaSession: EditorMediaSession,
         playbackController: EditorPlaybackController,
         renderProject: RecorderProject,
+        transientAspectRatio: CGFloat? = nil,
         previewResolutionMode: Binding<EditorPreviewResolutionMode>,
         isCropping: Bool,
         isSplitterResizing: Bool = false,
@@ -126,13 +149,17 @@ struct CanvasPreview: View {
         cropDraft: Binding<NormalizedCrop>,
         wallpaperURLResolver: @escaping EditorSessionContext.WallpaperURLResolver,
         projectAssetURLResolver: @escaping EditorSessionContext.ProjectAssetURLResolver,
+        assetRootURL: URL? = nil,
         onCanvasFocused: @escaping () -> Void = {},
         onError: @escaping (String) -> Void
     ) {
         self.editorStore = editorStore
         self.mediaSession = mediaSession
         self.playbackController = playbackController
-        self.renderProject = renderProject
+        self.frameClock = playbackController.frameClock
+        self.transientAspectRatio = transientAspectRatio
+        self.baseRenderProject = renderProject
+        _timelinePreview = ObservedObject(wrappedValue: editorStore.timelinePreview)
         _previewResolutionMode = previewResolutionMode
         self.isCropping = isCropping
         self.isSplitterResizing = isSplitterResizing
@@ -140,6 +167,7 @@ struct CanvasPreview: View {
         _cropDraft = cropDraft
         self.wallpaperURLResolver = wallpaperURLResolver
         self.projectAssetURLResolver = projectAssetURLResolver
+        self.assetRootURL = assetRootURL
         self.onCanvasFocused = onCanvasFocused
         self.onError = onError
         _playbackTrackCache = State(
@@ -159,25 +187,42 @@ struct CanvasPreview: View {
     }
 
     var project: RecorderProject { renderProject }
+    var interactionSceneProject: RecorderProject {
+        project.sceneProject(forSegmentID: project.timeline.recordingSegment(atOutputTime: playbackController.latestOutputTime)?.id)
+    }
 
-    var sourcePixelSize: CGSize { mediaSession.sourceDisplaySize }
+    var currentRecordingSourceID: UUID? {
+        mediaSession.sourceID(at: playbackController.hoverPreviewTime ?? playbackController.outputTime)
+    }
+    var sourcePixelSize: CGSize {
+        currentRecordingSourceID.flatMap { mediaSession.sourceDisplaySize(for: $0) } ?? mediaSession.primarySourceDisplaySize
+    }
 
     var sourceAspectRatio: CGFloat {
         let safeHeight = max(sourcePixelSize.height, CGFloat(1))
         return max(sourcePixelSize.width / safeHeight, CGFloat(0.01))
     }
 
-    var hasCameraTrack: Bool { mediaSession.inventories.camera.hasVideo }
+    var hasCameraTrack: Bool { currentRecordingSourceID.map { mediaSession.inventories(for: $0).camera.hasVideo } ?? false }
 
     var cameraSourceAspectRatio: CGFloat {
-        guard let size = mediaSession.cameraDisplaySize,
+        guard let id = currentRecordingSourceID, let size = mediaSession.cameraDisplaySize(for: id),
               size.width > 0,
               size.height > 0 else { return 4.0 / 3.0 }
         return size.width / size.height
     }
 
     var editScope: EditorCanvasEditScope {
-        EditorCanvasEditScope(selection: editorStore.selection)
+        if case let .primarySegment(id) = editorStore.selection,
+           id == insertedImageSegmentID {
+            return .screen(.base)
+        }
+        return EditorCanvasEditScope(selection: editorStore.selection)
+    }
+
+    var insertedImageSegmentID: UUID? {
+        let segment = project.timeline.recordingSegment(atOutputTime: playbackController.latestOutputTime)
+        return segment?.media?.imagePath != nil ? segment?.id : nil
     }
 
     var cameraInteractionScope: EditorCanvasEditScope {
@@ -209,13 +254,17 @@ struct CanvasPreview: View {
                     canvasSize: rasterCanvasSize,
                     activeTick: activeTick
                 )
-                let effectPrewarmPlans = isEditorActive ? makeEffectPrewarmPlans(for: renderedFrame) : []
+                // A shape morph re-evaluates every display frame; prewarming
+                // and plan caching for a ratio that lives 16 ms would only
+                // compete with the visible frame.
+                let isMorphing = transientAspectRatio != nil
+                let effectPrewarmPlans = isEditorActive && !isMorphing ? makeEffectPrewarmPlans(for: renderedFrame) : []
                 let playbackPlanCacheHandle = renderedFrame.flatMap {
                     playbackPlanCache.prepare(
                         around: playbackController.outputTime,
                         using: $0.layout.playbackEvaluation,
                         isPlaying: playbackController.isPlaying,
-                        isInteracting: editorStore.interaction != nil || !isEditorActive
+                        isInteracting: editorStore.interaction != nil || !isEditorActive || isMorphing
                     )
                 }
 
@@ -235,7 +284,9 @@ struct CanvasPreview: View {
                     // While the window is in the background the live picture
                     // is retired to save power. The cover is a calm resting
                     // plate with one quiet note, not a grey veil.
-                    EditorCanvasRestingCover(image: playbackController.pausedScreenImage)
+                    EditorCanvasRestingCover(
+                        image: sleepPresentation.isPresenting ? playbackController.pausedScreenImage : nil
+                    )
                         .opacity(sleepPresentation.opacity)
                         .allowsHitTesting(false).accessibilityHidden(true)
                 }
@@ -260,6 +311,13 @@ struct CanvasPreview: View {
                         .frame(width: liveCanvasSize.width, height: liveCanvasSize.height)
                     }
                 }
+                .overlay(alignment: .topLeading) {
+                    if showsEditingControls {
+                        RecordingSourceCanvasBadge(project: project, mediaSession: mediaSession,
+                            playback: playbackController, isCropping: isCropping,
+                            rename: editorStore.renameRecordingSource).padding(10)
+                    }
+                }
                 .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
                 .onChange(of: liveCanvasSize, initial: true) { _, newSize in
                     // 持续跟踪最新实际尺寸（含拖动期间的逐 tick 值）；拖动
@@ -270,6 +328,9 @@ struct CanvasPreview: View {
                 .onChange(of: isSplitterResizing) { _, resizing in
                     splitterResizeFrozenCanvasSize = resizing ? restCanvasSize : nil
                 }
+        }
+        .task(id: "\(project.sceneBackgroundSources):\(isEditorActive)") {
+            if isEditorActive { await loadSceneWallpapers() }
         }
         .task(id: "\(project.canvas.backgroundSource):\(isEditorActive)") {
             let source = project.canvas.backgroundSource
@@ -344,6 +405,9 @@ struct CanvasPreview: View {
                 hoveredCanvasSelection = nil
             }
         }
+        .onChange(of: elementEditingTarget, initial: true) { _, target in
+            if let target { motionElementEditor.begin(target) } else { motionElementEditor.end() }
+        }
         .onChange(of: editorStore.interaction?.selection) { _, selection in
             if selection != directCanvasManipulationSelection, isDirectCanvasManipulation {
                 clearCanvasManipulationPresentation()
@@ -402,31 +466,37 @@ struct CanvasPreview: View {
         let sourceSize = aspectFittedSize(aspectRatio: sourceAspectRatio,
             inside: CGSize(width: max(canvasSize.width - 36, 2), height: max(canvasSize.height - 36, 2)))
         let cropFrame: SharedPreviewPlaybackFrame? = isCropping ? cropSourceFrameCache.frame(
-            normalizedProject: cropSourceProject(), size: sourceSize, sourceAspect: sourceAspectRatio
+            normalizedProject: cropSourceProject(), size: sourceSize, sourceAspect: sourceAspectRatio,
+            time: playbackController.latestOutputTime
         ) { cropSourceFrame(project: cropSourceProject(), size: sourceSize, sourceAspect: sourceAspectRatio) } : nil
         if let plan = cropFrame?.renderPlan ?? renderedFrame?.layout.renderPlan,
            let scene = cropFrame?.semanticScene ?? renderedFrame?.layout.rasterFrameScene {
+            let normalProvider = renderedFrame.map {
+                makePlaybackFrameProvider(evaluation: $0.layout.playbackEvaluation,
+                                          cacheHandle: playbackPlanCacheHandle)
+            }
             let provider: SharedPreviewPlaybackFrameProvider = { tick in
                 if let cropFrame { return cropFrame }
-                guard let layout = renderedFrame?.layout else { return SharedPreviewPlaybackFrame(renderPlan: plan, semanticScene: scene) }
-                return makePlaybackFrameProvider(evaluation: layout.playbackEvaluation,
-                    cacheHandle: playbackPlanCacheHandle)(tick)
+                return normalProvider?(tick) ?? SharedPreviewPlaybackFrame(renderPlan: plan, semanticScene: scene)
             }
             SharedRenderedPreviewView(
                 presentationMode: isCropping ? 1 : 0,
+                assetRootURL: assetRootURL,
+                motionStarts: project.timeline.animationClips.map { PreviewMotionStart(time: $0.timing.startTime) }
+                    + (renderedFrame?.layout.playbackEvaluation.primaryPlan?.slices.compactMap { slice in
+                        slice.media?.motionPath == nil ? nil : PreviewMotionStart(time: slice.outputStart, segmentID: slice.segmentID)
+                    } ?? []),
                 screenOutput: playbackController.endpoints?.screenOutput,
-                screenPreferredTransform: playbackController.endpoints?.screenPreferredTransform ?? .identity,
                 cameraOutput: playbackController.endpoints?.cameraOutput,
-                cameraPreferredTransform: playbackController.endpoints?.cameraPreferredTransform ?? .identity,
-                cameraContentCrop: mediaSession.cameraContentCrop,
                 renderTick: activeTick,
-                usesPausedFrame: !playbackController.isPlaying && playbackController.hoverPreviewTime == nil,
                 renderPlan: plan, semanticScene: scene,
                 effectPrewarmPlans: isCropping ? [] : effectPrewarmPlans,
                 pausedScreenImage: playbackController.pausedScreenImage,
                 pausedCameraImage: playbackController.pausedCameraImage,
                 wallpaperImage: isCropping ? nil : resolvedWallpaperImage,
                 wallpaperVideoURL: isCropping ? nil : resolvedWallpaperVideoURL,
+                sceneWallpapers: isCropping ? [:] : resolvedSceneWallpapers,
+                defaultWallpaperKey: project.canvas.backgroundSource.sceneResourceKey,
                 stickerImages: isCropping ? [:] : resolvedStickerImages,
                 suppressCameraContent: isCropping || cameraCompositorSuppressed,
                 suppressScreenContent: !isCropping && screenCompositorSuppressed,
@@ -467,10 +537,17 @@ struct CanvasPreview: View {
         )
         .accessibilityHidden(isScreenSelectionActive)
 
+        // EDT-073: a main-track HTML motion's elements sit where its picture
+        // does — above the screen target, below every overlay, subtitle and
+        // the camera — so those stay clickable on top of it.
+        if showsEditingOverlays, case .mainTrack = motionElementEditor.target {
+            motionElementLayer(layout: layout, canvasSize: canvasSize)
+        }
+
         if showsEditingOverlays,
            case .screen = editScope,
-           let contentPosition = editScope.position(in: project),
-           let contentScale = editScope.scale(in: project) {
+           let contentPosition = editScope.position(in: interactionSceneProject),
+           let contentScale = editScope.scale(in: interactionSceneProject) {
             screenInteractionOverlay(
                 scene: layout.frameScene.screen,
                 canvasSize: canvasSize,
@@ -495,9 +572,24 @@ struct CanvasPreview: View {
             }())
         }
 
+        if showsEditingOverlays {
+            frontOverlaySelectionTargets(
+                scene: layout.frameScene,
+                canvasSize: canvasSize)
+            .zIndex({
+                if case .sticker = editorStore.selection { return 150.0 }
+                return 0.0
+            }())
+        }
+
+        if showsEditingOverlays, case .overlay = motionElementEditor.target {
+            motionElementLayer(layout: layout, canvasSize: canvasSize)
+                .zIndex(160)
+        }
+
         if showsEditingOverlays,
            hasCameraTrack,
-           !project.camera.isHidden,
+           !interactionSceneProject.camera.isHidden,
            let cameraEvaluation = layout.scene.camera {
             cameraInteractionOverlay(
                 in: canvasSize,
@@ -518,14 +610,39 @@ struct CanvasPreview: View {
                 onError: onError)
                 .id(id).zIndex(250)
         }
+    }
 
-        if showsEditingOverlays {
-            frontOverlaySelectionTargets(
-                scene: layout.frameScene,
-                canvasSize: canvasSize,
-                time: renderedFrame.playbackTime
-            )
+    @ViewBuilder
+    private func motionElementLayer(layout: CanvasPreviewLayout, canvasSize: CGSize) -> some View {
+        if let target = motionElementEditor.target,
+           let placement = MotionElementPlacement.resolve(target, scene: layout.frameScene, canvasSize: canvasSize) {
+            MotionElementEditingLayer(editorStore: editorStore, editor: motionElementEditor, placement: placement,
+                                      canvasSize: canvasSize, accent: EditorTheme.accent)
         }
+    }
+
+    /// Whose elements are pickable on the canvas right now (EDT-073).
+    var elementEditingTarget: MotionElementTarget? {
+        guard !playbackController.isPlaying, !isCropping else { return nil }
+        if case let .animation(id) = editorStore.selection,
+           let clip = editorStore.project.timeline.animationClips.first(where: { $0.id == id }),
+           HTMLMotion.isHTMLMotion(clip.sourcePath), clip.timing.contains(playbackController.outputTime) {
+            return .overlay(id)
+        }
+        return insertedMotionSegmentID().map { .mainTrack($0) }
+    }
+
+    /// The main-track segment under the playhead, when it plays an HTML motion.
+    func insertedMotionSegmentID() -> UUID? {
+        guard case let .edited(segments) = editorStore.project.timeline.sourceSequence else { return nil }
+        let time = playbackController.outputTime
+        var start: TimeInterval = 0
+        for segment in segments {
+            let end = start + segment.outputDuration
+            if time >= start, time < end { return segment.media?.motionPath != nil ? segment.id : nil }
+            start = end
+        }
+        return nil
     }
 
     func screenSelectionTarget(
@@ -540,17 +657,15 @@ struct CanvasPreview: View {
         return shape
         .fill(chrome.fillColor)
         .contentShape(shape)
-        .overlay {
-            if chrome.showsOutline {
-                shape.stroke(chrome.strokeColor, lineWidth: chrome.lineWidth)
-            }
-        }
         .shadow(color: chrome.glowColor, radius: chrome.glowRadius)
                 .animation(.easeOut(duration: 0.18), value: chrome.phase)
         .frame(width: canvasSize.width, height: canvasSize.height)
         .onTapGesture {
             onCanvasFocused()
-            editorStore.selection = selection
+            // EDT-073: inside a main-track HTML motion the picture is that
+            // clip, not the recording.
+            editorStore.selection = (insertedMotionSegmentID() ?? insertedImageSegmentID)
+                .map { .primarySegment($0) } ?? selection
         }
         .onHover {
             updateCanvasHover(selection, hovering: $0)
@@ -559,7 +674,8 @@ struct CanvasPreview: View {
         .accessibilityHint("点击以选择屏幕")
         .accessibilityAddTraits(.isButton)
         .accessibilityAction {
-            editorStore.selection = selection
+            editorStore.selection = (insertedMotionSegmentID() ?? insertedImageSegmentID)
+                .map { .primarySegment($0) } ?? selection
         }
     }
 
@@ -580,18 +696,14 @@ struct CanvasPreview: View {
             width: CGFloat(crop.width) * sourceSize.width,
             height: CGFloat(crop.height) * sourceSize.height
         )
+        let isDragging = cropDragOrigin != nil
         return ZStack(alignment: .topLeading) {
             cropDimming(sourceOrigin: sourceOrigin, sourceSize: sourceSize, selection: selectionRect)
 
-            RoundedRectangle(cornerRadius: 2, style: .continuous)
+            Rectangle()
                 .fill(Color.clear)
                 .contentShape(Rectangle())
-                .overlay(
-                    RoundedRectangle(cornerRadius: 2, style: .continuous)
-                        .stroke(.white.opacity(0.92), lineWidth: 1)
-                )
-                // Thirds, as in any photo crop: quiet at rest, clearer while
-                // the frame is being moved or resized.
+                // Rule of thirds appears only while the frame is moving.
                 .overlay {
                     Path { path in
                         for fraction in [1.0 / 3.0, 2.0 / 3.0] {
@@ -601,16 +713,22 @@ struct CanvasPreview: View {
                             path.addLine(to: CGPoint(x: selectionRect.width, y: selectionRect.height * fraction))
                         }
                     }
-                    .stroke(.white.opacity(cropDragOrigin == nil ? 0.28 : 0.6), lineWidth: 0.5)
-                    .animation(SpringMotion.hover, value: cropDragOrigin == nil)
+                    .stroke(.white.opacity(isDragging ? 0.42 : 0), lineWidth: 0.5)
+                    .animation(SpringMotion.hover, value: isDragging)
                     .allowsHitTesting(false)
+                }
+                .overlay {
+                    Rectangle()
+                        .strokeBorder(EditorTheme.accent, lineWidth: 1.5)
+                        .shadow(color: .black.opacity(0.25), radius: 1)
+                        .allowsHitTesting(false)
                 }
                 .frame(width: selectionRect.width, height: selectionRect.height)
                 .position(x: selectionRect.midX, y: selectionRect.midY)
                 .gesture(cropMoveGesture(sourceSize: sourceSize))
                 .editorCursor(.openHand)
                 // Canvas dragging remains the direct-manipulation path. The
-                // four named pixel steppers in the inspector are the precise
+                // margin fields in the inspector are the precise
                 // keyboard/VoiceOver path, so this mouse-only layer must not
                 // become an inert accessibility stop.
                 .accessibilityHidden(true)
@@ -619,27 +737,27 @@ struct CanvasPreview: View {
                 cropHandle(handle, in: selectionRect, sourceSize: sourceSize)
             }
 
-            HStack(spacing: 8) {
-                AppLineIcon(kind: .crop, size: 13)
-                Text(appLocalized("拖动边缘或四角裁切"))
-                    .font(.appUI(size: 12, weight: .medium))
-                Text("Esc")
-                    .font(.appUI(size: 11, weight: .semibold))
-                    .padding(.horizontal, 6)
-                    .frame(height: 18)
-                    .background(.white.opacity(0.16), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                Text(appLocalized("取消"))
-                    .font(.appUI(size: 12, weight: .medium))
-                    .opacity(0.7)
+            if isDragging {
+                EditorCanvasPill {
+                    Text(EditorCropGeometry.pixelSizeText(crop, source: sourcePixelSize))
+                        .font(.appUI(size: 12, weight: .semibold).monospacedDigit())
+                }
+                .position(cropSizeChipPosition(for: selectionRect, canvasSize: canvasSize))
+                .allowsHitTesting(false)
+                .transition(.opacity)
             }
-            .foregroundStyle(.white)
-            .padding(.horizontal, 13)
-            .frame(height: 32)
-            .background(.black.opacity(0.62), in: Capsule(style: .continuous))
-            .position(x: canvasSize.width / 2, y: canvasSize.height - 26)
-            .allowsHitTesting(false)
         }
+        .animation(SpringMotion.micro, value: isDragging)
         .frame(width: canvasSize.width, height: canvasSize.height)
+    }
+
+    /// Below the frame when there is room, otherwise above it, otherwise
+    /// just inside its bottom edge.
+    func cropSizeChipPosition(for rect: CGRect, canvasSize: CGSize) -> CGPoint {
+        let x = min(max(rect.midX, 60), max(canvasSize.width - 60, 60))
+        if rect.maxY + 34 <= canvasSize.height { return CGPoint(x: x, y: rect.maxY + 20) }
+        if rect.minY - 34 >= 0 { return CGPoint(x: x, y: rect.minY - 20) }
+        return CGPoint(x: x, y: rect.maxY - 24)
     }
 
     func cropSourceProject() -> RecorderProject {
@@ -658,11 +776,15 @@ struct CanvasPreview: View {
             backgroundBlur: 0,
             insetOpacity: 0
         )
+        cropProject.timeline.sourceSequence = cropProject.timeline.sourceSequence.withoutSceneStyles
         cropProject.zoomAnimations = []
         cropProject.timeline.screenMotionClips = []
         cropProject.timeline.cameraMotionClips = []
         cropProject.timeline.mosaicClips = []
         cropProject.timeline.stickerClips = []
+        cropProject.timeline.animationClips = []
+        cropProject.timeline.videoClips = []
+        cropProject.timeline.subtitleCues = []
         cropProject.openingSequence.isEnabled = false
         cropProject.camera.isHidden = true
         cropProject.cursorStyle.assetID = .hidden
@@ -674,9 +796,11 @@ struct CanvasPreview: View {
         size: CGSize,
         sourceAspect: CGFloat
     ) -> FrameScene {
-        return FrameSceneEvaluator.scene(
+        // The frame being cropped is the one under the playhead, so the
+        // scene is evaluated there too (never the opening at 0 s).
+        var scene = FrameSceneEvaluator.scene(
             project: cropProject,
-            time: 0,
+            time: playbackController.latestOutputTime,
             canvasSize: CompositionSize(
                 width: Double(size.width),
                 height: Double(size.height)
@@ -686,6 +810,8 @@ struct CanvasPreview: View {
             cursorMetrics: nil,
             zoomTrack: ZoomAnimationTrack([])
         )
+        scene.insertedMotion = nil
+        return scene
     }
 
     func cropSourceFrame(
@@ -700,7 +826,6 @@ struct CanvasPreview: View {
         )
         return SharedPreviewPlaybackFrame(
             renderPlan: FrameRenderPlan(
-                presentationTime: scene.time,
                 outputDuration: 0,
                 frameRate: cropProject.exportSettings.frameRate.rawValue,
                 scene: scene
@@ -714,34 +839,11 @@ struct CanvasPreview: View {
         sourceSize: CGSize,
         selection: CGRect
     ) -> some View {
-        let sourceMaxX = sourceOrigin.x + sourceSize.width
-        let sourceMaxY = sourceOrigin.y + sourceSize.height
-        return ZStack(alignment: .topLeading) {
-            Color.black.opacity(0.57)
-                .frame(width: sourceSize.width, height: max(selection.minY - sourceOrigin.y, 0))
-                .position(
-                    x: sourceOrigin.x + sourceSize.width / 2,
-                    y: sourceOrigin.y + max(selection.minY - sourceOrigin.y, 0) / 2
-                )
-            Color.black.opacity(0.57)
-                .frame(width: sourceSize.width, height: max(sourceMaxY - selection.maxY, 0))
-                .position(
-                    x: sourceOrigin.x + sourceSize.width / 2,
-                    y: selection.maxY + max(sourceMaxY - selection.maxY, 0) / 2
-                )
-            Color.black.opacity(0.57)
-                .frame(width: max(selection.minX - sourceOrigin.x, 0), height: selection.height)
-                .position(
-                    x: sourceOrigin.x + max(selection.minX - sourceOrigin.x, 0) / 2,
-                    y: selection.midY
-                )
-            Color.black.opacity(0.57)
-                .frame(width: max(sourceMaxX - selection.maxX, 0), height: selection.height)
-                .position(
-                    x: selection.maxX + max(sourceMaxX - selection.maxX, 0) / 2,
-                    y: selection.midY
-                )
+        Path { path in
+            path.addRect(CGRect(origin: sourceOrigin, size: sourceSize))
+            path.addRect(selection)
         }
+        .fill(Color.black.opacity(0.52), style: FillStyle(eoFill: true))
         .allowsHitTesting(false)
     }
 
@@ -752,7 +854,7 @@ struct CanvasPreview: View {
     ) -> some View {
         let position = cropHandlePosition(handle, in: rect)
         return CropHandleGlyph(handle: handle)
-            .shadow(color: .black.opacity(0.45), radius: 2.5, y: 1)
+            .shadow(color: .black.opacity(0.35), radius: 1.5, y: 0.5)
             .frame(width: 30, height: 30)
             .contentShape(Rectangle())
             .editorCursor(cropCursor(for: handle))
@@ -826,35 +928,14 @@ struct CanvasPreview: View {
     ) -> NormalizedCrop {
         let minimumWidth = max(24 / max(Double(sourcePixelSize.width), 1), 0.02)
         let minimumHeight = max(24 / max(Double(sourcePixelSize.height), 1), 0.02)
-        var left = origin.x
-        var right = origin.x + origin.width
-        var top = origin.y
-        var bottom = origin.y + origin.height
-
-        switch handle {
-        case .topLeft:
-            left = min(max(left + dx, 0), right - minimumWidth)
-            top = min(max(top + dy, 0), bottom - minimumHeight)
-        case .top:
-            top = min(max(top + dy, 0), bottom - minimumHeight)
-        case .topRight:
-            right = max(min(right + dx, 1), left + minimumWidth)
-            top = min(max(top + dy, 0), bottom - minimumHeight)
-        case .right:
-            right = max(min(right + dx, 1), left + minimumWidth)
-        case .bottomRight:
-            right = max(min(right + dx, 1), left + minimumWidth)
-            bottom = max(min(bottom + dy, 1), top + minimumHeight)
-        case .bottom:
-            bottom = max(min(bottom + dy, 1), top + minimumHeight)
-        case .bottomLeft:
-            left = min(max(left + dx, 0), right - minimumWidth)
-            bottom = max(min(bottom + dy, 1), top + minimumHeight)
-        case .left:
-            left = min(max(left + dx, 0), right - minimumWidth)
-        }
-
-        return NormalizedCrop(x: left, y: top, width: right - left, height: bottom - top).clamped()
+        // ⇧ while dragging a corner keeps the current shape; a locked ratio
+        // from the inspector always applies.
+        let lockedRatio = EditorCropAspectLock.shared.aspect.normalizedRatio(source: sourcePixelSize)
+            ?? (NSEvent.modifierFlags.contains(.shift) ? origin.width / max(origin.height, 0.0001) : nil)
+        return EditorCropGeometry.resized(
+            origin, handle: handle, dx: dx, dy: dy, ratio: lockedRatio,
+            minimumWidth: minimumWidth, minimumHeight: minimumHeight
+        )
     }
 
     func aspectFittedSize(aspectRatio: CGFloat, inside bounds: CGSize) -> CGSize {
@@ -874,7 +955,14 @@ struct CanvasPreview: View {
     ) -> some View {
         let quad = scene.projectedQuad
         let shape = ProjectedScreenShape(quad: quad)
-        let handle = quad.resizeHandlePoint
+        var handle = quad.resizeHandlePoint
+        if project.timeline.insertedMedia(atOutputTime: playbackController.latestOutputTime) != nil {
+            // A cover-fitted portrait/square source can extend beyond the
+            // canvas. Keep its resize handle reachable in the visible viewport.
+            handle = CompositionPoint(
+                x: min(max(handle.x, 6), max(Double(canvasSize.width) - 6, 6)),
+                y: min(max(handle.y, 6), max(Double(canvasSize.height) - 6, 6)))
+        }
         let bounds = quad.bounds
         let scaleReference = max(min(scene.finalRect.width, scene.finalRect.height), 1)
         let selection = scope.selection ?? .screen
@@ -909,7 +997,7 @@ struct CanvasPreview: View {
                         .onChanged { value in
                 EditorDragFrameCoalescer.shared.submit {
                             if screenDragOrigin == nil {
-                                guard editorStore.beginCanvasInteraction(
+                                guard beginSceneCanvasInteraction(
                                     scope: scope,
                                     operation: .move
                                 ) else { return }
@@ -1005,7 +1093,6 @@ struct CanvasPreview: View {
                 }
 
             EditorCanvasHandle(
-                color: EditorConsole.palette(for: scope.selection ?? .screen).fill,
                 active: isResizing
             )
                 .position(x: CGFloat(handle.x), y: CGFloat(handle.y))
@@ -1014,7 +1101,7 @@ struct CanvasPreview: View {
                         .onChanged { value in
                 EditorDragFrameCoalescer.shared.submit {
                             if screenScaleOrigin == nil {
-                                guard editorStore.beginCanvasInteraction(
+                                guard beginSceneCanvasInteraction(
                                     scope: scope,
                                     operation: .resize
                                 ) else { return }
@@ -1043,6 +1130,7 @@ struct CanvasPreview: View {
                                 referenceLength: scaleReference
                             )
                             let limits = scope == .screen(.base)
+                                && project.timeline.insertedMedia(atOutputTime: playbackController.latestOutputTime) == nil
                                 ? 0.7...2.2
                                 : 0.25...4
                             editorStore.updateCanvasScale(
@@ -1073,8 +1161,77 @@ struct CanvasPreview: View {
                 )
                 .accessibilityHidden(true)
 
+            // Linear-focus clips keep their own centre handle instead.
+            if case let .screen(.motion(id)) = scope,
+               project.timeline.screenMotionClips.first(where: { $0.id == id })?.focusEffect == nil {
+                screenTiltGizmo(clipID: id, quad: quad)
+            }
         }
         .frame(width: canvasSize.width, height: canvasSize.height)
+    }
+
+    /// 屏幕 3D · 选中后: a round handle in the middle of the projected screen.
+    /// Drag it to tilt (up/down = X, left/right = Y); the frame follows in
+    /// perspective. The float bar above offers the four presets.
+    func screenTiltGizmo(clipID: UUID, quad: ProjectedScreenQuad) -> some View {
+        let center = CGPoint(
+            x: CGFloat(quad.corners.map(\.x).reduce(0, +) / 4),
+            y: CGFloat(quad.corners.map(\.y).reduce(0, +) / 4)
+        )
+        let active = screenTiltOrigin != nil || isScreenTiltGizmoHovered
+        return ZStack {
+            Circle()
+                .fill(Color.black.opacity(active ? 0.08 : 0.001))
+            Circle()
+                .strokeBorder(EditorTheme.accent.opacity(0.85),
+                              style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+                .shadow(color: .black.opacity(0.25), radius: 1)
+            Circle()
+                .fill(EditorTheme.accent)
+                .frame(width: 10, height: 10)
+                .overlay(Circle().strokeBorder(Color.white, lineWidth: 2).padding(-2))
+                .shadow(color: .black.opacity(0.25), radius: 1.5, y: 0.5)
+        }
+        .frame(width: 44, height: 44)
+        .contentShape(Circle())
+        .scaleEffect(screenTiltOrigin != nil ? 1.06 : 1)
+        .animation(SpringMotion.micro, value: active)
+        .position(center)
+        .onHover { isScreenTiltGizmoHovered = $0 }
+        .editorCursor(screenTiltOrigin == nil ? .openHand : .closedHand)
+        .highPriorityGesture(
+            DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                .onChanged { value in
+                    EditorDragFrameCoalescer.shared.submit {
+                        if screenTiltOrigin == nil {
+                            guard let clip = project.timeline.screenMotionClips.first(where: { $0.id == clipID }) else { return }
+                            editorStore.cancelInteraction()
+                            editorStore.beginInteraction(tool: .editScreenMotion, selection: .screenMotion(clipID))
+                            screenTiltOrigin = (clipID, clip.target.rotationX, clip.target.rotationY)
+                        }
+                        guard let origin = screenTiltOrigin else { return }
+                        let x = min(max(origin.x - Double(value.translation.height) * EditorTiltPad.dragGain,
+                                        -EditorTiltPad.maximumX), EditorTiltPad.maximumX)
+                        let y = min(max(origin.y + Double(value.translation.width) * EditorTiltPad.dragGain,
+                                        -EditorTiltPad.maximumY), EditorTiltPad.maximumY)
+                        editorStore.updateInteraction { project in
+                            guard let index = project.timeline.screenMotionClips.firstIndex(where: { $0.id == origin.id }) else { return }
+                            project.timeline.screenMotionClips[index].target.rotationX = x
+                            project.timeline.screenMotionClips[index].target.rotationY = y
+                        }
+                    }
+                }
+                .onEnded { _ in
+                    EditorDragFrameCoalescer.shared.flush()
+                    if screenTiltOrigin != nil {
+                        commitCanvasInteraction(actionName: "调整屏幕 3D 倾斜")
+                    }
+                    screenTiltOrigin = nil
+                }
+        )
+        .help(appLocalized("拖动倾斜"))
+        .accessibilityLabel(appLocalized("3D 姿态"))
+        .accessibilityHint(appLocalized("拖动倾斜"))
     }
 
     @ViewBuilder
@@ -1085,8 +1242,8 @@ struct CanvasPreview: View {
         scope: EditorCanvasEditScope,
         dragPreviewImage: NSImage?
     ) -> some View {
-        let effectiveSize = scope.scale(in: project) ?? project.camera.size
-        let effectivePosition = scope.position(in: project) ?? project.camera.position
+        let effectiveSize = scope.scale(in: interactionSceneProject) ?? interactionSceneProject.camera.size
+        let effectivePosition = scope.position(in: interactionSceneProject) ?? interactionSceneProject.camera.position
         let isSelected: Bool = {
             if case .camera = editScope { return true }
             return false
@@ -1151,7 +1308,7 @@ struct CanvasPreview: View {
                 EditorDragFrameCoalescer.shared.submit {
                         guard cameraSizeOrigin == nil else { return }
                         if cameraDragOrigin == nil {
-                            guard editorStore.beginCanvasInteraction(
+                            guard beginSceneCanvasInteraction(
                                 scope: scope,
                                 operation: .move
                             ) else { return }
@@ -1164,11 +1321,18 @@ struct CanvasPreview: View {
                         }
                         guard let origin = cameraDragOrigin,
                               let interactionScope = cameraDragScope else { return }
+                        let base = Double(min(size.width, size.height))
+                        let travelX = size.width - width - CGFloat(CompositionSceneEvaluator.cameraEdgeInset(
+                            canvas: Double(size.width), camera: Double(width), base: base,
+                            style: interactionSceneProject.camera, styleScale: Double(previewRenderScale(for: size)))) * 2
+                        let travelY = size.height - height - CGFloat(CompositionSceneEvaluator.cameraEdgeInset(
+                            canvas: Double(size.height), camera: Double(height), base: base,
+                            style: interactionSceneProject.camera, styleScale: Double(previewRenderScale(for: size)))) * 2
                         let proposed = NormalizedPoint(
                             x: min(
                                 max(
                                     origin.x
-                                        + Double(value.translation.width / max(size.width - width, 1)),
+                                        + Double(value.translation.width / max(travelX, 1)),
                                     0
                                 ),
                                 1
@@ -1176,7 +1340,7 @@ struct CanvasPreview: View {
                             y: min(
                                 max(
                                     origin.y
-                                        + Double(value.translation.height / max(size.height - height, 1)),
+                                        + Double(value.translation.height / max(travelY, 1)),
                                     0
                                 ),
                                 1
@@ -1244,7 +1408,6 @@ struct CanvasPreview: View {
 
             if isSelected {
                 EditorCanvasHandle(
-                    color: EditorConsole.palette(for: scope.selection ?? .screen).fill,
                     active: isResizing
                 )
                     .offset(x: 15, y: 15)
@@ -1256,7 +1419,7 @@ struct CanvasPreview: View {
                                 cameraDragOrigin = nil
                                 cameraDragScope = nil
                                 if cameraSizeOrigin == nil {
-                                    guard editorStore.beginCanvasInteraction(
+                                    guard beginSceneCanvasInteraction(
                                         scope: scope,
                                         operation: .resize
                                     ) else { return }
@@ -1324,12 +1487,10 @@ struct CanvasPreview: View {
         evaluation: CanvasPlaybackEvaluationContext,
         cacheHandle: EditorCanvasPlaybackPlanCache.Handle?
     ) -> SharedPreviewPlaybackFrameProvider {
-        { tick in
-            if let cacheHandle,
-               let cached = playbackPlanCache.frame(
-                   at: tick.outputTime,
-                   handle: cacheHandle
-               ) {
+        let frames = playbackPlanCache.snapshot(handle: cacheHandle)
+        return { tick in
+            let index = Int((max(tick.outputTime, 0) * Double(PreviewAnimationCadence.framesPerSecond)).rounded())
+            if let cached = frames[index] {
                 return evaluation.refreshingCursor(in: cached, at: tick.outputTime)
             }
             return evaluation.playbackFrame(at: tick.outputTime)
@@ -1410,8 +1571,7 @@ struct EditorCanvasRestingCover: View {
 
     var body: some View {
         ZStack {
-            LinearGradient(colors: [EditorTheme.panelRaised, EditorTheme.stage],
-                           startPoint: .top, endPoint: .bottom)
+            EditorTheme.stage
             if let image, let frosted = Self.frosted(image) {
                 // A 40 px copy enlarged with smooth interpolation reads as
                 // frosted glass without running a blur filter every frame.
@@ -1427,11 +1587,10 @@ struct EditorCanvasRestingCover: View {
                         .font(.appUI(size: 12, weight: .medium))
                 }
                 .foregroundStyle(EditorTheme.secondaryText)
-                .padding(.horizontal, 14)
-                .frame(height: 30)
-                .background(.regularMaterial, in: Capsule(style: .continuous))
-                .overlay { Capsule(style: .continuous).strokeBorder(EditorTheme.islandOutline, lineWidth: 0.5) }
-                .shadow(color: EditorTheme.softShadow, radius: 10, y: 4)
+                .padding(.horizontal, 10)
+                .frame(height: 28)
+                .background(EditorTheme.panelSurface, in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
+                .overlay { RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous).strokeBorder(EditorTheme.islandOutline, lineWidth: 1) }
             }
         }
     }
@@ -1461,15 +1620,18 @@ struct EditorCanvasRestingCover: View {
 }
 
 
-/// Corner handles are bold L-brackets and edge handles short bars, the way
-/// a photo crop reads; each sits exactly on the frame line.
+/// Selection-frame handles: short white L-brackets hugging each corner and
+/// small white bars at the edge midpoints, each with a thin accent rim so
+/// they read on light and dark footage alike.
 private struct CropHandleGlyph: View {
     let handle: CropHandle
+    @State private var hovered = false
 
     var body: some View {
         Canvas { context, size in
             let c = CGPoint(x: size.width / 2, y: size.height / 2)
-            let arm: CGFloat = 13
+            let arm: CGFloat = hovered ? 12 : 10
+            let bar: CGFloat = hovered ? 9 : 7
             var path = Path()
             switch handle {
             case .topLeft:
@@ -1481,13 +1643,18 @@ private struct CropHandleGlyph: View {
             case .bottomLeft:
                 path.move(to: CGPoint(x: c.x + arm, y: c.y)); path.addLine(to: c); path.addLine(to: CGPoint(x: c.x, y: c.y - arm))
             case .top, .bottom:
-                path.move(to: CGPoint(x: c.x - 10, y: c.y)); path.addLine(to: CGPoint(x: c.x + 10, y: c.y))
+                path.move(to: CGPoint(x: c.x - bar, y: c.y)); path.addLine(to: CGPoint(x: c.x + bar, y: c.y))
             case .left, .right:
-                path.move(to: CGPoint(x: c.x, y: c.y - 10)); path.addLine(to: CGPoint(x: c.x, y: c.y + 10))
+                path.move(to: CGPoint(x: c.x, y: c.y - bar)); path.addLine(to: CGPoint(x: c.x, y: c.y + bar))
             }
-            context.stroke(path, with: .color(.white), style: StrokeStyle(lineWidth: 3.5, lineCap: .round, lineJoin: .round))
+            context.stroke(path, with: .color(EditorTheme.accent),
+                           style: StrokeStyle(lineWidth: 4.5, lineCap: .square, lineJoin: .miter))
+            context.stroke(path, with: .color(.white),
+                           style: StrokeStyle(lineWidth: 2.5, lineCap: .square, lineJoin: .miter))
         }
         .frame(width: 30, height: 30)
+        .onHover { hovered = $0 }
+        .animation(SpringMotion.micro, value: hovered)
     }
 }
 
@@ -1499,9 +1666,8 @@ private struct EditorCropReveal: ViewModifier {
     func body(content: Content) -> some View {
         content
             .opacity(shown || RecorderMotion.reduces ? 1 : 0)
-            .scaleEffect(shown || RecorderMotion.reduces ? 1 : 1.035)
             .onAppear {
-                withAnimation(.spring(response: 0.42, dampingFraction: 0.86).delay(0.12)) { shown = true }
+                withAnimation(SpringMotion.fade) { shown = true }
             }
     }
 }

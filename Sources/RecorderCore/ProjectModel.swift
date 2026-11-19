@@ -7,7 +7,8 @@ public enum ProjectSchema {
     public static let minimumSupportedVersion = 23
     // Version 24 adds authored canvas ratios. Version 23 projects retain their defaults.
     // Version 27 persists recording markers; older apps must not silently discard them.
-    public static let currentVersion = 27
+    // Version 28 adds independent recording sources and source-aware segments/markers.
+    public static let currentVersion = 28
 
     static func validateForDecoding(_ version: Int) throws {
         guard version >= minimumSupportedVersion else {
@@ -114,7 +115,7 @@ public enum ScreenFrameStyle: String, CaseIterable, Codable, Identifiable, Senda
     /// saved geometry but share the same picker card.
     public static let allCases: [ScreenFrameStyle] = [
         .none, .windowLight, .windowDark, .browserLight, .browserDark,
-        .devicePhone,
+        .devicePhone, .deviceTablet,
     ]
 
     public var id: String { rawValue }
@@ -313,6 +314,17 @@ public enum BackgroundPatternPreset: String, CaseIterable, Codable, Sendable, Id
     case isometricMesh = "立体等角网"
 
     public var id: String { rawValue }
+
+    /// Plain names for the picker; `rawValue` stays the stored identifier.
+    public var displayName: String {
+        switch self {
+        case .obsidianGrid: "深色网格"
+        case .engineeringWhiteGrid: "浅色网格"
+        case .midnightDots: "深色点阵"
+        case .architecturalDots: "浅色点阵"
+        case .isometricMesh: "等角网格"
+        }
+    }
 }
 
 public enum DynamicBackgroundPreset: String, CaseIterable, Codable, Sendable, Identifiable {
@@ -349,9 +361,9 @@ public enum DynamicBackgroundPreset: String, CaseIterable, Codable, Sendable, Id
     /// describe the current authored look more precisely.
     public var displayName: String {
         switch self {
-        case .cyberDriftGrid: "流金缓移网格"
-        case .starfieldDots: "暖星漫步点阵"
-        case .auroraFluid: "蓝白流体云幕"
+        case .cyberDriftGrid: "流动网格"
+        case .starfieldDots: "流动点阵"
+        case .auroraFluid: "流体渐变"
         }
     }
 }
@@ -535,10 +547,6 @@ public struct CursorAssetID: RawRepresentable, Codable, Hashable, Identifiable, 
 
     // 已退役的生成样式 ID：保留常量仅供旧项目解码，资源目录中已无
     // 对应资产，解析时统一回落到系统箭头。
-    public static let classicLavender = CursorAssetID(rawValue: "cursor.classic-lavender")
-    public static let violetGlass = CursorAssetID(rawValue: "cursor.violet-glass")
-    public static let graphiteIvory = CursorAssetID(rawValue: "cursor.graphite-ivory")
-    public static let creamCoral = CursorAssetID(rawValue: "cursor.cream-coral")
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.singleValueContainer()
@@ -592,6 +600,9 @@ public struct CursorStyle: Codable, Equatable, Sendable {
     /// The visible presets run from `2` through `4`; `.none` on the motion
     /// style is the single explicit way to disable the effect.
     public var motionTiltStrength: Double
+    /// The cursor bitmap briefly presses in (hotspot-anchored) on mouse-down.
+    /// Independent of `clickEffectStyle`, so it coexists with every ripple.
+    public var pressesOnClick: Bool
 
     public var showsClickEffect: Bool {
         get { clickEffectStyle != .none }
@@ -613,7 +624,8 @@ public struct CursorStyle: Codable, Equatable, Sendable {
         clickColor: HexColor? = nil,
         clickOpacity: Double = 0.8,
         clickScale: Double = 1.0,
-        motionTiltStrength: Double = 2.0
+        motionTiltStrength: Double = 2.0,
+        pressesOnClick: Bool = true
     ) {
         self.assetID = assetID.rawValue.isEmpty ? .systemArrow : assetID
         self.size = min(max(size, 0.25), 6)
@@ -624,89 +636,13 @@ public struct CursorStyle: Codable, Equatable, Sendable {
         self.clickOpacity = min(max(clickOpacity, 0.05), 1.0)
         self.clickScale = min(max(clickScale, 0.4), 3.0)
         self.motionTiltStrength = min(max(motionTiltStrength, 2), 4)
-    }
-
-    public init(
-        assetID: CursorAssetID = .automatic,
-        size: Double = 1.25,
-        hideWhenIdle: Bool = false,
-        idleDelay: Double = 1.2,
-        showsClickEffect: Bool
-    ) {
-        self.init(
-            assetID: assetID,
-            size: size,
-            hideWhenIdle: hideWhenIdle,
-            idleDelay: idleDelay,
-            clickEffectStyle: showsClickEffect ? .ripple : .none,
-            clickColor: nil,
-            clickOpacity: 0.8,
-            clickScale: 1.0
-        )
-    }
-
-    /// Source-compatibility bridge for callers that still construct the four
-    /// cursor choices supported before stable asset identifiers were added.
-    public init(
-        appearance: CursorAppearance,
-        size: Double = 1.25,
-        hideWhenIdle: Bool = false,
-        idleDelay: Double = 1.2,
-        showsClickEffect: Bool = true
-    ) {
-        self.init(
-            assetID: Self.assetID(for: appearance),
-            size: size,
-            hideWhenIdle: hideWhenIdle,
-            idleDelay: idleDelay,
-            clickEffectStyle: showsClickEffect ? .ripple : .none,
-            clickColor: nil,
-            clickOpacity: 0.8,
-            clickScale: 1.0
-        )
-    }
-
-    public init(
-        appearance: CursorAppearance,
-        size: Double = 1.25,
-        hideWhenIdle: Bool = false,
-        idleDelay: Double = 1.2,
-        clickEffectStyle: CursorClickEffectStyle,
-        clickColor: HexColor? = nil,
-        clickOpacity: Double = 0.8,
-        clickScale: Double = 1.0
-    ) {
-        self.init(
-            assetID: Self.assetID(for: appearance),
-            size: size,
-            hideWhenIdle: hideWhenIdle,
-            idleDelay: idleDelay,
-            clickEffectStyle: clickEffectStyle,
-            clickColor: clickColor,
-            clickOpacity: clickOpacity,
-            clickScale: clickScale
-        )
-    }
-
-    /// Compatibility view for older app code. New persistence and rendering
-    /// code must use `assetID`; custom artwork maps to the arrow only when an
-    /// old caller explicitly asks for this legacy representation.
-    public var appearance: CursorAppearance {
-        get {
-            switch assetID {
-            case .systemPointingHand: return .pointingHand
-            case .systemCrosshair: return .crosshair
-            case .hidden: return .hidden
-            default: return .arrow
-            }
-        }
-        set { assetID = Self.assetID(for: newValue) }
+        self.pressesOnClick = pressesOnClick
     }
 
     private enum CodingKeys: String, CodingKey {
         case assetID, appearance, size, hideWhenIdle, idleDelay
         case showsClickEffect, clickEffectStyle, clickColor, clickOpacity, clickScale
-        case motionTiltStrength
+        case motionTiltStrength, pressesOnClick
     }
 
     public init(from decoder: any Decoder) throws {
@@ -744,7 +680,11 @@ public struct CursorStyle: Codable, Equatable, Sendable {
             motionTiltStrength: try container.decodeIfPresent(
                 Double.self,
                 forKey: .motionTiltStrength
-            ) ?? 2.0
+            ) ?? 2.0,
+            pressesOnClick: try container.decodeIfPresent(
+                Bool.self,
+                forKey: .pressesOnClick
+            ) ?? true
         )
     }
 
@@ -759,6 +699,7 @@ public struct CursorStyle: Codable, Equatable, Sendable {
         try container.encodeIfPresent(clickColor, forKey: .clickColor)
         try container.encode(clickOpacity, forKey: .clickOpacity)
         try container.encode(clickScale, forKey: .clickScale)
+        try container.encode(pressesOnClick, forKey: .pressesOnClick)
     }
 
     private static func assetID(for appearance: CursorAppearance) -> CursorAssetID {
@@ -1192,6 +1133,7 @@ public struct CameraStyle: Codable, Equatable, Sendable {
     /// Additional source zoom inside the camera mask. It never changes the
     /// mask's canvas rect.
     public var contentScale: Double
+    public var beauty: CameraBeautySettings
 
     public init(
         shape: CameraShape = .square,
@@ -1204,7 +1146,8 @@ public struct CameraStyle: Codable, Equatable, Sendable {
         isHidden: Bool = false,
         scaleDuringZoom: Double = 0.7,
         contentPosition: NormalizedPoint = NormalizedPoint(x: 0.5, y: 0.5),
-        contentScale: Double = 1
+        contentScale: Double = 1,
+        beauty: CameraBeautySettings = CameraBeautySettings()
     ) {
         self.shape = shape
         self.position = position
@@ -1217,12 +1160,13 @@ public struct CameraStyle: Codable, Equatable, Sendable {
         self.scaleDuringZoom = scaleDuringZoom
         self.contentPosition = contentPosition
         self.contentScale = contentScale
+        self.beauty = beauty
     }
 
     private enum CodingKeys: String, CodingKey {
         case shape, position, size, borderWidth, shadowStrength
         case roundness, isMirrored, isHidden, scaleDuringZoom
-        case contentPosition, contentScale
+        case contentPosition, contentScale, beauty
     }
 
     public init(from decoder: any Decoder) throws {
@@ -1242,6 +1186,7 @@ public struct CameraStyle: Codable, Equatable, Sendable {
             forKey: .contentPosition
         ) ?? NormalizedPoint(x: 0.5, y: 0.5)
         contentScale = try container.decodeIfPresent(Double.self, forKey: .contentScale) ?? 1
+        beauty = try container.decodeIfPresent(CameraBeautySettings.self, forKey: .beauty) ?? CameraBeautySettings()
     }
 }
 

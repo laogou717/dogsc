@@ -44,7 +44,7 @@ struct PreviewEffectPrewarmSignature: Hashable {
     }
 }
 
-extension SharedRenderedPreviewNSView {
+extension SharedPreviewEngine {
     /// This is preparation, not another offscreen video render. Apple's API
     /// compiles kernels and reserves volatile intermediates in the same context
     /// the next visible frames use. Only one graph runs per idle turn; there is

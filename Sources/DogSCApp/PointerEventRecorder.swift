@@ -187,10 +187,14 @@ private final class PointerEventBuffer: @unchecked Sendable {
         lock.unlock()
     }
 
-    func resume(at uptime: TimeInterval) {
+    func resume(at uptime: TimeInterval, accumulatedPauseDuration: TimeInterval? = nil) {
         lock.lock()
         if let pausedAtUptime {
-            accumulatedPausedDuration += max(uptime - pausedAtUptime, 0)
+            if let accumulatedPauseDuration {
+                accumulatedPausedDuration = accumulatedPauseDuration
+            } else {
+                accumulatedPausedDuration += max(uptime - pausedAtUptime, 0)
+            }
             self.pausedAtUptime = nil
         }
         lock.unlock()
@@ -351,7 +355,6 @@ private final class PointerEventTapRunner: @unchecked Sendable {
     private var thread: Thread?
     private var runLoop: CFRunLoop?
     private var tap: CFMachPort?
-    private var source: CFRunLoopSource?
 
     init(buffer: PointerEventBuffer) {
         self.buffer = buffer
@@ -439,7 +442,6 @@ private final class PointerEventTapRunner: @unchecked Sendable {
         }
         self.runLoop = runLoop
         self.tap = tap
-        self.source = source
         didInstall = true
         lock.unlock()
         buffer.attachEventTap(tap)
@@ -456,7 +458,6 @@ private final class PointerEventTapRunner: @unchecked Sendable {
         lock.lock()
         self.runLoop = nil
         self.tap = nil
-        self.source = nil
         lock.unlock()
     }
 }
@@ -550,8 +551,11 @@ final class PointerEventRecorder {
         buffer.pause(at: CMClockGetTime(CMClockGetHostTimeClock()).seconds)
     }
 
-    func resume() {
-        buffer.resume(at: CMClockGetTime(CMClockGetHostTimeClock()).seconds)
+    func resume(at timing: RecordingResumeTiming? = nil) {
+        buffer.resume(
+            at: timing?.hostTime ?? CMClockGetTime(CMClockGetHostTimeClock()).seconds,
+            accumulatedPauseDuration: timing?.accumulatedPauseDuration
+        )
         sampleSystemCursorShape(force: true)
     }
 

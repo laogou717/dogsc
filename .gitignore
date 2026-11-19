@@ -9,7 +9,17 @@ DerivedData/
 .env.*
 *.p12
 *.pfx
+*.pem
+*.p8
+*.key
 *.keychain-db
+*.log
+*.ips
+*.trace/
+*.profraw
+*.profdata
 *.dogscproject/
 *.silkyproject/
 /open-check-project.command
+/AGENTS.md
+/Tests/

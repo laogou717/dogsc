@@ -15,7 +15,6 @@ enum RecordingPointerFinalization {
         events: [PointerEventRecord],
         startOffset: TimeInterval,
         sourceStartTime: TimeInterval,
-        createsAutomaticZooms: Bool,
         easing: ZoomEasingPreset,
         transitionDuration: TimeInterval
     ) throws -> RecordingPointerFinalizationResult {
@@ -27,7 +26,7 @@ enum RecordingPointerFinalization {
         )
         try Task.checkCancellation()
         let animations = AutoZoomPlanner.makeAnimations(
-            for: createsAutomaticZooms ? aligned : [],
+            for: aligned,
             easing: easing,
             transitionDuration: transitionDuration
         )

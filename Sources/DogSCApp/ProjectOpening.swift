@@ -78,6 +78,20 @@ struct ProjectOpenSnapshot: Sendable {
         default:
             break
         }
+        if case var .edited(segments) = project.timeline.sourceSequence {
+            for index in segments.indices {
+                guard var style = segments[index].sceneStyle else { continue }
+                switch style.canvas.backgroundSource {
+                case let .projectImage(path):
+                    style.canvas.backgroundSource = .projectImage(relativePath: relocated(path, directories: ["assets", "Sources"]))
+                case let .projectVideo(path):
+                    style.canvas.backgroundSource = .projectVideo(relativePath: relocated(path, directories: ["assets", "Sources"]))
+                default: break
+                }
+                segments[index].sceneStyle = style
+            }
+            project.timeline.sourceSequence = .edited(segments)
+        }
         for index in project.timeline.stickerClips.indices {
             project.timeline.stickerClips[index].relativePath = relocated(
                 project.timeline.stickerClips[index].relativePath,
@@ -136,6 +150,27 @@ struct ProjectOpenSnapshot: Sendable {
         if project.media?.microphone != nil, microphoneRecordingURL == nil {
             warnings.append(appLocalized("项目引用的麦克风素材不存在或路径无效。"))
         }
+        if loaded.droppedSourceSegments > 0 {
+            warnings.append(String(format: appLocalized("已丢弃 %ld 段主轨片段，它们引用的录制已不在项目中。"),
+                                   loaded.droppedSourceSegments))
+        }
+        // An imported recording keeps its own media. Reporting it as the main
+        // recording used to send the user hunting through a healthy file.
+        for source in project.additionalSources {
+            let name = source.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let title = name.isEmpty ? appLocalized("未命名录制") : name
+            func report(_ reference: ProjectMediaReference?, role: String) {
+                guard let reference,
+                      ProjectStore.resolveMediaPath(reference.relativePath, session: loaded.session) == nil
+                else { return }
+                warnings.append(String(format: appLocalized("项目引用的录制「%@」的%@素材不存在或路径无效。"),
+                                       title, appLocalized(role)))
+            }
+            report(source.media.screen, role: "屏幕")
+            report(source.media.camera, role: "摄像头")
+            report(source.media.microphone, role: "麦克风")
+            report(source.media.pointerEvents, role: "鼠标事件")
+        }
         switch project.canvas.backgroundSource {
         case let .projectImage(relativePath), let .projectVideo(relativePath):
             if ProjectStore.resolve(
@@ -152,10 +187,7 @@ struct ProjectOpenSnapshot: Sendable {
             break
         }
         let missingStickerCount = Set(project.timeline.stickerClips.compactMap { clip in
-            ProjectStore.resolve(
-                relativePath: clip.relativePath,
-                session: loaded.session
-            ) == nil ? clip.relativePath : nil
+            ProjectStore.resolveMediaPath(clip.relativePath, session: loaded.session) == nil ? clip.relativePath : nil
         }).count
         if missingStickerCount > 0 {
             warnings.append(String(format: appLocalized("有 %ld 项贴图素材不存在或路径无效。"), missingStickerCount))
@@ -177,12 +209,12 @@ struct ProjectOpenSnapshot: Sendable {
         // background snapshot, not the AppKit main-actor publication step.
         let originalMotion = project.motion
         let originalAutomaticTrack = project.zoomAnimations
-        let regroupedAutomaticTrack = AutoZoomPlanner.repairingLegacyAutomaticAnimations(
+        let regroupedAutomaticTrack = project.additionalSources.isEmpty ? AutoZoomPlanner.repairingLegacyAutomaticAnimations(
             originalAutomaticTrack,
             for: pointerEvents,
             easing: originalMotion.defaultZoomEasing,
             transitionDuration: originalMotion.defaultZoomTransitionDuration
-        )
+        ) : originalAutomaticTrack
         let upgradedMotion = LegacyMotionDefaultsUpgrade.upgraded(originalMotion)
         project.motion = upgradedMotion
         if regroupedAutomaticTrack != originalAutomaticTrack,
@@ -203,6 +235,17 @@ struct ProjectOpenSnapshot: Sendable {
             defaultTransitionDuration: project.motion.defaultZoomTransitionDuration
         )
         try Task.checkCancellation()
+        // Recovery already lost one revision; its older snapshot may not name
+        // every directory the lost one still used, so nothing is collected.
+        if !loaded.recoveredFromPreviousRevision {
+            let collected = ProjectStore.collectUnusedImportedSources(
+                project: project,
+                session: loaded.session
+            )
+            if collected > 0 {
+                warnings.append(String(format: appLocalized("已清理 %ld 份不再使用的导入录制素材。"), collected))
+            }
+        }
 
         return ProjectOpenSnapshot(
             normalizedURL: normalizedURL,

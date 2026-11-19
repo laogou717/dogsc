@@ -11,9 +11,9 @@ enum FrameColorProfileError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .unsupported:
-            "当前版本只支持桌面 SDR 成片。"
+            appLocalized("当前版本只支持桌面 SDR 成片。")
         case .unavailableColorSpace:
-            "系统无法建立 sRGB 色彩空间。"
+            appLocalized("系统无法建立 sRGB 色彩空间。")
         }
     }
 }
@@ -22,7 +22,6 @@ enum FrameColorProfileError: LocalizedError {
 /// export must construct their Core Image contexts through this value instead
 /// of falling back to a display-dependent RGB space.
 struct CoreImageFrameColorProfile: @unchecked Sendable {
-    let contract: FrameColorContract
     let workingColorSpace: CGColorSpace
     let outputColorSpace: CGColorSpace
 
@@ -34,7 +33,6 @@ struct CoreImageFrameColorProfile: @unchecked Sendable {
               let output = CGColorSpace(name: CGColorSpace.sRGB) else {
             throw FrameColorProfileError.unavailableColorSpace
         }
-        self.contract = contract
         workingColorSpace = working
         outputColorSpace = output
     }

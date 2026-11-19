@@ -11,6 +11,7 @@ struct CanvasManipulationReadout {
 
 extension CanvasPreview {
     var directCanvasManipulationSelection: EditorSelection? {
+        if let screenTiltOrigin { return .screenMotion(screenTiltOrigin.id) }
         if screenScaleOrigin != nil { return screenScaleScope?.selection }
         if screenDragOrigin != nil { return screenDragScope?.selection }
         if cameraSizeOrigin != nil { return cameraSizeScope?.selection }
@@ -58,7 +59,6 @@ extension CanvasPreview {
                         Circle().stroke(EditorTheme.mediaAccent, lineWidth: 1.25)
                     }
                     .frame(width: 7, height: 7)
-                    .shadow(color: EditorTheme.mediaAccent.opacity(0.38), radius: 4)
                     .position(
                         x: canvasSnapGuideX * canvasSize.width,
                         y: canvasSnapGuideY * canvasSize.height
@@ -66,33 +66,17 @@ extension CanvasPreview {
             }
 
             if let readout = canvasManipulationReadout() {
-                HStack(spacing: 7) {
-                    EditorSymbolLabel(readout.title, systemImage: readout.systemImage)
-                        .foregroundStyle(Color.white.opacity(0.82))
-                    Rectangle()
-                        .fill(Color.white.opacity(0.25))
-                        .frame(width: 1, height: 13)
+                EditorCanvasPill {
+                    Text(appLocalized(readout.title))
+                        .foregroundStyle(Color.white.opacity(0.7))
                     Text(readout.value)
-                        .monospacedDigit()
-                        .foregroundStyle(Color.white)
+                        .font(.appUI(size: 12, weight: .semibold).monospacedDigit())
                 }
-                .font(.appUI(size: 12, weight: .semibold))
-                .padding(.horizontal, 12)
-                .frame(height: 32)
-                .background(
-                    Color(red: 0.11, green: 0.12, blue: 0.13).opacity(0.96),
-                    in: RoundedRectangle(cornerRadius: 9, style: .continuous)
-                )
-                .overlay {
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .stroke(Color.white.opacity(0.2), lineWidth: 0.75)
-                }
-                .shadow(color: Color.black.opacity(0.25), radius: 6, y: 2)
                 .position(
                     x: canvasSize.width / 2,
-                    y: readout.objectY > 0.65
-                        ? 22
-                        : max(canvasSize.height - 22, 22)
+                    y: readout.objectY < 0.25 && canvasSize.height > 120
+                        ? max(canvasSize.height - 26, 26)
+                        : 26
                 )
                 .transaction { $0.animation = nil }
             }
@@ -174,7 +158,7 @@ extension CanvasPreview {
                     systemImage: "rotate.right",
                     title: "贴图旋转",
                     value: String(
-                        format: snapped ? "%.0f° · 已吸附" : "%.1f°",
+                        format: snapped ? appLocalized("%.0f° · 已吸附") : "%.1f°",
                         clip.rotationDegrees
                     ),
                     objectY: clip.position.y
@@ -237,6 +221,7 @@ extension CanvasPreview {
         screenDragScope = nil
         screenScaleOrigin = nil
         screenScaleScope = nil
+        screenTiltOrigin = nil
         cameraDragOrigin = nil
         cameraDragScope = nil
         cameraSizeOrigin = nil

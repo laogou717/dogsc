@@ -5,7 +5,8 @@ import SwiftUI
 struct EditorRecordingMarker: Identifiable {
     let marker: RecordingMarker
     let outputTime: TimeInterval
-    var id: UUID { marker.id }
+    let segmentID: UUID
+    var id: String { marker.id.uuidString + ":" + segmentID.uuidString }
     var label: String { String(format: appLocalized("标记 %d"), marker.number) }
     var timestamp: String {
         let value = max(Int((outputTime * 100).rounded(.down)), 0)
@@ -47,7 +48,7 @@ extension EditorTimelineView {
                 .accessibilityValue(timelineTimestamp(item.outputTime))
                 .contextMenu {
                     Button("跳转到标记") { seekRecordingMarker(item) }
-                    Button("删除录制标记", role: .destructive) { removeRecordingMarker(item.id) }
+                    Button("删除录制标记", role: .destructive) { removeRecordingMarker(item.marker.id) }
                 }
                 .offset(x: CGFloat(item.outputTime / max(duration, 0.001)) * width - 9,
                         y: timelineRulerHeight - 21)

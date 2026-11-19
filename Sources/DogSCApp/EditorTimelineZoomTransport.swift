@@ -24,15 +24,8 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
         let visibleSegments = visibleSegmentIndices.map { (index: $0, clip: segments[$0]) }
         return ZStack(alignment: .leading) {
             timelineLaneSurface(
-                tint: editorZoomClip,
                 isFocused: focusedTimelineLane == .zoom
             )
-            if segments.isEmpty {
-                timelineEmptyTrackHint(
-                    "单击或拖拽添加",
-                    documentWidth: width
-                )
-            }
             ForEach(visibleSegments, id: \.clip.id) { item in
                 let index = item.index
                 let segment = item.clip
@@ -49,48 +42,29 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                 )
                 let accessibilityTraits: AccessibilityTraits = selectedZoomID == segment.id
                     ? [.isButton, .isSelected] : .isButton
-                let isSelected = selectedZoomID == segment.id
+                let isSelected = selectedZoomID == segment.id || multiSelection.contains(.zoom(segment.id))
                 let isHovered = hoveredZoomID == segment.id
                 let emphasis = EditorTimelineClipEmphasis.resolve(
                     isEditing: isZoomClipEditing(segment.id),
                     isSelected: isSelected,
                     isHovered: isHovered
                 )
-                let label = "\(appLocalized("缩放")) \(EditorSliderValueFormat.compact(segment.scale, unit: "×", digits: 1)) · "
-                    + originTitle
-                ZStack {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(EditorConsole.Track.zoom.timelineSurface(emphasis))
-                        .overlay {
-                            if segmentWidth > 86 {
-                                Text(label)
-                                    .font(.appUI(size: 11, weight: .medium))
-                                    .foregroundStyle(EditorConsole.Track.zoom.softInk)
-                                    .lineLimit(1)
-                            } else if segmentWidth > 44 {
-                                Text(EditorSliderValueFormat.compact(segment.scale, unit: "×", digits: 1))
-                                    .font(.appUI(size: 11, weight: .semibold))
-                                    .foregroundStyle(EditorConsole.Track.zoom.softInk)
-                                    .lineLimit(1)
-                            } else {
-                                EditorSymbol("magnifyingglass", size: 10.5)
-                                    .font(.system(size: 8, weight: .semibold))
-                                    .foregroundStyle(EditorConsole.Track.zoom.softInk)
-                            }
-                        }
-                        .editorTimelineClipChrome(cornerRadius: 8, emphasis: emphasis, tint: EditorConsole.Track.zoom.stroke)
-
-                    if emphasis.showsHandles {
-                        HStack(spacing: 0) {
-                            zoomResizeHandle(edge: .leading)
-                            Spacer(minLength: 0)
-                            zoomResizeHandle(edge: .trailing)
-                        }
-                        .padding(.horizontal, 2)
-                        .opacity(emphasis.handleOpacity)
-                        .allowsHitTesting(false)
+                let hue = EditorTimelineHue.zoom
+                ZStack(alignment: .leading) {
+                    // Mockup: "1.6×", "1.4× · 自动" in the deep hue.
+                    if segmentWidth > 44 {
+                        Text(segment.origin == .manual || segmentWidth <= 86
+                             ? EditorSliderValueFormat.compact(segment.scale, unit: "×", digits: 1)
+                             : EditorSliderValueFormat.compact(segment.scale, unit: "×", digits: 1) + " · " + originTitle)
+                            .font(.appUI(size: 12, weight: .medium))
+                            .foregroundStyle(hue.clipInk)
+                            .lineLimit(1)
+                            .padding(.horizontal, 8)
                     }
                 }
+                .frame(width: segmentWidth, height: zoomBarHeight, alignment: .leading)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .editorTimelineHueClip(hue, emphasis: emphasis, width: segmentWidth)
                 .frame(width: segmentWidth, height: zoomBarHeight)
                 .editorClipDragFeedback(zoomTrackDrag == .move(segment.id))
                 .offset(x: startX)
@@ -122,17 +96,15 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                 )
             }
 
-            // 悬浮空白处显示创建起点；需要水平拖动形成区间，单击只定位，
-            // 不会意外写入一个默认片段。
-            if let indicatorX = zoomCreateIndicatorX(width: width, duration: duration) {
-                EditorSymbol("plus", size: 11.5)
-                    .font(.appUI(size: 10, weight: .bold))
-                    .foregroundStyle(EditorConsole.Track.zoom.ink)
-                    .frame(width: 18, height: 18)
-                    .background(Circle().fill(EditorConsole.Track.zoom.fill))
-                    .offset(x: indicatorX - 9)
-                    .allowsHitTesting(false)
-            }
+            // 悬浮空白处显示创建起点：拖动形成区间，单击添加 3 秒片段
+            // （单击前已有选中项时只清空选择）。
+            EditorTimelineCreateIndicator(
+                hover: laneHover,
+                x: { zoomCreateIndicatorX(location: $0.zoom, width: width, duration: duration) },
+                fill: EditorTimelineHue.zoom.solid,
+                ink: .white,
+                size: 18
+            )
 
             if let dragStart = manualZoomDragStart,
                let dragEnd = manualZoomDragEnd {
@@ -140,11 +112,11 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                 let end = max(dragStart, dragEnd)
                 let startX = CGFloat(start / max(duration, 0.001)) * width
                 let rangeWidth = max(CGFloat((end - start) / max(duration, 0.001)) * width, 4)
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(EditorConsole.Track.zoom.timelineSurface(.hovered))
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(EditorTimelineHue.zoom.solid.opacity(0.14))
                     .overlay(
-                        RoundedRectangle(cornerRadius: 7)
-                            .stroke(EditorConsole.Track.zoom.stroke, style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                        RoundedRectangle(cornerRadius: 6)
+                            .strokeBorder(EditorTimelineHue.zoom.solid, style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
                     )
                     .frame(width: rangeWidth, height: zoomBarHeight)
                     .offset(x: startX)
@@ -160,16 +132,16 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
         .onContinuousHover(coordinateSpace: .local) { phase in
             switch phase {
             case let .active(location):
-                hoveredZoomTrackLocation = location
+                laneHover.zoom = location
             case .ended:
-                hoveredZoomTrackLocation = nil
+                laneHover.zoom = nil
             }
         }
     }
 
     /// 悬浮在空白处且该处有空隙时，返回"+"指示的 x 位置（画布内容坐标）。
-    func zoomCreateIndicatorX(width: CGFloat, duration: TimeInterval) -> CGFloat? {
-        guard let location = hoveredZoomTrackLocation,
+    func zoomCreateIndicatorX(location: CGPoint?, width: CGFloat, duration: TimeInterval) -> CGFloat? {
+        guard let location,
               manualZoomDragStart == nil else { return nil }
         let zone = EditorTimelineMath.zoomHitZone(
             x: Double(location.x),
@@ -428,7 +400,7 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
 
     func previewZoomAnimation(_ animation: ZoomAnimationClip) {
         guard editorStore.previewProject.timeline.zoomClips.first(where: { $0.id == animation.id }) != animation else { return }
-        editorStore.updateInteraction { project in
+        editorStore.updateTimelineInteraction { project in
             guard let index = project.zoomAnimations.firstIndex(where: { $0.id == animation.id }) else {
                 return
             }
@@ -483,11 +455,24 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
 
     func installDeleteKeyMonitor() {
         guard deleteKeyMonitor == nil else { return }
-        deleteKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .rightMouseDown]) { event in
+        deleteKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown]) { event in
             guard event.window?.identifier?.rawValue
                     == "cn.laogou.dogsc.editor-window" else { return event }
 
             if event.type == .keyDown, event.targetsPresentedContent {
+                return event
+            }
+
+            if event.type == .leftMouseDown {
+                if let scroll = timelineScrollView, event.window === scroll.window,
+                   scroll.visibleRect.contains(scroll.convert(event.locationInWindow, from: nil)) {
+                    // Clicking a clip ends text/bin editing before shortcuts run.
+                    event.window?.makeFirstResponder(nil)
+                    editorStore.mediaLibraryHasKeyboardFocus = false
+                    // Any click on the timeline means the viewer is back to
+                    // the programme, not to the asset they were inspecting.
+                    EditorAssetMonitor.shared.returnToProgramme()
+                }
                 return event
             }
 
@@ -501,6 +486,7 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                textView.isEditable {
                 return event
             }
+            guard !editorStore.mediaLibraryHasKeyboardFocus else { return event }
 
             let editingModifiers = event.modifierFlags.intersection([
                 .command, .control, .option,
@@ -561,6 +547,7 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
     /// silently falling back to the primary video lane.
     var canRemoveCurrentTimelineSelection: Bool {
         selectedCameraSyncAnchorID != nil
+            || groupSelectionCount > 1
             || EditorTimelineDeleteTarget(selection: editorStore.selection) != nil
     }
 
@@ -582,12 +569,20 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
         case .cameraMotion: return "删除选中的摄像运动"
         case .mosaic: return selectedRegionIsSpotlight ? "删除选中的突出" : "删除选中的柔化"
         case .sticker: return "删除选中的贴图"
+        case .animation: return "删除选中的动效"
+        case .audioClip: return "删除选中的音频"
+        case .subtitle: return "删除选中的字幕"
+        case .videoClip: return "删除选中的视频"
         case nil: return "删除当前时间线选中项"
         }
     }
 
     @discardableResult
     func removeCurrentTimelineSelection() -> Bool {
+        if groupSelectionCount > 1 {
+            Task { @MainActor in removeGroupSelection() }
+            return true
+        }
         if let selectedCameraSyncAnchorID {
             Task { @MainActor in
                 removeCameraSyncAnchor(id: selectedCameraSyncAnchorID)
@@ -638,6 +633,18 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
             ) else { return false }
             return time > clip.timing.startTime + 0.01
                 && time < clip.timing.endTime - 0.01
+        case let .animation(id):
+            return editorStore.project.timeline.animationClips.first { $0.id == id }
+                .map { time > $0.timing.startTime + 0.01 && time < $0.timing.endTime - 0.01 } ?? false
+        case let .audioClip(id):
+            return editorStore.project.timeline.audioClips.first { $0.id == id }
+                .map { time > $0.timing.startTime + 0.01 && time < $0.timing.endTime - 0.01 } ?? false
+        case let .subtitle(id):
+            return editorStore.project.timeline.subtitleCues.first { $0.id == id }
+                .map { time > $0.timing.startTime + 0.01 && time < $0.timing.endTime - 0.01 } ?? false
+        case let .videoClip(id):
+            return editorStore.project.timeline.videoClips.first { $0.id == id }
+                .map { time > $0.timing.startTime + 0.01 && time < $0.timing.endTime - 0.01 } ?? false
         case nil:
             return primarySplitCandidate != nil
         }
@@ -655,6 +662,14 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
             return selectedRegionIsSpotlight ? "在播放头处分割选中的突出（S）" : "在播放头处分割选中的柔化（S）"
         case .sticker:
             return "在播放头处分割选中的贴图（S）"
+        case .animation:
+            return "在播放头处分割选中的动效（S）"
+        case .audioClip:
+            return "在播放头处分割选中的音频（S）"
+        case .subtitle:
+            return "在播放头处分割选中的字幕（S）"
+        case .videoClip:
+            return "在播放头处分割选中的视频（S）"
         case nil:
             return "在播放头处分割主片段（S）；按住 ⌥ 点击片段可直接切开"
         }
@@ -667,6 +682,10 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
         case .cameraMotion: return "分割选中的摄像运动"
         case .mosaic: return selectedRegionIsSpotlight ? "分割选中的突出" : "分割选中的柔化"
         case .sticker: return "分割选中的贴图"
+        case .animation: return "分割选中的动效"
+        case .audioClip: return "分割选中的音频"
+        case .subtitle: return "分割选中的字幕"
+        case .videoClip: return "分割选中的视频"
         case nil: return "在播放头处分割主片段"
         }
     }
@@ -684,8 +703,116 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
             splitMosaicClip(id: id, atTime: time)
         case let .sticker(id):
             splitStickerClip(id: id, atTime: time)
+        case let .animation(id):
+            splitPostProductionClip(.animation(id), at: time)
+        case let .audioClip(id):
+            splitPostProductionClip(.audioClip(id), at: time)
+        case let .subtitle(id):
+            splitPostProductionClip(.subtitle(id), at: time)
+        case let .videoClip(id):
+            splitPostProductionClip(.videoClip(id), at: time)
         case nil:
             splitPrimarySegmentAtPlayhead()
+        }
+    }
+
+    /// Splits an animation, audio or subtitle clip at the playhead. The
+    /// right half of an audio clip keeps playing the same part of its file.
+    func splitPostProductionClip(_ target: EditorTimelineSplitTarget, at time: TimeInterval) {
+        func halves(_ timing: OverlayTiming) -> (OverlayTiming, OverlayTiming)? {
+            guard time > timing.startTime + 0.01, time < timing.endTime - 0.01 else { return nil }
+            return (OverlayTiming(startTime: timing.startTime, duration: time - timing.startTime),
+                    OverlayTiming(startTime: time, duration: timing.endTime - time))
+        }
+        var timeline = editorStore.project.timeline
+        var selected: EditorSelection?
+        switch target {
+        case let .animation(id):
+            guard let i = timeline.animationClips.firstIndex(where: { $0.id == id }),
+                  let (left, right) = halves(timeline.animationClips[i].timing) else { return }
+            var tail = timeline.animationClips[i]
+            tail.id = UUID(); tail.timing = right
+            tail.timeOffset += left.duration * tail.playbackRate
+            timeline.animationClips[i].timing = left
+            timeline.animationClips.append(tail)
+            selected = .animation(tail.id)
+        case let .audioClip(id):
+            guard let i = timeline.audioClips.firstIndex(where: { $0.id == id }),
+                  let (left, right) = halves(timeline.audioClips[i].timing) else { return }
+            var tail = timeline.audioClips[i]
+            tail.id = UUID(); tail.timing = right
+            tail.sourceStart += left.duration * tail.playbackRate
+            tail.fadeIn = 0
+            timeline.audioClips[i].timing = left
+            timeline.audioClips[i].fadeOut = 0
+            timeline.audioClips.append(tail)
+            selected = .audioClip(tail.id)
+        case let .subtitle(id):
+            guard let i = timeline.subtitleCues.firstIndex(where: { $0.id == id }),
+                  let (left, right) = halves(timeline.subtitleCues[i].timing) else { return }
+            var tail = timeline.subtitleCues[i]
+            tail.id = UUID(); tail.timing = right
+            timeline.subtitleCues[i].timing = left
+            timeline.subtitleCues.append(tail)
+            timeline.subtitleCues.sort { $0.timing.startTime < $1.timing.startTime }
+            selected = .subtitle(tail.id)
+        case let .videoClip(id):
+            guard let i = timeline.videoClips.firstIndex(where: { $0.id == id }),
+                  let (left, right) = halves(timeline.videoClips[i].timing) else { return }
+            var tail = timeline.videoClips[i]
+            tail.id = UUID(); tail.timing = right
+            tail.sourceStart += left.duration * tail.playbackRate
+            timeline.videoClips[i].timing = left
+            timeline.videoClips.append(tail)
+            selected = .videoClip(tail.id)
+        default:
+            return
+        }
+        do {
+            try editorStore.replaceTimeline(with: timeline, actionName: "分割")
+            if let selected { editorStore.selection = selected }
+        } catch {
+            onError(error.localizedDescription)
+        }
+    }
+
+    /// Q/W on an animation, audio or subtitle clip: drop the part before
+    /// (keepsEnd) or after the playhead. Audio keeps its place in the file.
+    func trimPostProductionClip(_ target: EditorTimelineSplitTarget, keepsEnd: Bool, at time: TimeInterval) {
+        func trimmed(_ timing: OverlayTiming) -> OverlayTiming? {
+            guard time > timing.startTime + 0.01, time < timing.endTime - 0.01 else { return nil }
+            return keepsEnd
+                ? OverlayTiming(startTime: time, duration: timing.endTime - time)
+                : OverlayTiming(startTime: timing.startTime, duration: time - timing.startTime)
+        }
+        var timeline = editorStore.project.timeline
+        switch target {
+        case let .animation(id):
+            guard let i = timeline.animationClips.firstIndex(where: { $0.id == id }),
+                  let timing = trimmed(timeline.animationClips[i].timing) else { return }
+            if keepsEnd { timeline.animationClips[i].timeOffset += (timing.startTime - timeline.animationClips[i].timing.startTime) * timeline.animationClips[i].playbackRate }
+            timeline.animationClips[i].timing = timing
+        case let .audioClip(id):
+            guard let i = timeline.audioClips.firstIndex(where: { $0.id == id }),
+                  let timing = trimmed(timeline.audioClips[i].timing) else { return }
+            if keepsEnd { timeline.audioClips[i].sourceStart += (timing.startTime - timeline.audioClips[i].timing.startTime) * timeline.audioClips[i].playbackRate }
+            timeline.audioClips[i].timing = timing
+        case let .subtitle(id):
+            guard let i = timeline.subtitleCues.firstIndex(where: { $0.id == id }),
+                  let timing = trimmed(timeline.subtitleCues[i].timing) else { return }
+            timeline.subtitleCues[i].timing = timing
+        case let .videoClip(id):
+            guard let i = timeline.videoClips.firstIndex(where: { $0.id == id }),
+                  let timing = trimmed(timeline.videoClips[i].timing) else { return }
+            if keepsEnd { timeline.videoClips[i].sourceStart += (timing.startTime - timeline.videoClips[i].timing.startTime) * timeline.videoClips[i].playbackRate }
+            timeline.videoClips[i].timing = timing
+        default:
+            return
+        }
+        do {
+            try editorStore.replaceTimeline(with: timeline, actionName: keepsEnd ? "Q 删除播放头之前" : "W 删除播放头之后")
+        } catch {
+            onError(error.localizedDescription)
         }
     }
 
@@ -745,6 +872,14 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
             trimMosaicClip(id: id, edge: .left, atTime: editTime)
         case let .sticker(id):
             trimStickerClip(id: id, edge: .left, atTime: editTime)
+        case let .animation(id):
+            trimPostProductionClip(.animation(id), keepsEnd: true, at: editTime)
+        case let .audioClip(id):
+            trimPostProductionClip(.audioClip(id), keepsEnd: true, at: editTime)
+        case let .subtitle(id):
+            trimPostProductionClip(.subtitle(id), keepsEnd: true, at: editTime)
+        case let .videoClip(id):
+            trimPostProductionClip(.videoClip(id), keepsEnd: true, at: editTime)
         case nil:
             guard let segment = timelineMap?.segment(atOutputTime: editTime),
                   editTime > segment.outputStart + timelineFrameDuration / 2,
@@ -754,7 +889,7 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                     id: segment.id,
                     edge: .left,
                     toOutputTime: editTime,
-                    fullSourceDuration: fullSourceDuration,
+                    sourceDurations: sourceDurations,
                     actionName: "Q 波纹删除"
                 )
                 primaryTrimDraft = nil
@@ -783,6 +918,14 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
             trimMosaicClip(id: id, edge: .right, atTime: editTime)
         case let .sticker(id):
             trimStickerClip(id: id, edge: .right, atTime: editTime)
+        case let .animation(id):
+            trimPostProductionClip(.animation(id), keepsEnd: false, at: editTime)
+        case let .audioClip(id):
+            trimPostProductionClip(.audioClip(id), keepsEnd: false, at: editTime)
+        case let .subtitle(id):
+            trimPostProductionClip(.subtitle(id), keepsEnd: false, at: editTime)
+        case let .videoClip(id):
+            trimPostProductionClip(.videoClip(id), keepsEnd: false, at: editTime)
         case nil:
             guard let segment = timelineMap?.segment(atOutputTime: editTime),
                   editTime - segment.outputStart >= minimumPrimarySegmentDuration,
@@ -792,7 +935,7 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                     id: segment.id,
                     edge: .right,
                     toOutputTime: editTime,
-                    fullSourceDuration: fullSourceDuration,
+                    sourceDurations: sourceDurations,
                     actionName: "W 波纹删除"
                 )
                 primaryTrimDraft = nil
@@ -818,7 +961,7 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                 removeMotionClip(clip)
             case let .zoom(id):
                 removeZoomAnimation(id: id)
-            case .mosaic, .sticker:
+            case .mosaic, .sticker, .animation, .audioClip, .subtitle, .videoClip:
                 do {
                     try editorStore.removeSelectedOverlay()
                 } catch {
@@ -959,14 +1102,20 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
 
     func setTimelineHoverLocation(_ point: CGPoint?) {
         timelineHoverLocation.update(to: point)
+        // A sheet or another window may consume the Option key-up event.
+        // Reconcile with the live flags instead of retaining a stale blade.
+        isOptionHeld = point != nil && NSEvent.modifierFlags.contains(.option) && !isCutToolActive
         let cutPoint = isOptionHeld ? point : nil
         if hoveredTimelineCutPoint != cutPoint { hoveredTimelineCutPoint = cutPoint }
+        updatePrimarySeamHover(at: point)
     }
 
     func installModifierFlagsMonitor() {
         guard modifierFlagsMonitor == nil else { return }
         modifierFlagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
-            isOptionHeld = event.modifierFlags.contains(.option)
+            isOptionHeld = event.window?.identifier?.rawValue == "cn.laogou.dogsc.editor-window"
+                && !event.targetsPresentedContent && !isCutToolActive
+                && event.modifierFlags.contains(.option)
             hoveredTimelineCutPoint = isOptionHeld ? timelineHoverLocation.viewportPoint : nil
             return event
         }
@@ -976,6 +1125,8 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
         guard let modifierFlagsMonitor else { return }
         NSEvent.removeMonitor(modifierFlagsMonitor)
         self.modifierFlagsMonitor = nil
+        isOptionHeld = false
+        hoveredTimelineCutPoint = nil
     }
 
     /// EDT-016/020: SwiftUI may omit `onEnded` when a view disappears during a
@@ -1046,6 +1197,8 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
     }
 
     func endPrimarySegmentDrag() {
+        primaryVisualTransferTarget = nil
+        primaryVisualTransferOffsetY = 0
         timelineSnap.reset()
         draggedPrimarySegmentID = nil
         primarySegmentDragTranslation = 0
@@ -1055,10 +1208,13 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
     }
 
     var hasTransientTimelineGesture: Bool {
-        gestureOwnership.activeIntent != nil
+        primaryPointerSession != nil
+            || rulerPress != nil
+            || gestureOwnership.activeIntent != nil
             || draggedPrimarySegmentID != nil
             || primaryTrimDraft != nil
             || primaryRetimeDraft != nil
+            || overlayPointerPress != nil
             || overlayTimelineDrag != nil
             || overlayCreateStart != nil
             || overlayCreateRange != nil
@@ -1082,6 +1238,14 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
             currentZoom: timelineZoom,
             deltaY: deltaY,
             pointerViewportX: hoveredTimelineViewportX
+        ) { targetZoom, pointerViewportX in
+            zoomTimeline(to: targetZoom, pointerViewportX: pointerViewportX)
+        }
+    }
+
+    func enqueueTimelineZoom(scaleBy factor: Double) {
+        timelineZoomInputCoalescer.enqueue(
+            currentZoom: timelineZoom, scaleBy: factor, pointerViewportX: nil
         ) { targetZoom, pointerViewportX in
             zoomTimeline(to: targetZoom, pointerViewportX: pointerViewportX)
         }
@@ -1257,21 +1421,6 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
         activateTimelineSelection(.zoom(animation.id))
     }
 
-    func transportTimestamp(_ time: TimeInterval) -> String {
-        let value = max(Int((time * 100).rounded(.down)), 0)
-        return String(format: "%02d:%02d.%02d", value / 6000, (value / 100) % 60, value % 100)
-    }
-
-    /// Ruler marks drop zero hundredths: "0:18", but "0:18.50".
-    func timelineRulerLabel(_ time: TimeInterval) -> String {
-        let centiseconds = max(Int((time * 100).rounded()), 0)
-        let minutes = centiseconds / 6_000
-        let seconds = (centiseconds / 100) % 60
-        let fraction = centiseconds % 100
-        return fraction == 0
-            ? String(format: "%d:%02d", minutes, seconds)
-            : String(format: "%d:%02d.%02d", minutes, seconds, fraction)
-    }
 
     /// A clip's length as people say it: "4.7s", "12s", "1:05".
     func timelineClipLength(_ duration: TimeInterval) -> String {

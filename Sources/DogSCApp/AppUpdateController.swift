@@ -32,7 +32,7 @@ final class AppUpdateController: ObservableObject {
         let build = Bundle.main.object(
             forInfoDictionaryKey: "CFBundleVersion"
         ) as? String ?? "—"
-        return "\(version)（\(build)）"
+        return String(format: appLocalized("%@（%@）"), version, build)
     }
 
     var availabilityDescription: String {

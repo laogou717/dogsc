@@ -7,15 +7,14 @@ import RecorderCore
 /// 预览 drawable 合成提交与透视预热（PRE-007/PRE-022），从
 /// `SharedRenderedPreviewSurface.swift` 拆出以满足架构行数预算。主声明里
 /// 放宽到模块内访问的 queue* 渲染队列缓存只允许这里的代码使用。
-extension SharedRenderedPreviewNSView {
+extension SharedPreviewEngine {
     /// Compose and present directly into the Metal drawable. This removes the
     /// old per-frame `createCGImage` GPU readback and the subsequent CALayer
     /// upload, which was the main preview playback bottleneck.
-    nonisolated func renderDrawable(
+    func renderDrawable(
         for job: PreviewRenderJob,
-        submissionCompletion: @escaping @Sendable (Bool) -> Void,
-        presentationCompletion: @escaping @Sendable (Bool) -> Void
-    ) {
+        renderCompletion: @escaping @Sendable (Bool) -> Void
+    ) -> Bool {
         let timing = job.diagnostics
         let renderStarted = timing == nil ? 0 : CACurrentMediaTime()
         var didSubmit = false
@@ -26,24 +25,17 @@ extension SharedRenderedPreviewNSView {
         // or playback frame exists. Playback frames deliberately do not use
         // this generation check: dropping intermediate playback submissions
         // was the former ~45 fps cadence bug.
-        if PreviewRenderBackpressurePolicy.shouldDiscardBeforeRendering(
+        if PreviewRenderValidity.shouldDiscardBeforeRendering(
             isPausedFrame: job.isPausedFrame,
             generation: job.generation,
             latestGeneration: renderGeneration
         ) {
-            submissionCompletion(true)
-            presentationCompletion(false)
-            return
+            return true
         }
-        // Multiple submitted jobs may legitimately be queued at once. Do not compare
-        // each queued job with the latest generation here: completion of frame
-        // N immediately submits N+2 while N+1 is still waiting on this serial
-        // queue, so the old equality check discarded N+1 on every cycle and
-        // capped a 60 Hz preview near 45 fps. Back-pressure already limits the
-        // queue and coalesces newer input through `renderDirty`.
+        // Continuous playback is paced by the display link. UI revisions
+        // invalidate stationary jobs; only transport epochs retire live jobs.
         guard let device = job.metalLayer.device else {
-            submissionCompletion(false)
-            return
+            return false
         }
         if self.queueColorContract != job.colorContract {
             self.queueColorContract = job.colorContract
@@ -55,8 +47,7 @@ extension SharedRenderedPreviewNSView {
             // so keep that reuse while allowing all transient frame graphs to
             // be released as soon as their command buffer finishes.
             guard let commandQueue = device.makeCommandQueue() else {
-                submissionCompletion(false)
-                return
+                return false
             }
             self.queueContext = job.colorProfile.makeMetalContext(
                 commandQueue: commandQueue,
@@ -67,22 +58,20 @@ extension SharedRenderedPreviewNSView {
         }
         guard let context = self.queueContext,
               let commandQueue = self.queueCommandQueue else {
-            submissionCompletion(false)
-            return
+            return false
         }
         guard let rendered = SharedPreviewFramePipeline.render(
                   plan: job.plan,
                   resources: job.resources
               ) else {
-            submissionCompletion(false)
-            return
+            return false
         }
         // Track visibility changes resize the monitor while a previous paused
         // frame can still be waiting on this queue. CAMetalLayer hands that old
         // job a drawable using the *new* live size; rendering the old bounds
         // into it fills only one side and leaves a persistent black strip.
-        // Reject the mismatched surface and let the main actor immediately
-        // resubmit the newest scene/size contract.
+        // Reject the mismatched surface; the engine retries on its own queue
+        // with the newest scene/size contract.
         let expectedTextureWidth = max(
             Int(job.destinationPixelSize.width.rounded()),
             2
@@ -104,12 +93,14 @@ extension SharedRenderedPreviewNSView {
         // callback cannot return nil, whereas a resized/retired CAMetalLayer
         // legitimately may. Do not force-unwrap or allocate a second full-size
         // fallback texture merely to use the lazy-provider convenience API.
-        guard let drawable = job.metalLayer.nextDrawable(),
+        let drawable = job.drawable
+        guard drawable.layer === job.metalLayer,
               drawable.texture.width == expectedTextureWidth,
               drawable.texture.height == expectedTextureHeight else {
-            submissionCompletion(false)
-            presentationCompletion(false)
-            return
+            return false
+        }
+        if let observer = onDrawablePresented {
+            drawable.addPresentedHandler { if $0.presentedTime > 0 { observer($0.presentedTime, job.plan.scene.time) } }
         }
         let drawableAcquired = timing == nil ? 0 : CACurrentMediaTime()
         let destination = CIRenderDestination(mtlTexture: drawable.texture, commandBuffer: nil)
@@ -129,16 +120,13 @@ extension SharedRenderedPreviewNSView {
             renderTask = try context.startTask(toRender: scaled, from: displayBounds,
                                                to: destination, at: .zero)
         } catch {
-            submissionCompletion(false)
-            presentationCompletion(false)
-            return
+            return false
         }
         guard let commandBuffer = commandQueue.makeCommandBuffer() else {
-            submissionCompletion(false)
-            presentationCompletion(false)
-            return
+            return false
         }
-        guard PreviewRenderBackpressurePolicy.shouldPresent(
+        guard (!job.isPausedFrame || job.generation == renderGeneration),
+              PreviewRenderValidity.shouldPresent(
             jobEpochID: job.presentationEpochID,
             latestEpochID: presentationEpochID
         ) else {
@@ -146,10 +134,8 @@ extension SharedRenderedPreviewNSView {
             // to finish, but never receives a `present` call. CAMetalLayer
             // therefore keeps the last valid drawable visible until the first
             // frame from the new pause/seek/media epoch is ready.
-            submissionCompletion(true)
-            presentationCompletion(false)
             commandBuffer.commit()
-            return
+            return true
         }
         if let timing {
             let encodedAt = CACurrentMediaTime()
@@ -163,24 +149,19 @@ extension SharedRenderedPreviewNSView {
             }
             timing.owner.collectRenderInfo(renderTask, for: timing)
         }
-        if let presentationHostTime = job.presentationHostTime {
-            // Keep presentation on the Metal queue at the display-link's
-            // deadline. Sending every drawable back through a main-thread CA
-            // transaction makes playback wait behind unrelated UI updates.
-            commandBuffer.present(drawable, atTime: presentationHostTime)
-        } else {
-            commandBuffer.present(drawable)
-        }
+        // A Metal display-link drawable already carries its deadline. The
+        // platform forbids timed-present variants for these drawables.
+        commandBuffer.present(drawable)
         commandBuffer.addCompletedHandler { completed in
             if completed.status != .completed, let timing { timing.owner.failed(timing) }
             // Used only to hand editing overlays back to composited content.
             // Actual display diagnostics come from addPresentedHandler above.
-            presentationCompletion(completed.status == .completed)
+            renderCompletion(completed.status == .completed)
         }
         commandBuffer.commit()
         didSubmit = true
-        submissionCompletion(true)
 
         scheduleEffectPreparation(for: job, context: context, device: device)
+        return true
     }
 }

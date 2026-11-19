@@ -54,19 +54,14 @@ enum RecordingPlanError: LocalizedError, Equatable {
 struct RecordingPlan: Equatable, Sendable {
     let target: CaptureSelectionTarget
     let configuration: CaptureConfiguration
-    /// Exact media-input identities frozen at the setup -> preparing boundary.
-    /// Enabled recording tracks never become automatic/default requests.
-    let inputDeviceRequests: [CaptureInputDeviceRequest]
     /// Fixed capture frame for display/area targets and a bootstrap frame for
     /// windows. Live window geometry belongs to CaptureWindowGeometryRuntime.
     let pointerCaptureFrame: CGRect
-    let automaticallyCreatesZooms: Bool
 
     init(
         target: CaptureSelectionTarget,
         configuration: CaptureConfiguration,
-        pointerCaptureFrame: CGRect,
-        automaticallyCreatesZooms: Bool = true
+        pointerCaptureFrame: CGRect
     ) throws {
         let materialized = target.materializing(in: configuration)
         guard materialized == configuration else {
@@ -97,23 +92,9 @@ struct RecordingPlan: Equatable, Sendable {
            configuration.microphoneDeviceID?.isEmpty != false {
             throw RecordingPlanError.missingMicrophone
         }
-        var inputDeviceRequests: [CaptureInputDeviceRequest] = []
-        if case let .device(id, _) = target {
-            inputDeviceRequests.append(.exact(role: .iosDevice, uniqueID: id))
-        }
-        if configuration.recordsCamera,
-           let cameraDeviceID = configuration.cameraDeviceID {
-            inputDeviceRequests.append(.exact(role: .camera, uniqueID: cameraDeviceID))
-        }
-        if configuration.recordsMicrophone,
-           let microphoneDeviceID = configuration.microphoneDeviceID {
-            inputDeviceRequests.append(.exact(role: .microphone, uniqueID: microphoneDeviceID))
-        }
         self.target = target
         self.configuration = configuration
-        self.inputDeviceRequests = inputDeviceRequests
         self.pointerCaptureFrame = pointerCaptureFrame
-        self.automaticallyCreatesZooms = automaticallyCreatesZooms
     }
 
     var primaryRecordingRelativePath: String {

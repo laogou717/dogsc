@@ -52,11 +52,18 @@ final class RecorderMemoStore: ObservableObject {
 final class RecorderMemoController: NSObject, ObservableObject, NSWindowDelegate {
     static let shared = RecorderMemoController()
     @Published private(set) var isVisible = false
-    let store = RecorderMemoStore()
+    let store: RecorderMemoStore
+    private let defaults: UserDefaults
     private var panel: RecorderMemoPanel?
     private var screenObserver: NSObjectProtocol?
     private var shouldResumeAfterSelection = false
     private let frameKey = "recorder.memo.frame"
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        store = RecorderMemoStore(defaults: defaults)
+        super.init()
+    }
 
     func toggle(relativeTo owner: NSWindow) {
         if isVisible { hide() } else { show(relativeTo: owner) }
@@ -65,7 +72,7 @@ final class RecorderMemoController: NSObject, ObservableObject, NSWindowDelegate
     private func show(relativeTo owner: NSWindow) {
         RecorderPopoverPresenter.shared.dismiss()
         let panel = panel ?? makePanel()
-        let savedFrame = UserDefaults.standard.string(forKey: frameKey).map(NSRectFromString)
+        let savedFrame = defaults.string(forKey: frameKey).map(NSRectFromString)
         let screen = savedFrame.flatMap { frame in
             NSScreen.screens.first { $0.visibleFrame.contains(NSPoint(x: frame.midX, y: frame.midY)) }
         } ?? owner.screen ?? NSScreen.main
@@ -147,6 +154,11 @@ final class RecorderMemoController: NSObject, ObservableObject, NSWindowDelegate
         show(relativeTo: owner)
     }
 
+    func resumeAfterPhaseChange(_ phase: AppPhase, isSelectingSource: Bool, relativeTo owner: NSWindow) {
+        guard phase == .recording || (phase == .setup && !isSelectingSource) else { return }
+        resumeAfterSelection(relativeTo: owner)
+    }
+
     func shutdown() {
         hide()
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
@@ -167,7 +179,7 @@ final class RecorderMemoController: NSObject, ObservableObject, NSWindowDelegate
 
     private func saveFrame() {
         guard let panel else { return }
-        UserDefaults.standard.set(NSStringFromRect(panel.frame), forKey: frameKey)
+        defaults.set(NSStringFromRect(panel.frame), forKey: frameKey)
     }
 
     private func constrainToScreen() {
@@ -203,7 +215,7 @@ struct RecorderMemoButton: View {
             if memo.isVisible {
                 Circle().fill(RecorderStyle.selection).padding(3).transition(.scale(scale: 0.6).combined(with: .opacity))
             }
-            Image(systemName: memo.isVisible ? "note.text" : "note.text").font(.system(size: 14, weight: .medium))
+            EditorSymbol(memo.isVisible ? "note.text" : "note.text", size: 14).font(.system(size: 14, weight: .medium))
                 .foregroundStyle(memo.isVisible ? RecorderStyle.ink : RecorderStyle.muted)
                 .frame(width: size, height: size)
                 .accessibilityHidden(true)
@@ -276,7 +288,7 @@ private struct RecorderMemoView: View {
 
     private func control(_ symbol: String, title: String, enabled: Bool = true, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: symbol).font(.system(size: symbol.hasPrefix("textformat") ? 15 : 12, weight: .semibold))
+            EditorSymbol(symbol).font(.system(size: symbol.hasPrefix("textformat") ? 15 : 12, weight: .semibold))
                 .foregroundStyle(RecorderStyle.muted)
                 .contentTransition(.symbolEffect(.replace))
                 .frame(width: 30, height: 30)

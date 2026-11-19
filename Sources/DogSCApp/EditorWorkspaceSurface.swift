@@ -9,14 +9,12 @@ struct EditorFloatingSurface: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .background(EditorTheme.cardGradient)
+            .background(EditorTheme.panelSurface)
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .overlay {
                 EditorIslandEdge(shape: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             }
-            .shadow(color: EditorTheme.contactShadow, radius: 1.5, y: 1)
-            .shadow(color: EditorTheme.softShadow, radius: 18, y: 9)
-            .shadow(color: EditorTheme.ambientShadow, radius: 44, y: 22)
+            .shadow(color: EditorTheme.softShadow.opacity(0.6), radius: 12, y: 4)
     }
 }
 
@@ -26,13 +24,8 @@ struct EditorFloatingSurface: ViewModifier {
 struct EditorIslandEdge<S: InsettableShape>: View {
     let shape: S
     var body: some View {
-        ZStack {
-            shape.strokeBorder(EditorTheme.islandOutline, lineWidth: 0.5)
-            shape.inset(by: 0.5)
-                .strokeBorder(LinearGradient(colors: [EditorTheme.topHighlight, EditorTheme.topHighlight.opacity(0)],
-                                             startPoint: .top, endPoint: .center), lineWidth: 1)
-        }
-        .allowsHitTesting(false)
+        shape.strokeBorder(EditorTheme.islandOutline, lineWidth: 1)
+            .allowsHitTesting(false)
     }
 }
 
@@ -40,11 +33,9 @@ struct EditorIslandEdge<S: InsettableShape>: View {
 struct EditorCapsuleIsland: ViewModifier {
     func body(content: Content) -> some View {
         content
-            .background(EditorTheme.cardGradient, in: Capsule(style: .continuous))
-            .overlay { EditorIslandEdge(shape: Capsule(style: .continuous)) }
-            .shadow(color: EditorTheme.contactShadow, radius: 1.5, y: 1)
-            .shadow(color: EditorTheme.softShadow.opacity(0.75), radius: 14, y: 6)
-            .shadow(color: EditorTheme.ambientShadow.opacity(0.8), radius: 30, y: 14)
+            .background(EditorTheme.panelSurface, in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous))
+            .overlay { EditorIslandEdge(shape: RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous)) }
+            .shadow(color: EditorTheme.softShadow.opacity(0.6), radius: 12, y: 4)
     }
 }
 
@@ -59,14 +50,12 @@ extension View {
 enum EditorSwapTiming {
     // Crossfade, not a relay: the new content starts arriving at the same
     // moment the old one starts leaving, so there is never an empty frame.
-    static var insertion: Animation { .timingCurve(0.2, 0.8, 0.2, 1, duration: 0.34) }
-    static var removal: Animation { .timingCurve(0.4, 0, 1, 1, duration: 0.18) }
     /// For a single in-place crossfade (no identity change).
-    static var crossfade: Animation { .timingCurve(0.4, 0, 0.2, 1, duration: 0.3) }
+    static var crossfade: Animation { .easeOut(duration: 0.16) }
     /// Expanding geometry follows the same lively settle as the approved
     /// incoming pages. Interpolation remains shared across native layers.
     static var layout: Animation? {
-        RecorderMotion.reduces ? nil : .spring(response: 0.4, dampingFraction: 0.84)
+        SpringMotion.standard
     }
 }
 
@@ -76,41 +65,8 @@ func editorSwapEdge<T: Equatable>(from old: T, to new: T, in order: [T], vertica
     return vertical ? (forward ? .bottom : .top) : (forward ? .trailing : .leading)
 }
 
-/// The recorder's phase handoff, shared with Settings: the old page leaves
-/// soft and quick; the next one drifts in from the side it was chosen on,
-/// sharpening a beat after the island has started to change shape.
-struct EditorPagePhase: ViewModifier {
-    let hidden: Bool
-    var drift: CGSize = .zero
-    func body(content: Content) -> some View {
-        content
-            .opacity(hidden ? 0 : 1)
-            .offset(hidden ? drift : .zero)
-    }
-}
-
-private struct EditorLabelPhase: ViewModifier {
-    let hidden: Bool
-    func body(content: Content) -> some View {
-        content
-            .opacity(hidden ? 0 : 1)
-            .scaleEffect(hidden ? 0.9 : 1, anchor: .leading)
-            .blur(radius: hidden ? 4 : 0)
-    }
-}
 
 extension AnyTransition {
-    static func editorPage(drift: CGSize) -> AnyTransition {
-        guard !RecorderMotion.reduces else { return .opacity.animation(.easeOut(duration: 0.16)) }
-        return .asymmetric(
-            insertion: .modifier(active: EditorPagePhase(hidden: true, drift: drift),
-                                 identity: EditorPagePhase(hidden: false))
-                .animation(EditorSwapTiming.insertion),
-            removal: .modifier(active: EditorPagePhase(hidden: true), identity: EditorPagePhase(hidden: false))
-                .animation(EditorSwapTiming.removal)
-        )
-    }
-
     /// The single content-swap transition of the editor. Every place a
     /// choice replaces content (rail tools, frame sub-pages, background
     /// sources, film/waveform, disclosure groups) uses this, drifting in
@@ -121,14 +77,6 @@ extension AnyTransition {
         .editorSubpage(edge: edge)
     }
 
-    static var editorLabel: AnyTransition {
-        guard !RecorderMotion.reduces else { return .opacity }
-        return .asymmetric(
-            insertion: .modifier(active: EditorLabelPhase(hidden: true), identity: EditorLabelPhase(hidden: false))
-                .animation(.easeOut(duration: 0.24).delay(0.06)),
-            removal: .opacity.animation(.easeIn(duration: 0.08))
-        )
-    }
 }
 
 /// Content scrolling inside an island dissolves into its edges instead of
@@ -149,9 +97,9 @@ struct EditorScrollEdgeFade: ViewModifier {
 
 /// The settings track: a recessed channel holding one raised thumb.
 enum EditorChoiceStyle {
-    static let track = SettingsTheme.track
-    static let thumb = SettingsTheme.thumb
-    static let thumbShadow = SettingsTheme.thumbShadow
+    static let track = EditorTheme.controlWell
+    static let thumb = EditorTheme.segmentThumb
+    static let thumbShadow = Color.black.opacity(0.12)
     static let hover = RecorderStyle.chrome.opacity(EditorStateWash.hover)
 }
 
@@ -232,6 +180,62 @@ enum EditorWorkspaceGeometry {
     }
 }
 
+/// What the stage's shape is derived from. A morph runs only between two
+/// inputs that differ in the authored ratio alone; entering or leaving crop
+/// mode and the first measurement of the source snap, because those have
+/// their own transitions (or none).
+struct EditorStageAspectInput: Equatable {
+    let ratio: CGFloat
+    let isCropping: Bool
+    let sourceSize: CGSize
+
+    func morphs(to next: EditorStageAspectInput) -> Bool {
+        !SpringMotion.reducesMotion
+            && !isCropping && !next.isCropping
+            && sourceSize == next.sourceSize
+    }
+}
+
+/// The single, preview-only source of truth for the canvas shape while the
+/// aspect ratio changes. Both the stage frame and the rendered canvas read
+/// `value(at:)` for the same frame, so the picture reflows continuously in
+/// both directions. It never touches the project or the undo history.
+struct EditorCanvasAspectMorph: Equatable {
+    let id = UUID()
+    let from: CGFloat
+    let to: CGFloat
+    let start: Date
+
+    static var duration: TimeInterval { SpringMotion.canvasMorphDuration }
+
+    func progress(at date: Date) -> Double {
+        let linear = min(max(date.timeIntervalSince(start) / Self.duration, 0), 1)
+        return SpringMotion.canvasMorphCurve.value(at: linear)
+    }
+
+    /// Interpolates in log space so 16:9 → 9:16 passes through 1:1 at the
+    /// midpoint and widening and narrowing feel the same speed.
+    func value(at date: Date) -> CGFloat {
+        let t = CGFloat(progress(at: date))
+        guard t < 1 else { return to }
+        return exp(log(from) + (log(to) - log(from)) * t)
+    }
+
+    /// The stage's displayed ratio for one frame. Before `onChange` has
+    /// registered a new target the previous shape is held for that one
+    /// frame, so the canvas never jumps to the new aspect first.
+    static func displayed(
+        target: EditorStageAspectInput,
+        settled: EditorStageAspectInput?,
+        morph: EditorCanvasAspectMorph?,
+        at date: Date
+    ) -> CGFloat {
+        if let morph, morph.to == target.ratio, !target.isCropping { return morph.value(at: date) }
+        guard let settled, settled.morphs(to: target) else { return target.ratio }
+        return morph?.value(at: date) ?? settled.ratio
+    }
+}
+
 /// A quiet transport capsule; playback alone carries the primary ink fill.
 struct EditorSoftRaisedButtonStyle: ButtonStyle {
     var isPrimary = false
@@ -271,7 +275,6 @@ struct EditorSoftRaisedButtonStyle: ButtonStyle {
                 }
                 .contentShape(Capsule())
                 .appKeyboardFocus(in: Capsule(), color: isPrimary ? EditorTheme.onAccent.opacity(0.65) : EditorTheme.chrome(0.40))
-                .scaleEffect(pressed && !RecorderMotion.reduces ? 0.96 : 1)
                 .opacity(isEnabled ? 1 : 0.38)
                 .onHover { isHovered = $0 }
                 .onChange(of: isEnabled) { _, enabled in if !enabled { isHovered = false } }

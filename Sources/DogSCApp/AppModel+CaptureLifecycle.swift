@@ -262,6 +262,7 @@ extension AppModel {
         // capture sessions; otherwise opening a saved project merely hides the
         // UI while macOS correctly keeps showing the camera privacy light.
         cameraRecorder.requestIdleResourceRelease()
+        cameraBeautyPreviewProcessor.reset()
         microphoneRecorder.requestIdleResourceRelease()
         deviceRecorder.requestIdleResourceRelease()
     }
@@ -306,6 +307,7 @@ extension AppModel {
         microphoneRecorder.releaseIdleResourcesSynchronously()
         deviceRecorder.releaseIdleResourcesSynchronously()
         cameraRecorder.onPreviewSampleBuffer = nil
+        cameraBeautyPreviewProcessor.reset()
         cameraRecorder.onRuntimeFormatChange = nil
         cameraRecorder.onUnexpectedStop = nil
         microphoneRecorder.onUnexpectedStop = nil
@@ -414,41 +416,18 @@ extension AppModel {
         }
     }
 
-    func displayedVideoSize(at url: URL) async -> CGSize? {
-        let asset = AVURLAsset(url: url)
-        guard let tracks = try? await asset.loadTracks(withMediaType: .video),
-              let track = tracks.first,
-              let naturalSize = try? await track.load(.naturalSize),
-              let preferredTransform = try? await track.load(.preferredTransform)
-        else { return nil }
-        let size = VideoExporter.displayedVideoSize(
-            naturalSize: naturalSize,
-            preferredTransform: preferredTransform
-        )
-        guard size.width.isFinite, size.height.isFinite,
-              size.width > 0, size.height > 0 else { return nil }
-        return size
-    }
-
-
-    func chooseProjectSaveDestination() -> URL? {
-        guard currentSession != nil else { return nil }
-        try? FileManager.default.createDirectory(
-            at: ProjectStore.savedProjectsFolder,
-            withIntermediateDirectories: true
-        )
-        let panel = NSSavePanel()
-        panel.title = "保存 \(AppIdentity.displayName) 项目"
-        panel.prompt = "保存项目"
-        panel.directoryURL = ProjectStore.savedProjectsFolder
-        panel.nameFieldStringValue = sanitizedProjectFilename(project.title) + ".dogscproject"
-        panel.allowedContentTypes = [UTType(
-            exportedAs: "cn.laogou.dogsc-project",
-            conformingTo: .package
-        )]
-        panel.canCreateDirectories = true
-        guard panel.runModal() == .OK else { return nil }
-        return panel.url
+    func chooseProjectSaveDestination() async -> URL? {
+        guard let sessionURL = currentSession?.packageURL else { return nil }
+        let name = sanitizedProjectFilename(project.title) + ".dogscproject"
+        let destination = await AppFilePanel.save { panel in
+            panel.title = String(format: appLocalized("保存 %@ 项目"), AppIdentity.displayName)
+            panel.prompt = appLocalized("保存项目")
+            panel.directoryURL = ProjectStore.savedProjectsFolder
+            panel.nameFieldStringValue = name
+            panel.allowedContentTypes = [EditorImportFileTypes.recordingProject]
+            panel.canCreateDirectories = true
+        }
+        return currentSession?.packageURL == sessionURL ? destination : nil
     }
 
     /// The completion page retains ownership while its final save runs. A
@@ -481,6 +460,7 @@ extension AppModel {
                 savedURL = moved.session.packageURL
             }
             ProjectStore.registerRecentProject(savedURL)
+            lastSavedRecordingURL = savedURL
             // Warnings were visible on the completion page. Do not re-present
             // them as an unrelated setup error after the user keeps the take.
             errorMessage = nil
@@ -649,6 +629,18 @@ extension AppModel {
             details.append(String(format: appLocalized("底层错误：%@ %ld"), underlying.domain, underlying.code))
         }
         return details.joined(separator: " · ")
+    }
+
+    func pauseAuxiliaryTracks(for run: RecordingRun) {
+        if run.startedTracks.contains(.camera) { cameraRecorder.pause() }
+        if run.startedTracks.contains(.microphone) { microphoneRecorder.pause() }
+        if run.startedTracks.contains(.pointer) { pointerRecorder.pause() }
+    }
+
+    func resumeAuxiliaryTracks(for run: RecordingRun, at timing: RecordingResumeTiming? = nil) {
+        if run.startedTracks.contains(.camera) { cameraRecorder.resume(at: timing) }
+        if run.startedTracks.contains(.microphone) { microphoneRecorder.resume(at: timing) }
+        if run.startedTracks.contains(.pointer) { pointerRecorder.resume(at: timing) }
     }
 
     func beginPauseAccounting() {
@@ -841,7 +833,7 @@ extension AppModel {
                     return
                 }
                 guard ContinuousClock.now < deadline else {
-                    self.errorMessage = "摄像头尚未就绪，已暂停重新录制。画面恢复后可再次开始。"
+                    self.errorMessage = appLocalized("摄像头尚未就绪，已暂停重新录制。画面恢复后可再次开始。")
                     return
                 }
                 do { try await Task.sleep(for: .milliseconds(100)) }
@@ -909,6 +901,9 @@ extension AppModel {
 
     func handleUnexpectedCaptureStop(runID: RecordingRunID, error: any Error) {
         guard recordingRuns.isCurrent(runID) else { return }
+        Logger(subsystem: "cn.laogou.dogsc", category: "recording-stop").error(
+            "unexpected stop source=\(self.configuration.source.rawValue, privacy: .public) phase=\(String(describing: self.phase), privacy: .public) error=\(self.detailedErrorDescription(error), privacy: .public)"
+        )
         if phase == .preparing {
             // 屏幕流在准备期间已死亡（markStarted 之后、phase 切换之前）。
             // preparation 尾段会抛出该错误走 rollback，避免 UI 显示录制中

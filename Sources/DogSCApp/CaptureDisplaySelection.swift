@@ -1,6 +1,5 @@
 import AppKit
 import CoreText
-import RecorderCore
 import ScreenCaptureKit
 import SwiftUI
 
@@ -319,6 +318,6 @@ private struct DisplaySelectionOverlay: View {
         .foregroundStyle(RecorderStyle.ink)
         .focusEffectDisabled()
         .fixedSize()
-        .recorderSurface(radius: 30, castsShadow: true)
+        .recorderSurface(radius: RecorderStyle.cardRadius, castsShadow: true)
     }
 }

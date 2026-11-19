@@ -3,13 +3,11 @@ import QuartzCore
 
 typealias PreviewSleepCoverHandler = (Bool, @escaping () -> Void) -> Void
 
-/// Owns the display link, notification registration, and suspension state for
-/// one preview surface. The surface renders pixels; this object decides when
-/// that surface is allowed to present them.
+/// Owns window notifications and suspension state for one preview surface.
+/// The background engine owns frame scheduling and drawable acquisition.
 @MainActor
 final class SharedPreviewWindowVisibilityController: NSObject {
     private weak var view: SharedRenderedPreviewNSView?
-    private var displayLink: CADisplayLink?
     private(set) var isSuspended = true
     private var isAwaitingResumedFrame = false
     private var transitionRevision: UInt64 = 0
@@ -23,15 +21,6 @@ final class SharedPreviewWindowVisibilityController: NSObject {
             updatePresentationVisibility(force: true)
             return
         }
-
-        let link = window.displayLink(
-            target: self,
-            selector: #selector(displayLinkDidFire(_:))
-        )
-        configureCadence(link, screen: window.screen)
-        link.isPaused = true
-        link.add(to: .main, forMode: .common)
-        displayLink = link
 
         let center = NotificationCenter.default
         for name in [
@@ -61,11 +50,6 @@ final class SharedPreviewWindowVisibilityController: NSObject {
 
     }
 
-    func updatePlaybackState() {
-        displayLink?.isPaused = isSuspended
-            || view?.playbackController?.isPlaying != true
-    }
-
     func invalidate() {
         stopObserving()
         view = nil
@@ -77,19 +61,10 @@ final class SharedPreviewWindowVisibilityController: NSObject {
         retirementWatchdog?.cancel()
         retirementWatchdog = nil
         isAwaitingResumedFrame = false
-        displayLink?.invalidate()
-        displayLink = nil
         NotificationCenter.default.removeObserver(self)
     }
 
-    @objc private func displayLinkDidFire(_ link: CADisplayLink) {
-        view?.playbackDisplayLinkDidFire(link)
-    }
-
     @objc private func windowVisibilityDidChange(_ notification: Notification) {
-        if notification.name == NSWindow.didChangeScreenNotification, let displayLink {
-            configureCadence(displayLink, screen: view?.window?.screen)
-        }
         if notification.name == NSApplication.didBecomeActiveNotification {
             resumePreviewPresentationForForegroundWindow(
                 acceptsExplicitForegroundSignal: true
@@ -116,16 +91,6 @@ final class SharedPreviewWindowVisibilityController: NSObject {
                 )
             }
         }
-    }
-
-    private func configureCadence(_ link: CADisplayLink, screen: NSScreen?) {
-        // A full-resolution effects graph must not silently double its work on
-        // a 120/144 Hz display. This is a presentation budget, not an export
-        // frame-rate or pixel-resolution change; the OS still owns scheduling.
-        let maximum = Float(min(max(screen?.maximumFramesPerSecond ?? 60, 1),
-                                PreviewAnimationCadence.framesPerSecond))
-        link.preferredFrameRateRange = CAFrameRateRange(
-            minimum: maximum, maximum: maximum, preferred: maximum)
     }
 
     private func resumePreviewPresentationForForegroundWindow(
@@ -157,7 +122,6 @@ final class SharedPreviewWindowVisibilityController: NSObject {
             isApplicationActive: NSApp.isActive && !NSApp.isHidden
         )
         guard force || shouldSuspend != isSuspended else {
-            updatePlaybackState()
             return
         }
 
@@ -168,11 +132,7 @@ final class SharedPreviewWindowVisibilityController: NSObject {
             retirementWatchdog = nil
             isAwaitingResumedFrame = false
             hasRetiredForSuspension = false
-            displayLink?.isPaused = true
-            view.renderGeneration &+= 1
-            view.presentationEpochID &+= 1
-            view.renderDirty = false
-            view.lastSubmittedSignature = nil
+            view.suspendRendering()
             // Freeze the last valid pixels and cursor while the cover fades.
             // Rendering is already suspended; this is not continued playback.
             requestSleepCover(true)
@@ -203,8 +163,6 @@ final class SharedPreviewWindowVisibilityController: NSObject {
         isSuspended = false
         isAwaitingResumedFrame = true
         view.installPreviewBackingLayerIfNeeded()
-        updatePlaybackState()
-        view.lastSubmittedSignature = nil
         view.renderCurrentFrame()
     }
 

@@ -31,20 +31,16 @@ enum RecordingTrackStopTarget: String, Equatable, Sendable {
 
 struct RecordingTrackStopFailure: LocalizedError, Equatable, Sendable {
     let target: RecordingTrackStopTarget
-    let domain: String
-    let code: Int
     let message: String
 
     init(target: RecordingTrackStopTarget, error: any Error) {
         let error = error as NSError
         self.target = target
-        domain = error.domain
-        code = error.code
         message = error.localizedDescription
     }
 
     var errorDescription: String? {
-        "\(target.displayName)轨道停止失败：\(message)"
+        String(format: appLocalized("%@轨道停止失败：%@"), appLocalized(target.displayName), appLocalized(message))
     }
 }
 
@@ -58,8 +54,9 @@ struct RecordingPreparationRollbackError: LocalizedError, Equatable, Sendable {
     }
 
     var errorDescription: String? {
-        let cleanup = stopFailures.compactMap(\.errorDescription).joined(separator: "；")
-        return cleanup.isEmpty ? startFailureMessage : "\(startFailureMessage)；\(cleanup)"
+        let separator = appLocalized("；")
+        let cleanup = stopFailures.compactMap(\.errorDescription).joined(separator: separator)
+        return cleanup.isEmpty ? startFailureMessage : startFailureMessage + separator + cleanup
     }
 }
 
@@ -70,7 +67,6 @@ struct RecordingTrackStopOutcome: Equatable, Sendable {
 }
 
 struct RecordingTrackFinalizationResult: Equatable, Sendable {
-    let request: RecordingTrackFinalizationRequest
     let pointerEvents: [PointerEventRecord]
     let outcomes: [RecordingTrackStopOutcome]
 
@@ -95,11 +91,11 @@ enum RecordingTrackFinalizerError: LocalizedError, Equatable, Sendable {
     var errorDescription: String? {
         switch self {
         case .staleRun:
-            "这次录制已结束或已被替换，不能再停止它的轨道。"
+            appLocalized("这次录制已结束或已被替换，不能再停止它的轨道。")
         case .intentConflict:
-            "这次录制已经按另一种方式结束，不能在写入过程中改变结束意图。"
+            appLocalized("这次录制已经按另一种方式结束，不能在写入过程中改变结束意图。")
         case .anotherRunFinalizing:
-            "另一次录制仍在结束写入，不能同时停止新的录制。"
+            appLocalized("另一次录制仍在结束写入，不能同时停止新的录制。")
         }
     }
 }
@@ -107,7 +103,7 @@ enum RecordingTrackFinalizerError: LocalizedError, Equatable, Sendable {
 @MainActor
 struct RecordingTrackFinalizerOperations {
     var freezePointer: @MainActor @Sendable (RecordingRunID) -> [PointerEventRecord]
-    var stopScreen: @MainActor @Sendable (RecordingRunID) async throws -> URL?
+    var stopScreen: @MainActor @Sendable (RecordingRunID, RecordingTrackFinalizationIntent) async throws -> URL?
     var stopIOSDevice: @MainActor @Sendable (RecordingRunID) async throws -> Void
     var stopCamera: @MainActor @Sendable (RecordingRunID) async throws -> Void
     var stopMicrophone: @MainActor @Sendable (RecordingRunID) async throws -> Void
@@ -121,7 +117,11 @@ struct RecordingTrackFinalizerOperations {
     ) -> RecordingTrackFinalizerOperations {
         RecordingTrackFinalizerOperations(
             freezePointer: { _ in pointerRecorder.stop() },
-            stopScreen: { runID in try await screenRecorder.stop(runID: runID) },
+            stopScreen: { runID, intent in
+                let discarding: Bool
+                if case .discard = intent { discarding = true } else { discarding = false }
+                return try await screenRecorder.stop(runID: runID, discarding: discarding)
+            },
             stopIOSDevice: { _ in try await iosDeviceRecorder.stop() },
             stopCamera: { _ in try await cameraRecorder.stop() },
             stopMicrophone: { _ in try await microphoneRecorder.stop() }
@@ -232,7 +232,6 @@ final class RecordingTrackFinalizer {
         )
         let values = await (primary, camera, microphone)
         return RecordingTrackFinalizationResult(
-            request: request,
             pointerEvents: frozenPointerEvents,
             outcomes: [values.0, values.1, values.2].compactMap { $0 }
         )
@@ -254,7 +253,7 @@ final class RecordingTrackFinalizer {
         if request.startedTracks.contains(.screen) {
             return await stop(
                 target: .screen,
-                operation: { try await operations.stopScreen(request.runID) }
+                operation: { try await operations.stopScreen(request.runID, request.intent) }
             )
         }
         return nil
@@ -277,13 +276,18 @@ final class RecordingTrackFinalizer {
         target: RecordingTrackStopTarget,
         operation: @MainActor @Sendable () async throws -> URL?
     ) async -> RecordingTrackStopOutcome {
+        let started = ProcessInfo.processInfo.systemUptime
+        recordingFinalizationLogger.notice("track stop started: \(target.rawValue, privacy: .public)")
         do {
-            return RecordingTrackStopOutcome(
+            let result = RecordingTrackStopOutcome(
                 target: target,
                 outputURL: try await operation(),
                 failure: nil
             )
+            recordingFinalizationLogger.notice("track stop finished: \(target.rawValue, privacy: .public), seconds=\(ProcessInfo.processInfo.systemUptime - started, privacy: .public)")
+            return result
         } catch {
+            recordingFinalizationLogger.error("track stop failed: \(target.rawValue, privacy: .public), error=\(error.localizedDescription, privacy: .public)")
             return RecordingTrackStopOutcome(
                 target: target,
                 outputURL: nil,

@@ -20,8 +20,9 @@ enum FirstUseTourKind: String, CaseIterable {
             ]
         case .editor:
             [
-                .init("editor.tools", "从这里选择要调整的内容", "画面、运镜、光标、摄像头与声音，各自的设置都从左侧进入。", "slider.horizontal.3", side: .right),
-                .init("editor.inspector", "调整画面外观", "右侧显示当前选项的详细设置。背景、布局与样机的变化会显示在预览中。", "macwindow", side: .left),
+                .init("editor.library", "素材、字幕与 AI", "左侧放项目素材和素材库，字幕在「字幕」页逐条编辑，AI 可以帮你剪辑。", "square.grid.2x2", side: .right),
+                .init("editor.inspector", "全片设置", "右侧列出整段视频的每一项设置和当前的值，点一项进去调整。选中时间线上的东西，这里会直接显示它。", "slider.horizontal.3", side: .left),
+                .init("editor.canvasbar", "画布与播放", "画布下方依次是比例、裁切、添加到画面，中间是播放，右侧是时间和预览质量。", "play.rectangle", side: .above),
                 .init("editor.timeline", "在时间线上剪辑", "移动播放指针定位内容，拖动片段边缘调整长度。吸附和预览可以在时间线上方开关。", "film", side: .above),
                 .init("editor.export", "完成后导出", "从这里选择导出格式和画质，生成成片。项目会继续保留，方便回来修改。", "square.and.arrow.up")
             ]
@@ -242,10 +243,6 @@ final class FirstUseTourController {
         suspend()
     }
 
-    func replay() {
-        prepareReplay()
-        resume()
-    }
 
     /// Called before opening System Settings or a modal App surface. Never keep
     /// a tutorial panel above an OS permission/password dialog.
@@ -601,10 +598,10 @@ final class FirstUseTourShadeView: NSView {
         super.init(frame: frameRect)
         wantsLayer = true
         shade.fillRule = .evenOdd
-        shade.fillColor = NSColor(white: 0.04, alpha: 0.48).cgColor
+        shade.fillColor = NSColor(white: 0.04, alpha: 0.36).cgColor
         edge.fillColor = nil
-        edge.strokeColor = NSColor.white.withAlphaComponent(0.86).cgColor
-        edge.lineWidth = 1.5
+        edge.strokeColor = RecorderStyle.accentNSColor.cgColor
+        edge.lineWidth = 2
         layer?.addSublayer(shade)
         layer?.addSublayer(edge)
         shade.frame = bounds
@@ -657,42 +654,51 @@ struct FirstUseTourCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 11) {
-                Image(systemName: step.symbol)
+            HStack(spacing: 10) {
+                EditorSymbol(step.symbol, size: 14)
                     .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(EditorTheme.primaryText)
                     .frame(width: 30, height: 30)
-                    .background(RecorderStyle.chrome.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
-                Text(appLocalized(step.title)).font(.appUI(size: 15, weight: .semibold))
+                    .background(EditorTheme.controlWell, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                Text(appLocalized(step.title))
+                    .font(.appUI(size: 16, weight: .semibold))
+                    .foregroundStyle(EditorTheme.primaryText)
             }
             Text(appLocalized(step.detail))
-                .font(.appUI(size: 13)).foregroundStyle(RecorderStyle.chrome.opacity(0.68))
+                .font(.appUI(size: 14)).foregroundStyle(EditorTheme.secondaryText)
                 .fixedSize(horizontal: false, vertical: true).lineSpacing(4)
                 .padding(.top, 12)
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 progress
                 Spacer(minLength: 0)
-                Button(action: onSkip) { Text("跳过引导").font(.appUI(size: 11)).padding(.horizontal, 6).frame(height: 30) }
+                Button(action: onSkip) { Text("跳过引导").font(.appUI(size: 13)).padding(.horizontal, 8).frame(height: 30) }
                     .buttonStyle(FirstUseTourButtonStyle())
                 if showsPrevious, index > 0 {
-                    Button(action: onPrevious) { Image(systemName: "chevron.left").font(.system(size: 11, weight: .semibold)).frame(width: 28, height: 30) }
+                    Button(action: onPrevious) { EditorSymbol("chevron.left", size: 12).font(.system(size: 12, weight: .semibold)).frame(width: 30, height: 30) }
                         .buttonStyle(FirstUseTourButtonStyle()).accessibilityLabel("上一步")
                 }
                 Button(action: onNext) {
                     HStack(spacing: 6) {
                         Text(primaryTitle ?? (index == count - 1 ? appLocalized("知道了") : appLocalized("下一步")))
-                        Image(systemName: index == count - 1 ? "checkmark" : "arrow.right")
-                            .font(.system(size: 10, weight: .semibold))
+                        EditorSymbol(index == count - 1 ? "checkmark" : "arrow.right", size: 11)
+                            .font(.system(size: 11, weight: .semibold))
                     }
-                    .font(.appUI(size: 12, weight: .medium)).padding(.horizontal, 12).frame(height: 30)
+                    .font(.appUI(size: 13, weight: .medium)).padding(.horizontal, 12).frame(height: 30)
                 }
                 .buttonStyle(FirstUseTourButtonStyle(primary: true))
             }
             .padding(.top, 18)
         }
         .padding(18)
-        .foregroundStyle(RecorderStyle.chrome.opacity(0.96))
-        // The guide card follows the same appearance as its owning controls.
-        .recorderSurface(radius: 16)
+        // The editor's popover surface: white card, hairline, soft shadow.
+        .background {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(EditorTheme.panelRaised)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(EditorTheme.hairline, lineWidth: 1)
+                }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("首次使用引导")
     }
@@ -702,7 +708,7 @@ struct FirstUseTourCard: View {
         HStack(spacing: 5) {
             ForEach(0..<count, id: \.self) { position in
                 Capsule()
-                    .fill(RecorderStyle.chrome.opacity(position == index ? 0.95 : 0.24))
+                    .fill(position == index ? EditorTheme.accent : EditorTheme.chrome(0.18))
                     .frame(width: position == index ? 16 : 5, height: 5)
             }
         }
@@ -716,12 +722,13 @@ private struct FirstUseTourButtonStyle: ButtonStyle {
     @State private var hovered = false
     @FocusState private var focused: Bool
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .foregroundStyle(primary ? RecorderStyle.onPrimary : RecorderStyle.chrome.opacity(0.72))
-            .background(primary ? RecorderStyle.primaryFill.opacity(configuration.isPressed ? 0.8 : hovered ? 1 : 0.94)
-                        : RecorderStyle.chrome.opacity(configuration.isPressed ? 0.16 : hovered ? 0.1 : 0), in: RoundedRectangle(cornerRadius: 9))
-            .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(RecorderStyle.chrome.opacity(focused ? 0.7 : 0), lineWidth: 1.5))
-            .contentShape(RoundedRectangle(cornerRadius: 9))
+        let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
+        return configuration.label
+            .foregroundStyle(primary ? EditorTheme.onAccentFill : EditorTheme.secondaryText)
+            .background(primary ? EditorTheme.accent : EditorTheme.chrome(configuration.isPressed ? 0.1 : hovered ? 0.06 : 0), in: shape)
+            .overlay(shape.fill(Color.black.opacity(primary ? (configuration.isPressed ? 0.14 : hovered ? 0.07 : 0) : 0)))
+            .overlay(shape.strokeBorder(EditorTheme.accent.opacity(focused ? 1 : 0), lineWidth: 2))
+            .contentShape(shape)
             .onHover { hovered = $0 }
             .animation(.easeOut(duration: 0.12), value: hovered)
             .focused($focused).focusEffectDisabled()

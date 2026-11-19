@@ -30,6 +30,7 @@ if [[ -e "$app_output" ]] && pgrep -x DogSC >/dev/null; then
 fi
 
 swift build -c release --product DogSC
+swift build -c release --product dogsc-mcp
 binary_dir="$(swift build -c release --show-bin-path)"
 sparkle_source="$project_root/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework"
 [[ -f "$binary_dir/DogSC" && -d "$sparkle_source" ]]
@@ -39,12 +40,13 @@ trap 'rm -rf "$staging_dir"' EXIT
 app="$staging_dir/DogSC Dev.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Frameworks" "$app/Contents/Resources"
 cp "$binary_dir/DogSC" "$app/Contents/MacOS/DogSC"
+cp "$binary_dir/dogsc-mcp" "$app/Contents/MacOS/dogsc-mcp"
 cp Resources/Info.plist "$app/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c 'Set :CFBundleName DogSC Dev' "$app/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName DogSC Dev' "$app/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier cn.laogou.dogsc.dev' "$app/Contents/Info.plist"
 cp Resources/AppIcon.icns "$app/Contents/Resources/"
-for resource in en.lproj zh-Hans.lproj Fonts Onboarding Support; do
+for resource in en.lproj zh-Hans.lproj Fonts Onboarding Support Agent; do
   ditto "Resources/$resource" "$app/Contents/Resources/$resource"
   diff -qr "Resources/$resource" "$app/Contents/Resources/$resource"
 done
@@ -75,6 +77,7 @@ codesign --force --options runtime --preserve-metadata=entitlements --sign "$sig
 for component in "$framework_version/Autoupdate" "$framework_version/Updater.app" "$framework"; do
   codesign --force --options runtime --sign "$signing_identity" "$component"
 done
+codesign --force --options runtime --sign "$signing_identity" "$app/Contents/MacOS/dogsc-mcp"
 codesign --force --options runtime --entitlements Resources/DogSC.entitlements \
   --sign "$signing_identity" "$app"
 codesign --verify --deep --strict "$app"

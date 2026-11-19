@@ -6,7 +6,7 @@ extension ProjectTimelineEditing {
         replacingSourceSequenceWith sourceSequence: SourceSequence,
         deleting deletion: OutputDeletion,
         deletesOutputTail: Bool,
-        fullSourceDuration: TimeInterval,
+        sourceDurations: [UUID: TimeInterval],
         defaultTransitionDuration: TimeInterval
     ) throws -> ProjectTimeline {
         var result = timeline
@@ -29,6 +29,18 @@ extension ProjectTimelineEditing {
         }
         result.stickerClips = timeline.stickerClips.compactMap {
             ripple($0, deleting: deletion, deletesOutputTail: deletesOutputTail)
+        }
+        result.animationClips = timeline.animationClips.compactMap {
+            ripple($0, deleting: deletion, deletesOutputTail: deletesOutputTail)
+        }
+        result.audioClips = timeline.audioClips.compactMap {
+            rippleTimed($0, deleting: deletion, deletesOutputTail: deletesOutputTail)
+        }
+        result.videoClips = timeline.videoClips.compactMap {
+            rippleTimed($0, deleting: deletion, deletesOutputTail: deletesOutputTail)
+        }
+        result.subtitleCues = timeline.subtitleCues.compactMap {
+            rippleTimed($0, deleting: deletion, deletesOutputTail: deletesOutputTail)
         }
         sortZoom(&result.zoomClips)
         sortScreenMotion(&result.screenMotionClips)
@@ -71,7 +83,7 @@ extension ProjectTimelineEditing {
             // space. Do not run a second default-duration pass: it would
             // overwrite explicitly authored zero returns after a successor cut.
         }
-        try validate(result, fullSourceDuration: fullSourceDuration)
+        try validate(result, sourceDurations: sourceDurations)
         return result
     }
 
@@ -168,6 +180,90 @@ extension ProjectTimelineEditing {
         return edited
     }
 
+    static func insertingTimed<C: TimedOverlayClip>(_ clip: C, at insertionTime: TimeInterval, duration: TimeInterval) -> C {
+        var edited = clip
+        edited.timing = inserting(clip.timing, at: insertionTime, duration: duration)
+        return edited
+    }
+
+    static func rippleTimed<C: TimedOverlayClip>(_ clip: C, deleting deletion: OutputDeletion, deletesOutputTail: Bool) -> C? {
+        guard let timing = ripple(clip.timing, deleting: deletion, deletesOutputTail: deletesOutputTail) else { return nil }
+        var edited = clip
+        edited.timing = timing
+        if clip.timing.startTime >= deletion.start, clip.timing.startTime < deletion.end {
+            let removedPrefix = deletion.end - clip.timing.startTime
+            if var audio = edited as? AudioClip {
+                audio.sourceStart += removedPrefix * audio.playbackRate
+                audio.fadeIn = max(audio.fadeIn - removedPrefix, 0)
+                return audio as? C
+            }
+            if var video = edited as? VideoClip {
+                video.sourceStart += removedPrefix * video.playbackRate
+                return video as? C
+            }
+        }
+        return edited
+    }
+
+    static func remappedTimed<C: TimedOverlayClip>(
+        _ clips: [C], oldMap: TimelineMap, newStarts: [UUID: TimeInterval], outputDuration: TimeInterval
+    ) -> [C] {
+        clips.compactMap { clip in
+            let delta = reorderedOutputOffset(at: clip.timing.startTime, oldMap: oldMap, newStarts: newStarts)
+            var moved = clip
+            moved.timing.startTime = min(max(clip.timing.startTime + delta, 0), outputDuration)
+            moved.timing.duration = min(clip.timing.duration, max(outputDuration - moved.timing.startTime, 0))
+            return moved.timing.duration > epsilon ? moved : nil
+        }
+    }
+
+    static func inserting(
+        _ clip: AnimationClip,
+        at insertionTime: TimeInterval,
+        duration: TimeInterval
+    ) -> AnimationClip {
+        var edited = clip
+        edited.timing = inserting(clip.timing, at: insertionTime, duration: duration)
+        return edited
+    }
+
+    static func ripple(
+        _ clip: AnimationClip,
+        deleting deletion: OutputDeletion,
+        deletesOutputTail: Bool
+    ) -> AnimationClip? {
+        guard let timing = ripple(
+            clip.timing,
+            deleting: deletion,
+            deletesOutputTail: deletesOutputTail
+        ) else { return nil }
+        var edited = clip
+        edited.timing = timing
+        if clip.timing.startTime >= deletion.start, clip.timing.startTime < deletion.end {
+            edited.timeOffset += (deletion.end - clip.timing.startTime) * clip.playbackRate
+        }
+        return edited
+    }
+
+    static func remappedAnimationClips(
+        _ clips: [AnimationClip],
+        oldMap: TimelineMap,
+        newStarts: [UUID: TimeInterval],
+        outputDuration: TimeInterval
+    ) -> [AnimationClip] {
+        clips.compactMap { clip in
+            let delta = reorderedOutputOffset(
+                at: clip.timing.startTime,
+                oldMap: oldMap,
+                newStarts: newStarts
+            )
+            var moved = clip
+            moved.timing.startTime = min(max(clip.timing.startTime + delta, 0), outputDuration)
+            moved.timing.duration = min(clip.timing.duration, max(outputDuration - moved.timing.startTime, 0))
+            return moved.timing.duration > epsilon ? moved : nil
+        }.sorted { $0.layerIndex == $1.layerIndex ? $0.id.uuidString < $1.id.uuidString : $0.layerIndex < $1.layerIndex }
+    }
+
     static func ripple(
         _ timing: OverlayTiming,
         deleting deletion: OutputDeletion,
@@ -226,6 +322,9 @@ extension ProjectTimelineEditing {
         edited.timing = timing
         // Keep the authored entry/exit ratio. FrameScene fits both windows to
         // a short clip together; editing media must not overwrite that intent.
+        if clip.timing.startTime >= deletion.start, clip.timing.startTime < deletion.end {
+            edited.sourceStart += (deletion.end - clip.timing.startTime) * clip.playbackRate
+        }
         return edited
     }
 
@@ -849,15 +948,7 @@ extension ProjectTimelineEditing {
                 throw ProjectTimelineEditingError.invalidSourceSequence
             }
         }
-        for current in segments {
-            if segments.contains(where: {
-                $0.id != current.id
-                    && current.sourceStart < $0.sourceEnd - epsilon
-                    && current.sourceEnd > $0.sourceStart + epsilon
-            }) {
-                throw ProjectTimelineEditingError.invalidSourceSequence
-            }
-        }
+        // Every occurrence owns a unique segment ID; source intervals may repeat.
     }
 
     static func primarySegmentIDs(in sequence: SourceSequence) -> Set<UUID> {
@@ -1040,8 +1131,9 @@ extension ProjectTimelineEditing {
             }
             let components = clip.relativePath.split(separator: "/")
             guard valid(clip.timing),
+                  clip.sourceStart.isFinite, clip.sourceStart >= 0,
+                  clip.playbackRate.isFinite, clip.playbackRate > 0,
                   !clip.relativePath.isEmpty,
-                  !clip.relativePath.hasPrefix("/"),
                   !components.contains(".."),
                   normalized(clip.position),
                   clip.width.isFinite,
@@ -1115,7 +1207,11 @@ extension ProjectTimelineEditing {
             id: segment.id,
             sourceStart: segment.sourceStart,
             sourceDuration: segment.sourceDuration,
-            playbackRate: segment.playbackRate
+            playbackRate: segment.playbackRate,
+            media: segment.media,
+            sourceID: segment.sourceID == RecordingSource.primaryID ? nil : segment.sourceID,
+            sceneStyle: segment.sceneStyle,
+            crop: segment.crop
         )
     }
 
@@ -1162,7 +1258,4 @@ struct OutputDeletion {
         return start
     }
 
-    func overlapDuration(start otherStart: TimeInterval, end otherEnd: TimeInterval) -> TimeInterval {
-        max(0, min(end, otherEnd) - max(start, otherStart))
-    }
 }

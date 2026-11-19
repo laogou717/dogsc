@@ -4,194 +4,155 @@ import SwiftUI
 // MARK: - Design Tokens (Soft Silver / Graphite)
 
 public enum EditorTheme {
-    // The media remains colour-accurate while workspace chrome follows the
-    // selected Aqua appearance. Dynamic NSColor providers also update panels
-    // already on screen when the user changes appearance in Settings.
+    // Warm neutral palette (DogSC redesign, 2026-10-31). The ground the
+    // canvas stands on is the deepest layer, panels sit one step above it and
+    // raised things (popovers, segmented thumbs) are lightest. One accent:
+    // export, the playhead and keyboard focus.
     public static let backgroundDeep = adaptive(
-        light: NSColor(calibratedRed: 0.925, green: 0.929, blue: 0.937, alpha: 1),
-        dark: NSColor(calibratedRed: 0.028, green: 0.029, blue: 0.033, alpha: 1)
+        light: NSColor(calibratedRed: 0.949, green: 0.949, blue: 0.941, alpha: 1),
+        dark: NSColor(calibratedRed: 0.106, green: 0.106, blue: 0.102, alpha: 1)
     )
     public static let panelSurface = adaptive(
-        light: NSColor(calibratedRed: 0.992, green: 0.992, blue: 0.996, alpha: 1),
-        dark: NSColor(calibratedRed: 0.063, green: 0.065, blue: 0.072, alpha: 1)
-    )
-    public static let sleepingMonitor = adaptive(
-        light: NSColor(calibratedWhite: 0.79, alpha: 1),
-        dark: NSColor(calibratedWhite: 0.24, alpha: 1)
+        light: NSColor(calibratedRed: 0.980, green: 0.980, blue: 0.976, alpha: 1),
+        dark: NSColor(calibratedRed: 0.137, green: 0.137, blue: 0.133, alpha: 1)
     )
     public static let panelRaised = adaptive(
-        light: NSColor(calibratedRed: 0.955, green: 0.957, blue: 0.963, alpha: 1),
-        dark: NSColor(calibratedRed: 0.098, green: 0.1, blue: 0.11, alpha: 1)
+        light: NSColor(calibratedRed: 1.000, green: 1.000, blue: 1.000, alpha: 1),
+        dark: NSColor(calibratedRed: 0.176, green: 0.176, blue: 0.169, alpha: 1)
     )
-    /// The island: every floating tool surface shares the recorder's base.
     public static let cardElevated = adaptive(
-        light: NSColor(calibratedRed: 0.992, green: 0.992, blue: 0.996, alpha: 1),
-        dark: NSColor(calibratedRed: 0.063, green: 0.065, blue: 0.072, alpha: 1)
+        light: NSColor(calibratedRed: 1.000, green: 1.000, blue: 1.000, alpha: 1),
+        dark: NSColor(calibratedRed: 0.176, green: 0.176, blue: 0.169, alpha: 1)
     )
-    /// Islands are lit from above: a touch brighter at the top edge and a
-    /// touch deeper toward the workspace, so a flat slab reads as material.
     static let cardTop = adaptive(
-        light: NSColor(calibratedRed: 0.992, green: 0.992, blue: 0.996, alpha: 1),
-        dark: NSColor(calibratedRed: 0.063, green: 0.065, blue: 0.072, alpha: 1)
+        light: NSColor(calibratedRed: 0.980, green: 0.980, blue: 0.976, alpha: 1),
+        dark: NSColor(calibratedRed: 0.137, green: 0.137, blue: 0.133, alpha: 1)
     )
     static let cardBottom = adaptive(
-        light: NSColor(calibratedRed: 0.992, green: 0.992, blue: 0.996, alpha: 1),
-        dark: NSColor(calibratedRed: 0.063, green: 0.065, blue: 0.072, alpha: 1)
+        light: NSColor(calibratedRed: 0.980, green: 0.980, blue: 0.976, alpha: 1),
+        dark: NSColor(calibratedRed: 0.137, green: 0.137, blue: 0.133, alpha: 1)
     )
-    /// Docked chrome (title bar, track header column) sits a half step
-    /// below the panels it frames.
     static let chromeBar = adaptive(
-        light: NSColor(calibratedRed: 0.992, green: 0.992, blue: 0.996, alpha: 1),
-        dark: NSColor(calibratedRed: 0.063, green: 0.065, blue: 0.072, alpha: 1)
+        light: NSColor(calibratedRed: 0.980, green: 0.980, blue: 0.976, alpha: 1),
+        dark: NSColor(calibratedRed: 0.137, green: 0.137, blue: 0.133, alpha: 1)
     )
     /// The stage the canvas stands on.
     static let stage = adaptive(
-        light: NSColor(calibratedRed: 0.925, green: 0.929, blue: 0.937, alpha: 1),
-        dark: NSColor(calibratedRed: 0.028, green: 0.029, blue: 0.033, alpha: 1)
+        light: NSColor(calibratedRed: 0.949, green: 0.949, blue: 0.941, alpha: 1),
+        dark: NSColor(calibratedRed: 0.106, green: 0.106, blue: 0.102, alpha: 1)
     )
     static var cardGradient: LinearGradient {
         LinearGradient(colors: [cardTop, cardBottom], startPoint: .top, endPoint: .bottom)
     }
-    /// The soft pool of light the monitor stands in.
-    static let stageLight = adaptive(
-        light: NSColor(calibratedWhite: 1.0, alpha: 0.72),
-        dark: NSColor(calibratedRed: 0.55, green: 0.58, blue: 0.68, alpha: 0.075)
+    static let stageLight = Color.clear
+    static let stageVignette = Color.clear
+    static let accentGlow = Color.clear
+    /// The one accent: export, the playhead, keyboard focus.
+    public static let accent = adaptive(
+        light: NSColor(calibratedRed: 0.769, green: 0.388, blue: 0.247, alpha: 1),
+        dark: NSColor(calibratedRed: 0.855, green: 0.478, blue: 0.322, alpha: 1)
     )
-    static let stageVignette = adaptive(
-        light: NSColor(calibratedRed: 0.10, green: 0.12, blue: 0.18, alpha: 0.06),
-        dark: NSColor.black.withAlphaComponent(0.42)
+    /// Text on the accent.
+    public static let onAccentFill = adaptive(
+        light: NSColor(calibratedRed: 1.000, green: 1.000, blue: 1.000, alpha: 1),
+        dark: NSColor(calibratedRed: 0.106, green: 0.106, blue: 0.102, alpha: 1)
     )
-    /// A soft halo for the current choice and the solid primary action.
-    static let accentGlow = adaptive(
-        light: NSColor(calibratedRed: 0.10, green: 0.12, blue: 0.18, alpha: 0.22),
-        dark: NSColor(calibratedWhite: 1.0, alpha: 0.16)
-    )
-    /// Gentle top-to-bottom shading for the solid platinum fill.
-    static let platinumAccentDeep = adaptive(
-        light: NSColor(calibratedWhite: 0.12, alpha: 1),
-        dark: NSColor(calibratedWhite: 0.97, alpha: 1)
-    )
-    static var platinumGradient: LinearGradient {
-        LinearGradient(colors: [platinumAccent, platinumAccentDeep], startPoint: .top, endPoint: .bottom)
-    }
-    public static let timelineClipTop = adaptive(
-        light: NSColor(calibratedWhite: 0.88, alpha: 1),
-        dark: NSColor(calibratedWhite: 0.22, alpha: 1)
-    )
-    public static let timelineClipBottom = adaptive(
-        light: NSColor(calibratedWhite: 0.83, alpha: 1),
-        dark: NSColor(calibratedWhite: 0.17, alpha: 1)
-    )
-    // The zoom lane uses the 运镜 task colour: a light wash, the hue for
-    // rings and handles, and the deep shade (or the hue in dark) for text.
-    public static let timelineZoomSurface = EditorConsole.Track.zoom.soft
-    /// The zoom identity at full strength: selection rings and handles.
-    static let timelineZoomAccent = EditorConsole.Track.zoom.stroke
-    static let timelineZoomInk = EditorConsole.Track.zoom.softInk
-    public static let recorderSurface = panelSurface
-    public static let mediaAccent = Color(red: 0.949, green: 0.941, blue: 0.918)
-
+    /// Ink used for solid controls (play, switches on, slider fill).
     public static let platinumAccent = adaptive(
-        light: NSColor(calibratedWhite: 0.12, alpha: 1),
-        dark: NSColor(calibratedWhite: 0.97, alpha: 1)
+        light: NSColor(calibratedRed: 0.110, green: 0.110, blue: 0.106, alpha: 1),
+        dark: NSColor(calibratedRed: 0.925, green: 0.925, blue: 0.914, alpha: 1)
     )
+    static let platinumAccentDeep = platinumAccent
+    static var platinumGradient: LinearGradient {
+        LinearGradient(colors: [platinumAccent, platinumAccent], startPoint: .top, endPoint: .bottom)
+    }
+    static let timelineZoomAccent = EditorConsole.Track.zoom.stroke
+    public static let mediaAccent = Color(red: 0.945, green: 0.945, blue: 0.937)
     public static let platinumMuted = adaptive(
-        light: NSColor(calibratedWhite: 0.40, alpha: 1),
-        dark: NSColor(calibratedWhite: 0.56, alpha: 1)
+        light: NSColor(calibratedRed: 0.408, green: 0.404, blue: 0.392, alpha: 1),
+        dark: NSColor(calibratedRed: 0.639, green: 0.635, blue: 0.620, alpha: 1)
     )
-    /// Foreground paired with solid accent fills in both workspace themes.
+    /// Foreground on ink-filled controls.
     public static let onAccent = adaptive(
-        light: NSColor(calibratedWhite: 1.0, alpha: 1),
-        dark: NSColor(calibratedWhite: 0.08, alpha: 1)
+        light: NSColor(calibratedRed: 0.980, green: 0.980, blue: 0.976, alpha: 1),
+        dark: NSColor(calibratedRed: 0.106, green: 0.106, blue: 0.102, alpha: 1)
     )
     public static let controlWell = adaptive(
-        light: NSColor(calibratedWhite: 0.0, alpha: 0.05),
-        dark: NSColor(calibratedWhite: 1.0, alpha: 0.06)
+        light: NSColor(calibratedRed: 0.110, green: 0.110, blue: 0.106, alpha: 0.05),
+        dark: NSColor(calibratedRed: 0.925, green: 0.925, blue: 0.914, alpha: 0.055)
     )
-    public static let amberAccent = Color(red: 0.95, green: 0.68, blue: 0.28)
-    /// Warm botanical green aligned with the editor's lime family.
-    public static let success = Color(red: 0.52, green: 0.82, blue: 0.26)
-    public static let recording = Color(red: 1.0, green: 0.27, blue: 0.23)
+    /// The raised plate of the current choice in a segmented track.
+    public static let segmentThumb = adaptive(
+        light: NSColor(calibratedRed: 1.000, green: 1.000, blue: 1.000, alpha: 1),
+        dark: NSColor(calibratedRed: 0.227, green: 0.227, blue: 0.220, alpha: 1)
+    )
+    public static let amberAccent = Color(red: 0.85, green: 0.58, blue: 0.24)
+    public static let success = Color(red: 0.31, green: 0.54, blue: 0.36)
+    public static let recording = Color(red: 0.85, green: 0.28, blue: 0.23)
 
-    public static let selectionTint = platinumAccent
-    /// Current choice in a navigation group: the recorder's neutral 14% lift.
-    public static let railSelectionWash = adaptive(
-        light: NSColor(calibratedWhite: 0.0, alpha: 0.075),
-        dark: NSColor(calibratedWhite: 1.0, alpha: 0.14)
-    )
+    /// Selection outlines use the same terracotta throughout the editor.
+    /// Ink-filled controls and the unselected timeline retain their neutral palette.
+    public static let selectionTint = accent
     public static let selectionWash = adaptive(
-        light: NSColor(calibratedWhite: 0.0, alpha: 0.075),
-        dark: NSColor(calibratedWhite: 1.0, alpha: 0.14)
+        light: NSColor(calibratedRed: 0.110, green: 0.110, blue: 0.106, alpha: 0.08),
+        dark: NSColor(calibratedRed: 0.925, green: 0.925, blue: 0.914, alpha: 0.1)
     )
-    public static let hairline = chrome(0.06)
-    static let controlBorder = chrome(0.085)
+    public static let hairline = chrome(0.08)
     static let groupSurface = chrome(0.035)
-    /// The one fill for grouped content inside an island: cards, disclosure
-    /// groups, info notes and stages' wells. Flat, no outline.
-    static let cardFill = chrome(0.045)
-    // Native popovers own their brighter backdrop, including the arrow. Keep
-    // selection relative to that surface and small helper copy fully legible.
-    static let popoverSelectionSurface = selectionWash.opacity(0.6)
+    static let cardFill = chrome(0.04)
     static let popoverSecondaryText = adaptive(
-        light: NSColor(calibratedWhite: 0.32, alpha: 1),
-        dark: NSColor(calibratedWhite: 0.86, alpha: 1)
+        light: NSColor(calibratedRed: 0.408, green: 0.404, blue: 0.392, alpha: 1),
+        dark: NSColor(calibratedRed: 0.639, green: 0.635, blue: 0.620, alpha: 1)
     )
-    /// The machined top edge of an island, fading toward the bottom.
-    public static let topHighlight = adaptive(
-        light: NSColor(calibratedWhite: 1.0, alpha: 1.0),
-        dark: NSColor(calibratedWhite: 1.0, alpha: 0.17)
-    )
-    /// Slider parts: a quiet rail, a near-black (or near-white) filled run
-    /// and a paper thumb that stays light in both appearances.
-    static let sliderRail = chrome(0.075)
+    public static let topHighlight = Color.clear
+    static let sliderRail = chrome(0.08)
     static let sliderInk = adaptive(
-        light: NSColor(calibratedWhite: 0.12, alpha: 1),
-        dark: NSColor(calibratedWhite: 0.92, alpha: 1)
+        light: NSColor(calibratedRed: 0.110, green: 0.110, blue: 0.106, alpha: 1),
+        dark: NSColor(calibratedRed: 0.925, green: 0.925, blue: 0.914, alpha: 1)
     )
     static let sliderThumb = adaptive(
-        light: .white,
-        dark: NSColor(calibratedWhite: 0.97, alpha: 1)
+        light: NSColor(calibratedRed: 1.000, green: 1.000, blue: 1.000, alpha: 1),
+        dark: NSColor(calibratedRed: 0.953, green: 0.953, blue: 0.945, alpha: 1)
     )
-    /// The silhouette hairline every island draws on its outer edge.
     static let islandOutline = adaptive(
-        light: NSColor(calibratedRed: 0.10, green: 0.12, blue: 0.18, alpha: 0.075),
-        dark: NSColor(calibratedWhite: 1.0, alpha: 0.07)
+        light: NSColor(calibratedRed: 0.110, green: 0.110, blue: 0.106, alpha: 0.08),
+        dark: NSColor(calibratedRed: 0.925, green: 0.925, blue: 0.914, alpha: 0.08)
     )
-    /// A tight shadow where an island meets the workspace, under the soft one.
     static let contactShadow = adaptive(
-        light: NSColor(calibratedRed: 0.10, green: 0.12, blue: 0.18, alpha: 0.06),
-        dark: NSColor.black.withAlphaComponent(0.5)
+        light: NSColor(calibratedRed: 0.000, green: 0.000, blue: 0.000, alpha: 0.06),
+        dark: NSColor(calibratedRed: 0.000, green: 0.000, blue: 0.000, alpha: 0.5)
     )
     public static let softShadow = adaptive(
-        light: NSColor(calibratedRed: 0.10, green: 0.12, blue: 0.18, alpha: 0.11),
-        dark: NSColor.black.withAlphaComponent(0.42)
+        light: NSColor(calibratedRed: 0.000, green: 0.000, blue: 0.000, alpha: 0.1),
+        dark: NSColor(calibratedRed: 0.000, green: 0.000, blue: 0.000, alpha: 0.45)
     )
-    /// The wide, faint falloff under a floating island.
     static let ambientShadow = adaptive(
-        light: NSColor(calibratedRed: 0.10, green: 0.12, blue: 0.18, alpha: 0.07),
-        dark: NSColor.black.withAlphaComponent(0.30)
+        light: NSColor(calibratedRed: 0.000, green: 0.000, blue: 0.000, alpha: 0.06),
+        dark: NSColor(calibratedRed: 0.000, green: 0.000, blue: 0.000, alpha: 0.3)
     )
-
-    /// Text roles stay readable on the neutral control and panel surfaces.
-    /// Opacity remains useful for decoration, but not for small helper copy.
     static let primaryText = adaptive(
-        light: NSColor(calibratedWhite: 0.1, alpha: 1),
-        dark: NSColor(calibratedWhite: 0.96, alpha: 1)
+        light: NSColor(calibratedRed: 0.110, green: 0.110, blue: 0.106, alpha: 1),
+        dark: NSColor(calibratedRed: 0.925, green: 0.925, blue: 0.914, alpha: 1)
     )
     static let secondaryText = adaptive(
-        light: NSColor(calibratedWhite: 0.36, alpha: 1),
-        dark: NSColor(calibratedWhite: 0.66, alpha: 1)
+        light: NSColor(calibratedRed: 0.408, green: 0.404, blue: 0.392, alpha: 1),
+        dark: NSColor(calibratedRed: 0.639, green: 0.635, blue: 0.620, alpha: 1)
     )
-    /// Section captions: one step below helper copy, still AA on the island.
     static let tertiaryText = adaptive(
-        light: NSColor(calibratedWhite: 0.52, alpha: 1),
-        dark: NSColor(calibratedWhite: 0.46, alpha: 1)
+        light: NSColor(calibratedRed: 0.600, green: 0.596, blue: 0.580, alpha: 1),
+        dark: NSColor(calibratedRed: 0.459, green: 0.455, blue: 0.443, alpha: 1)
+    )
+    static let destructiveText = adaptive(
+        light: NSColor(calibratedRed: 0.706, green: 0.251, blue: 0.173, alpha: 1),
+        dark: NSColor(calibratedRed: 0.878, green: 0.439, blue: 0.357, alpha: 1)
     )
 
-    /// Foreground/border ink for chrome. Media-overlay controls intentionally
-    /// keep their explicit white/black colours and do not use this token.
+    /// Ink for chrome at an opacity: warm, never pure black or white.
     public static func chrome(_ opacity: Double = 1) -> Color {
-        adaptive(light: .black, dark: .white).opacity(opacity)
+        adaptive(
+            light: NSColor(calibratedRed: 0.110, green: 0.110, blue: 0.106, alpha: 1),
+            dark: NSColor(calibratedRed: 0.925, green: 0.925, blue: 0.914, alpha: 1)
+        ).opacity(opacity)
     }
 
     private static func adaptive(light: NSColor, dark: NSColor) -> Color {
@@ -216,89 +177,100 @@ enum EditorStateWash {
 /// Editor text uses five sizes: 10 micro (badges, axes), 11 caption,
 /// 12 label, 13 body, and headings from 14 up. Values use monospaced digits.
 enum EditorTypography {
-    static var panelTitle: Font { .appUI(size: 15, weight: .semibold) }
-    static var sectionTitle: Font { .appUI(size: 12, weight: .semibold) }
+    /// Inspector page titles: the largest type in the panels.
+    static var display: Font { .appUI(size: 20, weight: .semibold) }
+    static var pageTitle: Font { .appUI(size: 15, weight: .semibold) }
+    static var sectionTitle: Font { .appUI(size: 13, weight: .semibold) }
     static var controlLabel: Font { .appUI(size: 12) }
-    static var controlValue: Font { .appUI(size: 12, weight: .medium) }
-    static var helper: Font { .appUI(size: 12) }
+    static var controlValue: Font { .appUI(size: 12, weight: .medium).monospacedDigit() }
+    static var helper: Font { .appUI(size: 11) }
     static var caption: Font { .appUI(size: 11, weight: .medium) }
-    /// Small section captions: tracked, quiet, never competing with values.
-    static var eyebrow: Font { .appUI(size: 11, weight: .semibold) }
+    /// Small section captions: quiet, never competing with values.
+    static var eyebrow: Font { .appUI(size: 11, weight: .medium) }
 }
 
 enum EditorInterfaceSpacing {
-    static let inspectorInset: CGFloat = 14
+    static let inspectorInset: CGFloat = 16
     static let sectionGap: CGFloat = 16
     static let controlGap: CGFloat = 8
-    static let headingGap: CGFloat = 6
     /// Content inset inside a settings-style tile.
-    static let tileInset: CGFloat = 14
+    static let tileInset: CGFloat = 12
 }
 
 /// Radii describe nesting roles rather than individual screens. Small controls
 /// sit inside groups; only detached workspace surfaces carry the largest curve.
 enum EditorInterfaceRadius {
-    static let compact: CGFloat = 8
-    static let control: CGFloat = 10
-    static let group: CGFloat = 12
-    static let card: CGFloat = 14
-    static let floating: CGFloat = 20
+    static let mark: CGFloat = 4
+    static let compact: CGFloat = 6
+    static let control: CGFloat = 6
+    static let group: CGFloat = 10
+    static let card: CGFloat = 10
+    static let floating: CGFloat = 10
     /// Settings-style tiles holding a group of controls.
-    static let tile: CGFloat = 18
+    static let tile: CGFloat = 10
 }
 
 enum EditorInterfaceHeight {
-    static let compact: CGFloat = 30
-    static let selection: CGFloat = 32
-    static let action: CGFloat = 32
+    static let inline: CGFloat = 24
+    static let compact: CGFloat = 28
+    static let selection: CGFloat = 28
+    static let toolbar: CGFloat = 32
 }
 
 // MARK: - Product Motion
 
+/// The editor has four motions. Everything else is instant: drags, hover
+/// follow, the playhead, timeline zoom and canvas resizing never animate.
+/// The legacy names below all resolve to one of the four so every call site
+/// shares the same feel.
 public enum SpringMotion {
-    private static var reducesMotion: Bool {
+    static var reducesMotion: Bool {
         NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     }
 
-    /// Controls settle quickly with almost no overshoot; a visible bounce on
-    /// every hover and press reads as a toy. Larger panels take a slower,
-    /// fully settled spring. Reduce Motion still removes spatial transitions.
-    public static var interactive: Animation? {
-        reducesMotion ? nil : .spring(response: 0.3, dampingFraction: 1)
+    /// Hover and press colour: 0.12 s.
+    public static var micro: Animation {
+        reducesMotion ? .linear(duration: 0.01) : .easeOut(duration: 0.12)
     }
-
-    public static var fluid: Animation? {
-        reducesMotion ? nil : .spring(response: 0.45, dampingFraction: 1)
+    /// Selection thumbs, position and size changes, disclosure.
+    public static var standard: Animation? {
+        reducesMotion ? nil : .timingCurve(0.2, 0, 0, 1, duration: 0.24)
     }
-
-    /// Text changes fade briefly without scaling glyphs or moving their baseline.
-    public static var crossfade: Animation? {
+    /// Panels and popovers arriving.
+    public static var emphasis: Animation? {
+        reducesMotion ? nil : .timingCurve(0.2, 0, 0, 1, duration: 0.28)
+    }
+    /// A page pushed onto or popped from the inspector stack: 240 ms, one
+    /// decelerating curve, no spring.
+    public static var panel: Animation? {
+        reducesMotion ? nil : .timingCurve(0.2, 0, 0, 1, duration: 0.24)
+    }
+    /// The canvas changing shape (ratio, orientation): one decelerating
+    /// 320 ms curve with no overshoot. The stage samples `canvasMorphCurve`
+    /// itself, frame by frame; SwiftUI chrome that moves with it (the
+    /// orientation thumb, the preset list) uses `canvasMorph` so both land
+    /// together.
+    static let canvasMorphDuration: TimeInterval = 0.32
+    static let canvasMorphCurve = UnitCurve.bezier(
+        startControlPoint: UnitPoint(x: 0.2, y: 0),
+        endControlPoint: UnitPoint(x: 0, y: 1)
+    )
+    public static var canvasMorph: Animation? {
+        reducesMotion ? nil : .timingCurve(0.2, 0, 0, 1, duration: canvasMorphDuration)
+    }
+    /// Content and notices fading in.
+    public static var fade: Animation? {
         reducesMotion ? nil : .easeOut(duration: 0.16)
     }
 
-    public static var snappy: Animation? {
-        reducesMotion ? nil : .spring(response: 0.24, dampingFraction: 1)
-    }
-
-    public static var gentle: Animation? {
-        reducesMotion ? nil : .spring(response: 0.55, dampingFraction: 1)
-    }
-
-    /// Selection thumbs, indicators and expanding groups: one smooth glide
-    /// with no overshoot, the same everywhere in the editor.
-    public static var settle: Animation? {
-        reducesMotion ? nil : .spring(response: 0.38, dampingFraction: 1)
-    }
-
-    /// Hover arrives softly and leaves a little faster than it came.
-    public static var hover: Animation {
-        reducesMotion ? .linear(duration: 0.01) : .easeOut(duration: 0.15)
-    }
-
-    /// A lively but fully settled spring for small lifts and thumbs.
-    public static var lift: Animation? {
-        reducesMotion ? nil : .spring(response: 0.28, dampingFraction: 1)
-    }
+    public static var interactive: Animation? { standard }
+    public static var fluid: Animation? { standard }
+    public static var crossfade: Animation? { fade }
+    public static var snappy: Animation? { standard }
+    public static var gentle: Animation? { emphasis }
+    public static var settle: Animation? { standard }
+    public static var hover: Animation { micro }
+    public static var lift: Animation? { standard }
 }
 
 // MARK: - Shared finishes
@@ -308,28 +280,17 @@ public enum SpringMotion {
 /// graphite slab on Dark Aqua, with a top bevel and a two-step shadow.
 struct EditorRaisedThumb<S: InsettableShape>: View {
     let shape: S
-    var fill: Color = EditorChoiceStyle.thumb
+    var fill: Color = EditorTheme.segmentThumb
     var elevated = true
     var usesAccent = true
-    @Environment(\.consolePalette) private var palette
 
     var body: some View {
-        if let palette, usesAccent {
-            // Inside the inspector the current choice carries its task's
-            // colour: one flat fill, no outline, no glow.
-            shape
-                .fill(palette.fill)
-                .shadow(color: EditorChoiceStyle.thumbShadow.opacity(elevated ? 1 : 0), radius: 2, y: 1)
-                .allowsHitTesting(false)
-        } else {
-            shape
-                .fill(fill)
-                .overlay { shape.strokeBorder(EditorTheme.chrome(0.05), lineWidth: 0.5) }
-                // Settings' adaptive thumb shadow: present on paper, still
-                // readable on graphite, never a halo.
-                .shadow(color: EditorChoiceStyle.thumbShadow.opacity(elevated ? 1 : 0), radius: 2, y: 1)
-                .allowsHitTesting(false)
-        }
+        // One raised plate for every current choice: segmented thumbs, tile
+        // selectors and toolbar toggles share it. No task tint, no glow.
+        shape
+            .fill(fill)
+            .shadow(color: .black.opacity(elevated ? 0.12 : 0), radius: 1.5, y: 0.5)
+            .allowsHitTesting(false)
     }
 }
 

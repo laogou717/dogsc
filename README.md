@@ -61,6 +61,22 @@
       MP4 或 M4A；原始素材、1080p、1440p、4K；30／60 FPS。项目随时可以继续编辑。
     </td>
   </tr>
+  <tr>
+    <td valign="top">
+      <b>素材与声音</b><br>
+      素材箱只引用原文件；视频画中画或铺满、背景音乐与音效，有人说话时音乐自动压低。
+    </td>
+    <td valign="top">
+      <b>字幕与动效</b><br>
+      双语字幕、多种字体与出场动画，导入导出 SRT；Rive 与 DogSC Motion 动效，参数可直接改。
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" valign="top">
+      <b>AI 助手</b><br>
+      连接你自己的 Codex 或 API Key，直接说要做什么：生成字幕、配音乐、原创动效。每次修改都能一步撤销；也可以在 Claude Code、Codex 里通过 MCP 编辑 DogSC 项目。
+    </td>
+  </tr>
 </table>
 
 <p align="center">

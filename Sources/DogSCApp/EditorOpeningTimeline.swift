@@ -47,14 +47,12 @@ struct EditorOpeningTimeline: View {
                 }
             }
             .animation(activeIndex == nil && !RecorderMotion.reduces
-                ? .spring(response: 0.5, dampingFraction: 0.82) : nil, value: domain)
+                ? SpringMotion.standard : nil, value: domain)
         }
         .coordinateSpace(name: coordinateSpaceID)
         .frame(height: 20 + CGFloat(elements.count) * (rowHeight + 6))
         .onAppear {
-            guard reveals, !RecorderMotion.reduces else { return }
-            grown = false
-            withAnimation(.spring(response: 0.7, dampingFraction: 0.8).delay(0.45)) { grown = true }
+            grown = true
         }
         .onChange(of: editorStore.interaction?.id) { _, id in
             if activeIndex != nil, id != interactionID { reset() }

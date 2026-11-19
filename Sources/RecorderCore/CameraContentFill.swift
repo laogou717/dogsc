@@ -33,8 +33,6 @@ public enum CameraContentFill {
             target.width / sourceWidth,
             target.height / sourceHeight
         ) * edgeOverscanScale * sourceZoom
-        let destinationWidth = sourceWidth * scale
-        let destinationHeight = sourceHeight * scale
         let visibleSourceWidth = target.width / scale
         let visibleSourceHeight = target.height / scale
         let focusX = min(max(focus.x.isFinite ? focus.x : 0.5, 0), 1)
@@ -45,13 +43,6 @@ public enum CameraContentFill {
             width: visibleSourceWidth,
             height: visibleSourceHeight
         )
-        let destination = CompositionRect(
-            x: target.x - visibleSource.x * scale,
-            y: target.y - visibleSource.y * scale,
-            width: destinationWidth,
-            height: destinationHeight
-        )
-
         return CameraContentFillLayout(
             source: CompositionRect(
                 x: 0,
@@ -60,9 +51,7 @@ public enum CameraContentFill {
                 height: sourceHeight
             ),
             target: target,
-            destination: destination,
-            visibleSource: visibleSource,
-            scale: scale
+            visibleSource: visibleSource
         )
     }
 }
@@ -70,24 +59,17 @@ public enum CameraContentFill {
 public struct CameraContentFillLayout: Equatable, Sendable {
     public let source: CompositionRect
     public let target: CompositionRect
-    /// The source-sized rectangle after authored aspect-fill and overscan.
-    public let destination: CompositionRect
     /// The authored portion of the source that remains visible through target.
     public let visibleSource: CompositionRect
-    public let scale: Double
 
     init(
         source: CompositionRect,
         target: CompositionRect,
-        destination: CompositionRect,
-        visibleSource: CompositionRect,
-        scale: Double
+        visibleSource: CompositionRect
     ) {
         self.source = source
         self.target = target
-        self.destination = destination
         self.visibleSource = visibleSource
-        self.scale = scale
     }
 
     /// Horizontal mirroring is evaluated after content fill, around the target
@@ -95,16 +77,4 @@ public struct CameraContentFillLayout: Equatable, Sendable {
     /// avoids the translation jump caused by mirroring around the global origin.
     public var mirrorAxisX: Double { target.midX }
 
-    public func destinationPoint(
-        forSourcePoint point: CompositionPoint,
-        mirroredHorizontally: Bool
-    ) -> CompositionPoint {
-        let sourceX = mirroredHorizontally
-            ? source.x + source.width - (point.x - source.x)
-            : point.x
-        return CompositionPoint(
-            x: destination.x + (sourceX - source.x) * scale,
-            y: destination.y + (point.y - source.y) * scale
-        )
-    }
 }

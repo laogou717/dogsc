@@ -8,6 +8,111 @@ private enum StickerLayerMove {
     case top
 }
 
+/// The four entrance families the inspector offers. Saved presets keep
+/// their exact value; this only groups them for the controls.
+enum StickerMotionStyle: CaseIterable, Hashable {
+    case none, fade, pop, slide
+
+    init(_ preset: StickerAnimationPreset) {
+        switch preset {
+        case .none: self = .none
+        case .fade: self = .fade
+        case .pop: self = .pop
+        case .slideLeft, .slideRight, .slideUp, .slideDown,
+             .slideTopLeft, .slideTopRight, .slideBottomLeft, .slideBottomRight:
+            self = .slide
+        }
+    }
+
+    var entranceTitle: String {
+        switch self {
+        case .none: "无"
+        case .fade: "淡入"
+        case .pop: "弹出"
+        case .slide: "滑入"
+        }
+    }
+
+    func preset(direction: StickerSlideDirection) -> StickerAnimationPreset {
+        switch self {
+        case .none: .none
+        case .fade: .fade
+        case .pop: .pop
+        case .slide: direction.preset
+        }
+    }
+}
+
+/// Where a slide comes in from. Legacy diagonals read as their horizontal
+/// side (左上 → 从左) and keep rendering diagonally until changed.
+enum StickerSlideDirection: CaseIterable, Hashable {
+    case left, up, right, down
+
+    init?(_ preset: StickerAnimationPreset) {
+        switch preset {
+        case .slideLeft, .slideTopLeft, .slideBottomLeft: self = .left
+        case .slideRight, .slideTopRight, .slideBottomRight: self = .right
+        case .slideUp: self = .up
+        case .slideDown: self = .down
+        case .none, .fade, .pop: return nil
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .left: "从左"
+        case .up: "从上"
+        case .right: "从右"
+        case .down: "从下"
+        }
+    }
+
+    var preset: StickerAnimationPreset {
+        switch self {
+        case .left: .slideLeft
+        case .up: .slideUp
+        case .right: .slideRight
+        case .down: .slideDown
+        }
+    }
+}
+
+/// 退场 choices. `nil` (同入场) plays the entrance backwards. Explicit slide
+/// exits from older projects show as 同入场 and render unchanged.
+enum StickerExitStyle: CaseIterable, Hashable {
+    case mirror, none, fade, shrink
+
+    init(_ exit: StickerAnimationPreset?) {
+        switch exit {
+        case nil: self = .mirror
+        case .none?: self = .none
+        case .fade?: self = .fade
+        case .pop?: self = .shrink
+        case .slideLeft?, .slideRight?, .slideUp?, .slideDown?,
+             .slideTopLeft?, .slideTopRight?, .slideBottomLeft?, .slideBottomRight?:
+            self = .mirror
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .mirror: "同入场"
+        case .none: "无"
+        case .fade: "淡出"
+        case .shrink: "收缩"
+        }
+    }
+
+    var preset: StickerAnimationPreset? {
+        switch self {
+        case .mirror: nil
+        case .none: StickerAnimationPreset.none
+        case .fade: .fade
+        case .shrink: .pop
+        }
+    }
+}
+
 extension EditorInspectorView {
     @ViewBuilder
     var overlayInspector: some View {
@@ -147,76 +252,10 @@ extension EditorInspectorView {
         if let clip = editorStore.previewProject.timeline.stickerClips.first(
             where: { $0.id == id }
         ) {
-            VStack(alignment: .leading, spacing: 14) {
-                EditorInspectorSection("贴图布局") {
-                    EditorPositionPad(
-                        title: "位置",
-                        point: clip.position,
-                        onChanged: { point in
-                            updateStickerPositionDraft(id: id, point: point)
-                        },
-                        onEnded: {
-                            commitOverlayDraft(actionName: "移动贴图")
-                        },
-                        onCancelled: { editorStore.cancelInteraction() },
-                        onTextPreviewValidityChanged: {
-                            updateEditorTextPreviewValidity(
-                                store: editorStore, isValid: $0,
-                                commandScope: .selection, selection: .sticker(id),
-                                actionName: "移动贴图"
-                            )
-                        },
-                        snapsToGrid: false
-                    )
-                    overlaySlider("宽度", value: stickerBinding(id: id, keyPath: \.width, fallback: clip.width), range: 0.02...1.5, format: .percent)
-                    overlaySlider("旋转", value: stickerBinding(id: id, keyPath: \.rotationDegrees, fallback: clip.rotationDegrees), range: -180...180, format: .degrees)
-                    overlaySlider("透明度", value: stickerBinding(id: id, keyPath: \.opacity, fallback: clip.opacity), range: 0...1, format: .percent)
-                }
-
-                if editorStore.previewProject.timeline.stickerClips.count > 1 {
-                    EditorInspectorSection("层级") {
-                        let state = stickerLayerState(id: id)
-                        HStack(spacing: 7) {
-                            stickerLayerButton(
-                                title: "置底",
-                                symbol: "square.3.layers.3d.bottom.filled",
-                                disabled: state.rank == 0
-                            ) {
-                                moveStickerLayer(id: id, move: .bottom)
-                            }
-                            stickerLayerButton(
-                                title: "下移",
-                                symbol: "square.2.layers.3d.bottom.filled",
-                                disabled: state.rank == 0
-                            ) {
-                                moveStickerLayer(id: id, move: .backward)
-                            }
-                            stickerLayerButton(
-                                title: "上移",
-                                symbol: "square.2.layers.3d.top.filled",
-                                disabled: state.rank >= state.count - 1
-                            ) {
-                                moveStickerLayer(id: id, move: .forward)
-                            }
-                            stickerLayerButton(
-                                title: "置顶",
-                                symbol: "square.3.layers.3d.top.filled",
-                                disabled: state.rank >= state.count - 1
-                            ) {
-                                moveStickerLayer(id: id, move: .top)
-                            }
-                        }
-                        Text(String(
-                            format: appLocalized("当前第 %lld 层，共 %lld 层"),
-                            Int64(state.rank + 1), Int64(state.count)
-                        ))
-                            .font(.appUI(size: 10))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
+            VStack(alignment: .leading, spacing: 0) {
                 EditorInspectorSection("外观") {
                     overlaySlider("圆角", value: stickerBinding(id: id, keyPath: \.cornerRadius, fallback: clip.cornerRadius), range: 0...160, format: .points)
+                    overlaySlider("阴影", value: stickerBinding(id: id, keyPath: \.shadowOpacity, fallback: clip.shadowOpacity), range: 0...1, format: .percent)
                     overlaySlider("描边", value: stickerBinding(id: id, keyPath: \.borderWidth, fallback: clip.borderWidth), range: 0...40, format: .points)
                     if clip.borderWidth > 0 {
                         EditorTransactionalColorInput(
@@ -233,21 +272,12 @@ extension EditorInspectorView {
                             onError: onError
                         )
                     }
-                    overlaySlider("阴影", value: stickerBinding(id: id, keyPath: \.shadowOpacity, fallback: clip.shadowOpacity), range: 0...1, format: .percent)
-                    overlaySlider("阴影柔化", value: stickerBinding(id: id, keyPath: \.shadowRadius, fallback: clip.shadowRadius), range: 0...80, format: .points)
+                    overlaySlider("透明度", value: stickerBinding(id: id, keyPath: \.opacity, fallback: clip.opacity), range: 0...1, format: .percent)
                 }
 
-                EditorInspectorSection("背景处理") {
-                    if clip.hidesScreen {
-                        EditorSymbolLabel("仅保留画布背景与贴图", systemImage: "rectangle.slash")
-                            .font(.appUI(size: 11, weight: .semibold))
-                            .foregroundStyle(EditorTheme.chrome(0.78))
-                        Text("录屏已隐藏，只保留画布自身的壁纸模糊。").help(appLocalized("录屏画面已隐藏，录屏虚化不会再让画布背景变得雾蒙蒙；画布自身设置的壁纸模糊仍会保留。"))
-                            .font(.appUI(size: 10))
-                            .foregroundStyle(EditorTheme.chrome(0.50))
-                            .fixedSize(horizontal: false, vertical: true)
-                    } else {
-                        overlaySlider("录屏虚化", value: stickerBinding(id: id, keyPath: \.backdropBlur, fallback: clip.backdropBlur), range: 0...60, format: .points)
+                EditorInspectorSection("背景") {
+                    if !clip.hidesScreen {
+                        overlaySlider("虚化", value: stickerBinding(id: id, keyPath: \.backdropBlur, fallback: clip.backdropBlur), range: 0...60, format: .points)
                         if clip.backdropBlur > 0.01 {
                             EditorToggle(
                                 isOn: stickerBinding(
@@ -265,108 +295,56 @@ extension EditorInspectorView {
                             keyPath: \.hidesScreen,
                             fallback: clip.hidesScreen
                         ),
-                        title: "贴图期间隐藏录屏画面"
+                        title: "隐藏录屏"
                     )
+                    .help(appLocalized("贴图期间隐藏录屏画面"))
                     EditorToggle(
                         isOn: stickerBinding(
                             id: id,
                             keyPath: \.hidesCamera,
                             fallback: clip.hidesCamera
                         ),
-                        title: "贴图期间隐藏摄像头"
+                        title: "隐藏摄像头"
                     )
+                    .help(appLocalized("贴图期间隐藏摄像头"))
                 }
 
-                EditorInspectorSection("出入场") {
-                    VStack(alignment: .leading, spacing: 7) {
-                        Text("动效节奏")
-                            .font(.appUI(size: 10, weight: .semibold))
-                            .foregroundStyle(EditorTheme.chrome(0.62))
-                        EditorTileSelector(
-                            options: ElementMotionCurve.allCases,
-                            title: { $0.editorTitle },
-                            icon: { $0.editorSymbol },
-                            selection: stickerBinding(
-                                id: id,
-                                keyPath: \.animationCurve,
-                                fallback: clip.animationCurve
-                            ),
-                            columnCount: 3
-                        )
-                    }
-
-                    Divider()
-                        .overlay(EditorTheme.chrome(0.05))
-
-                    VStack(alignment: .leading, spacing: 7) {
-                        Text("入场方式")
-                            .font(.appUI(size: 10, weight: .semibold))
-                            .foregroundStyle(EditorTheme.chrome(0.62))
-                        EditorTileSelector(
-                            options: StickerAnimationPreset.allCases,
-                            title: stickerAnimationShortLabel,
-                            icon: stickerAnimationSymbol,
-                            selection: stickerBinding(
-                                id: id,
-                                keyPath: \.animation,
-                                fallback: clip.animation
-                            ),
-                            columnCount: 4
-                        )
-                        .accessibilityLabel("贴图入场方式")
-                        overlaySlider(
-                            "入场时长",
-                            value: stickerBinding(
-                                id: id,
-                                keyPath: \.enterDuration,
-                                fallback: clip.enterDuration
-                            ),
-                            range: 0...2,
-                            format: .seconds
-                        )
-                    }
-
-                    Divider()
-                        .overlay(EditorTheme.chrome(0.05))
-
-                    VStack(alignment: .leading, spacing: 7) {
-                        Text("退场方式")
-                            .font(.appUI(size: 10, weight: .semibold))
-                            .foregroundStyle(EditorTheme.chrome(0.62))
-                        EditorTileSelector(
-                            options: stickerExitAnimationOptions,
-                            title: stickerExitAnimationShortLabel,
-                            icon: stickerExitAnimationSymbol,
-                            selection: stickerBinding(
-                                id: id,
-                                keyPath: \.exitAnimation,
-                                fallback: clip.exitAnimation
-                            ),
-                            columnCount: 4
-                        )
-                        .accessibilityLabel("贴图退场方式")
-                        if clip.exitAnimation == nil {
-                            EditorSymbolLabel(
-                                "自动采用入场方式的反向动作",
-                                systemImage: "arrow.triangle.2.circlepath"
+                EditorInspectorSection("位置与尺寸") {
+                    EditorPositionPad(
+                        title: "位置",
+                        point: clip.position,
+                        onChanged: { point in
+                            updateStickerPositionDraft(id: id, point: point)
+                        },
+                        onEnded: {
+                            commitOverlayDraft(actionName: "移动贴图")
+                        },
+                        onCancelled: { editorStore.cancelInteraction() },
+                        onTextPreviewValidityChanged: {
+                            updateEditorTextPreviewValidity(
+                                store: editorStore, isValid: $0,
+                                commandScope: .selection, selection: .sticker(id),
+                                actionName: "移动贴图"
                             )
-                            .font(.appUI(size: 10))
-                            .foregroundStyle(EditorTheme.chrome(0.50))
-                        }
-                        overlaySlider(
-                            "出场时长",
-                            value: stickerBinding(
-                                id: id,
-                                keyPath: \.exitDuration,
-                                fallback: clip.exitDuration
-                            ),
-                            range: 0...2,
-                            format: .seconds
-                        )
+                        },
+                        snapsToGrid: false,
+                        anchorSteps: [0.15, 0.5, 0.85]
+                    )
+                    overlaySlider("大小", value: stickerBinding(id: id, keyPath: \.width, fallback: clip.width), range: 0.02...1.5, format: .percent)
+                    overlaySlider("旋转", value: stickerBinding(id: id, keyPath: \.rotationDegrees, fallback: clip.rotationDegrees), range: -180...180, format: .degrees)
+                    if editorStore.previewProject.timeline.stickerClips.count > 1 {
+                        stickerLayerRow(id: id)
                     }
+                }
+
+                EditorInspectorSection("动画") {
+                    stickerEntranceRows(id: id, clip: clip)
+                    stickerExitRow(id: id, clip: clip)
+                    stickerDurationRow(id: id, clip: clip)
                 }
 
                 removeOverlayButton(title: "删除贴图")
+                    .padding(.top, 14)
             }
         } else {
             missingOverlayView
@@ -397,7 +375,7 @@ extension EditorInspectorView {
             }
         }
         .buttonStyle(.editorDestructive)
-        .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 
     var missingOverlayView: some View {
@@ -481,90 +459,173 @@ extension EditorInspectorView {
         )
     }
 
-    var stickerExitAnimationOptions: [StickerAnimationPreset?] {
-        [nil] + StickerAnimationPreset.allCases.map(Optional.some)
-    }
+    // MARK: 贴图 · 动画
 
-    func stickerAnimationShortLabel(_ preset: StickerAnimationPreset) -> String {
-        switch preset {
-        case .none: "无"
-        case .fade: "淡入"
-        case .pop: "弹出"
-        case .slideLeft: "从左"
-        case .slideRight: "从右"
-        case .slideUp: "从上"
-        case .slideDown: "从下"
-        case .slideTopLeft: "左上"
-        case .slideTopRight: "右上"
-        case .slideBottomLeft: "左下"
-        case .slideBottomRight: "右下"
+    /// 入场: 无 / 淡入 / 弹出 / 滑入; 滑入 adds a four-way 方向 row.
+    /// Diagonal slides from older projects keep rendering exactly as saved;
+    /// the controls only show their nearest choice until the user picks one.
+    @ViewBuilder
+    func stickerEntranceRows(id: UUID, clip: StickerClip) -> some View {
+        let motion = StickerMotionStyle(clip.animation)
+        stickerPropertyRow("入场") {
+            EditorSegmentedControl(
+                options: StickerMotionStyle.allCases,
+                title: \.entranceTitle,
+                selection: Binding(
+                    get: { motion },
+                    set: { style in
+                        guard style != motion else { return }
+                        setStickerAnimation(id: id) { clip in
+                            clip.animation = style.preset(
+                                direction: StickerSlideDirection(clip.animation) ?? .left
+                            )
+                        }
+                    }
+                )
+            )
+            .accessibilityLabel(appLocalized("贴图入场方式"))
+        }
+        if motion == .slide {
+            let direction = StickerSlideDirection(clip.animation) ?? .left
+            stickerPropertyRow("方向") {
+                EditorSegmentedControl(
+                    options: StickerSlideDirection.allCases,
+                    title: \.title,
+                    selection: Binding(
+                        get: { direction },
+                        set: { next in
+                            guard next.preset != clip.animation else { return }
+                            setStickerAnimation(id: id) { $0.animation = next.preset }
+                        }
+                    )
+                )
+                .accessibilityLabel(appLocalized("贴图滑入方向"))
+            }
         }
     }
 
-    func stickerExitAnimationShortLabel(_ preset: StickerAnimationPreset?) -> String {
-        guard let preset else { return "反向" }
-        switch preset {
-        case .none: return "无"
-        case .fade: return "淡出"
-        case .pop: return "收缩"
-        case .slideLeft: return "向左"
-        case .slideRight: return "向右"
-        case .slideUp: return "向上"
-        case .slideDown: return "向下"
-        case .slideTopLeft: return "向左上"
-        case .slideTopRight: return "向右上"
-        case .slideBottomLeft: return "向左下"
-        case .slideBottomRight: return "向右下"
+    /// 退场: 同入场 (the reverse path, the default) / 无 / 淡出 / 收缩.
+    func stickerExitRow(id: UUID, clip: StickerClip) -> some View {
+        let current = StickerExitStyle(clip.exitAnimation)
+        return stickerPropertyRow("退场") {
+            EditorSegmentedControl(
+                options: StickerExitStyle.allCases,
+                title: \.title,
+                optionHelp: { $0 == .mirror ? "按入场的反向动作退场" : $0.title },
+                selection: Binding(
+                    get: { current },
+                    set: { style in
+                        // Compare saved values, so a legacy explicit slide
+                        // shown as 同入场 can still be reset to the mirror.
+                        guard style.preset != clip.exitAnimation else { return }
+                        setStickerAnimation(id: id) { $0.exitAnimation = style.preset }
+                    }
+                )
+            )
+            .accessibilityLabel(appLocalized("贴图退场方式"))
         }
     }
 
-    func stickerAnimationSymbol(_ preset: StickerAnimationPreset) -> String {
-        switch preset {
-        case .none: "minus"
-        case .fade: "circle.dotted"
-        case .pop: "sparkles"
-        case .slideLeft: "arrow.right"
-        case .slideRight: "arrow.left"
-        case .slideUp: "arrow.down"
-        case .slideDown: "arrow.up"
-        case .slideTopLeft: "arrow.down.right"
-        case .slideTopRight: "arrow.down.left"
-        case .slideBottomLeft: "arrow.up.right"
-        case .slideBottomRight: "arrow.up.left"
+    /// One 时长 row: entrance and exit as a pair of scrub boxes.
+    func stickerDurationRow(id: UUID, clip: StickerClip) -> some View {
+        stickerPropertyRow("时长") {
+            EditorPairedParameterReadouts(
+                first: EditorPairedParameterValue(
+                    title: "入",
+                    accessibilityTitle: "入场时长",
+                    value: clip.enterDuration,
+                    range: 0...2,
+                    displayText: EditorSliderValueFormat.seconds.text(for: clip.enterDuration),
+                    inputFormat: .seconds
+                ),
+                second: EditorPairedParameterValue(
+                    title: "出",
+                    accessibilityTitle: "出场时长",
+                    value: clip.exitDuration,
+                    range: 0...2,
+                    displayText: EditorSliderValueFormat.seconds.text(for: clip.exitDuration),
+                    inputFormat: .seconds
+                ),
+                onChanged: { enter, exit in
+                    _ = editorStore.beginContinuousInteraction(
+                        commandScope: .selection,
+                        selection: .sticker(id)
+                    )
+                    editorStore.updateInteraction { project in
+                        guard let index = project.timeline.stickerClips.firstIndex(
+                            where: { $0.id == id }
+                        ) else { return }
+                        project.timeline.stickerClips[index].enterDuration = (enter * 20).rounded() / 20
+                        project.timeline.stickerClips[index].exitDuration = (exit * 20).rounded() / 20
+                    }
+                },
+                onEnded: { commitOverlayDraft(actionName: "调整贴图时长") },
+                onCancelled: { editorStore.cancelInteraction() },
+                onTextPreviewValidityChanged: {
+                    updateEditorTextPreviewValidity(
+                        store: editorStore, isValid: $0,
+                        commandScope: .selection, selection: .sticker(id),
+                        actionName: "调整贴图时长"
+                    )
+                }
+            )
         }
     }
 
-    func stickerExitAnimationSymbol(_ preset: StickerAnimationPreset?) -> String {
-        guard let preset else { return "arrow.triangle.2.circlepath" }
-        switch preset {
-        case .none: return "minus"
-        case .fade: return "circle.dotted"
-        case .pop: return "sparkles"
-        case .slideLeft: return "arrow.left"
-        case .slideRight: return "arrow.right"
-        case .slideUp: return "arrow.up"
-        case .slideDown: return "arrow.down"
-        case .slideTopLeft: return "arrow.up.left"
-        case .slideTopRight: return "arrow.up.right"
-        case .slideBottomLeft: return "arrow.down.left"
-        case .slideBottomRight: return "arrow.down.right"
-        }
-    }
-
-    func replaceSticker(
-        id: UUID,
-        actionName: String,
-        update: (inout StickerClip) -> Void
-    ) {
+    func setStickerAnimation(id: UUID, update: (inout StickerClip) -> Void) {
         var timeline = editorStore.project.timeline
-        guard let index = timeline.stickerClips.firstIndex(
-            where: { $0.id == id }
-        ) else { return }
+        guard let index = timeline.stickerClips.firstIndex(where: { $0.id == id }) else { return }
         update(&timeline.stickerClips[index])
         do {
-            try editorStore.replaceTimeline(with: timeline, actionName: actionName)
+            try editorStore.replaceTimeline(with: timeline, actionName: "调整贴图动画")
         } catch {
             onError(error.localizedDescription)
+        }
+    }
+
+    /// Label 64 + control, 30 high — the inspector's one row grammar.
+    func stickerPropertyRow<Control: View>(
+        _ title: String,
+        @ViewBuilder control: () -> Control
+    ) -> some View {
+        HStack(spacing: EditorPropertyRowMetrics.gap) {
+            Text(appLocalized(title))
+                .font(.appUI(size: 13))
+                .foregroundStyle(EditorTheme.secondaryText)
+                .lineLimit(1)
+                .frame(width: EditorPropertyRowMetrics.labelWidth, alignment: .leading)
+            control()
+                .frame(maxWidth: .infinity)
+        }
+        .frame(minHeight: EditorPropertyRowMetrics.height)
+    }
+
+    /// 层级 as one row of four quiet icon buttons; the rank sits in the help.
+    func stickerLayerRow(id: UUID) -> some View {
+        let state = stickerLayerState(id: id)
+        let atBottom = state.rank == 0
+        let atTop = state.rank >= state.count - 1
+        return stickerPropertyRow("层级") {
+            HStack(spacing: 2) {
+                stickerLayerButton(title: "置底", symbol: "square.3.layers.3d.bottom.filled", disabled: atBottom) {
+                    moveStickerLayer(id: id, move: .bottom)
+                }
+                stickerLayerButton(title: "下移", symbol: "square.2.layers.3d.bottom.filled", disabled: atBottom) {
+                    moveStickerLayer(id: id, move: .backward)
+                }
+                stickerLayerButton(title: "上移", symbol: "square.2.layers.3d.top.filled", disabled: atTop) {
+                    moveStickerLayer(id: id, move: .forward)
+                }
+                stickerLayerButton(title: "置顶", symbol: "square.3.layers.3d.top.filled", disabled: atTop) {
+                    moveStickerLayer(id: id, move: .top)
+                }
+            }
+            .padding(2)
+            .background(EditorTheme.controlWell, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .help(String(
+                format: appLocalized("当前第 %lld 层，共 %lld 层（摄像头始终在贴图上方）"),
+                Int64(state.rank + 1), Int64(state.count)
+            ))
         }
     }
 
@@ -587,31 +648,17 @@ extension EditorInspectorView {
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            VStack(spacing: 4) {
-                EditorSymbol(symbol, size: 15.5)
-                    .font(.appUI(size: 12, weight: .semibold))
-                Text(appLocalized(title))
-                    .font(.appUI(size: 10, weight: .medium))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-            }
-            .foregroundStyle(
-                disabled
-                    ? EditorTheme.chrome(0.28)
-                    : EditorTheme.chrome(0.84)
-            )
-            .frame(maxWidth: .infinity)
-            .frame(height: 40)
-            .background(
-                EditorTheme.chrome(disabled ? 0.018 : 0.055),
-                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            EditorSymbol(symbol, size: 14)
+                .font(.appUI(size: 12, weight: .medium))
+                .foregroundStyle(disabled ? EditorTheme.tertiaryText.opacity(0.5) : EditorTheme.secondaryText)
+                .frame(maxWidth: .infinity)
+                .frame(height: 26)
+                .contentShape(Rectangle())
         }
-        .buttonStyle(.editorThumbnail)
-        .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 7))
+        .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 7, style: .continuous))
         .disabled(disabled)
-        .help(appLocalized(title + "贴图"))
+        .help(appLocalized(title))
         .accessibilityLabel(appLocalized(title + "贴图"))
     }
 

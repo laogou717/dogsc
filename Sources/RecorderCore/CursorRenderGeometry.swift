@@ -44,9 +44,6 @@ public struct CursorAssetMetrics: Equatable, Sendable {
 }
 
 public struct CursorClickGeometryFrame: Equatable, Sendable {
-    public var style: CursorClickEffectStyle
-    public var progress: Double
-
     // Primary outer ring / main shape
     public var primaryDiameter: Double
     public var primaryLineWidth: Double
@@ -66,12 +63,7 @@ public struct CursorClickGeometryFrame: Equatable, Sendable {
     public var accentSize: Double
     public var accentOpacity: Double
 
-    // Maximum footprint diameter
-    public var maxFootprintDiameter: Double
-
     public init(
-        style: CursorClickEffectStyle,
-        progress: Double,
         primaryDiameter: Double,
         primaryLineWidth: Double,
         primaryOpacity: Double,
@@ -84,11 +76,8 @@ public struct CursorClickGeometryFrame: Equatable, Sendable {
         secondaryGlowRadius: Double = 0,
         accentOffset: Double = 0,
         accentSize: Double = 0,
-        accentOpacity: Double = 0,
-        maxFootprintDiameter: Double = 0
+        accentOpacity: Double = 0
     ) {
-        self.style = style
-        self.progress = progress
         self.primaryDiameter = primaryDiameter
         self.primaryLineWidth = primaryLineWidth
         self.primaryOpacity = primaryOpacity
@@ -102,9 +91,6 @@ public struct CursorClickGeometryFrame: Equatable, Sendable {
         self.accentOffset = accentOffset
         self.accentSize = accentSize
         self.accentOpacity = accentOpacity
-        self.maxFootprintDiameter = maxFootprintDiameter > 0
-            ? maxFootprintDiameter
-            : max(primaryDiameter + primaryGlowRadius * 2, secondaryDiameter + secondaryGlowRadius * 2, (accentOffset + accentSize) * 2)
     }
 }
 
@@ -140,6 +126,30 @@ public struct CursorRenderLayout: Equatable, Sendable {
 /// performs Core Image's final Y-axis conversion.
 public enum CursorRenderGeometry {
     public static let canonicalHeight: Double = 44
+
+    /// Mouse-down press: ease in to 0.82x over 80 ms, then spring back over
+    /// 180 ms with a barely visible overshoot. Renderers scale the cursor
+    /// bitmap around its hotspot, so the tip never moves.
+    public static let pressInDuration: Double = 0.08
+    public static let pressReleaseDuration: Double = 0.18
+    public static let pressDuration: Double = pressInDuration + pressReleaseDuration
+    public static let pressedScale: Double = 0.82
+
+    public static func pressScale(elapsed: Double) -> Double {
+        guard elapsed.isFinite, elapsed >= 0, elapsed < pressDuration else { return 1 }
+        let depth = 1 - pressedScale
+        if elapsed < pressInDuration {
+            let p = elapsed / pressInDuration
+            let eased = 1 - (1 - p) * (1 - p)
+            return 1 - depth * eased
+        }
+        // easeOutBack: 0 -> 1 with a small overshoot (about 3% of depth).
+        let p = (elapsed - pressInDuration) / pressReleaseDuration
+        let overshoot = 1.2
+        let q = p - 1
+        let back = 1 + (overshoot + 1) * q * q * q + overshoot * q * q
+        return pressedScale + depth * back
+    }
     public static let canonicalShortEdge: Double = 1_080
 
     public static func layout(
@@ -225,8 +235,6 @@ public enum CursorRenderGeometry {
             }
 
             return CursorClickGeometryFrame(
-                style: .ripple,
-                progress: progress,
                 primaryDiameter: primaryDiameter,
                 primaryLineWidth: primaryLineWidth,
                 primaryOpacity: primaryOpacity,
@@ -236,8 +244,7 @@ public enum CursorRenderGeometry {
                 secondaryLineWidth: 0,
                 secondaryOpacity: secondaryOpacity,
                 secondaryIsFilled: secondaryIsFilled,
-                secondaryGlowRadius: secondaryGlow,
-                maxFootprintDiameter: scaledHeight * 2.2
+                secondaryGlowRadius: secondaryGlow
             )
 
         case .glow:
@@ -258,8 +265,6 @@ public enum CursorRenderGeometry {
             let secondaryGlow = scaledHeight * 0.18
 
             return CursorClickGeometryFrame(
-                style: .glow,
-                progress: progress,
                 primaryDiameter: primaryDiameter,
                 primaryLineWidth: 0,
                 primaryOpacity: primaryOpacity,
@@ -269,8 +274,7 @@ public enum CursorRenderGeometry {
                 secondaryLineWidth: 0,
                 secondaryOpacity: secondaryOpacity,
                 secondaryIsFilled: true,
-                secondaryGlowRadius: secondaryGlow,
-                maxFootprintDiameter: scaledHeight * 2.2
+                secondaryGlowRadius: secondaryGlow
             )
 
         case .pulse:
@@ -302,8 +306,6 @@ public enum CursorRenderGeometry {
             }
 
             return CursorClickGeometryFrame(
-                style: .pulse,
-                progress: progress,
                 primaryDiameter: primaryDiameter,
                 primaryLineWidth: primaryLineWidth,
                 primaryOpacity: primaryOpacity,
@@ -313,8 +315,7 @@ public enum CursorRenderGeometry {
                 secondaryLineWidth: secondaryLineWidth,
                 secondaryOpacity: secondaryOpacity,
                 secondaryIsFilled: secondaryIsFilled,
-                secondaryGlowRadius: secondaryGlow,
-                maxFootprintDiameter: scaledHeight * 2.0
+                secondaryGlowRadius: secondaryGlow
             )
 
         case .burst:
@@ -333,8 +334,6 @@ public enum CursorRenderGeometry {
             let accentOpacity = max(userOpacity * 0.85 * (1.0 - progress), 0)
 
             return CursorClickGeometryFrame(
-                style: .burst,
-                progress: progress,
                 primaryDiameter: primaryDiameter,
                 primaryLineWidth: 0,
                 primaryOpacity: primaryOpacity,
@@ -347,8 +346,7 @@ public enum CursorRenderGeometry {
                 secondaryGlowRadius: secondaryGlow,
                 accentOffset: accentOffset,
                 accentSize: accentSize,
-                accentOpacity: accentOpacity,
-                maxFootprintDiameter: scaledHeight * 1.8
+                accentOpacity: accentOpacity
             )
 
         case .none:

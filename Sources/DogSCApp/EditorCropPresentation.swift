@@ -1,5 +1,3 @@
-import RecorderCore
-
 /// The three editor surfaces that change while a crop draft is active.
 /// Keeping these as distinct values makes presentation drift testable while
 /// resolving all of them atomically from the same `EditorStore.interaction`.
@@ -33,24 +31,20 @@ struct EditorCropPresentation: Equatable, Sendable {
     let toolbarMode: EditorCropToolbarMode
     let inspectorMode: EditorCropInspectorMode
     let canvasMode: EditorCropCanvasMode
-    let draft: NormalizedCrop?
 
     init(interaction: EditorInteractionDraft?) {
         guard interaction?.tool == .crop,
-              interaction?.selection == .crop,
-              let interaction
+              interaction?.selection == .crop
         else {
             toolbarMode = .standardControls
             inspectorMode = .selectedInspector
             canvasMode = .composition
-            draft = nil
             return
         }
 
         toolbarMode = .cropControls
         inspectorMode = .cropInspector
         canvasMode = .cropEditor
-        draft = interaction.previewProject.canvas.crop.clamped()
     }
 
     var isActive: Bool {

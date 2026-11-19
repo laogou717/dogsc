@@ -5,88 +5,90 @@ import SwiftUI
 struct EditorActionMenu<Label: View>: View {
     let title: String
     let items: [RecorderMenuItem]
+    var showsHover = true
     @ViewBuilder let label: () -> Label
     @State private var isPresented = false
 
     var body: some View {
         Button { isPresented.toggle() } label: { label() }
-            .buttonStyle(.editorToolbarPress)
-            .appButtonKeyboardFocus(in: Capsule(style: .continuous))
+            .buttonStyle(EditorToolbarPressButtonStyle(showsHover: showsHover))
+            .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
             .focusEffectDisabled()
             .help(appLocalized(title))
             .accessibilityLabel(appLocalized(title))
             .editorPopoverKeyboardEntry { isPresented = true }
             .editorPopover(isPresented: $isPresented, arrowEdge: .bottom) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(appLocalized(title))
-                        .font(EditorTypography.eyebrow)
-                        .tracking(0.5)
-                        .foregroundStyle(EditorTheme.popoverSecondaryText)
-                        .padding(.horizontal, 12)
-                        .padding(.top, 6)
-                        .padding(.bottom, 4)
-                    ScrollView {
-                        VStack(spacing: 4) {
-                    ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                        switch item.kind {
-                        case .separator:
-                            Color.clear.frame(height: 6)
-                        case .info:
-                            Text(item.title).font(.appUI(size: 12)).foregroundStyle(EditorTheme.popoverSecondaryText)
-                                .padding(10)
-                        case .action:
-                            Button {
-                                performAction(item)
-                            } label: {
-                                HStack(spacing: 12) {
-                                    if let symbol = item.systemImage {
-                                        EditorSymbol(symbol, size: 15)
-                                            .frame(width: 30, height: 30)
-                                            .background(EditorTheme.chrome(0.06), in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous))
-                                            .accessibilityHidden(true)
-                                    }
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(item.title).font(.appUI(size: 13)).lineLimit(1).truncationMode(.middle)
-                                        if let detail = item.detail {
-                                            Text(detail)
-                                                .font(.appUI(size: 12))
-                                                .foregroundStyle(EditorTheme.popoverSecondaryText)
-                                                .lineLimit(1)
-                                        }
-                                    }
-                                    Spacer(minLength: 12)
-                                    EditorSymbol("checkmark", size: 15.5)
-                                        .font(.appUI(size: 12, weight: .medium))
-                                        .foregroundStyle(EditorTheme.selectionTint)
-                                        .opacity(item.isOn ? 1 : 0)
-                                        .accessibilityHidden(true)
-                                }
-                                .padding(.horizontal, 12).frame(minHeight: item.detail == nil ? 36 : 52)
-                            }
-                            .buttonStyle(EditorActionRowStyle(selected: item.isOn))
-                            .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control))
-                            .disabled(!item.isEnabled)
-                            .accessibilityLabel(appLocalized(item.title))
-                            .accessibilityAddTraits(item.isOn ? .isSelected : [])
-                            .help(appLocalized(item.detail ?? item.title))
-                            .onKeyPress(keys: [.return], phases: .down) { press in
-                                guard item.isEnabled,
-                                      press.modifiers.intersection([.command, .control, .option, .shift]).isEmpty else {
-                                    return .ignored
-                                }
-                                performAction(item)
-                                return .handled
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                            switch item.kind {
+                            case .separator:
+                                Rectangle().fill(EditorTheme.hairline)
+                                    .frame(height: 1)
+                                    .padding(.vertical, 4)
+                                    .padding(.horizontal, 8)
+                            case .info:
+                                Text(item.title).font(EditorTypography.helper)
+                                    .foregroundStyle(EditorTheme.popoverSecondaryText)
+                                    .padding(.horizontal, 10).padding(.vertical, 6)
+                            case .action:
+                                actionRow(item)
                             }
                         }
                     }
-                        }
-                    }
-                    .scrollIndicators(.hidden)
-                    .frame(height: menuContentHeight)
                 }
-                .padding(8).frame(width: menuWidth)
+                .scrollIndicators(.hidden)
+                .frame(height: menuContentHeight)
+                .padding(4)
+                .frame(width: menuWidth)
             }
     }
+
+    private func actionRow(_ item: RecorderMenuItem) -> some View {
+        Button {
+            performAction(item)
+        } label: {
+            HStack(spacing: 8) {
+                if let symbol = item.systemImage {
+                    EditorSymbol(symbol, size: 14)
+                        .foregroundStyle(EditorTheme.secondaryText)
+                        .frame(width: 18)
+                        .accessibilityHidden(true)
+                }
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(item.title).font(.appUI(size: 13)).lineLimit(1).truncationMode(.middle)
+                    if let detail = item.detail {
+                        Text(detail)
+                            .font(EditorTypography.helper)
+                            .foregroundStyle(EditorTheme.popoverSecondaryText)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 12)
+                EditorSymbol("checkmark", size: 13)
+                    .foregroundStyle(EditorTheme.primaryText)
+                    .opacity(item.isOn ? 1 : 0)
+                    .accessibilityHidden(true)
+            }
+            .padding(.horizontal, 8)
+            .frame(minHeight: item.detail == nil ? 28 : 40)
+        }
+        .buttonStyle(EditorActionRowStyle(selected: item.isOn))
+        .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control))
+        .disabled(!item.isEnabled)
+        .accessibilityLabel(appLocalized(item.title))
+        .accessibilityAddTraits(item.isOn ? .isSelected : [])
+        .help(appLocalized(item.detail ?? item.title))
+        .onKeyPress(keys: [.return], phases: .down) { press in
+            guard item.isEnabled,
+                  press.modifiers.intersection([.command, .control, .option, .shift]).isEmpty else {
+                return .ignored
+            }
+            performAction(item)
+            return .handled
+        }
+    }
+
     private func performAction(_ item: RecorderMenuItem) {
         isPresented = false
         item.handler?()
@@ -106,20 +108,20 @@ struct EditorActionMenu<Label: View>: View {
                 } ?? 0
                 // Padding, the trailing checkmark and gaps stay aligned;
                 // rows with an icon also reserve its 22-point column.
-                return max(titleWidth, detailWidth) + 88 + (item.systemImage == nil ? 0 : 34)
+                return max(titleWidth, detailWidth) + 52 + (item.systemImage == nil ? 0 : 26)
             }
         }.max() ?? 0
-        return min(360, max(270, ceil(contentWidth) + 2))
+        return min(320, max(180, ceil(contentWidth) + 2))
     }
 
     private var menuContentHeight: CGFloat {
         min(items.reduce(CGFloat(0)) { result, item in
             switch item.kind {
-            case .separator: result + 15
-            case .info: result + 40
-            case .action: result + (item.detail == nil ? 40 : 56)
+            case .separator: result + 9
+            case .info: result + 28
+            case .action: result + (item.detail == nil ? 28 : 40)
             }
-        }, 360)
+        }, 400)
     }
 
 }
@@ -137,23 +139,16 @@ struct EditorActionRowStyle: ButtonStyle {
         var body: some View {
             let lit = isEnabled && hovered
             configuration.label
-                .foregroundStyle(EditorTheme.chrome(isEnabled ? (lit ? 0.96 : 0.86) : 0.32))
-                .offset(x: lit && !RecorderMotion.reduces ? 2 : 0)
+                .foregroundStyle(EditorTheme.chrome(isEnabled ? 0.92 : 0.32))
                 .frame(maxWidth: .infinity)
                 .background {
                     RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous)
-                        .fill(EditorTheme.chrome(isEnabled && configuration.isPressed ? EditorStateWash.pressed : lit ? EditorStateWash.hover : selected ? 0.045 : 0))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous)
-                                .strokeBorder(EditorTheme.chrome(lit ? 0.06 : 0), lineWidth: 0.5)
-                        }
+                        .fill(EditorTheme.chrome(isEnabled && configuration.isPressed ? EditorStateWash.pressed : lit ? EditorStateWash.hover : 0))
                 }
                 .contentShape(RoundedRectangle(cornerRadius: EditorInterfaceRadius.control))
                 .appKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control))
-                .scaleEffect(isEnabled && configuration.isPressed && !RecorderMotion.reduces ? 0.985 : 1)
                 .onHover { hovered = $0 }
-                .animation(SpringMotion.interactive, value: hovered)
-                .animation(SpringMotion.snappy, value: configuration.isPressed)
+                .animation(SpringMotion.micro, value: hovered)
         }
     }
 }

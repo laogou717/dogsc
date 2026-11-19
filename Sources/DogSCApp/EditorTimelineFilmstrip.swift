@@ -1,10 +1,12 @@
 import OSLog
+import RecorderCore
 import SwiftUI
 
 /// Height-sized source pictures, sampled only inside the buffered viewport.
 /// Clip duration changes the number of pictures, never their aspect ratio.
 struct EditorTimelineFilmstrip: View {
     @ObservedObject var mediaSession: EditorMediaSession
+    let sourceID: UUID
     let sourceStart: TimeInterval
     let sourceDuration: TimeInterval
     let visibleRange: ClosedRange<CGFloat>
@@ -38,7 +40,6 @@ struct EditorTimelineFilmstrip: View {
     }
 
     private struct Request: Equatable {
-        let generation: UInt64?
         let source: SourceIdentity?
         let sourceStart: TimeInterval
         let sourceDuration: TimeInterval
@@ -54,8 +55,8 @@ struct EditorTimelineFilmstrip: View {
     }
 
     private var sourceIdentity: SourceIdentity? {
-        guard let prepared = mediaSession.prepared, let input = prepared.request.source else { return nil }
-        return SourceIdentity(input: input, timeOffset: prepared.plan.primarySourceTimeOffset)
+        guard let prepared = mediaSession.prepared, let input = prepared.request.screenInput(for: sourceID) else { return nil }
+        return SourceIdentity(input: input, timeOffset: prepared.plan.sourceTimeOffsets[sourceID] ?? 0)
     }
 
     var body: some View {
@@ -120,7 +121,7 @@ struct EditorTimelineFilmstrip: View {
               sourceStart.isFinite, sourceDuration.isFinite, sourceDuration > 0,
               visibleRange.upperBound > 0, visibleRange.lowerBound < size.width
         else { return [] }
-        let sourceSize = mediaSession.sourceDisplaySize
+        let sourceSize = mediaSession.sourceDisplaySize(for: sourceID) ?? CGSize(width: 1920, height: 1080)
         let aspect = sourceSize.width.isFinite && sourceSize.height.isFinite
             && sourceSize.width > 0 && sourceSize.height > 0
             ? sourceSize.width / sourceSize.height : 16.0 / 9.0
@@ -160,7 +161,7 @@ struct EditorTimelineFilmstrip: View {
         let samples = ordered.compactMap { tile in
             seen.insert(tile.sample.timeValue).inserted ? tile.sample : nil
         }
-        return Request(generation: mediaSession.prepared?.generation, source: source,
+        return Request(source: source,
             sourceStart: sourceStart, sourceDuration: sourceDuration, samples: samples,
             priorityTimes: Set(priority.map { $0.sample.timeValue }),
             isEnabled: isEnabled, isEditorActive: isEditorActive)
@@ -188,13 +189,13 @@ struct EditorTimelineFilmstrip: View {
         // forever. Retry only missing samples, with bounded, cancellable backoff.
         for attempt in 0..<3 {
             guard requestIsCurrent(request) else { return }
-            let shared = mediaSession.filmstripCachedFrames(sourceStart: sourceStart, sourceDuration: sourceDuration)
+            let shared = mediaSession.filmstripCachedFrames(sourceID: sourceID, sourceStart: sourceStart, sourceDuration: sourceDuration)
             decoded.merge(shared) { existing, _ in existing }
             var unpublishedCount = 0
             var hasPublishedNewFrame = false
             for sample in request.samples where decoded[sample.timeValue] == nil {
                 guard requestIsCurrent(request) else { return }
-                if let frame = await mediaSession.filmstripThumbnail(
+                if let frame = await mediaSession.filmstripThumbnail(sourceID: sourceID,
                     atSourceTime: Double(sample.timeValue) / 600,
                     tolerance: Double(sample.toleranceValue) / 600
                 ) {
@@ -223,13 +224,12 @@ struct EditorTimelineFilmstrip: View {
     }
 
     private func requestIsCurrent(_ request: Request) -> Bool {
-        !Task.isCancelled && request.generation == mediaSession.prepared?.generation
-            && request.source == sourceIdentity
+        !Task.isCancelled && request.source == sourceIdentity
     }
 
     private func availableFrames(for source: SourceIdentity?) -> [Int64: CGImage] {
         guard source != nil, source == sourceIdentity else { return [:] }
-        return compatibleFrames(for: source).merging(mediaSession.filmstripCachedFrames(
+        return compatibleFrames(for: source).merging(mediaSession.filmstripCachedFrames(sourceID: sourceID,
             sourceStart: sourceStart, sourceDuration: sourceDuration)) { existing, _ in existing }
     }
 
@@ -276,6 +276,9 @@ struct EditorTimelineFilmstrip: View {
             let left = abs(Double($0) - center), right = abs(Double($1) - center)
             return left == right ? $0 < $1 : left < right
         }.prefix(limit).compactMap { time in decoded[time].map { (time, $0) } })
+        if frameSource == source, frameReveals.isEmpty,
+           retained.count == frames.count,
+           retained.allSatisfy({ frames[$0.key] === $0.value }) { return }
         let previous = compatibleFrames(for: source)
         let now = Date()
         var reveals = frameSource == source ? frameReveals.filter {

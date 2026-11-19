@@ -86,10 +86,7 @@ struct EditorWallpaperResolver: Sendable {
 
     func resolve(relativePath: String) -> URL? {
         guard let projectSession else { return nil }
-        return ProjectStore.resolve(
-            relativePath: relativePath,
-            session: projectSession
-        )
+        return ProjectStore.resolveMediaPath(relativePath, session: projectSession)
     }
 }
 
@@ -102,17 +99,19 @@ final class EditorHostActions: ObservableObject {
     @Published private(set) var errorRevision: UInt64 = 0
 
     private let openProjectAction: () -> Void
+    /// EDT-054: copies a bin image into the project for use as a sticker.
+    var importOverlayImageFileAction: (URL) -> String? = { _ in nil }
+    /// EDT-054: the open project's package, for project-relative assets.
+    var projectPackageURL: () -> URL? = { nil }
     private let deleteProjectAction: () -> Void
-    private let chooseWallpaperAction: () -> BackgroundSource?
-    private let importOverlayImageAction: () -> String?
-    private let importOverlayImageFromURLAction: (URL) -> String?
+    private let chooseWallpaperAction: () async -> BackgroundSource?
+    private let importOverlayImageAction: () async -> String?
     private let pasteOverlayImageAction: () -> String?
     private let setErrorAction: (String?) -> Void
     private let saveProjectAction: () -> Void
     private let revealProjectAction: () -> Void
     private let exportSourceMediaAction: () -> Void
-    private let importCameraAction: () -> Void
-    private let importDesktopWallpaperAction: () -> BackgroundSource?
+    private let importCameraAction: (UUID) -> Void
     private let renameProjectAction: (String) -> URL?
     private var subscriptions = Set<AnyCancellable>()
 
@@ -123,16 +122,14 @@ final class EditorHostActions: ObservableObject {
         errorMessageUpdates: AnyPublisher<String?, Never>,
         openProject: @escaping () -> Void,
         deleteProject: @escaping () -> Void,
-        chooseWallpaper: @escaping () -> BackgroundSource?,
-        importOverlayImage: @escaping () -> String? = { nil },
-        importOverlayImageFromURL: @escaping (URL) -> String? = { _ in nil },
+        chooseWallpaper: @escaping () async -> BackgroundSource?,
+        importOverlayImage: @escaping () async -> String? = { nil },
         pasteOverlayImage: @escaping () -> String? = { nil },
         setError: @escaping (String?) -> Void,
         saveProject: @escaping () -> Void = {},
         revealProject: @escaping () -> Void = {},
         exportSourceMedia: @escaping () -> Void = {},
-        importCamera: @escaping () -> Void = {},
-        importDesktopWallpaper: @escaping () -> BackgroundSource? = { nil },
+        importCamera: @escaping (UUID) -> Void = { _ in },
         renameProject: @escaping (String) -> URL? = { _ in nil }
     ) {
         self.persistenceStatus = persistenceStatus
@@ -141,14 +138,12 @@ final class EditorHostActions: ObservableObject {
         deleteProjectAction = deleteProject
         chooseWallpaperAction = chooseWallpaper
         importOverlayImageAction = importOverlayImage
-        importOverlayImageFromURLAction = importOverlayImageFromURL
         pasteOverlayImageAction = pasteOverlayImage
         setErrorAction = setError
         saveProjectAction = saveProject
         revealProjectAction = revealProject
         exportSourceMediaAction = exportSourceMedia
         importCameraAction = importCamera
-        importDesktopWallpaperAction = importDesktopWallpaper
         renameProjectAction = renameProject
 
         persistenceStatusUpdates
@@ -177,17 +172,18 @@ final class EditorHostActions: ObservableObject {
         deleteProjectAction()
     }
 
-    func chooseWallpaper() -> BackgroundSource? {
-        chooseWallpaperAction()
+    func chooseWallpaper() async -> BackgroundSource? {
+        await chooseWallpaperAction()
     }
 
-    func importOverlayImage() -> String? {
-        importOverlayImageAction()
+    func importOverlayImage() async -> String? {
+        await importOverlayImageAction()
     }
 
     func importOverlayImage(from url: URL) -> String? {
-        importOverlayImageFromURLAction(url)
+        importOverlayImageFileAction(url)
     }
+
 
     func pasteOverlayImage() -> String? {
         pasteOverlayImageAction()
@@ -213,13 +209,10 @@ final class EditorHostActions: ObservableObject {
         exportSourceMediaAction()
     }
 
-    func importCameraReplacement() {
-        importCameraAction()
+    func importCameraReplacement(sourceID: UUID) {
+        importCameraAction(sourceID)
     }
 
-    func importDesktopWallpaper() -> BackgroundSource? {
-        importDesktopWallpaperAction()
-    }
 
     func renameProject(to title: String) -> URL? {
         renameProjectAction(title)
@@ -273,7 +266,7 @@ struct EditorSessionContext {
     /// Dynamic timeline/media-manifest state comes from the shared document;
     /// file identities and pointer records remain pinned to this generation.
     func mediaRequest(for project: RecorderProject) -> EditorMediaRequest {
-        return EditorMediaRequest(
+        var request = EditorMediaRequest(
             editorSessionID: id,
             source: media.source,
             camera: media.camera,
@@ -282,13 +275,31 @@ struct EditorSessionContext {
             mediaManifest: project.media,
             pointerEvents: media.pointerEvents
         )
+        request.audioClips = project.timeline.programAudioClips
+        request.speech = project.timeline.audioClips.contains(where: \.ducksUnderSpeech)
+            ? project.timeline.subtitleCues.map(\.timing) : []
+        for source in project.additionalSources {
+            func input(_ reference: ProjectMediaReference?) -> EditorMediaInput? {
+                guard let path = reference?.relativePath else { return nil }
+                let url = path.hasPrefix("/") ? URL(fileURLWithPath: path) : projectAssetURLResolver(path)
+                return EditorMediaInput(url)
+            }
+            request.additionalSources[source.id] = EditorRecordingSourceInput(
+                manifest: source.media, name: source.name,
+                screen: input(source.media.screen), camera: input(source.media.camera),
+                microphone: input(source.media.microphone), pointer: input(source.media.pointerEvents),
+                cameraContentCrop: source.cameraContentCrop)
+        }
+        return request
     }
 
     func cameraTimingRequest(for project: RecorderProject) -> EditorCameraTimingRequest {
         EditorCameraTimingRequest(
             editorSessionID: id,
             sourceSequence: project.timeline.sourceSequence,
-            cameraReference: project.media?.camera
+            cameraReferences: Dictionary(uniqueKeysWithValues: project.sources.compactMap { source in
+                source.media.camera.map { (source.id, $0) }
+            })
         )
     }
 
@@ -358,15 +369,11 @@ extension EditorSessionContext {
             },
             chooseWallpaper: { [weak model] in
                 guard model?.editorSessionID == id.rawValue else { return nil }
-                return model?.chooseWallpaperAsset()
+                return await model?.chooseWallpaperAsset()
             },
             importOverlayImage: { [weak model] in
                 guard model?.editorSessionID == id.rawValue else { return nil }
-                return model?.chooseOverlayImageAsset()?.relativePath
-            },
-            importOverlayImageFromURL: { [weak model] url in
-                guard model?.editorSessionID == id.rawValue else { return nil }
-                return model?.importOverlayImageAsset(from: url)
+                return await model?.chooseOverlayImageAsset()?.relativePath
             },
             pasteOverlayImage: { [weak model] in
                 guard model?.editorSessionID == id.rawValue else { return nil }
@@ -389,13 +396,9 @@ extension EditorSessionContext {
                 guard model?.editorSessionID == id.rawValue else { return }
                 model?.exportCurrentProjectSourceMedia()
             },
-            importCamera: { [weak model] in
+            importCamera: { [weak model] sourceID in
                 guard model?.editorSessionID == id.rawValue else { return }
-                model?.importCameraReplacement()
-            },
-            importDesktopWallpaper: { [weak model] in
-                guard model?.editorSessionID == id.rawValue else { return nil }
-                return model?.importCurrentDesktopWallpaper()
+                model?.importCameraReplacement(sourceID: sourceID)
             },
             renameProject: { [weak model] newTitle in
                 guard model?.editorSessionID == id.rawValue,
@@ -404,14 +407,25 @@ extension EditorSessionContext {
                     let newURL = try ProjectStore.renamePackage(at: currentURL, toTitle: newTitle)
                     if newURL != currentURL {
                         model?.updateSessionPackageURL(to: newURL)
+                        ProjectFiles.setPackage(newURL)
                     }
                     return newURL
                 } catch {
-                    model?.errorMessage = "重命名项目包失败：\(error.localizedDescription)"
+                    model?.errorMessage = String(format: appLocalized("重命名项目包失败：%@"), error.localizedDescription)
                     return nil
                 }
             }
         )
+        hostActions.importOverlayImageFileAction = { [weak model] url in
+            guard model?.editorSessionID == id.rawValue, let session = model?.currentSession else { return nil }
+            do {
+                return try ProjectStore.importOverlayImage(from: url, session: session).relativePath
+            } catch {
+                model?.errorMessage = appErrorDescription(error)
+                return nil
+            }
+        }
+        hostActions.projectPackageURL = { [weak model] in model?.currentSession?.packageURL }
         let wallpaperResolver = model.makeEditorWallpaperResolver()
         self.init(
             id: id,

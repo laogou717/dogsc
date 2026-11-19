@@ -25,7 +25,8 @@ extension EditorPlaybackController {
             outputTime: time,
             itemTime: CMTime(seconds: time, preferredTimescale: 60_000),
             cameraIsAvailable: cameraIsAvailable(at: time),
-            isPlaying: false
+            isPlaying: false,
+            sourceFrame: preparedMedia?.composition.frameMetadata(at: time)
         )
     }
 
@@ -33,7 +34,7 @@ extension EditorPlaybackController {
     /// 画布。目标帧等上一帧完成后追赶最新落点，传输层 seek 落地后才发
     /// 布 `hoverPreviewTime`，每次落地只触发一次画布重绘。
     func updateHoverPreview(to requestedTime: TimeInterval) {
-        guard !isPlaying, !scrubIsActive, primaryPlayer != nil else { return }
+        guard !isPlaying, !scrubIsActive, !primarySeekIsPending, primaryPlayer != nil else { return }
         let target = EditorPlaybackClockPolicy.clampedTime(
             requestedTime,
             duration: duration
@@ -70,7 +71,7 @@ extension EditorPlaybackController {
         }
         guard needsTransportRestore, let primaryPlayer else { return }
         primaryPlayer.cancelPendingSeeks()
-        guard restoreTransport else { return }
+        guard restoreTransport, !isPlaying else { return }
         // 逻辑时钟从未离开播放头，这里只归还物理传输位置；不 advance
         // discontinuity，画布回落由 hoverPreviewTime = nil 的发布驱动。
         let target = EditorPlaybackClockPolicy.clampedTime(
@@ -80,6 +81,7 @@ extension EditorPlaybackController {
         seekToken &+= 1
         let requestedSeek = seekToken
         let requestedGeneration = endpoints?.generation
+        primarySeekIsPending = true
         primaryPlayer.cancelPendingSeeks()
         Task { [weak self] in
             let finished = await primaryPlayer.seekTransport(
@@ -89,8 +91,9 @@ extension EditorPlaybackController {
             )
             guard let self,
                   self.seekToken == requestedSeek,
-                  self.endpoints?.generation == requestedGeneration,
-                  finished else { return }
+                  self.endpoints?.generation == requestedGeneration else { return }
+            self.primarySeekIsPending = false
+            guard finished, !self.isPlaying else { return }
             self.synchronizeCamera(to: target, force: true)
         }
     }

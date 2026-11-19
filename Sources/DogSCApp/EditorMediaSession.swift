@@ -8,7 +8,7 @@ import RecorderCore
 /// Stable file identity plus the version fields that can change while a URL
 /// remains the same. Editor media preparation keys use this value instead of
 /// a path alone so replacing a recording in place cannot reuse stale assets.
-struct EditorMediaFileVersion: Equatable, Sendable {
+struct EditorMediaFileVersion: Codable, Equatable, Hashable, Sendable {
     let standardizedPath: String
     let fileSystemNumber: UInt64?
     let fileNumber: UInt64?
@@ -37,6 +37,26 @@ struct EditorMediaInput: Equatable, Sendable {
         self.url = url
         version = EditorMediaFileVersion(url: url)
     }
+}
+
+/// Immutable file identities for an imported recording. Pointer JSONL is read
+/// by the background loader, never on the editor's main thread.
+struct EditorRecordingSourceInput: Equatable, Sendable {
+    var manifest: ProjectMediaManifest
+    /// Carried so a failure can name the recording it belongs to. Renaming a
+    /// recording must not re-prepare its media, so `==` ignores it.
+    var name: String = ""
+    let screen: EditorMediaInput?
+    let camera: EditorMediaInput?
+    let microphone: EditorMediaInput?
+    let pointer: EditorMediaInput?
+    let cameraContentCrop: NormalizedCrop?
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.screen == rhs.screen && lhs.camera == rhs.camera && lhs.microphone == rhs.microphone
+            && lhs.pointer == rhs.pointer && lhs.cameraContentCrop == rhs.cameraContentCrop
+            && EditorMediaRequest.mediaManifestMatchesForPreparation(lhs.manifest, rhs.manifest)
+    }
+
 }
 
 /// An exclusively leased generator. The actor reuses idle decoders so a filmstrip
@@ -118,7 +138,7 @@ private actor EditorMediaThumbnailDecoder {
     }
     private var idleDecoders: [IdleDecoder] = []
 
-    private let permits = EditorThumbnailPermits(limit: 2)
+    private static let permits = EditorThumbnailPermits(limit: 2)
     private let cacheLimit: Int
     private let requestTimeout: Duration?
     private var sourceGeneration: UInt64?
@@ -166,8 +186,8 @@ private actor EditorMediaThumbnailDecoder {
         }
 
         if let cached = cachedImage(for: cacheKey) { return cached }
-        try await permits.acquire()
-        defer { Task { await permits.release() } }
+        try await Self.permits.acquire()
+        defer { Task { await Self.permits.release() } }
         try Task.checkCancellation()
         guard sourceGeneration == generation else { throw CancellationError() }
         if let cached = cachedImage(for: cacheKey) { return cached }
@@ -234,30 +254,17 @@ struct EditorMediaRequest: Equatable, Sendable {
     let camera: EditorMediaInput?
     let microphone: EditorMediaInput?
     let sourceSequence: SourceSequence
-    let mediaManifest: ProjectMediaManifest?
+    var mediaManifest: ProjectMediaManifest?
     /// Keeping every record is intentional. Count/first/last fingerprints miss
     /// edits to an event in the middle and can leave pointer timing stale.
     let pointerEvents: [PointerEventRecord]
+    /// EDT-054: music/effects are part of the prepared composition.
+    var audioClips: [AudioClip] = []
+    /// Speech ranges (subtitle cues) that ducking music dips under; only
+    /// relevant when a music clip ducks.
+    var speech: [OverlayTiming] = []
+    var additionalSources: [UUID: EditorRecordingSourceInput] = [:]
 
-    init(
-        editorSessionID: EditorSessionID,
-        sourceURL: URL?,
-        cameraURL: URL?,
-        microphoneURL: URL?,
-        sourceSequence: SourceSequence,
-        mediaManifest: ProjectMediaManifest?,
-        pointerEvents: [PointerEventRecord]
-    ) {
-        self.init(
-            editorSessionID: editorSessionID,
-            source: EditorMediaInput(sourceURL),
-            camera: EditorMediaInput(cameraURL),
-            microphone: EditorMediaInput(microphoneURL),
-            sourceSequence: sourceSequence,
-            mediaManifest: mediaManifest,
-            pointerEvents: pointerEvents
-        )
-    }
 
     init(
         editorSessionID: EditorSessionID,
@@ -286,9 +293,20 @@ struct EditorMediaRequest: Equatable, Sendable {
             && lhs.source == rhs.source
             && lhs.camera == rhs.camera
             && lhs.microphone == rhs.microphone
-            && lhs.sourceSequence == rhs.sourceSequence
+            && lhs.sourceSequence.withoutSceneStyles == rhs.sourceSequence.withoutSceneStyles
             && mediaManifestMatchesForPreparation(lhs.mediaManifest, rhs.mediaManifest)
             && lhs.pointerEvents == rhs.pointerEvents
+            && lhs.audioClips.count == rhs.audioClips.count
+            && zip(lhs.audioClips, rhs.audioClips).allSatisfy { $0.matchesCompositionStructure(of: $1) }
+            && lhs.additionalSources == rhs.additionalSources
+    }
+
+    func matchesPreparationManifests(_ project: RecorderProject) -> Bool {
+        matchesPreparationManifest(project.media)
+            && Set(additionalSources.keys) == Set(project.additionalSources.map(\.id))
+            && project.additionalSources.allSatisfy { source in
+                Self.mediaManifestMatchesForPreparation(additionalSources[source.id]?.manifest, source.media)
+            }
     }
 
     func matchesPreparationManifest(_ manifest: ProjectMediaManifest?) -> Bool {
@@ -302,9 +320,21 @@ struct EditorMediaRequest: Equatable, Sendable {
             && source == other.source
             && camera == other.camera
             && microphone == other.microphone
+            && Set(additionalSources.keys) == Set(other.additionalSources.keys)
+            && additionalSources.allSatisfy { id, input in
+                guard let previous = other.additionalSources[id] else { return false }
+                return input.screen == previous.screen && input.camera == previous.camera
+                    && input.microphone == previous.microphone && input.pointer == previous.pointer
+                    && input.cameraContentCrop == previous.cameraContentCrop
+                    && input.manifest.camera?.relativePath == previous.manifest.camera?.relativePath
+                    && input.manifest.microphone?.relativePath == previous.manifest.microphone?.relativePath
+                    && input.manifest.pointerEvents?.relativePath == previous.manifest.pointerEvents?.relativePath
+            }
             && (mediaManifest?.camera != nil) == (other.mediaManifest?.camera != nil)
             && (mediaManifest?.microphone != nil) == (other.mediaManifest?.microphone != nil)
-            && [source, camera, microphone].compactMap { $0 }.allSatisfy {
+            && ([source, camera, microphone] + additionalSources.values.flatMap {
+                [$0.screen, $0.camera, $0.microphone, $0.pointer]
+            }).compactMap { $0 }.allSatisfy {
                 // Session inputs are pinned; an external in-place replacement
                 // must still invalidate reuse before another timeline edit.
                 $0.version == EditorMediaFileVersion(url: $0.url)
@@ -312,7 +342,7 @@ struct EditorMediaRequest: Equatable, Sendable {
     }
 
     func updatingMediaManifest(_ manifest: ProjectMediaManifest?) -> EditorMediaRequest {
-        EditorMediaRequest(
+        var request = EditorMediaRequest(
             editorSessionID: editorSessionID,
             source: source,
             camera: camera,
@@ -321,9 +351,13 @@ struct EditorMediaRequest: Equatable, Sendable {
             mediaManifest: manifest,
             pointerEvents: pointerEvents
         )
+        request.audioClips = audioClips
+        request.speech = speech
+        request.additionalSources = additionalSources
+        return request
     }
 
-    private static func mediaManifestMatchesForPreparation(
+    static func mediaManifestMatchesForPreparation(
         _ lhs: ProjectMediaManifest?,
         _ rhs: ProjectMediaManifest?
     ) -> Bool {
@@ -348,7 +382,7 @@ struct EditorMediaRequest: Equatable, Sendable {
 struct EditorCameraTimingRequest: Equatable, Sendable {
     let editorSessionID: EditorSessionID
     let sourceSequence: SourceSequence
-    let cameraReference: ProjectMediaReference?
+    let cameraReferences: [UUID: ProjectMediaReference]
 }
 
 struct EditorMediaInventories: Equatable, Sendable {
@@ -375,6 +409,7 @@ struct EditorPreparedMediaPayload {
     /// It is never decoded here and does not reopen the source file.
     let cameraSource: EditorPreparedCameraSource?
     let sourceTracks: TimelinePreparedSourceTracks?
+    var inventoriesBySource: [UUID: EditorMediaInventories] = [:]
 
     init(
         composition: TimelineCompositionBundle,
@@ -411,9 +446,14 @@ struct EditorPreparedMedia {
 
     var composition: TimelineCompositionBundle { payload.composition }
     var plan: ProjectTimelineMediaPlan { composition.plan }
+    @available(*, deprecated, message: "Use payload.inventoriesBySource with an explicit recording source ID.")
     var inventories: EditorMediaInventories { payload.inventories }
+    var primarySourceDisplaySize: CGSize { payload.sourceDisplaySize }
+    @available(*, deprecated, message: "Use recordingGeometry by source ID; primarySourceDisplaySize is only for the global canvas.")
     var sourceDisplaySize: CGSize { payload.sourceDisplaySize }
+    @available(*, deprecated, message: "Use recordingGeometry by source ID.")
     var cameraDisplaySize: CGSize? { payload.cameraDisplaySize }
+    @available(*, deprecated, message: "Use composition.frameMetadata(at:) for the active recording's camera crop.")
     var cameraContentCrop: NormalizedCrop? { payload.cameraContentCrop }
     var outputDuration: TimeInterval { plan.outputDuration }
 }
@@ -455,16 +495,29 @@ final class EditorMediaSession: ObservableObject {
     private var lastReadyMedia: EditorPreparedMedia?
 
     private let preparation: Preparation
-    private let thumbnailDecoder = EditorMediaThumbnailDecoder()
-    private let filmstripDecoder = EditorMediaThumbnailDecoder(cacheLimit: 160, requestTimeout: .seconds(4))
-    private var filmstripAsset: ImmutablePreviewAsset?
-    private var filmstripInput: EditorMediaInput?
-    // Source-time-indexed references also survive virtualization. A single
-    // last-decoded poster would put an unrelated moment into every new clip.
-    private var filmstripFrames: [Int64: CGImage] = [:]
-    private var filmstripFrameOrder: [Int64] = []
-    private var filmstripSourceGeneration: UInt64 = 0
+    private var thumbnailDecoders: [String: EditorMediaThumbnailDecoder] = [:]
+    private final class FilmstripCache {
+        let input: EditorMediaInput
+        let asset: ImmutablePreviewAsset
+        let decoder = EditorMediaThumbnailDecoder(cacheLimit: 160, requestTimeout: .seconds(4))
+        var frames: [Int64: CGImage] = [:]
+        var order: [Int64] = []
+        init(input: EditorMediaInput) {
+            self.input = input
+            self.asset = ImmutablePreviewAsset(AVURLAsset(url: input.url))
+        }
+    }
+    private var filmstripCaches: [UUID: FilmstripCache] = [:]
     private var currentRequest: EditorMediaRequest?
+    /// The recorded pointer events of the open project, in source time (the
+    /// AI reads clicks from here).
+    var pointerEventsBySource: [UUID: [PointerEventRecord]] {
+        mediaPlan?.sources.mapValues {
+            PointerTimelineAlignment.align($0.pointerEvents,
+                startOffset: $0.manifest?.pointerEvents?.startOffset ?? 0,
+                sourceStartTime: $0.manifest?.pointerEvents?.sourceStartTime ?? 0)
+        } ?? [:]
+    }
     private var generation: UInt64 = 0
     private var cameraTimingGeneration: UInt64 = 0
     private var latestCameraTimingRequest: EditorCameraTimingRequest?
@@ -495,24 +548,26 @@ final class EditorMediaSession: ObservableObject {
         return lastReadyMedia
     }
 
-    var inventories: EditorMediaInventories {
-        prepared?.inventories ?? .empty
-    }
+    @available(*, deprecated, message: "Use inventories(for:) or source-aware aggregate availability.")
+    var inventories: EditorMediaInventories { prepared?.inventories ?? .empty }
 
-    var sourceDisplaySize: CGSize {
-        prepared?.sourceDisplaySize ?? CGSize(width: 1_920, height: 1_080)
-    }
+    var primarySourceDisplaySize: CGSize { prepared?.primarySourceDisplaySize ?? CGSize(width: 1920, height: 1080) }
 
-    var cameraDisplaySize: CGSize? {
-        prepared?.cameraDisplaySize
-    }
+    @available(*, deprecated, message: "Use sourceDisplaySize(for:); use primarySourceDisplaySize only for the global canvas.")
+    var sourceDisplaySize: CGSize { primarySourceDisplaySize }
 
-    var cameraContentCrop: NormalizedCrop? {
-        prepared?.cameraContentCrop
-    }
+    @available(*, deprecated, message: "Use cameraDisplaySize(for:) with the active source ID.")
+    var cameraDisplaySize: CGSize? { prepared?.cameraDisplaySize }
+
+    @available(*, deprecated, message: "Use the active frame's source-scoped camera crop.")
+    var cameraContentCrop: NormalizedCrop? { prepared?.cameraContentCrop }
 
     var mediaPlan: ProjectTimelineMediaPlan? {
         prepared?.plan
+    }
+
+    var sourceDurations: [UUID: TimeInterval] {
+        prepared?.plan.timelineMap.sourceDurations ?? [:]
     }
 
     var outputDuration: TimeInterval {
@@ -524,81 +579,54 @@ final class EditorMediaSession: ObservableObject {
         return message
     }
 
-    func thumbnail(
-        atOutputTime outputTime: TimeInterval,
-        maximumSize: CGSize = CGSize(width: 640, height: 360)
-    ) async -> CGImage? {
-        guard let prepared else { return nil }
+    func thumbnail(atOutputTime outputTime: TimeInterval,
+                   maximumSize: CGSize = CGSize(width: 640, height: 360)) async -> CGImage? {
+        guard let prepared, let input = prepared.screenFrameInput(at: outputTime) else { return nil }
+        let decoder = thumbnailDecoders[input.cacheKey] ?? EditorMediaThumbnailDecoder()
+        thumbnailDecoders[input.cacheKey] = decoder
         let expectedGeneration = prepared.generation
-        let assetTime = EditorPlaybackClockPolicy.clampedTime(
-            outputTime,
-            duration: prepared.outputDuration
-        )
-        let source = ImmutablePreviewAsset(
-            prepared.composition.primaryComposition,
-            videoComposition: prepared.composition.primaryVideoComposition
-        )
         do {
-            let image = try await thumbnailDecoder.image(
-                source: source,
-                generation: expectedGeneration,
-                at: assetTime,
-                maximumSize: maximumSize
-            )
+            let image = try await decoder.image(source: input.asset, generation: expectedGeneration,
+                at: input.assetTime, maximumSize: maximumSize)
             try Task.checkCancellation()
-            guard self.prepared?.generation == expectedGeneration else { return nil }
-            return image
-        } catch {
-            return nil
-        }
-    }
-
-    func filmstripThumbnail(atSourceTime sourceTime: TimeInterval,
-                            tolerance: TimeInterval) async -> CGImage? {
-        guard !Task.isCancelled, sourceTime.isFinite, sourceTime >= 0,
-              let prepared, let input = prepared.request.source
-        else { return nil }
-        let expectedGeneration = prepared.generation
-        if filmstripInput != input {
-            filmstripAsset = ImmutablePreviewAsset(AVURLAsset(url: input.url))
-            filmstripInput = input
-            filmstripFrames.removeAll(keepingCapacity: true)
-            filmstripFrameOrder.removeAll(keepingCapacity: true)
-            filmstripSourceGeneration &+= 1
-        }
-        let sourceGeneration = filmstripSourceGeneration
-        let assetTime = sourceTime + prepared.plan.primarySourceTimeOffset
-        guard let source = filmstripAsset else { return nil }
-        do {
-            let image = try await filmstripDecoder.image(
-                source: source, generation: sourceGeneration,
-                at: assetTime,
-                maximumSize: CGSize(width: 220, height: 140), tolerance: tolerance)
-            try Task.checkCancellation()
-            guard filmstripInput == input, filmstripSourceGeneration == sourceGeneration,
-                  self.prepared?.request.source == input else { return nil }
-            let timeValue = CMTime(seconds: assetTime, preferredTimescale: 600).value
-            filmstripFrames[timeValue] = image
-            filmstripFrameOrder.removeAll { $0 == timeValue }
-            filmstripFrameOrder.append(timeValue)
-            if filmstripFrameOrder.count > 160 {
-                filmstripFrames.removeValue(forKey: filmstripFrameOrder.removeFirst())
-            }
             guard self.prepared?.generation == expectedGeneration else { return nil }
             return image
         } catch { return nil }
     }
 
-    /// Synchronous reuse restricted to the clip's retained source interval.
-    /// Cache keys are original asset times, so a new trim/offset maps correctly.
-    func filmstripCachedFrames(sourceStart: TimeInterval, sourceDuration: TimeInterval) -> [Int64: CGImage] {
+    func filmstripThumbnail(sourceID: UUID, atSourceTime sourceTime: TimeInterval,
+                            tolerance: TimeInterval) async -> CGImage? {
+        guard !Task.isCancelled, sourceTime.isFinite, sourceTime >= 0,
+              let prepared, let input = prepared.request.screenInput(for: sourceID) else { return nil }
+        let cache: FilmstripCache
+        if let existing = filmstripCaches[sourceID], existing.input == input { cache = existing }
+        else {
+            cache = FilmstripCache(input: input)
+            filmstripCaches[sourceID] = cache
+        }
+        let assetTime = sourceTime + (prepared.plan.sourceTimeOffsets[sourceID] ?? 0)
+        do {
+            let image = try await cache.decoder.image(source: cache.asset, generation: 0, at: assetTime,
+                maximumSize: CGSize(width: 220, height: 140), tolerance: tolerance)
+            try Task.checkCancellation()
+            guard filmstripCaches[sourceID] === cache,
+                  self.prepared?.request.screenInput(for: sourceID) == input else { return nil }
+            let key = CMTime(seconds: assetTime, preferredTimescale: 600).value
+            cache.frames[key] = image
+            cache.order.removeAll { $0 == key }
+            cache.order.append(key)
+            if cache.order.count > 160 { cache.frames.removeValue(forKey: cache.order.removeFirst()) }
+            return image
+        } catch { return nil }
+    }
+
+    func filmstripCachedFrames(sourceID: UUID, sourceStart: TimeInterval, sourceDuration: TimeInterval) -> [Int64: CGImage] {
         guard sourceStart.isFinite, sourceDuration.isFinite, sourceDuration > 0,
-              let prepared, let input = prepared.request.source,
-              filmstripInput == input else { return [:] }
-        let offset = prepared.plan.primarySourceTimeOffset
-        guard offset.isFinite else { return [:] }
+              let prepared, let cache = filmstripCaches[sourceID],
+              cache.input == prepared.request.screenInput(for: sourceID) else { return [:] }
+        let offset = prepared.plan.sourceTimeOffsets[sourceID] ?? 0
         let offsetValue = CMTime(seconds: offset, preferredTimescale: 600).value
-        return Dictionary(uniqueKeysWithValues: filmstripFrames.compactMap { assetTime, image in
+        return Dictionary(uniqueKeysWithValues: cache.frames.compactMap { assetTime, image in
             let sourceTime = assetTime - offsetValue
             let time = Double(sourceTime) / 600
             guard time >= sourceStart, time < sourceStart + sourceDuration else { return nil }
@@ -668,62 +696,37 @@ final class EditorMediaSession: ObservableObject {
     /// screen audio, microphone mix, waveforms and file analysis remain alive.
     func updateCameraTiming(_ request: EditorCameraTimingRequest) async {
         latestCameraTimingRequest = request
-        guard request.editorSessionID == lastReadyMedia?.request.editorSessionID,
-              let ready = lastReadyMedia,
-              ready.request.sourceSequence == request.sourceSequence,
-              ready.request.mediaManifest?.camera?.relativePath
-                == request.cameraReference?.relativePath,
-              ready.request.mediaManifest?.camera != request.cameraReference
-        else { return }
-
+        guard let ready = lastReadyMedia,
+              request.editorSessionID == ready.request.editorSessionID,
+              ready.request.sourceSequence.withoutSceneStyles == request.sourceSequence.withoutSceneStyles,
+              ready.request.cameraReferences.mapValues(\.relativePath) == request.cameraReferences.mapValues(\.relativePath),
+              ready.request.cameraReferences != request.cameraReferences,
+              let tracks = ready.payload.sourceTracks else { return }
         cameraTimingGeneration &+= 1
         let requestedGeneration = cameraTimingGeneration
         do {
-            var manifest = ready.request.mediaManifest
-            manifest?.camera = request.cameraReference
-            guard let primaryRange = ready.inventories.source.videoTimeRange else { return }
-            let plan = try ProjectTimelineMediaPlan(
-                sourceSequence: request.sourceSequence,
-                mediaManifest: manifest,
-                primaryVideoRange: primaryRange,
-                systemAudioRange: ready.inventories.source.audioTimeRange,
-                cameraRange: ready.inventories.camera.videoTimeRange,
-                microphoneRange: ready.inventories.microphone.audioTimeRange,
-                sourcePointerEvents: ready.request.pointerEvents
-            )
-            let camera = try TimelineCompositionBuilder.buildCamera(
-                plan: plan.camera,
-                source: ready.payload.cameraSource
-            )
+            let updatedRequest = ready.request.updatingCameraReferences(request.cameraReferences)
+            let plan = try TimelinePreviewCompositionLoader.mediaPlan(request: updatedRequest, recordings: tracks.recordings)
+            let camera = try TimelineCompositionBuilder.buildCamera(plan: plan.camera,
+                sources: tracks.recordings.compactMapValues(\.camera))
             try Task.checkCancellation()
             guard requestedGeneration == cameraTimingGeneration,
                   lastReadyMedia?.generation == ready.generation else { return }
-
             let old = ready.composition
-            let payload = EditorPreparedMediaPayload(
-                composition: TimelineCompositionBundle(
-                    plan: plan,
-                    primaryComposition: old.primaryComposition,
-                    primaryVideoTrack: old.primaryVideoTrack,
-                    primaryVideoTracks: old.primaryVideoTracks,
-                    primaryVideoComposition: old.primaryVideoComposition,
-                    systemAudioTrack: old.systemAudioTrack,
-                    microphoneAudioTrack: old.microphoneAudioTrack,
-                    cameraComposition: camera?.composition,
-                    cameraVideoTrack: camera?.track
-                ),
-                inventories: ready.inventories,
-                sourceDisplaySize: ready.sourceDisplaySize,
-                cameraDisplaySize: ready.cameraDisplaySize,
-                cameraContentCrop: ready.cameraContentCrop,
-                cameraSource: ready.payload.cameraSource,
-                sourceTracks: ready.payload.sourceTracks
-            )
-            let updated = EditorPreparedMedia(
-                generation: ready.generation,
-                request: ready.request.updatingMediaManifest(manifest),
-                payload: payload
-            )
+            var composition = TimelineCompositionBundle(plan: plan,
+                primaryComposition: old.primaryComposition, primaryVideoTrack: old.primaryVideoTrack,
+                primaryVideoTracks: old.primaryVideoTracks, primaryVideoComposition: old.primaryVideoComposition,
+                systemAudioTrack: old.systemAudioTrack, microphoneAudioTrack: old.microphoneAudioTrack,
+                cameraComposition: camera?.composition, cameraVideoTrack: camera?.track)
+            composition.externalAudio = old.externalAudio
+            composition.recordingSources = old.recordingSources
+            composition.insertedSources = old.insertedSources
+            var payload = EditorPreparedMediaPayload(composition: composition,
+                inventories: ready.payload.inventories, sourceDisplaySize: ready.primarySourceDisplaySize,
+                cameraDisplaySize: ready.payload.cameraDisplaySize, cameraContentCrop: ready.payload.cameraContentCrop,
+                cameraSource: ready.payload.cameraSource, sourceTracks: tracks)
+            payload.inventoriesBySource = ready.payload.inventoriesBySource
+            let updated = EditorPreparedMedia(generation: ready.generation, request: updatedRequest, payload: payload)
             lastReadyMedia = updated
             state = .ready(updated)
             cameraTimingErrorMessage = nil
@@ -742,18 +745,11 @@ final class EditorMediaSession: ObservableObject {
         currentRequest = nil
         state = .empty
         lastReadyMedia = nil
-        filmstripAsset = nil
-        filmstripInput = nil
-        filmstripFrames.removeAll(keepingCapacity: false)
-        filmstripFrameOrder.removeAll(keepingCapacity: false)
-        filmstripSourceGeneration &+= 1
+        let decoders = Array(thumbnailDecoders.values) + filmstripCaches.values.map(\.decoder)
+        thumbnailDecoders = [:]
+        filmstripCaches = [:]
         latestCameraTimingRequest = nil
         cameraTimingErrorMessage = nil
-        let thumbnailDecoder = thumbnailDecoder
-        let filmstripDecoder = filmstripDecoder
-        Task {
-            await thumbnailDecoder.invalidate()
-            await filmstripDecoder.invalidate()
-        }
+        Task { for decoder in decoders { await decoder.invalidate() } }
     }
 }

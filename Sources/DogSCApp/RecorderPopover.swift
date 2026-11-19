@@ -81,8 +81,15 @@ final class RecorderPopoverPresenter {
         current?.close()
     }
 
-    /// Finish the triggering mouse-up and dispose of its hosting tree before
-    /// handing focus to an open panel or changing the app's workspace phase.
+    /// File panels own their scheduling and activation. Retain the stable owner
+    /// before removing this transient window, without queuing a second handoff.
+    func dismissForFilePanel() -> NSWindow? {
+        let owner = panel?.parent
+        dismiss()
+        return owner
+    }
+
+    /// Finish the triggering mouse-up before changing the app's workspace phase.
     func dismissAndPerform(_ action: @escaping @MainActor () -> Void) {
         let owner = panel?.parent
         dismiss()
@@ -111,8 +118,8 @@ private struct RecorderPopoverViewport: View {
         }
         .scrollIndicators(.hidden)
         .frame(width: width, height: min(contentHeight, maxHeight))
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .recorderSurface(radius: 18)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .recorderSurface(radius: 12)
     }
 }
 
@@ -130,12 +137,12 @@ struct RecorderPopoverButton<Label: View, Panel: View>: View {
     @ViewBuilder let label: () -> Label
     @ViewBuilder let panel: () -> Panel
     @State private var pressed = false
-    private var cornerRadius: CGFloat { width == height ? height / 2 : EditorInterfaceRadius.group }
+    private var cornerRadius: CGFloat { RecorderStyle.controlRadius }
     var body: some View {
         ZStack {
             label()
                 .frame(width: width, height: height)
-                .modifier(RecorderPressFeedback(isPressed: pressed, cornerRadius: cornerRadius))
+                .modifier(RecorderPressFeedback(isPressed: pressed))
                 .accessibilityHidden(true)
             RecorderPopoverTrigger(id: id, title: title, content: AnyView(panel()), panelWidth: panelWidth,
                                    cornerRadius: cornerRadius,
@@ -204,7 +211,6 @@ struct RecorderPopoverSurface<Content: View>: View {
 /// action it is plain text, ticked when it is a setting that is on.
 struct RecorderChoiceRow: View {
     let title: String
-    var symbol: String? = nil
     var selected = false
     var enabled = true
     var subtitle: String? = nil
@@ -230,7 +236,7 @@ struct RecorderChoiceRow: View {
                 }
                 Spacer(minLength: 4)
                 if !isAlternative {
-                    Image(systemName: "checkmark").font(.system(size: 11, weight: .bold))
+                    EditorSymbol("checkmark", size: 11).font(.system(size: 11, weight: .bold))
                         .foregroundStyle(RecorderStyle.ink)
                         .opacity(selected ? 1 : 0).scaleEffect(selected ? 1 : 0.4)
                 }
@@ -239,7 +245,7 @@ struct RecorderChoiceRow: View {
             .background(hovered ? RecorderStyle.well : .clear, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .contentShape(Rectangle())
         }
-        .buttonStyle(RecorderPlainPressButtonStyle(cornerRadius: 10))
+        .buttonStyle(RecorderPlainPressButtonStyle())
         .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 10))
         .disabled(!enabled).opacity(enabled ? 1 : 0.4)
         .onHover { value in withAnimation(RecorderMotion.fade) { hovered = value } }

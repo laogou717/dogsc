@@ -2,20 +2,11 @@ import Foundation
 
 public struct PointerClickPhase: Equatable, Sendable {
     public var progress: Double
-    public var elapsed: Double
-    public var duration: Double
-    public var kind: PointerEventKind
 
     public init(
-        progress: Double,
-        elapsed: Double,
-        duration: Double,
-        kind: PointerEventKind
+        progress: Double
     ) {
         self.progress = min(max(progress, 0), 1)
-        self.elapsed = elapsed
-        self.duration = duration
-        self.kind = kind
     }
 }
 
@@ -28,19 +19,23 @@ public struct PointerSample: Equatable, Sendable {
     /// authored click coordinate remains exact.
     public var rotationRadians: Double
     public var recordedCursorAssetID: CursorAssetID?
+    /// Hotspot-anchored bitmap scale of the mouse-down press (1 = at rest).
+    public var pressScale: Double
 
     public init(
         location: NormalizedPoint,
         isClicking: Bool,
         clickPhase: PointerClickPhase? = nil,
         rotationRadians: Double = 0,
-        recordedCursorAssetID: CursorAssetID? = nil
+        recordedCursorAssetID: CursorAssetID? = nil,
+        pressScale: Double = 1
     ) {
         self.location = location
         self.isClicking = isClicking
         self.clickPhase = clickPhase
         self.rotationRadians = rotationRadians.isFinite ? rotationRadians : 0
         self.recordedCursorAssetID = recordedCursorAssetID
+        self.pressScale = pressScale.isFinite ? min(max(pressScale, 0.5), 1.5) : 1
     }
 }
 
@@ -82,9 +77,15 @@ public struct PointerTrack: Equatable, Sendable {
     /// every recorded click exactly while retaining the spring's velocity.
     private static let clickAnchorLeadDuration: TimeInterval = 0.18
     private static let clickAnchorTrailDuration: TimeInterval = 0.18
-    private static let clickEffectDuration: TimeInterval = 0.18
 
     public let events: [PointerEventRecord]
+    /// A track built once and then copied around keeps this stamp, so the
+    /// common comparison is one UUID instead of several hundred thousand
+    /// events. SwiftUI compares the enclosing evaluation context on every
+    /// body pass, and timeline gestures produce those by the dozen per
+    /// second. Two separately built tracks still fall through to the real
+    /// comparison, so equality never changes meaning.
+    private let identity = UUID()
     /// A 40-minute 240 Hz spring path contains roughly 576,000 samples. Keep
     /// the current and previous inspector variants, not every transient value
     /// produced while mass/stiffness/damping sliders move.
@@ -99,7 +100,7 @@ public struct PointerTrack: Equatable, Sendable {
     }
 
     public static func == (lhs: PointerTrack, rhs: PointerTrack) -> Bool {
-        lhs.events == rhs.events
+        lhs.identity == rhs.identity || lhs.events == rhs.events
     }
 
     /// Builds the current cursor spring away from the playback/display-link
@@ -116,22 +117,8 @@ public struct PointerTrack: Equatable, Sendable {
         }
     }
 
-    var cachedSpringVariantCount: Int { springCache.count }
 
-    public func sample(
-        at time: TimeInterval,
-        motion: MotionStyle = MotionStyle(),
-        style: CursorStyle = CursorStyle()
-    ) -> PointerSample? {
-        evaluation(at: time, motion: motion, style: style).cursor
-    }
 
-    public func samplePosition(
-        at time: TimeInterval,
-        motion: MotionStyle = MotionStyle()
-    ) -> NormalizedPoint? {
-        evaluation(at: time, motion: motion, style: CursorStyle()).position
-    }
 
     /// Computes the physical pointer position independently from whether the
     /// cursor is visible. Hiding an exported cursor must never disable an
@@ -178,10 +165,7 @@ public struct PointerTrack: Equatable, Sendable {
                 let elapsed = max(time - click.time, 0)
                 let progress = min(max(elapsed / style.clickEffectStyle.duration, 0), 1)
                 clickPhase = PointerClickPhase(
-                    progress: progress,
-                    elapsed: elapsed,
-                    duration: style.clickEffectStyle.duration,
-                    kind: click.kind
+                    progress: progress
                 )
             } else {
                 clickPhase = nil
@@ -190,6 +174,16 @@ public struct PointerTrack: Equatable, Sendable {
             clickPhase = nil
         }
         let clicking = clickPhase != nil
+        let pressScale: Double
+        if cursorIsVisible, style.pressesOnClick,
+           let press = mostRecentClick(
+               from: time - CursorRenderGeometry.pressDuration,
+               through: time
+           ) {
+            pressScale = CursorRenderGeometry.pressScale(elapsed: time - press.time)
+        } else {
+            pressScale = 1
+        }
         let rotationRadians = cursorRotationRadians(
             at: time,
             currentLocation: rawLocation,
@@ -204,7 +198,8 @@ public struct PointerTrack: Equatable, Sendable {
                     isClicking: clicking,
                     clickPhase: clickPhase,
                     rotationRadians: rotationRadians,
-                    recordedCursorAssetID: lower.cursorAssetID
+                    recordedCursorAssetID: lower.cursorAssetID,
+                    pressScale: pressScale
                 )
                 : nil
         )
@@ -385,6 +380,10 @@ public struct PointerTrack: Equatable, Sendable {
         let mass = max(motion.cursorSpringMass, 0.01)
         let stiffness = max(motion.cursorSpringStiffness, 0.01)
         let damping = max(motion.cursorSpringDamping, 0.01)
+        // Forward and backward passes each run at twice the natural frequency
+        // (4x stiffness) with the authored damping ratio (2x damping).
+        let passStiffness = stiffness * 4
+        let passDamping = damping * 2
         let settleDuration = max(0.65, 6 * sqrt(mass / stiffness))
         let endTime = max(last.time, first.time) + settleDuration
         let jitterThreshold = 0.000_35
@@ -436,10 +435,10 @@ public struct PointerTrack: Equatable, Sendable {
 
             let deltaTime = max(nextTime - sampleTime, 0)
             let accelerationX = (
-                stiffness * (stableTarget.x - position.x) - damping * velocityX
+                passStiffness * (stableTarget.x - position.x) - passDamping * velocityX
             ) / mass
             let accelerationY = (
-                stiffness * (stableTarget.y - position.y) - damping * velocityY
+                passStiffness * (stableTarget.y - position.y) - passDamping * velocityY
             ) / mass
             velocityX += accelerationX * deltaTime
             velocityY += accelerationY * deltaTime
@@ -451,10 +450,69 @@ public struct PointerTrack: Equatable, Sendable {
             result.append(PointerSpringSample(time: sampleTime, location: position))
             iteration &+= 1
         }
+        guard let zeroPhase = Self.reverseSpringPass(
+            over: result,
+            mass: mass,
+            stiffness: passStiffness,
+            damping: passDamping,
+            cancellationCheck: cancellationCheck
+        ) else { return nil }
         return anchoringClicks(
-            in: result,
+            in: zeroPhase,
             cancellationCheck: cancellationCheck
         )
+    }
+
+    /// A causal spring tracking a moving target trails it by roughly
+    /// `damping / stiffness` seconds (66 / 450 ≈ 147 ms with the defaults):
+    /// 150–380 px behind the real pointer on an ordinary fast move, so the
+    /// drawn tip visibly missed what the user was pointing at. Post-production
+    /// owns the complete track, so the same spring also runs backwards in
+    /// time over the forward result. The backward pass cancels the forward
+    /// pass's phase lag (a zero-phase forward/backward filter) while keeping
+    /// its smoothing. Both passes run at twice the authored natural frequency
+    /// with the authored damping ratio, so the cascade keeps about one
+    /// spring's smoothness and the inspector's mass/stiffness/damping keep
+    /// their relative feel. Deterministic, so preview and export agree.
+    private static func reverseSpringPass(
+        over forward: [PointerSpringSample],
+        mass: Double,
+        stiffness: Double,
+        damping: Double,
+        cancellationCheck: () -> Bool
+    ) -> [PointerSpringSample]? {
+        guard forward.count > 2 else { return forward }
+        var output = forward
+        var index = forward.index(before: forward.endIndex)
+        var position = forward[index].location
+        var velocityX = 0.0
+        var velocityY = 0.0
+        var iteration = 0
+        while index > forward.startIndex {
+            if iteration & 4_095 == 0, cancellationCheck() { return nil }
+            let previous = index - 1
+            let deltaTime = max(forward[index].time - forward[previous].time, 0)
+            let target = forward[previous].location
+            let accelerationX = (
+                stiffness * (target.x - position.x) - damping * velocityX
+            ) / mass
+            let accelerationY = (
+                stiffness * (target.y - position.y) - damping * velocityY
+            ) / mass
+            velocityX += accelerationX * deltaTime
+            velocityY += accelerationY * deltaTime
+            position = NormalizedPoint(
+                x: min(max(position.x + velocityX * deltaTime, 0), 1),
+                y: min(max(position.y + velocityY * deltaTime, 0), 1)
+            )
+            output[previous] = PointerSpringSample(
+                time: forward[previous].time,
+                location: position
+            )
+            index = previous
+            iteration &+= 1
+        }
+        return output
     }
 
     /// Applies a compact correction around each click to the already-smoothed
@@ -862,9 +920,6 @@ public struct PointerTrack: Equatable, Sendable {
         return events[lower..<upper]
     }
 
-    private func containsClick(from start: TimeInterval, through end: TimeInterval) -> Bool {
-        mostRecentClick(from: start, through: end) != nil
-    }
 
     private func mostRecentClick(
         from start: TimeInterval,
@@ -879,16 +934,5 @@ public struct PointerTrack: Equatable, Sendable {
             index += 1
         }
         return latest
-    }
-}
-
-public enum PointerInterpolator {
-    public static func sample(
-        events: [PointerEventRecord],
-        at time: TimeInterval,
-        motion: MotionStyle = MotionStyle(),
-        style: CursorStyle = CursorStyle()
-    ) -> PointerSample? {
-        PointerTrack(events).sample(at: time, motion: motion, style: style)
     }
 }

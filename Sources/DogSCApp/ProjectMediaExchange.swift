@@ -1,11 +1,11 @@
 import AVFoundation
 import Foundation
-import RecorderCore
 
 struct ProjectSourceMediaFiles: Sendable {
     let screen: URL
     let camera: URL?
     let microphone: URL?
+    var pointer: URL? = nil
 }
 
 struct ImportedCameraMedia: Sendable {
@@ -32,6 +32,7 @@ enum ProjectMediaExchange {
     static func exportSources(
         _ sources: ProjectSourceMediaFiles,
         projectTitle: String,
+        additionalRecordings: [(name: String, files: ProjectSourceMediaFiles)] = [],
         into parentFolder: URL
     ) throws -> URL {
         let fileManager = FileManager.default
@@ -54,6 +55,15 @@ enum ProjectMediaExchange {
             }
             if let microphone = sources.microphone {
                 try copy(microphone, to: folder, baseName: "麦克风")
+            }
+            if let pointer = sources.pointer { try copy(pointer, to: folder, baseName: "鼠标") }
+            for (index, recording) in additionalRecordings.enumerated() {
+                let child = folder.appendingPathComponent("\(index + 1)-" + sanitizedFilename(recording.name), isDirectory: true)
+                try fileManager.createDirectory(at: child, withIntermediateDirectories: true)
+                try copy(recording.files.screen, to: child, baseName: "屏幕")
+                if let camera = recording.files.camera { try copy(camera, to: child, baseName: "摄像头") }
+                if let microphone = recording.files.microphone { try copy(microphone, to: child, baseName: "麦克风") }
+                if let pointer = recording.files.pointer { try copy(pointer, to: child, baseName: "鼠标") }
             }
             return folder
         } catch {

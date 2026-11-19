@@ -198,6 +198,20 @@ public enum ProjectValidator {
                 reason: "时长、间隔或元素顺序无效。"
             )
         }
+        // A segment pointing at a removed recording stays renderable-looking
+        // in the model while every preview and export fails on load. Reject it
+        // here so no edit or save can introduce a dangling reference.
+        if case let .edited(segments) = project.timeline.sourceSequence {
+            let available = Set(project.additionalSources.map(\.id))
+                .union([RecordingSource.primaryID])
+            for segment in segments where segment.media == nil {
+                guard available.contains(segment.resolvedSourceID) else {
+                    throw ProjectValidationError.invalidTimeline(
+                        reason: "主轨片段引用的录制已不在项目中。"
+                    )
+                }
+            }
+        }
         try validate(project.timeline)
     }
 

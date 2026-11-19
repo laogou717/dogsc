@@ -3,44 +3,59 @@ import AVFoundation
 import QuartzCore
 import SwiftUI
 
-/// Both completion pages keep the same bottom action geometry while their
-/// content crossfades. The shared native window is anchored at that bottom edge.
+/// One card: the take, Save / Edit, and a trash button. Closing keeps the
+/// take; deleting happens at once and can be undone for a few seconds. After
+/// Save or Delete the card shrinks to a strip that says what happened.
 enum RecordingCompletionLayout {
+    static let width: CGFloat = 320
+    static let stripWidth: CGFloat = 288
     static let inset: CGFloat = 8
-    static let actionSpacing: CGFloat = 8
-    static let actionHeight: CGFloat = 44
+    static let radius: CGFloat = 14
+    static let saveLinger: TimeInterval = 3
+    static let undoWindow: TimeInterval = 5
+}
+
+/// What the card shows: the take, or the strip after the user chose.
+enum RecordingCompletionState: Equatable {
+    case take
+    case saved(name: String, folder: String, url: URL)
+    case trashed(name: String)
+}
+
+@MainActor
+final class RecordingCompletionCardModel: ObservableObject {
+    @Published var state: RecordingCompletionState = .take
+    @Published var thumbnail: CGImage?
 }
 
 /// A finished take stays outside the editor until the user chooses its next step.
 @MainActor
 final class RecordingCompletionWindowController {
     private var panel: RecordingCompletionPanel?
-    private var contentHost: RecordingCompletionHostingView?
-    private var entranceSurface: RecordingCompletionSurfaceView?
+    private var host: NSHostingView<RecordingCompletionCard>?
     private var sessionID: UUID?
-    private var entranceID: UUID?
-    private let pageTransition = RecordingCompletionTransition()
-    private var decision: AppDialog?
-    private var decisionHost: RecordingDecisionHostingView?
-    private var decisionReply: (@MainActor (AppDialog.Response) -> Void)?
     private weak var model: AppModel?
+    private let card = RecordingCompletionCardModel()
+    private var undoTask: Task<Void, Never>?
+    private var lingerTask: Task<Void, Never>?
+    /// A delete waiting out its undo window; the files move only after it.
+    private var pendingTrash = false
 
     func show(model: AppModel, preferredScreen: NSScreen?) {
         guard sessionID != model.editorSessionID || panel == nil else { return }
-        close()
+        dismissNow()
         self.model = model
+        card.state = .take
+        card.thumbnail = nil
         let visible = (preferredScreen ?? NSScreen.main)?.visibleFrame
             ?? NSRect(x: 0, y: 0, width: 1024, height: 768)
-        let width = min(336, visible.width - 40)
-        // Reserve room for shadow margins and an inline failure notice too.
-        let previewHeight = min((width - 16) * 9 / 16, max(48, visible.height - 350))
+        let width = min(RecordingCompletionLayout.width, visible.width - 40)
         let window = RecordingCompletionPanel(contentRect: .zero,
             styleMask: [.borderless], backing: .buffered, defer: false)
         appLocalizeWindowTitle(window, "录制完成")
         window.identifier = NSUserInterfaceItemIdentifier("dogsc.recording-completion")
         window.isOpaque = false
         window.backgroundColor = .clear
-        // Shadow follows the single native contour outside its hit bounds.
         window.hasShadow = true
         window.animationBehavior = .none
         window.isReleasedWhenClosed = false
@@ -48,90 +63,29 @@ final class RecordingCompletionWindowController {
         window.hidesOnDeactivate = false
         window.isFloatingPanel = true
         window.becomesKeyOnlyIfNeeded = false
-        window.completionController = self
         window.level = .floating
         window.collectionBehavior = [.fullScreenAuxiliary, .moveToActiveSpace]
-        // Part of the recording workflow, so it shares the recorder's glass.
-        window.appearance = nil
-        window.onCloseRequest = { [weak self, weak model, weak window] in
-            guard let self, let model else { return }
-            if self.decision != nil {
-                self.cancelDecision()
-                return
-            }
-            // An explicit close may open a modal decision; automatic arrival
-            // below never activates the application or steals typing focus.
-            NSApp.activate(ignoringOtherApps: true)
-            Task { await model.requestCloseCompletedRecording(relativeTo: window) }
-        }
-        window.onDecisionReturn = { [weak self] in self?.chooseDefaultDecision() }
-        let card = RecordingCompletionCard(model: model, width: width,
-            previewHeight: previewHeight, close: { [weak window] in window?.onCloseRequest?() },
-            layoutChanged: { [weak self] in self?.resizeToFit(visible: visible) })
-        let host = RecordingCompletionHostingView(rootView: card)
+        window.onEscape = { [weak self] in self?.escape() }
+        window.onReturn = { [weak self] in self?.edit() }
+        window.onUndo = { [weak self] in self?.undoTrash() }
+        let view = RecordingCompletionCard(
+            model: model, card: card, width: width,
+            save: { [weak self] in self?.save() },
+            edit: { [weak self] in self?.edit() },
+            trash: { [weak self] in self?.trash() },
+            undo: { [weak self] in self?.undoTrash() },
+            open: { [weak self] in self?.openSaved() },
+            layoutChanged: { [weak self] in self?.fit(animated: true) })
+        let host = RecordingCompletionHostingView(rootView: view)
         host.sizingOptions = [.intrinsicContentSize]
-        host.wantsLayer = true
-        host.frame.size = host.fittingSize
-        let motionSurface = RecordingCompletionSurfaceView(resultView: host)
-        // AppKit owns the contentView's backing layer. Animate a child so
-        // ordering the window cannot reset the entrance transform.
-        let root = NSView()
-        root.wantsLayer = true
-        motionSurface.autoresizingMask = [.width, .height]
-        root.addSubview(motionSurface)
-        window.contentView = root
-        contentHost = host
-        entranceSurface = motionSurface
+        window.contentView = host
+        self.host = host
         panel = window
         sessionID = model.editorSessionID
-        resizeToFit(visible: visible, anchorsToCorner: true)
+        fit(animated: false, anchor: visible)
         FirstUseTourController.controller(for: .recorder).suspend()
         FirstUseTourController.controller(for: .editor).suspend()
-        presentFromScreenEdge(window)
-    }
-
-    /// Keep the native window on its destination display. Translating its
-    /// clipped contents gives a real edge entrance without briefly showing the
-    /// card on the neighbouring monitor or letting AppKit clamp an offscreen
-    /// window back into place.
-    private func presentFromScreenEdge(_ window: RecordingCompletionPanel) {
-        guard let layer = entranceSurface?.layer else {
-            window.orderFrontRegardless()
-            return
-        }
-        let reducesMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        let travel = window.frame.width + 28
-        // Resolve both hosting views while hidden, before the first visible
-        // commit. Never order a resting card and attach its motion next turn.
-        window.contentView?.layoutSubtreeIfNeeded()
-        entranceSurface?.layoutCards()
-        window.contentView?.displayIfNeeded()
-        let id = UUID()
-        entranceID = id
-        let motion = CABasicAnimation(keyPath: reducesMotion ? "opacity" : "transform.translation.x")
-        motion.fromValue = reducesMotion ? 0 : travel
-        motion.toValue = reducesMotion ? 1 : 0
-        motion.duration = reducesMotion ? 0.14 : 0.38
-        motion.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 0.72, 0.18, 1)
-        // The visible layer moves while AppKit's hit rectangles stay at the
-        // destination. Keep work clicks passing through until it settles.
-        window.ignoresMouseEvents = true
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        CATransaction.setCompletionBlock { [weak self, weak window] in
-            Task { @MainActor in
-                guard let self, let window, self.panel === window,
-                      self.entranceID == id else { return }
-                self.entranceID = nil
-                window.ignoresMouseEvents = false
-                window.invalidateShadow()
-            }
-        }
-        layer.opacity = 1
-        layer.transform = CATransform3DIdentity
-        layer.add(motion, forKey: "recording-completion-entrance")
-        window.orderFrontRegardless()
-        CATransaction.commit()
+        slideIn(window)
     }
 
     func bringToFront() {
@@ -140,139 +94,172 @@ final class RecordingCompletionWindowController {
         panel.makeKeyAndOrderFront(nil)
     }
 
+    /// The app leaves the completion phase (saved, opened, deleted). A saved
+    /// or deleted take keeps its strip up briefly; anything else closes now.
     func close() {
-        pageTransition.stop()
-        decisionReply = nil
-        decision = nil
-        decisionHost = nil
-        panel?.completionController = nil
-        panel?.onDecisionReturn = nil
-        entranceID = nil
-        entranceSurface?.layer?.removeAllAnimations()
-        panel?.onCloseRequest = nil
-        panel?.orderOut(nil)
-        panel?.contentView = nil
-        contentHost = nil
-        entranceSurface = nil
-        panel?.close()
-        panel = nil
-        sessionID = nil
-        model = nil
+        switch card.state {
+        case .saved, .trashed: return
+        case .take: dismissNow()
+        }
     }
 
-    private func resizeToFit(visible: NSRect, anchorsToCorner: Bool = false) {
-        guard let panel, let contentHost, let entranceSurface else { return }
-        contentHost.layoutSubtreeIfNeeded()
-        let size = contentHost.fittingSize
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        contentHost.setFrameSize(size)
-        if decision == nil {
-            let currentScreen = panel.screen?.visibleFrame ?? visible
-            let anchor = anchorsToCorner ? visible.insetBy(dx: 28, dy: 28) : panel.frame
-            let proposed = NSRect(x: anchor.maxX - size.width, y: anchor.minY,
-                                  width: size.width, height: size.height)
-            panel.setFrame(RecorderPanelPolicy.frame(centeredOn: proposed, contentSize: size,
-                                                     visibleFrame: currentScreen), display: false)
+    // MARK: Actions
+
+    private func save() {
+        guard let model, card.state == .take else { return }
+        Task { @MainActor [weak self] in
+            guard await model.saveCompletedRecording(), let self, let url = model.lastSavedRecordingURL else { return }
+            self.showStrip(.saved(name: url.deletingPathExtension().lastPathComponent,
+                                  folder: url.deletingLastPathComponent().lastPathComponent, url: url),
+                           for: RecordingCompletionLayout.saveLinger)
         }
-        entranceSurface.layoutCards()
-        CATransaction.commit()
+    }
+
+    private func edit() {
+        guard let model, card.state == .take else { return }
+        model.editCompletedRecording()
+    }
+
+    private func escape() {
+        switch card.state {
+        case .take: save()
+        case .trashed: undoTrash()
+        case .saved: dismissAnimated()
+        }
+    }
+
+    /// Takes the card down to the undo strip at once; the package moves to
+    /// the Trash only when the undo window ends.
+    private func trash() {
+        guard let model, card.state == .take, !model.isResolvingCompletedRecording else { return }
+        pendingTrash = true
+        showStrip(.trashed(name: model.project.title), for: nil)
+        undoTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(RecordingCompletionLayout.undoWindow))
+            guard let self, !Task.isCancelled, self.pendingTrash else { return }
+            self.pendingTrash = false
+            if await model.discardCompletedRecording(resumingLiveInputs: true) {
+                self.dismissAnimated()
+            } else {
+                // Could not move it: the take comes back with the reason.
+                self.card.state = .take
+                self.fit(animated: true)
+            }
+        }
+    }
+
+    private func undoTrash() {
+        guard pendingTrash, case .trashed = card.state else { return }
+        pendingTrash = false
+        undoTask?.cancel()
+        undoTask = nil
+        card.state = .take
+        fit(animated: true)
+    }
+
+    private func openSaved() {
+        guard case let .saved(_, _, url) = card.state, let model else { return }
+        lingerTask?.cancel()
+        dismissAnimated()
+        WindowCoordinator.prepareExternalProjectPresentation()
+        model.requestOpenProject(at: url)
+    }
+
+    private func showStrip(_ state: RecordingCompletionState, for linger: TimeInterval?) {
+        card.state = state
+        fit(animated: true)
+        lingerTask?.cancel()
+        guard let linger else { return }
+        lingerTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(linger))
+            guard let self, !Task.isCancelled else { return }
+            self.dismissAnimated()
+        }
+    }
+
+    // MARK: Window
+
+    private func fit(animated: Bool, anchor visibleFrame: NSRect? = nil) {
+        guard let panel, let host else { return }
+        host.layoutSubtreeIfNeeded()
+        let size = host.fittingSize
+        let visible = visibleFrame ?? panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? panel.frame
+        // The card keeps its bottom-right corner where it is.
+        let corner = visibleFrame != nil
+            ? NSPoint(x: visible.maxX - 28, y: visible.minY + 28)
+            : NSPoint(x: panel.frame.maxX, y: panel.frame.minY)
+        let proposed = NSRect(x: corner.x - size.width, y: corner.y, width: size.width, height: size.height)
+        let frame = RecorderPanelPolicy.frame(centeredOn: proposed, contentSize: size, visibleFrame: visible)
+        let reduces = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        if animated, !reduces, panel.isVisible {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.22
+                context.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 0.72, 0.18, 1)
+                panel.animator().setFrame(frame, display: true)
+            }
+        } else {
+            panel.setFrame(frame, display: true)
+        }
         panel.invalidateShadow()
     }
 
-    fileprivate func presentDecision(_ dialog: AppDialog,
-                                     respond: @escaping @MainActor (AppDialog.Response) -> Void) -> Bool {
-        guard let panel, let contentHost, let entranceSurface, decision == nil else { return false }
-        // Explicit interaction can finish an automatic edge entrance, but
-        // never lets its delayed callback reset a later transition's state.
-        entranceID = nil
-        entranceSurface.layer?.removeAllAnimations()
-        entranceSurface.layer?.transform = CATransform3DIdentity
-        entranceSurface.layer?.opacity = 1
-        panel.ignoresMouseEvents = false
-        panel.blocksPointerActions = true
-        decision = dialog
-        decisionReply = respond
-        let host = RecordingDecisionHostingView(rootView: AppDialogCard(
-            dialog: dialog, input: AppDialogInput(dialog.input ?? ""), width: panel.frame.width,
-            drawsSurface: false, respond: { [weak self] response in self?.chooseDecision(response) }))
-        host.sizingOptions = [.intrinsicContentSize]
-        host.wantsLayer = true
-        host.isHidden = true
-        host.alphaValue = 0
-        host.frame.size = host.fittingSize
-        decisionHost = host
-        entranceSurface.setDecisionView(host)
-        pageTransition.start(window: panel, surface: entranceSurface, from: contentHost, to: host,
-                             targetFrame: frame(for: host.fittingSize)) { [weak self, weak panel] in
-            guard let self, let panel, self.panel === panel else { return }
-            self.contentHost?.isHidden = true
-            panel.blocksPointerActions = false
-            panel.makeFirstResponder(nil)
-        }
-        return true
-    }
-
-    fileprivate func cancelDecision() {
-        guard let decision else { return }
-        chooseDecision(.init(actionID: decision.cancelActionID))
-    }
-
-    private func chooseDefaultDecision() {
-        guard let decision, let action = decision.actions.first(where: { $0.id == decision.defaultActionID }),
-              decision.isEnabled(action, input: "") else { return }
-        chooseDecision(.init(actionID: action.id))
-    }
-
-    private func chooseDecision(_ response: AppDialog.Response) {
-        guard let decision, let reply = decisionReply, panel?.blocksPointerActions == false else { return }
-        decisionReply = nil
-        if response.actionID == nil || response.actionID == decision.cancelActionID {
-            returnToResult { reply(response) }
-        } else {
-            // Keep the same decision card while save/trash crosses its I/O
-            // barrier. The model's defer returns here on failure; success
-            // closes the completion window through the normal phase change.
-            panel?.blocksPointerActions = true
-            reply(response)
-        }
-    }
-
-    fileprivate func finishDecision() {
-        guard model?.phase == .recordingComplete, decision != nil, decisionReply == nil else { return }
-        returnToResult()
-    }
-
-    private func returnToResult(completion: @escaping () -> Void = {}) {
-        guard let panel, let contentHost, let entranceSurface, let decisionHost else {
-            completion()
+    /// Slides in from the screen edge it sits against.
+    private func slideIn(_ window: RecordingCompletionPanel) {
+        let target = window.frame
+        let reduces = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        guard !reduces else {
+            window.alphaValue = 0
+            window.orderFrontRegardless()
+            NSAnimationContext.runAnimationGroup { $0.duration = 0.14; window.animator().alphaValue = 1 }
             return
         }
-        panel.blocksPointerActions = true
-        contentHost.alphaValue = 0
-        contentHost.isHidden = false
-        contentHost.layoutSubtreeIfNeeded()
-        contentHost.setFrameSize(contentHost.fittingSize)
-        pageTransition.start(window: panel, surface: entranceSurface, from: decisionHost, to: contentHost,
-                             targetFrame: frame(for: contentHost.fittingSize)) { [weak self, weak panel] in
-            guard let self, let panel, self.panel === panel else { completion(); return }
-            self.entranceSurface?.setDecisionView(nil)
-            self.decisionHost = nil
-            self.decision = nil
-            panel.blocksPointerActions = false
-            panel.makeFirstResponder(nil)
-            completion()
+        window.alphaValue = 0
+        window.setFrame(target.offsetBy(dx: 36, dy: 0), display: false)
+        window.orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.34
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 0.72, 0.18, 1)
+            window.animator().setFrame(target, display: true)
+            window.animator().alphaValue = 1
         }
     }
 
-    private func frame(for size: NSSize) -> NSRect {
-        guard let panel else { return .zero }
-        let visible = panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? panel.frame
-        let proposed = NSRect(x: panel.frame.maxX - size.width, y: panel.frame.minY,
-                              width: size.width, height: size.height)
-        return RecorderPanelPolicy.frame(centeredOn: proposed, contentSize: size, visibleFrame: visible)
+    private func dismissAnimated() {
+        guard let panel else { return }
+        undoTask?.cancel()
+        lingerTask?.cancel()
+        let reduces = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = reduces ? 0.12 : 0.2
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            if !reduces { panel.animator().setFrame(panel.frame.offsetBy(dx: 24, dy: 0), display: true) }
+            panel.animator().alphaValue = 0
+        }, completionHandler: { [weak self, weak panel] in
+            MainActor.assumeIsolated {
+                guard let self, let panel, self.panel === panel else { return }
+                self.dismissNow()
+            }
+        })
     }
 
+    private func dismissNow() {
+        undoTask?.cancel()
+        lingerTask?.cancel()
+        undoTask = nil
+        lingerTask = nil
+        pendingTrash = false
+        card.state = .take
+        panel?.onEscape = nil
+        panel?.onReturn = nil
+        panel?.onUndo = nil
+        panel?.orderOut(nil)
+        panel?.contentView = nil
+        panel?.close()
+        panel = nil
+        host = nil
+        sessionID = nil
+        model = nil
+    }
 }
 
 /// The result is shown without activating the app. Its first click should
@@ -282,26 +269,12 @@ private final class RecordingCompletionHostingView: NSHostingView<RecordingCompl
     override var needsPanelToBecomeKey: Bool { true }
 }
 
-private final class RecordingDecisionHostingView: NSHostingView<AppDialogCard> {
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-    override var needsPanelToBecomeKey: Bool { true }
-}
-
-private final class RecordingCompletionPanel: NSPanel, RecordingDecisionHosting {
-    var onCloseRequest: (() -> Void)?
-    var onDecisionReturn: (() -> Void)?
-    weak var completionController: RecordingCompletionWindowController?
-    var blocksPointerActions = false
-
-    func presentRecordingDecision(_ dialog: AppDialog,
-                                  respond: @escaping @MainActor (AppDialog.Response) -> Void) -> Bool {
-        completionController?.presentDecision(dialog, respond: respond) ?? false
-    }
-    func cancelRecordingDecision() { completionController?.cancelDecision() }
-    func finishRecordingDecision() { completionController?.finishDecision() }
+private final class RecordingCompletionPanel: NSPanel {
+    var onEscape: (() -> Void)?
+    var onReturn: (() -> Void)?
+    var onUndo: (() -> Void)?
 
     override func sendEvent(_ event: NSEvent) {
-        if blocksPointerActions && [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown].contains(event.type) { return }
         if event.type == .leftMouseDown {
             if !NSApp.isActive { NSApp.activate(ignoringOtherApps: true) }
             if !isKeyWindow { makeKeyAndOrderFront(nil) }
@@ -311,150 +284,175 @@ private final class RecordingCompletionPanel: NSPanel, RecordingDecisionHosting 
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
-    override func cancelOperation(_ sender: Any?) { onCloseRequest?() }
-    override func performClose(_ sender: Any?) { onCloseRequest?() }
+    override func cancelOperation(_ sender: Any?) { onEscape?() }
+    override func performClose(_ sender: Any?) { onEscape?() }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        if blocksPointerActions { return true }
-        if (event.keyCode == 36 || event.keyCode == 76), NSApp.modalWindow === self {
-            onDecisionReturn?()
-            return true
-        }
-        if event.modifierFlags.intersection([.command, .option, .control, .shift]) == .command,
-           event.charactersIgnoringModifiers == "w" {
-            onCloseRequest?()
-            return true
-        }
+        let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        if mods == .command, event.charactersIgnoringModifiers == "z" { onUndo?(); return true }
+        if mods == .command, event.charactersIgnoringModifiers == "w" { onEscape?(); return true }
+        if mods.isEmpty, event.keyCode == 36 || event.keyCode == 76 { onReturn?(); return true }
         return super.performKeyEquivalent(with: event)
     }
     override func keyDown(with event: NSEvent) {
-        if event.keyCode == 53 { onCloseRequest?() }
-        else if (event.keyCode == 36 || event.keyCode == 76), NSApp.modalWindow === self {
-            onDecisionReturn?()
-        } else { super.keyDown(with: event) }
+        if event.keyCode == 53 { onEscape?() } else { super.keyDown(with: event) }
     }
 }
 
 private struct RecordingCompletionCard: View {
     @ObservedObject var model: AppModel
+    @ObservedObject var card: RecordingCompletionCardModel
     let width: CGFloat
-    let previewHeight: CGFloat
-    let close: () -> Void
+    let save: () -> Void
+    let edit: () -> Void
+    let trash: () -> Void
+    let undo: () -> Void
+    let open: () -> Void
     let layoutChanged: () -> Void
-    @State private var image: CGImage?
     @State private var duration: TimeInterval?
     @State private var dimensions: CGSize?
     @State private var loadingPreview = true
 
-    @State private var arrived = false
-
-    /// The take itself is the card: its first frame, what it is called, and
-    /// the two things that can be done with it.
     var body: some View {
+        Group {
+            switch card.state {
+            case .take: take
+            case let .saved(name, folder, _):
+                strip(title: appLocalized("已保存"), detail: String(format: appLocalized("%@ · %@"), name, folder),
+                      dimmed: false, action: appLocalized("打开"), perform: open,
+                      seconds: RecordingCompletionLayout.saveLinger)
+            case let .trashed(name):
+                strip(title: appLocalized("已移到废纸篓"), detail: name, dimmed: true,
+                      action: appLocalized("撤销"), perform: undo,
+                      seconds: RecordingCompletionLayout.undoWindow)
+            }
+        }
+        .background(RoundedRectangle(cornerRadius: RecordingCompletionLayout.radius, style: .continuous)
+            .fill(EditorTheme.panelRaised))
+        .overlay(RoundedRectangle(cornerRadius: RecordingCompletionLayout.radius, style: .continuous)
+            .strokeBorder(EditorTheme.hairline, lineWidth: 1).allowsHitTesting(false))
+        .clipShape(RoundedRectangle(cornerRadius: RecordingCompletionLayout.radius, style: .continuous))
+        .fixedSize(horizontal: false, vertical: true)
+        .foregroundStyle(EditorTheme.primaryText)
+        .appControlFocusAppearance()
+        .accessibilityIdentifier("recording.completion.card")
+        .task(id: model.recordingURL) { await loadPreview() }
+        .onChange(of: model.errorMessage) { _, _ in DispatchQueue.main.async { layoutChanged() } }
+    }
+
+    // MARK: The take
+
+    private var take: some View {
         VStack(alignment: .leading, spacing: 0) {
             ZStack {
-                RoundedRectangle(cornerRadius: 20, style: .continuous).fill(RecorderStyle.silver)
-                if let image {
+                RoundedRectangle(cornerRadius: 8, style: .continuous).fill(EditorTheme.controlWell)
+                if let image = card.thumbnail {
                     Image(decorative: image, scale: 1).resizable().scaledToFill()
-                        .transition(.opacity.combined(with: .scale(scale: 1.04)))
+                        .transition(.opacity)
                 } else if loadingPreview {
                     ProgressView().controlSize(.small)
                 } else {
-                    Image(systemName: "film").font(.system(size: 20, weight: .medium))
-                        .foregroundStyle(RecorderStyle.faint)
-                        .accessibilityLabel("预览暂不可用")
+                    AppLineIcon(kind: .film, size: 20).foregroundStyle(EditorTheme.tertiaryText)
                 }
             }
-            // A wide window thumbnail must not enlarge the stack's reported
-            // width and shift every row outside the native card's viewport.
-            .frame(width: width - RecordingCompletionLayout.inset * 2, height: previewHeight)
-            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .frame(width: width - RecordingCompletionLayout.inset * 2,
+                   height: (width - RecordingCompletionLayout.inset * 2) * 9 / 16)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(EditorTheme.hairline, lineWidth: 1))
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("录制画面预览")
-            .overlay(alignment: .bottomLeading) {
-                if !metadata.isEmpty {
-                    Text(metadata).font(.system(size: 10.5, weight: .semibold, design: .rounded)).monospacedDigit()
-                        .foregroundStyle(RecorderStyle.mediaInk)
-                        .padding(.horizontal, 8).padding(.vertical, 4)
-                        .background(RecorderStyle.mediaOverlay, in: Capsule())
-                        .padding(10)
-                }
-            }
-            .overlay(alignment: .topTrailing) {
-                Button(action: close) {
-                    Image(systemName: "xmark").font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(RecorderStyle.mediaInk)
-                        .frame(width: 26, height: 26)
-                        .background(RecorderStyle.mediaOverlay, in: Circle())
-                        .contentShape(Circle())
-                }
-                .buttonStyle(RecorderPlainPressButtonStyle(cornerRadius: 13))
-                .help("关闭录制结果")
-                .accessibilityLabel("关闭录制结果")
-                .disabled(model.isResolvingCompletedRecording)
-                .padding(10)
-            }
-            .animation(RecorderMotion.settle, value: image != nil)
+            .accessibilityLabel(appLocalized("录制画面预览"))
+            .animation(.easeOut(duration: 0.2), value: card.thumbnail != nil)
 
-            HStack(spacing: 8) {
-                Image(systemName: "checkmark.circle.fill").font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(RecorderStyle.mint)
-                    .scaleEffect(arrived || RecorderMotion.reduces ? 1 : 0.3)
-                    .opacity(arrived ? 1 : 0)
-                    .accessibilityLabel("录制完成")
-                Text(model.project.title).font(.appUI(size: 14, weight: .semibold))
-                    .lineLimit(1).truncationMode(.middle)
-                    .help(model.currentSession?.packageURL.deletingLastPathComponent().path ?? "")
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(model.project.title)
+                        .font(.appUI(size: 15, weight: .semibold))
+                        .lineLimit(1).truncationMode(.middle)
+                    if !metadata.isEmpty {
+                        Text(metadata)
+                            .font(.appUI(size: 13).monospacedDigit())
+                            .foregroundStyle(EditorTheme.tertiaryText)
+                    }
+                }
+                Spacer(minLength: 4)
+                Button(action: trash) {
+                    AppLineIcon(kind: .trash, size: 15)
+                        .foregroundStyle(EditorTheme.tertiaryText)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(CompletionIconButtonStyle())
+                .help(appLocalized("移到废纸篓"))
+                .accessibilityLabel(appLocalized("移到废纸篓"))
+                .disabled(model.isResolvingCompletedRecording)
             }
-            .padding(.horizontal, 10).padding(.top, 14)
+            .padding(.horizontal, 6).padding(.top, 12)
 
             if let error = model.errorMessage, !error.isEmpty {
                 ScrollView {
                     Text(error)
-                        .font(.appUI(size: 12)).foregroundStyle(RecorderStyle.muted)
+                        .font(.appUI(size: 12)).foregroundStyle(EditorTheme.secondaryText)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
                 }
-                .frame(height: 56).padding(.horizontal, 10).padding(.top, 8)
+                .frame(height: 56).padding(.horizontal, 6).padding(.top, 8)
             }
 
-            HStack(spacing: RecordingCompletionLayout.actionSpacing) {
-                Button {
-                    Task { await model.saveCompletedRecording() }
-                } label: {
-                    Text(model.isResolvingCompletedRecording
+            HStack(spacing: 8) {
+                Button(action: save) {
+                    Text(model.recorderTransitionStage == .savingProject
                         ? model.recorderTransitionStage.title : appLocalized("保存项目"))
                         .lineLimit(1).frame(maxWidth: .infinity)
                 }
-                .buttonStyle(RecorderPillButtonStyle(kind: .soft))
+                .buttonStyle(CompletionButtonStyle(primary: false))
                 .accessibilityIdentifier("recording.completion.save")
-                Button { model.editCompletedRecording() } label: {
+                Button(action: edit) {
                     HStack(spacing: 6) {
-                        Text("进入编辑")
-                        Image(systemName: "arrow.right").font(.system(size: 11, weight: .bold))
+                        Text(appLocalized("进入编辑"))
+                        AppLineIcon(kind: .arrowRight, size: 12)
                     }
                     .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(RecorderPillButtonStyle(kind: .primary))
-                .keyboardShortcut(.defaultAction)
+                .buttonStyle(CompletionButtonStyle(primary: true))
                 .accessibilityIdentifier("recording.completion.edit")
             }
-            .frame(height: RecordingCompletionLayout.actionHeight)
             .disabled(model.isResolvingCompletedRecording)
             .padding(.top, 14)
         }
-        .foregroundStyle(RecorderStyle.ink)
-        .padding(RecordingCompletionLayout.inset).frame(width: width)
-        .fixedSize(horizontal: false, vertical: true)
-        .onAppear {
-            withAnimation(RecorderMotion.reduces ? nil : .spring(response: 0.42, dampingFraction: 0.6).delay(0.25)) { arrived = true }
+        .padding(RecordingCompletionLayout.inset)
+        .frame(width: width)
+    }
+
+    // MARK: The strip after a choice
+
+    private func strip(title: String, detail: String, dimmed: Bool, action: String,
+                       perform: @escaping () -> Void, seconds: TimeInterval) -> some View {
+        HStack(spacing: 10) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 4, style: .continuous).fill(EditorTheme.controlWell)
+                if let image = card.thumbnail {
+                    Image(decorative: image, scale: 1).resizable().scaledToFill()
+                }
+            }
+            .frame(width: 52, height: 29)
+            .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(EditorTheme.hairline, lineWidth: 1))
+            .opacity(dimmed ? 0.5 : 1)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(title).font(.appUI(size: 14, weight: .semibold))
+                Text(detail).font(.appUI(size: 12)).foregroundStyle(EditorTheme.tertiaryText)
+                    .lineLimit(1).truncationMode(.middle)
+            }
+            Spacer(minLength: 4)
+            Button(action: perform) { Text(action).padding(.horizontal, 12) }
+                .buttonStyle(CompletionButtonStyle(primary: false, height: 30))
+                .fixedSize()
         }
-        .appControlFocusAppearance()
-        .accessibilityIdentifier("recording.completion.card")
-        .task(id: model.recordingURL) { await loadPreview() }
-        .onChange(of: model.errorMessage) { _, _ in
-            DispatchQueue.main.async { layoutChanged() }
-        }
+        .padding(.leading, 10).padding(.trailing, 6).padding(.vertical, 8)
+        .frame(width: RecordingCompletionLayout.stripWidth)
+        .overlay(alignment: .bottomLeading) { CompletionCountdown(seconds: seconds) }
+        .transition(.opacity)
     }
 
     private var metadata: String {
@@ -466,12 +464,12 @@ private struct RecordingCompletionCard: View {
         if let dimensions {
             values.append("\(Int(dimensions.width.rounded())) × \(Int(dimensions.height.rounded()))")
         }
-        return values.isEmpty ? appLocalized("屏幕录制") : values.joined(separator: " · ")
+        return values.joined(separator: " · ")
     }
 
     @MainActor
     private func loadPreview() async {
-        image = nil
+        card.thumbnail = nil
         duration = nil
         dimensions = nil
         loadingPreview = true
@@ -479,8 +477,7 @@ private struct RecordingCompletionCard: View {
         let asset = AVURLAsset(url: url)
         do {
             let loadedDuration = try await asset.load(.duration).seconds
-            let track = try await asset.loadTracks(withMediaType: .video).first
-            if let track {
+            if let track = try await asset.loadTracks(withMediaType: .video).first {
                 let size = try await track.load(.naturalSize)
                 let transform = try await track.load(.preferredTransform)
                 let rect = CGRect(origin: .zero, size: size).applying(transform)
@@ -488,14 +485,62 @@ private struct RecordingCompletionCard: View {
                 dimensions = CGSize(width: abs(rect.width), height: abs(rect.height))
             }
             duration = loadedDuration
-            let request = RecordingCompletionPreviewRequest(asset: asset)
-            let frame = try await request.load()
+            let frame = try await RecordingCompletionPreviewRequest(asset: asset).load()
             try Task.checkCancellation()
-            image = frame
+            card.thumbnail = frame
         } catch is CancellationError { return }
         catch { /* A missing thumbnail must never block saving or editing. */ }
         guard !Task.isCancelled else { return }
         loadingPreview = false
+        layoutChanged()
+    }
+}
+
+/// A hairline that drains while the strip waits.
+private struct CompletionCountdown: View {
+    let seconds: TimeInterval
+    @State private var remaining: CGFloat = 1
+
+    var body: some View {
+        GeometryReader { proxy in
+            Rectangle().fill(EditorTheme.tertiaryText.opacity(0.5))
+                .frame(width: proxy.size.width * remaining, height: 2)
+                .frame(maxHeight: .infinity, alignment: .bottom)
+        }
+        .frame(height: 2)
+        .allowsHitTesting(false)
+        .onAppear {
+            remaining = 1
+            withAnimation(.linear(duration: seconds)) { remaining = 0 }
+        }
+    }
+}
+
+/// Editor-sized buttons: 36 high, 8 corners; one filled accent action.
+private struct CompletionButtonStyle: ButtonStyle {
+    let primary: Bool
+    var height: CGFloat = 36
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.appUI(size: primary || height >= 36 ? 14 : 13, weight: .semibold))
+            .foregroundStyle(primary ? Color.white : EditorTheme.primaryText)
+            .frame(height: height)
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(primary ? EditorTheme.accent : EditorTheme.controlWell))
+            .opacity(isEnabled ? (configuration.isPressed ? 0.82 : 1) : 0.5)
+            .contentShape(Rectangle())
+    }
+}
+
+private struct CompletionIconButtonStyle: ButtonStyle {
+    @State private var hovered = false
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(EditorTheme.controlWell.opacity(hovered || configuration.isPressed ? 1 : 0)))
+            .onHover { hovered = $0 }
     }
 }
 

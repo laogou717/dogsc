@@ -3,26 +3,36 @@ import RecorderCore
 import SwiftUI
 
 private enum EditorClipPayload: Codable {
+    case primary([RecordingSegment], [UUID: PrimarySegmentAudioOverrides])
     case zoom(ZoomAnimationClip)
     case screen(ScreenMotionClip)
     case camera(CameraMotionClip)
     case mosaic(MosaicClip)
     case sticker(StickerClip)
+    case animation(AnimationClip)
+    case audio(AudioClip)
+    case subtitle(SubtitleCue)
+    case video(VideoClip)
 
     var duration: TimeInterval {
         switch self {
+        case let .primary(segments, _): segments.reduce(0) { $0 + $1.outputDuration }
         case let .zoom(clip): clip.duration
         case let .screen(clip): clip.timing.duration
         case let .camera(clip): clip.timing.duration
         case let .mosaic(clip): clip.timing.duration
         case let .sticker(clip): clip.timing.duration
+        case let .animation(clip): clip.timing.duration
+        case let .audio(clip): clip.timing.duration
+        case let .subtitle(cue): cue.timing.duration
+        case let .video(clip): clip.timing.duration
         }
     }
 
     func supportsAttributes(_ selection: EditorSelection?) -> Bool {
         switch (self, selection) {
         case (.zoom, .zoom), (.screen, .screenMotion), (.camera, .cameraMotion),
-             (.mosaic, .mosaic), (.sticker, .sticker): true
+             (.mosaic, .mosaic), (.sticker, .sticker), (.animation, .animation), (.audio, .audioClip): true
         default: false
         }
     }
@@ -31,10 +41,12 @@ private enum EditorClipPayload: Codable {
 private struct EditorCopiedClip: Codable {
     let payload: EditorClipPayload
     let stickerSourceURL: URL?
+    var projectURL: URL?
+    var sessionID: EditorSessionID?
 }
 
 private enum EditorClipPasteError: LocalizedError {
-    case insufficientSpace, occupiedLane, unavailableImage, unavailableCamera, changedDuringImport
+    case insufficientSpace, occupiedLane, unavailableImage, unavailableCamera, changedDuringImport, differentProject
     var errorDescription: String? {
         switch self {
         case .insufficientSpace: appLocalized("此位置到片尾的时长不足，无法粘贴完整片段。请选择更靠前的位置。")
@@ -42,6 +54,7 @@ private enum EditorClipPasteError: LocalizedError {
         case .unavailableImage: appLocalized("复制的贴图源文件已不可用，请重新复制该贴图。")
         case .unavailableCamera: appLocalized("当前项目没有摄像头素材，无法粘贴摄像运动片段。")
         case .changedDuringImport: appLocalized("导入贴图期间时间线已改变，请重新粘贴。")
+        case .differentProject: appLocalized("请在原项目内粘贴主轨道片段；跨项目请使用“导入录屏项目”。")
         }
     }
 }
@@ -60,17 +73,28 @@ final class EditorClipClipboard {
 
     static func isClip(_ selection: EditorSelection?) -> Bool {
         switch selection {
-        case .zoom, .screenMotion, .cameraMotion, .mosaic, .sticker: true
+        case .primarySegment, .zoom, .screenMotion, .cameraMotion, .mosaic, .sticker, .animation, .audioClip, .subtitle, .videoClip: true
         default: false
         }
     }
 
     func copy(from store: EditorStore, selection: EditorSelection?,
-              context: EditorSessionContext) throws {
+              context: EditorSessionContext, primaryIDs: Set<UUID> = []) throws {
         try store.commitInteraction()
         let value: EditorClipPayload?
         var imageURL: URL?
         switch selection {
+        case let .primarySegment(id):
+            let map = try TimelineMap(sourceSequence: store.project.timeline.sourceSequence,
+                                      sourceDurations: store.recordingDurations())
+            let ids = primaryIDs.contains(id) ? primaryIDs : [id]
+            let segments = map.segments.filter { ids.contains($0.id) }.map {
+                RecordingSegment(id: $0.id, sourceStart: $0.sourceStart, sourceDuration: $0.sourceDuration,
+                    playbackRate: $0.playbackRate, media: $0.media, sourceID: $0.sourceID, sceneStyle: $0.sceneStyle,
+                    crop: $0.crop)
+            }
+            guard !segments.isEmpty else { return }
+            value = .primary(segments, store.project.timeline.primarySegmentAudioOverrides.filter { ids.contains($0.key) })
         case let .zoom(id):
             value = store.project.zoomAnimations.first { $0.id == id }.map(EditorClipPayload.zoom)
         case let .screenMotion(id):
@@ -83,10 +107,19 @@ final class EditorClipClipboard {
             let clip = store.project.timeline.stickerClips.first { $0.id == id }
             value = clip.map(EditorClipPayload.sticker)
             imageURL = clip.flatMap { context.projectAssetURL(for: $0.relativePath) }
+        case let .animation(id):
+            value = store.project.timeline.animationClips.first { $0.id == id }.map(EditorClipPayload.animation)
+        case let .audioClip(id):
+            value = store.project.timeline.audioClips.first { $0.id == id }.map(EditorClipPayload.audio)
+        case let .subtitle(id):
+            value = store.project.timeline.subtitleCues.first { $0.id == id }.map(EditorClipPayload.subtitle)
+        case let .videoClip(id):
+            value = store.project.timeline.videoClips.first { $0.id == id }.map(EditorClipPayload.video)
         default: value = nil
         }
         guard let value else { return }
-        let data = try JSONEncoder().encode(EditorCopiedClip(payload: value, stickerSourceURL: imageURL))
+        let data = try JSONEncoder().encode(EditorCopiedClip(payload: value, stickerSourceURL: imageURL,
+            projectURL: ProjectFiles.package?.standardizedFileURL, sessionID: store.sessionID))
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setData(data, forType: pasteboardType)
     }
@@ -141,6 +174,25 @@ final class EditorClipClipboard {
             copy.relativePath = target.relativePath
             copy.layerIndex = target.layerIndex
             timeline.stickerClips[index] = copy
+        case let (.animation(source), .animation(id)):
+            guard let index = timeline.animationClips.firstIndex(where: { $0.id == id }) else { return }
+            let target = timeline.animationClips[index]
+            var copy = source
+            copy.id = target.id
+            copy.timing = target.timing
+            copy.sourcePath = target.sourcePath
+            copy.layerIndex = target.layerIndex
+            copy.timeOffset = target.timeOffset
+            copy.playbackRate = target.playbackRate
+            copy.soundtrack = target.soundtrack
+            copy.mainTrackStyle = target.mainTrackStyle
+            timeline.animationClips[index] = copy
+        case let (.audio(source), .audioClip(id)):
+            guard let index = timeline.audioClips.firstIndex(where: { $0.id == id }) else { return }
+            timeline.audioClips[index].volume = source.volume
+            timeline.audioClips[index].fadeIn = source.fadeIn
+            timeline.audioClips[index].fadeOut = source.fadeOut
+            timeline.audioClips[index].kind = source.kind
         default: return
         }
         fitReturnBesideSuccessor(in: &timeline, selection: selection, includePredecessor: false,
@@ -154,10 +206,32 @@ final class EditorClipClipboard {
                    frameDuration: TimeInterval, edgeTolerance: TimeInterval) async throws
         -> (selection: EditorSelection, startTime: TimeInterval)? {
         guard let copied = copiedClip() else { return nil }
+        try Task.checkCancellation()
         try store.commitInteraction()
         let before = store.project.timeline
         var timeline = before
         let length = copied.payload.duration
+        if case let .primary(originals, overrides) = copied.payload {
+            guard copied.sessionID == store.sessionID
+                || (copied.projectURL != nil && copied.projectURL == ProjectFiles.package?.standardizedFileURL) else {
+                throw EditorClipPasteError.differentProject
+            }
+            let durations = store.recordingDurations()
+            let map = try TimelineMap(sourceSequence: before.sourceSequence, sourceDurations: durations)
+            let time = RecordingProjectImport.insertionTime(proposedTime, map: map)
+            var copiedOverrides: [UUID: PrimarySegmentAudioOverrides] = [:]
+            let segments = originals.map { original in
+                var segment = original; segment.id = UUID()
+                copiedOverrides[segment.id] = overrides[original.id]
+                return segment
+            }
+            timeline = try ProjectTimelineEditing.insertPrimarySegments(in: before, segments: segments,
+                audioOverrides: copiedOverrides, atOutputTime: time, sourceDurations: durations)
+            try store.replaceTimeline(with: timeline, actionName: appLocalized("粘贴片段"))
+            let selection = EditorSelection.primarySegment(segments[0].id)
+            store.selection = selection
+            return (selection, time)
+        }
         let time = insertionTime(for: copied.payload, in: before, proposed: proposedTime,
                                  outputDuration: outputDuration, frameDuration: frameDuration,
                                  edgeTolerance: edgeTolerance)
@@ -169,6 +243,7 @@ final class EditorClipClipboard {
         var imported: ImportedProjectOverlayAsset?
         do {
             switch copied.payload {
+            case .primary: return nil // handled above; primary clips extend the programme
             case var .zoom(clip):
                 try requireSpace(at: time, duration: length, intervals: timeline.zoomClips.map { ($0.startTime, $0.endTime) })
                 clip.id = id
@@ -186,7 +261,8 @@ final class EditorClipClipboard {
                 timeline.screenMotionClips.sort { $0.timing.startTime < $1.timing.startTime }
                 selection = .screenMotion(id)
             case var .camera(clip):
-                guard context.media.camera != nil else { throw EditorClipPasteError.unavailableCamera }
+                guard context.media.camera != nil || store.project.sources.contains(where: { $0.media.camera != nil })
+                else { throw EditorClipPasteError.unavailableCamera }
                 try requireSpace(at: time, duration: length, intervals: timeline.cameraMotionClips.map { ($0.timing.startTime, $0.timing.endTime) })
                 clip.id = id
                 clip.groupID = nil
@@ -210,9 +286,33 @@ final class EditorClipClipboard {
                 }
                 clip.id = id
                 clip.timing.startTime = time
-                clip.layerIndex = (timeline.stickerClips.map(\.layerIndex).max() ?? -1) + 1
+                clip.layerIndex = timeline.visualLayer(for: clip.timing)
                 timeline.stickerClips.append(clip)
                 selection = .sticker(id)
+            case var .animation(clip):
+                clip.id = id
+                clip.timing.startTime = time
+                clip.layerIndex = timeline.visualLayer(for: clip.timing)
+                timeline.animationClips.append(clip)
+                selection = .animation(id)
+            case var .audio(clip):
+                clip.id = id
+                clip.timing.startTime = time
+                timeline.audioClips.append(clip)
+                selection = .audioClip(id)
+            case var .subtitle(cue):
+                try requireSpace(at: time, duration: length, intervals: timeline.subtitleCues.map { ($0.timing.startTime, $0.timing.endTime) })
+                cue.id = id
+                cue.timing.startTime = time
+                timeline.subtitleCues.append(cue)
+                timeline.subtitleCues.sort { $0.timing.startTime < $1.timing.startTime }
+                selection = .subtitle(id)
+            case var .video(clip):
+                clip.id = id
+                clip.timing.startTime = time
+                clip.layerIndex = timeline.visualLayer(for: clip.timing)
+                timeline.videoClips.append(clip)
+                selection = .videoClip(id)
             }
             try Task.checkCancellation()
             fitReturnBesideSuccessor(in: &timeline, selection: selection, includePredecessor: true,
@@ -236,6 +336,7 @@ final class EditorClipClipboard {
         let intervals: [(start: TimeInterval, end: TimeInterval)]
         let exclusive: Bool
         switch payload {
+        case .primary: return proposed
         case .zoom:
             intervals = timeline.zoomClips.map { ($0.startTime, $0.endTime) }; exclusive = true
         case .screen:
@@ -246,6 +347,14 @@ final class EditorClipClipboard {
             intervals = timeline.mosaicClips.map { ($0.timing.startTime, $0.timing.endTime) }; exclusive = false
         case .sticker:
             intervals = timeline.stickerClips.map { ($0.timing.startTime, $0.timing.endTime) }; exclusive = false
+        case .animation:
+            intervals = timeline.animationClips.map { ($0.timing.startTime, $0.timing.endTime) }; exclusive = false
+        case .audio:
+            intervals = timeline.audioClips.map { ($0.timing.startTime, $0.timing.endTime) }; exclusive = false
+        case .subtitle:
+            intervals = timeline.subtitleCues.map { ($0.timing.startTime, $0.timing.endTime) }; exclusive = true
+        case .video:
+            intervals = timeline.videoClips.map { ($0.timing.startTime, $0.timing.endTime) }; exclusive = false
         }
         let length = payload.duration
         let tolerance = max(edgeTolerance, frameDuration / 2)
@@ -325,7 +434,7 @@ final class EditorClipClipboard {
     }
 
     private func copiedClip() -> EditorCopiedClip? {
-        guard let data = NSPasteboard.general.data(forType: pasteboardType), data.count < 65_536 else { return nil }
+        guard let data = NSPasteboard.general.data(forType: pasteboardType), data.count <= 16 * 1_024 * 1_024 else { return nil }
         return try? JSONDecoder().decode(EditorCopiedClip.self, from: data)
     }
 }
@@ -352,7 +461,8 @@ extension EditorTimelineView {
     }
 
     func copyTimelineClip(_ selection: EditorSelection?) {
-        do { try EditorClipClipboard.shared.copy(from: editorStore, selection: selection, context: context) }
+        do { try EditorClipClipboard.shared.copy(from: editorStore, selection: selection, context: context,
+                                                primaryIDs: selectedPrimarySegmentIDs) }
         catch { onError(error.localizedDescription) }
     }
 
@@ -376,7 +486,17 @@ extension EditorTimelineView {
                 case .zoom: visibleTracks.insert(.zoom)
                 case .screenMotion: visibleTracks.insert(.screenMotion)
                 case .cameraMotion: visibleTracks.insert(.cameraMotion)
-                case .mosaic, .sticker: visibleTracks.insert(.overlays)
+                case .mosaic:
+                    visibleTracks.insert(.overlays)
+                    collapsedTimelineGroupsRaw = collapsedLaneGroups.subtracting([TimelinePostLane.effects.rawValue]).sorted().joined(separator: ",")
+                case .sticker, .animation, .videoClip:
+                    visibleTracks.insert(.overlays)
+                    setPostLane(.layers, visible: true)
+                    collapsedTimelineGroupsRaw = collapsedLaneGroups.subtracting([TimelinePostLane.layers.rawValue]).sorted().joined(separator: ",")
+                    showsAllOverlayLayers = true
+                case .audioClip: setPostLane(.audio, visible: true)
+                case .subtitle: setPostLane(.subtitles, visible: true)
+                case let .primarySegment(id): selectPrimarySegment(id)
                 default: break
                 }
                 playbackController.seek(to: pasted.startTime, pausing: true)

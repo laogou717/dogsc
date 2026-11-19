@@ -17,11 +17,4 @@ extension ElementMotionCurve {
         }
     }
 
-    var editorDetail: String {
-        switch self {
-        case .smooth: "均衡加减速，适合大多数元素。"
-        case .swift: "快速进入并干净收尾，节奏更明确。"
-        case .gentle: "起落更慢，适合较大的画面和样机。"
-        }
-    }
 }

@@ -35,6 +35,12 @@ final class ImmediateCameraPreviewFrameSink: @unchecked Sendable {
     private var pendingFrame: PendingFrame?
     private var drainIsScheduled = false
 
+    var isAttached: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return renderer != nil
+    }
+
     func attach(_ renderer: AVSampleBufferVideoRenderer?) {
         lock.lock()
         self.renderer = renderer
@@ -142,7 +148,6 @@ final class ImmediateCameraPreviewFrameSink: @unchecked Sendable {
 
 @MainActor
 final class CameraPreviewWindowController {
-    private let session: AVCaptureSession
     let frameSink = ImmediateCameraPreviewFrameSink()
     private var panel: CameraPreviewPanel?
     private var presentationGeneration = 0
@@ -157,8 +162,7 @@ final class CameraPreviewWindowController {
     private var sourcePixelSize: CGSize?
     private var shapeObserver: NSObjectProtocol?
 
-    init(session: AVCaptureSession) {
-        self.session = session
+    init() {
         shapeObserver = NotificationCenter.default.addObserver(
             forName: .recordingCameraPreviewShapeDidChange,
             object: nil,
@@ -272,7 +276,6 @@ final class CameraPreviewWindowController {
         panel.isMovableByWindowBackground = true
         let surface = CameraPreviewSurface(
             frame: CGRect(origin: .zero, size: size),
-            session: session,
             frameSink: frameSink
         )
         surface.mirrored = mirrored
@@ -353,7 +356,6 @@ private final class CameraPreviewPanel: NSPanel {
 
 private final class CameraPreviewSurface: NSView {
     var mirrored = true
-    private let session: AVCaptureSession
     private let frameSink: ImmediateCameraPreviewFrameSink
     private let previewLayer: AVSampleBufferDisplayLayer
     private let statusView = NSView()
@@ -375,10 +377,8 @@ private final class CameraPreviewSurface: NSView {
 
     init(
         frame frameRect: NSRect,
-        session: AVCaptureSession,
         frameSink: ImmediateCameraPreviewFrameSink
     ) {
-        self.session = session
         self.frameSink = frameSink
         previewLayer = AVSampleBufferDisplayLayer()
         super.init(frame: frameRect)

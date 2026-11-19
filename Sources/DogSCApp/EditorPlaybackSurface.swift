@@ -32,7 +32,8 @@ final class NativePlaybackTimeNSView: NSView {
     /// every playback frame and redrew through the NSView display machinery
     /// (measured as most of the remaining main-thread commit cost).
     private let textLayer = CATextLayer()
-    private let font = NSFont.monospacedDigitSystemFont(ofSize: 13.5, weight: .semibold)
+    // The monitor time code: 14 pt monospaced, so digits never shift.
+    private let font = NSFont.monospacedSystemFont(ofSize: 14, weight: .medium)
     private var lastDisplayedCentiseconds: Int?
     private var currentText = "00:00.00"
 
@@ -144,6 +145,15 @@ extension NativePlaybackTimeNSView: EditorPlaybackTimelineObserver {
 enum NativeTimelinePlayheadPart {
     case line
     case knob
+
+    static let knobSize = CGSize(width: 11, height: 17)
+    static let knobCenterY: CGFloat = 12.5
+
+    static func knobHitArea(centerX: CGFloat) -> CGRect {
+        CGRect(x: centerX - knobSize.width / 2, y: knobCenterY - knobSize.height / 2,
+               width: knobSize.width, height: knobSize.height)
+            .insetBy(dx: -4, dy: -3)
+    }
 }
 
 /// The line stays inside the scrolling canvas; the knob is drawn above the
@@ -213,14 +223,15 @@ final class NativeTimelinePlayheadNSView: NSView {
         // A slim capsule handle reads as a grip on the time axis rather than
         // a dot; the paper rim separates it from clips passing underneath.
         knobLayer.lineWidth = 1.5
+        let knobBounds = CGRect(origin: .zero, size: NativeTimelinePlayheadPart.knobSize)
         knobLayer.path = CGPath(
-            roundedRect: CGRect(x: 0, y: 0, width: 11, height: 17),
+            roundedRect: knobBounds,
             cornerWidth: 5.5, cornerHeight: 5.5, transform: nil
         )
         // Keep the path and bounds in the same coordinate space. Updating
         // frame while a scale transform is active changes bounds underneath
         // the fixed path, leaving the grip off-centre after a seek.
-        knobLayer.bounds = CGRect(x: 0, y: 0, width: 11, height: 17)
+        knobLayer.bounds = knobBounds
         // A solid, narrow rim separates the red line from media without a
         // moving blur/shadow surface crossing the clip's selection glow.
         layer?.addSublayer(lineRimLayer)
@@ -328,7 +339,7 @@ final class NativeTimelinePlayheadNSView: NSView {
             || knobX > leadingInset + viewportWidth
         lineLayer.frame = CGRect(x: lineX - 0.75, y: 0, width: 1.5, height: bounds.height)
         lineRimLayer.frame = CGRect(x: lineX - 1.75, y: 0, width: 3.5, height: bounds.height)
-        knobLayer.position = CGPoint(x: knobX, y: bounds.height - 12.5)
+        knobLayer.position = CGPoint(x: knobX, y: bounds.height - NativeTimelinePlayheadPart.knobCenterY)
         CATransaction.commit()
     }
 
@@ -638,8 +649,178 @@ extension NativeTimelineOverviewNSView: EditorPlaybackTimelineObserver {
     }
 }
 
+/// The monitor's one thin progress line (编辑器第二版 · 监视器): 3 pt, the
+/// played part in the accent; press or drag anywhere on it to seek. The hit
+/// area is taller than the line so it is easy to grab.
+struct NativeMonitorProgressView: NSViewRepresentable {
+    let playbackController: EditorPlaybackController
+    let duration: TimeInterval
+
+    func makeNSView(context: Context) -> NativeMonitorProgressNSView {
+        let view = NativeMonitorProgressNSView()
+        view.configure(playbackController: playbackController, duration: duration)
+        return view
+    }
+
+    func updateNSView(_ view: NativeMonitorProgressNSView, context: Context) {
+        view.configure(playbackController: playbackController, duration: duration)
+    }
+
+    static func dismantleNSView(_ view: NativeMonitorProgressNSView, coordinator: Void) {
+        view.invalidate()
+    }
+}
+
+@MainActor
+final class NativeMonitorProgressNSView: NSView {
+    static let lineHeight: CGFloat = 3
+    private weak var playbackController: EditorPlaybackController?
+    private var duration: TimeInterval = 0
+    private var time: TimeInterval = 0
+    private let trackLayer = CALayer()
+    private let fillLayer = CALayer()
+    private var hoverTrackingArea: NSTrackingArea?
+    private var isPointerInside = false
+    private var isPointerDown = false
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        for layer in [trackLayer, fillLayer] {
+            layer.cornerRadius = Self.lineHeight / 2
+            layer.actions = ["position": NSNull(), "bounds": NSNull(), "frame": NSNull()]
+            self.layer?.addSublayer(layer)
+        }
+        setAccessibilityElement(true)
+        setAccessibilityRole(.slider)
+        setAccessibilityLabel(appLocalized("播放进度"))
+        updateColors(animated: false)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    func configure(playbackController: EditorPlaybackController, duration: TimeInterval) {
+        if self.playbackController !== playbackController {
+            self.playbackController?.removeNativeTimelineObserver(self)
+            playbackController.addNativeTimelineObserver(self)
+        }
+        self.playbackController = playbackController
+        self.duration = max(duration, 0)
+        time = playbackController.outputTime
+        updateLayers()
+    }
+
+    func invalidate() {
+        playbackController?.removeNativeTimelineObserver(self)
+        playbackController = nil
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateColors(animated: false)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverTrackingArea { removeTrackingArea(hoverTrackingArea) }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow], owner: self, userInfo: nil)
+        addTrackingArea(area)
+        hoverTrackingArea = area
+    }
+
+    override func layout() {
+        super.layout()
+        updateLayers()
+    }
+
+    private var trackRect: CGRect {
+        CGRect(x: 0, y: floor((bounds.height - Self.lineHeight) / 2), width: max(bounds.width, 1), height: Self.lineHeight)
+    }
+
+    private func updateLayers() {
+        let track = trackRect
+        let fraction = duration > 0 ? min(max(time / duration, 0), 1) : 0
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        trackLayer.frame = track
+        fillLayer.frame = CGRect(x: track.minX, y: track.minY, width: track.width * CGFloat(fraction), height: track.height)
+        CATransaction.commit()
+        setAccessibilityValue(EditorView.transportTimestamp(time))
+    }
+
+    private func updateColors(animated: Bool) {
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(animated ? 0.12 : 0)
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            trackLayer.backgroundColor = NSColor.labelColor.withAlphaComponent(
+                isPointerDown || isPointerInside ? 0.12 : 0.08
+            ).cgColor
+            fillLayer.backgroundColor = EditorPlayheadColor.line.cgColor
+        }
+        CATransaction.commit()
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isPointerInside = true
+        updateColors(animated: true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isPointerInside = false
+        updateColors(animated: true)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        isPointerDown = true
+        updateColors(animated: true)
+        playbackController?.beginScrubbing()
+        scrub(with: event)
+    }
+
+    override func mouseDragged(with event: NSEvent) { scrub(with: event) }
+
+    override func mouseUp(with event: NSEvent) {
+        scrub(with: event)
+        playbackController?.endScrubbing()
+        isPointerDown = false
+        updateColors(animated: true)
+    }
+
+    private func scrub(with event: NSEvent) {
+        let local = convert(event.locationInWindow, from: nil)
+        let track = trackRect
+        guard track.width > 0, duration > 0 else { return }
+        let fraction = min(max((local.x - track.minX) / track.width, 0), 1)
+        let target = duration * TimeInterval(fraction)
+        time = target
+        updateLayers()
+        playbackController?.updateScrubbing(to: target)
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .pointingHand)
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        bounds.contains(point) ? self : nil
+    }
+}
+
+extension NativeMonitorProgressNSView: EditorPlaybackTimelineObserver {
+    func editorPlaybackTimelineDidUpdate(_ snapshot: EditorPlaybackTimelineSnapshot) {
+        duration = max(snapshot.duration, 0)
+        time = snapshot.outputTime
+        updateLayers()
+    }
+}
+
 enum EditorPlayheadColor {
-    static let line = NSColor(calibratedRed: 1.0, green: 0.27, blue: 0.23, alpha: 1)
+    /// The editor accent: the playhead is the one coloured line on screen.
+    static let line = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(calibratedRed: 0.855, green: 0.478, blue: 0.322, alpha: 1)
+            : NSColor(calibratedRed: 0.769, green: 0.388, blue: 0.247, alpha: 1)
+    }
 }
 
 struct EditorOverviewMarker: Equatable {

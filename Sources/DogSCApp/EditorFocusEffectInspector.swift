@@ -6,7 +6,6 @@ import SwiftUI
 /// transaction as the other animation parameters (one drag / one undo).
 struct EditorFocusEffectInspector: View {
     @ObservedObject var editorStore: EditorStore
-    var sourceImage: NSImage? = nil
     let selection: EditorSelection
     let onError: (String) -> Void
 

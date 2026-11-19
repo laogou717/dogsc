@@ -3,9 +3,9 @@ import CoreImage
 import Metal
 import QuartzCore
 
-/// CAMetalLayer is thread-safe for drawable acquisition but is not annotated
-/// Sendable. Keep the cross-queue boundary explicit and weak so a retirement
-/// request cannot extend the life of a dismantled editor surface.
+/// Keep the cross-queue boundary weak so a retirement request cannot extend
+/// the life of a dismantled editor surface. The display driver owns drawable
+/// acquisition; the render queue owns the GPU clear and presentation.
 final class PreviewLayerRetirementRequest: @unchecked Sendable {
     weak var layer: CAMetalLayer?
     let generation: UInt64
@@ -16,9 +16,8 @@ final class PreviewLayerRetirementRequest: @unchecked Sendable {
     }
 }
 
-/// RES-001/RES-002 预览层后台退役与恢复重建，从
-/// `SharedRenderedPreviewSurface.swift` 拆出以满足架构行数预算。主声明里
-/// 放宽到模块内访问的退役代际/光标层/渲染队列成员只允许这里的代码使用。
+/// AppKit owns surface lifetime. GPU retirement runs on the render queue,
+/// then returns a guarded, one-time teardown notification to the view.
 extension SharedRenderedPreviewNSView {
     static func makePreviewMetalLayer() -> CAMetalLayer {
         let result = CAMetalLayer()
@@ -42,7 +41,7 @@ extension SharedRenderedPreviewNSView {
         // Core Image must be allowed to render into the texture.
         layer.framebufferOnly = false
         layer.maximumDrawableCount = 3
-        // Playback is already paced by the window's CADisplayLink. Enabling a
+        // Playback is already paced by the independent CAMetalDisplayLink. Enabling a
         // second independent vblank gate inside CAMetalLayer holds all three
         // drawables until presentation completion; on a 120 Hz desktop with a
         // 60 Hz producer that measured only 43-46 completed frames/s. Let the
@@ -63,16 +62,10 @@ extension SharedRenderedPreviewNSView {
     func suspendPreviewBackingLayer() {
         guard wantsLayer else { return }
 
-        previewRetirementGeneration &+= 1
-        let retirementGeneration = previewRetirementGeneration
+        let retirementGeneration = engine.mailbox.nextRetirement()
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        cursorClickGradientLayer.removeFromSuperlayer()
-        cursorClickSecondaryLayer.removeFromSuperlayer()
-        cursorClickAccentLayer.removeFromSuperlayer()
-        cursorClickLayer.removeFromSuperlayer()
-        cursorImageLayer.removeFromSuperlayer()
         if let previewLayer = layer as? CAMetalLayer {
             previewLayer.isHidden = true
             let request = PreviewLayerRetirementRequest(
@@ -83,75 +76,12 @@ extension SharedRenderedPreviewNSView {
             // The same Metal command queue then guarantees the 2×2 drawable is
             // presented after every full-resolution frame, without blocking
             // AppKit's main thread while the GPU drains.
-            renderQueue.async { [weak self, request] in
-                self?.presentTinyRetirementDrawable(request)
-            }
+            engine.retire(request)
         } else {
             wantsLayer = false
         }
         CATransaction.commit()
         CATransaction.flush()
-    }
-
-    /// WindowServer keeps the most recently presented drawable as the window's
-    /// visual backing even after AppKit dismantles the layer. Replace that
-    /// front buffer with a transparent 2×2 surface first, so the retained
-    /// snapshot costs kilobytes instead of one 53 MB 5K IOSurface.
-    nonisolated func presentTinyRetirementDrawable(
-        _ request: PreviewLayerRetirementRequest
-    ) {
-        guard request.generation == previewRetirementGeneration,
-              let previewLayer = request.layer else { return }
-        guard let device = previewLayer.device else {
-            finishTinyRetirementDrawable(request)
-            return
-        }
-        previewLayer.drawableSize = CGSize(width: 2, height: 2)
-        if queueCommandQueue == nil {
-            queueCommandQueue = device.makeCommandQueue()
-        }
-        guard let drawable = previewLayer.nextDrawable(),
-              let commandQueue = queueCommandQueue,
-              let commandBuffer = commandQueue.makeCommandBuffer()
-        else {
-            finishTinyRetirementDrawable(request)
-            return
-        }
-
-        let pass = MTLRenderPassDescriptor()
-        pass.colorAttachments[0].texture = drawable.texture
-        pass.colorAttachments[0].loadAction = .clear
-        pass.colorAttachments[0].storeAction = .store
-        pass.colorAttachments[0].clearColor = MTLClearColor(
-            red: 0,
-            green: 0,
-            blue: 0,
-            alpha: 0
-        )
-        guard let encoder = commandBuffer.makeRenderCommandEncoder(
-            descriptor: pass
-        ) else {
-            finishTinyRetirementDrawable(request)
-            return
-        }
-        encoder.endEncoding()
-        commandBuffer.present(drawable)
-        commandBuffer.addCompletedHandler { [weak self, request] _ in
-            self?.finishTinyRetirementDrawable(request)
-        }
-        commandBuffer.commit()
-    }
-
-    nonisolated func finishTinyRetirementDrawable(
-        _ request: PreviewLayerRetirementRequest
-    ) {
-        DispatchQueue.main.async { [weak self, request] in
-            guard let self, let previewLayer = request.layer else { return }
-            self.finalizePreviewBackingLayerRetirement(
-                previewLayer,
-                generation: request.generation
-            )
-        }
     }
 
     func finalizePreviewBackingLayerRetirement(
@@ -178,7 +108,7 @@ extension SharedRenderedPreviewNSView {
     func installPreviewBackingLayerIfNeeded() {
         // Cancel an in-flight retirement before it can dismantle the layer the
         // returning foreground window is about to reuse.
-        previewRetirementGeneration &+= 1
+        engine.mailbox.nextRetirement()
         if !wantsLayer {
             wantsLayer = true
         }
@@ -194,11 +124,6 @@ extension SharedRenderedPreviewNSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         previewLayer.masksToBounds = true
-        previewLayer.addSublayer(cursorClickGradientLayer)
-        previewLayer.addSublayer(cursorClickSecondaryLayer)
-        previewLayer.addSublayer(cursorClickAccentLayer)
-        previewLayer.addSublayer(cursorClickLayer)
-        previewLayer.addSublayer(cursorImageLayer)
         CATransaction.commit()
     }
 }

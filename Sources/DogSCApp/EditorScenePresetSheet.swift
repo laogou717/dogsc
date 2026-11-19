@@ -18,7 +18,7 @@ struct EditorScenePresetSheet: View {
         VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 6) {
                 Text(appLocalized(isUpdating ? "更新场景预设" : "保存场景预设"))
-                    .font(.appUI(size: 17, weight: .semibold))
+                    .font(.appUI(size: 15, weight: .semibold))
                 Text("把这套配置留给下一次录制。")
                     .foregroundStyle(.secondary)
             }
@@ -106,7 +106,7 @@ struct EditorScenePresetPreview: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             VStack(alignment: .leading, spacing: 5) {
-                Text("检查裁切适配").font(.appUI(size: 17, weight: .semibold))
+                Text("检查裁切适配").font(.appUI(size: 15, weight: .semibold))
                 Text(preset.name).font(.appUI(size: 12)).foregroundStyle(.secondary)
             }
             if let source = preset.sourceDimensions {

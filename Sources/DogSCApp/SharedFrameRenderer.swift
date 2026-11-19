@@ -12,9 +12,19 @@ import SwiftUI
 struct SharedFrameRenderResources: @unchecked Sendable {
     var screen: CIImage
     var camera: CIImage?
+    var cameraBeauty: CameraBeautyFrame?
     var wallpaper: CIImage?
     var cursor: CIImage?
     var stickers: [String: CIImage]
+    /// Rive frames already rendered for this exact output time, by clip id.
+    var animations: [UUID: CIImage]
+    /// Overlay video frames for this output time, by clip id.
+    var videos: [UUID: CIImage] = [:]
+    /// EDT-071: the live-drawn HTML motion of a main-track clip. It takes the
+    /// place of the screen source (whose frame there is only a stand-in).
+    var insertedMotion: CIImage?
+    var insertedImage: CIImage?
+    var timedStickers: [UUID: CIImage] = [:]
     /// A caller-owned, already-lowered canvas background. The editor keeps
     /// this immutable CIImage alive across playback frames so Core Image can
     /// retain one GPU intermediate instead of uploading and blurring the same
@@ -28,6 +38,7 @@ struct SharedFrameRenderResources: @unchecked Sendable {
         wallpaper: CIImage? = nil,
         cursor: CIImage? = nil,
         stickers: [String: CIImage] = [:],
+        animations: [UUID: CIImage] = [:],
         preparedBackground: CIImage? = nil
     ) {
         self.screen = screen
@@ -35,6 +46,7 @@ struct SharedFrameRenderResources: @unchecked Sendable {
         self.wallpaper = wallpaper
         self.cursor = cursor
         self.stickers = stickers
+        self.animations = animations
         self.preparedBackground = preparedBackground
     }
 }
@@ -59,26 +71,6 @@ private final class BackgroundPatternTileCache: @unchecked Sendable {
     }
 }
 
-private final class ScreenChromeTextCache: @unchecked Sendable {
-    private let storage: NSCache<NSString, CIImage> = {
-        let cache = NSCache<NSString, CIImage>()
-        cache.countLimit = 96
-        cache.totalCostLimit = 12 * 1_024 * 1_024
-        return cache
-    }()
-
-    func image(for key: NSString, create: () -> CIImage?) -> CIImage? {
-        if let cached = storage.object(forKey: key) { return cached }
-        guard let created = create() else { return nil }
-        storage.setObject(
-            created,
-            forKey: key,
-            cost: max(Int(created.extent.width * created.extent.height * 4), 1)
-        )
-        return created
-    }
-}
-
 /// The single Core Image lowering of a backend-neutral `FrameScene`.
 ///
 /// A screen-attached cursor is composited into the decorated screen layer
@@ -87,18 +79,9 @@ private final class ScreenChromeTextCache: @unchecked Sendable {
 /// layer. An axis-aligned quad takes the original 2D path byte-for-byte.
 enum SharedFrameRenderer {
     private static let backgroundPatternTileCache = BackgroundPatternTileCache()
-    private static let screenChromeTextCache = ScreenChromeTextCache()
 
-    nonisolated static func render(
-        scene: FrameScene,
-        resources: SharedFrameRenderResources
-    ) -> CIImage {
-        render(scene: scene, resources: resources, over: nil)
-    }
 
-    /// Renders the scene over a caller-provided background. Moving layers use
-    /// their evaluated one-frame displacement; the canvas background remains
-    /// sharp and is never re-rendered as blur history.
+
     nonisolated static func render(
         scene: FrameScene,
         resources: SharedFrameRenderResources,
@@ -130,8 +113,24 @@ enum SharedFrameRenderer {
         let cameraVisibility = 1 - min(max(cameraSuppression, 0), 1)
 
         let transparent = CIImage(color: .clear).cropped(to: canvasRect)
-        var compositeBeforeCamera: CIImage?
-        var visibleCameraLayer: CIImage?
+        var drewOverlayLayers = false
+        var resources = resources
+        if scene.insertedImage != nil, let image = resources.insertedImage {
+            resources.screen = image
+        }
+        if scene.insertedMotion != nil {
+            // Over black, like the stand-in it replaces; until the first page
+            // frame lands the span simply stays black.
+            let black = CIImage(color: CIColor(red: 0, green: 0, blue: 0)).cropped(to: resources.screen.extent)
+            if let motion = resources.insertedMotion, motion.extent.width > 0, motion.extent.height > 0 {
+                // Drawn at the output size; the screen layer fits it into the
+                // frame (cover), so no second scale happens here.
+                let placed = motion.transformed(by: CGAffineTransform(translationX: -motion.extent.minX, y: -motion.extent.minY))
+                resources.screen = placed.composited(over: CIImage(color: CIColor(red: 0, green: 0, blue: 0))).cropped(to: placed.extent)
+            } else {
+                resources.screen = black
+            }
+        }
         for role in scene.layerOrder where role != .background {
             switch role {
             case .background:
@@ -186,74 +185,94 @@ enum SharedFrameRenderer {
                     canvasRect: canvasRect
                 )
             case .camera:
-                compositeBeforeCamera = result
-                visibleCameraLayer = nil
                 guard cameraVisibility > 0.001 else { continue }
                 guard let cameraScene = scene.camera,
                       cameraScene.opacity > 0,
                       let cameraImage = resources.camera else { continue }
-                let cameraLayer = renderCamera(
+                var cameraLayer = renderCamera(
                     source: cameraImage,
                     scene: cameraScene,
+                    tracking: resources.cameraBeauty,
                     over: transparent,
                     canvasRect: canvasRect
                 )
-                visibleCameraLayer = applyingOpacity(
-                    cameraLayer,
-                    cameraVisibility
-                )
-                result = visibleCameraLayer!
-                    .composited(over: result)
-                    .cropped(to: canvasRect)
-            case .stickers:
-                guard !scene.stickers.isEmpty else { continue }
-                // A sticker normally softens the canvas/screen composite but
-                // leaves the independently-authored camera crisp. Only clips
-                // that explicitly opt in soften the camera layer. Rebuild the
-                // two layers here instead of blurring the already-flattened
-                // result, which made that distinction impossible.
-                // "Hide screen" means the authored canvas background is the
-                // actual backdrop. Do not blur that background again with a
-                // sticker's screen-blur control. If another sticker requests
-                // blur at the same time, ease that blur away with the same
-                // suppression phase instead of switching it abruptly.
-                let requestedScreenBlur = scene.stickerBackdrop.screenBlur
-                let baseBlur = requestedScreenBlur
-                    * (1 - min(max(screenSuppression, 0), 1))
-                let cameraBlur = scene.stickerBackdrop.cameraBlur
-                var stickerBackdrop = compositeBeforeCamera ?? result
-                if baseBlur > 0.01 {
-                    stickerBackdrop = stickerBackdrop.clampedToExtent()
+                // The camera stays above every sticker. It is softened only
+                // when an active sticker clip explicitly opts in.
+                let cameraBlur = scene.stickers.isEmpty ? 0 : scene.stickerBackdrop.cameraBlur
+                if cameraBlur > 0.01 {
+                    cameraLayer = cameraLayer.clampedToExtent()
                         .applyingFilter(
                             "CIGaussianBlur",
-                            parameters: [kCIInputRadiusKey: baseBlur]
+                            parameters: [kCIInputRadiusKey: cameraBlur]
                         )
                         .cropped(to: canvasRect)
                 }
-                if var cameraLayer = visibleCameraLayer {
-                    if cameraBlur > 0.01 {
-                        cameraLayer = cameraLayer.clampedToExtent()
-                            .applyingFilter(
-                                "CIGaussianBlur",
-                                parameters: [kCIInputRadiusKey: cameraBlur]
-                            )
+                result = applyingOpacity(cameraLayer, cameraVisibility)
+                    .composited(over: result)
+                    .cropped(to: canvasRect)
+            case .stickers, .videos, .animations:
+                // EDT-054: pictures, motion graphics and videos share one layer
+                // order (`layerIndex`, then video < sticker < animation), so a
+                // later role must not draw them again.
+                guard !drewOverlayLayers else { continue }
+                drewOverlayLayers = true
+                if !scene.stickers.isEmpty {
+                    // "Hide screen" means the authored canvas background is the
+                    // backdrop; ease any requested screen blur with its phase.
+                    let baseBlur = scene.stickerBackdrop.screenBlur
+                        * (1 - min(max(screenSuppression, 0), 1))
+                    if baseBlur > 0.01 {
+                        result = result.clampedToExtent()
+                            .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: baseBlur])
                             .cropped(to: canvasRect)
                     }
-                    stickerBackdrop = cameraLayer
-                        .composited(over: stickerBackdrop)
-                        .cropped(to: canvasRect)
                 }
-                result = stickerBackdrop
-                for sticker in scene.stickers {
-                    guard let source = resources.stickers[sticker.relativePath] else {
-                        continue
+                enum Item { case video(FrameVideoScene), sticker(FrameStickerScene), animation(FrameAnimationScene) }
+                let items: [(layer: Int, rank: Int, item: Item)] =
+                    scene.videos.map { ($0.layerIndex, 0, .video($0)) }
+                    + scene.stickers.map { ($0.layerIndex, 1, .sticker($0)) }
+                    + scene.animations.map { ($0.layerIndex, 2, .animation($0)) }
+                for entry in items.sorted(by: { $0.layer == $1.layer ? $0.rank < $1.rank : $0.layer < $1.layer }) {
+                    switch entry.item {
+                    case let .sticker(sticker):
+                        guard let source = resources.timedStickers[sticker.id] ?? resources.stickers[sticker.relativePath] else { continue }
+                        result = SharedFrameOverlayRenderer.renderSticker(
+                            source: source, scene: sticker, over: result, canvasRect: canvasRect)
+                    case let .video(video):
+                        guard let source = resources.videos[video.id],
+                              source.extent.width > 0, source.extent.height > 0 else { continue }
+                        let size = CGSize(width: canvasRect.width * CGFloat(video.width),
+                                          height: canvasRect.width * CGFloat(video.width) * CGFloat(video.aspect))
+                        let scale = max(size.width / source.extent.width, size.height / source.extent.height)
+                        let center = CGPoint(x: canvasRect.minX + canvasRect.width * CGFloat(video.position.x),
+                                             y: canvasRect.maxY - canvasRect.height * CGFloat(video.position.y))
+                        let frame = CGRect(x: center.x - size.width / 2, y: center.y - size.height / 2,
+                                           width: size.width, height: size.height)
+                        let placed = source
+                            .transformed(by: CGAffineTransform(translationX: -source.extent.midX, y: -source.extent.midY))
+                            .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+                            .transformed(by: CGAffineTransform(translationX: center.x, y: center.y))
+                            .cropped(to: frame)
+                        result = applyingOpacity(placed, video.opacity).composited(over: result).cropped(to: canvasRect)
+                    case let .animation(animation):
+                        guard let source = resources.animations[animation.id],
+                              source.extent.width > 0, source.extent.height > 0 else { continue }
+                        let targetWidth = canvasRect.width * CGFloat(animation.width)
+                        let scale = targetWidth / source.extent.width
+                        let size = CGSize(width: targetWidth, height: source.extent.height * scale)
+                        let center = CGPoint(x: canvasRect.minX + canvasRect.width * CGFloat(animation.position.x),
+                                             y: canvasRect.maxY - canvasRect.height * CGFloat(animation.position.y))
+                        let placed = source
+                            .transformed(by: CGAffineTransform(translationX: -source.extent.minX, y: -source.extent.minY))
+                            .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+                            .transformed(by: CGAffineTransform(translationX: center.x - size.width / 2, y: center.y - size.height / 2))
+                        result = applyingOpacity(placed, animation.opacity).composited(over: result).cropped(to: canvasRect)
                     }
-                    result = SharedFrameOverlayRenderer.renderSticker(
-                        source: source,
-                        scene: sticker,
-                        over: result,
-                        canvasRect: canvasRect
-                    )
+                }
+            case .subtitles:
+                if let subtitle = scene.subtitle,
+                   let image = SubtitleRasterizer.image(for: subtitle, canvasRect: canvasRect) {
+                    result = image.composited(over: result).cropped(to: canvasRect)
                 }
             }
         }
@@ -587,10 +606,9 @@ enum SharedFrameRenderer {
         guard baseRect.width > 0, baseRect.height > 0,
               finalRect.width > 0, finalRect.height > 0 else { return nil }
 
-        let fitScale = min(
-            baseRect.width / max(croppedSource.extent.width, 1),
-            baseRect.height / max(croppedSource.extent.height, 1)
-        )
+        let widthScale = baseRect.width / max(croppedSource.extent.width, 1)
+        let heightScale = baseRect.height / max(croppedSource.extent.height, 1)
+        let fitScale = scene.fillsFrame ? max(widthScale, heightScale) : min(widthScale, heightScale)
         // Reconstruct the former viewport transform from the canonical base and
         // final rectangles. This retains the exact 2D lowering while keeping
         // viewport-specific project state out of the renderer boundary.
@@ -665,6 +683,13 @@ enum SharedFrameRenderer {
             return layer
         }
 
+        func chromeForegroundLayer() -> CIImage? {
+            guard case let .chrome(chrome) = scene.decoration else { return nil }
+            return SharedFrameChromeRenderer.foreground(
+                chrome, canvasRect: canvasRect, renderExtent: projectionRect
+            )
+        }
+
         var cachedBorderLayer: CIImage?
         func borderLayer() -> CIImage? {
             if let cachedBorderLayer { return cachedBorderLayer }
@@ -715,7 +740,11 @@ enum SharedFrameRenderer {
                 let outerMask = projectionMask()
                 let cardExtent = layer.extent.union(chrome.extent)
                     .intersection(outerMask.extent)
-                layer = layer.composited(over: chrome).applyingFilter(
+                var card = layer.composited(over: chrome)
+                if let foreground = chromeForegroundLayer() {
+                    card = foreground.composited(over: card)
+                }
+                layer = card.applyingFilter(
                     "CIBlendWithMask",
                     parameters: [
                         kCIInputBackgroundImageKey: CIImage(color: .clear)
@@ -825,6 +854,15 @@ enum SharedFrameRenderer {
                             ]
                         )
                     }
+                    if let foreground = chromeForegroundLayer(),
+                       let projectedForeground = perspectiveTransform(
+                           foreground,
+                           sourceRect: projectionRect,
+                           contentExtent: projectionRect,
+                           mapping: projectionMapping
+                       ) {
+                        projected = projectedForeground.composited(over: projected)
+                    }
                 }
                 if let borderLayer = borderLayer(),
                    let projectedBorder = perspectiveTransform(
@@ -894,288 +932,24 @@ enum SharedFrameRenderer {
             .cropped(to: visibleExtent)
     }
 
-    /// Draws original vector chrome with no bundled third-party artwork. The
-    /// result is clipped once to the evaluated outer shape, then travels with
-    /// the screen through the same homography as content, border and cursor.
     private nonisolated static func screenChromeLayer(
         _ chrome: FrameScreenChromeScene,
         canvasRect: CGRect,
         renderExtent: CGRect,
         coordinateTransform: CGAffineTransform = .identity
     ) -> CIImage {
-        // `outerRect` is allowed to extend outside the output canvas before a
-        // 3D projection. Cropping vector chrome to `canvasRect` here amputates
-        // those off-canvas source pixels before the tilt can move them back
-        // into view, leaving the background visible through the card. Generate
-        // the complete authored card first; only the final composite is clipped
-        // to the output canvas.
-        let layerExtent = renderExtent.standardized
-        let transformScaleX = hypot(
-            coordinateTransform.a,
-            coordinateTransform.b
+        SharedFrameChromeRenderer.background(
+            chrome,
+            canvasRect: canvasRect,
+            renderExtent: renderExtent,
+            coordinateTransform: coordinateTransform
         )
-        let transformScaleY = hypot(
-            coordinateTransform.c,
-            coordinateTransform.d
-        )
-        let radiusScale = max(min(transformScaleX, transformScaleY), 0.000_1)
-        let transparent = CIImage(color: .clear).cropped(to: layerExtent)
-        let outerRect = coreImageRect(
-            from: chrome.outerRect,
-            canvasHeight: canvasRect.height
-        ).applying(coordinateTransform).standardized
-        let toolbarRect = coreImageRect(
-            from: chrome.toolbarRect,
-            canvasHeight: canvasRect.height
-        ).applying(coordinateTransform).standardized
-        let outerCornerRadius = chrome.outerCornerRadius * radiusScale
-        let outerMask = roundedMask(
-            rect: outerRect,
-            radius: outerCornerRadius
-        )
-        let surface = coloredLayer(
-            color: CIColor(chrome.surfaceColor),
-            mask: outerMask,
-            canvasRect: layerExtent
-        )
-        if chrome.kind.isDevice {
-            // A restrained, original graphite chassis: continuous metal rim,
-            // uniform bezel and no sensor notch drawn over recorded pixels.
-            let metal = CIFilter(name: "CILinearGradient", parameters: [
-                "inputPoint0": CIVector(x: outerRect.minX, y: outerRect.maxY),
-                "inputPoint1": CIVector(x: outerRect.maxX, y: outerRect.minY),
-                "inputColor0": CIColor(red: 0.52, green: 0.54, blue: 0.56),
-                "inputColor1": CIColor(red: 0.17, green: 0.18, blue: 0.20),
-            ])?.outputImage?.cropped(to: layerExtent) ?? surface
-            let rim = max(min(outerRect.width, outerRect.height) * 0.006, 0.8)
-            let innerRect = outerRect.insetBy(dx: rim, dy: rim)
-            let innerMask = roundedMask(rect: innerRect, radius: max(outerCornerRadius - rim, 0))
-            var deviceLayer = coloredLayer(color: CIColor(red: 0.055, green: 0.06, blue: 0.065),
-                mask: innerMask, canvasRect: layerExtent).composited(over: metal)
-            let highlightWidth = max(min(outerRect.width, outerRect.height) * 0.006, 0.8)
-            let highlightRect = outerRect.insetBy(dx: highlightWidth * 0.7, dy: highlightWidth * 0.7)
-            deviceLayer = coloredLayer(
-                color: CIColor(chrome.separatorColor, alpha: 0.42),
-                mask: ringMask(
-                    outer: roundedMask(rect: outerRect, radius: outerCornerRadius),
-                    inner: roundedMask(
-                        rect: highlightRect,
-                        radius: max(outerCornerRadius - highlightWidth, 0)
-                    ),
-                    canvasRect: layerExtent
-                ),
-                canvasRect: layerExtent
-            ).composited(over: deviceLayer)
-            return deviceLayer.applyingFilter(
-                "CIBlendWithMask",
-                parameters: [
-                    kCIInputBackgroundImageKey: transparent,
-                    kCIInputMaskImageKey: outerMask,
-                ]
-            )
-        }
-        let toolbarMask = CIImage(color: .white)
-            .cropped(to: toolbarRect)
-        let toolbar = coloredLayer(
-            color: CIColor(chrome.toolbarColor),
-            mask: toolbarMask,
-            canvasRect: layerExtent
-        )
-        var layer = toolbar.composited(over: surface)
-
-        let separatorHeight = max(toolbarRect.height * 0.035, 0.75)
-        let separatorRect = CGRect(
-            x: toolbarRect.minX,
-            y: toolbarRect.minY,
-            width: toolbarRect.width,
-            height: separatorHeight
-        )
-        layer = CIImage(color: CIColor(chrome.separatorColor))
-            .cropped(to: separatorRect)
-            .composited(over: layer)
-
-        let controlDiameter = min(
-            max(toolbarRect.height * 0.23, 1.5),
-            toolbarRect.height * 0.32
-        )
-        let controlMargin = max(toolbarRect.height * 0.31, controlDiameter)
-        let controlSpacing = controlDiameter * 1.62
-        let controlColors = [
-            HexColor(rgb24: 0xFF_5F_57),
-            HexColor(rgb24: 0xFE_BC_2E),
-            HexColor(rgb24: 0x28_C8_40),
-        ]
-        for (index, color) in controlColors.enumerated() {
-            let rect = CGRect(
-                x: toolbarRect.minX + controlMargin + CGFloat(index) * controlSpacing,
-                y: toolbarRect.midY - controlDiameter / 2,
-                width: controlDiameter,
-                height: controlDiameter
-            )
-            let control = coloredLayer(
-                color: CIColor(color),
-                mask: roundedMask(rect: rect, radius: controlDiameter / 2),
-                canvasRect: layerExtent
-            )
-            layer = control.composited(over: layer)
-        }
-
-        let controlsEnd = toolbarRect.minX + controlMargin
-            + controlSpacing * 2 + controlDiameter
-        switch chrome.kind {
-        case .window:
-            let title = chrome.title.trimmingCharacters(in: .whitespacesAndNewlines)
-            if let textLayer = screenChromeTextLayer(
-                text: title,
-                color: chrome.glyphColor,
-                fontSize: max(toolbarRect.height * 0.30, 5),
-                weight: .medium,
-                maximumWidth: max(toolbarRect.width * 0.46, 2),
-                center: CGPoint(x: toolbarRect.midX, y: toolbarRect.midY),
-                clipRect: toolbarRect
-            ) {
-                layer = textLayer.composited(over: layer)
-            } else {
-                let titleWidth = min(toolbarRect.width * 0.22, toolbarRect.height * 3.2)
-                let titleHeight = max(toolbarRect.height * 0.11, 1)
-                let titleRect = CGRect(
-                    x: toolbarRect.midX - titleWidth / 2,
-                    y: toolbarRect.midY - titleHeight / 2,
-                    width: titleWidth,
-                    height: titleHeight
-                )
-                layer = coloredLayer(
-                    color: CIColor(chrome.glyphColor, alpha: 0.38),
-                    mask: roundedMask(rect: titleRect, radius: titleHeight / 2),
-                    canvasRect: layerExtent
-                ).composited(over: layer)
-            }
-        case .browser:
-            let fieldMargin = max(toolbarRect.height * 0.28, 2)
-            let availableMinX = controlsEnd + fieldMargin
-            let availableMaxX = toolbarRect.maxX - fieldMargin
-            let availableWidth = max(availableMaxX - availableMinX, 2)
-            let fieldHeight = max(toolbarRect.height * 0.44, 2)
-            let address = chrome.browserAddress.trimmingCharacters(in: .whitespacesAndNewlines)
-            let fontSize = max(fieldHeight * 0.38, 5)
-            let textWidth = screenChromeTextImage(text: address, color: chrome.glyphColor,
-                fontSize: fontSize, weight: .regular)?.extent.width ?? 0
-            // Balanced room for the small leading glyph and a matching right
-            // inset. Short labels stay compact; long ones respect the controls.
-            let fieldWidth = min(max(textWidth + fieldHeight * 1.7, fieldHeight * 3), availableWidth)
-            let fieldCenterX = min(max(toolbarRect.midX, availableMinX + fieldWidth / 2),
-                                   availableMaxX - fieldWidth / 2)
-            let fieldRect = CGRect(
-                x: fieldCenterX - fieldWidth / 2,
-                y: toolbarRect.midY - fieldHeight / 2,
-                width: fieldWidth,
-                height: fieldHeight
-            )
-            layer = coloredLayer(
-                color: CIColor(chrome.fieldColor),
-                mask: roundedMask(rect: fieldRect, radius: fieldHeight / 2),
-                canvasRect: layerExtent
-            ).composited(over: layer)
-            let glyphDiameter = max(fieldHeight * 0.22, 1)
-            let glyphRect = CGRect(
-                x: fieldRect.minX + fieldHeight * 0.34,
-                y: fieldRect.midY - glyphDiameter / 2,
-                width: glyphDiameter,
-                height: glyphDiameter
-            )
-            layer = coloredLayer(
-                color: CIColor(chrome.glyphColor, alpha: 0.62),
-                mask: roundedMask(rect: glyphRect, radius: glyphDiameter / 2),
-                canvasRect: layerExtent
-            ).composited(over: layer)
-            if let textLayer = screenChromeTextLayer(
-                text: address,
-                color: chrome.glyphColor,
-                fontSize: fontSize,
-                weight: .regular,
-                maximumWidth: max(fieldRect.width - fieldHeight * 1.35, 2),
-                center: CGPoint(x: fieldRect.midX, y: fieldRect.midY),
-                clipRect: fieldRect
-            ) {
-                layer = textLayer.composited(over: layer)
-            }
-        case .devicePhonePortrait, .devicePhoneLandscape,
-             .deviceTabletPortrait, .deviceTabletLandscape:
-            break
-        }
-
-        return layer.applyingFilter(
-            "CIBlendWithMask",
-            parameters: [
-                kCIInputBackgroundImageKey: transparent,
-                kCIInputMaskImageKey: outerMask,
-            ]
-        )
-    }
-
-    private nonisolated static func screenChromeTextLayer(
-        text: String,
-        color: HexColor,
-        fontSize: CGFloat,
-        weight: NSFont.Weight,
-        maximumWidth: CGFloat,
-        center: CGPoint,
-        clipRect: CGRect,
-        alignsLeading: Bool = false
-    ) -> CIImage? {
-        guard !text.isEmpty, fontSize > 0, maximumWidth > 2 else { return nil }
-        guard let image = screenChromeTextImage(text: text, color: color, fontSize: fontSize, weight: weight)
-        else { return nil }
-        let scale = min(maximumWidth / image.extent.width, 1)
-        let scaled = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-        let targetX = alignsLeading
-            ? center.x - maximumWidth / 2
-            : center.x - scaled.extent.width / 2
-        return scaled
-            .transformed(by: CGAffineTransform(
-                translationX: targetX - scaled.extent.minX,
-                y: center.y - scaled.extent.height / 2 - scaled.extent.minY
-            ))
-            .cropped(to: clipRect)
-    }
-
-    /// Immutable CPU-backed glyph raster: independent of the preview CIContext
-    /// lifetime and reusable by both the browser measurement and export graph.
-    private nonisolated static func screenChromeTextImage(
-        text: String, color: HexColor, fontSize: CGFloat, weight: NSFont.Weight
-    ) -> CIImage? {
-        guard !text.isEmpty, fontSize > 0 else { return nil }
-        let components = color.components
-        let key = String(format: "%@|%.2f|%.3f|%.3f|%.3f|%.2f", text,
-            Double(fontSize), components.red, components.green, components.blue,
-            Double(weight.rawValue)) as NSString
-        return screenChromeTextCache.image(for: key) {
-            let font = NSFont.systemFont(ofSize: fontSize, weight: weight)
-            let attributed = NSAttributedString(string: text, attributes: [
-                NSAttributedString.Key(kCTFontAttributeName as String): font,
-                NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(
-                    red: components.red, green: components.green, blue: components.blue, alpha: 0.86)
-            ])
-            let line = CTLineCreateWithAttributedString(attributed)
-            var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
-            let width = CTLineGetTypographicBounds(line, &ascent, &descent, &leading)
-            let glyphs = CTLineGetBoundsWithOptions(line, .useGlyphPathBounds)
-            let bounds = glyphs.union(CGRect(x: 0, y: -descent, width: width, height: ascent + descent)).integral
-            guard bounds.width > 0, bounds.height > 0, bounds.width < 32768,
-                  let context = CGContext(data: nil, width: Int(bounds.width) + 2,
-                    height: Int(bounds.height) + 2, bitsPerComponent: 8, bytesPerRow: 0,
-                    space: CGColorSpace(name: CGColorSpace.sRGB)!,
-                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
-            context.textPosition = CGPoint(x: 1 - bounds.minX, y: 1 - bounds.minY)
-            CTLineDraw(line, context)
-            guard let image = context.makeImage() else { return nil }
-            return CIImage(cgImage: image)
-        }
     }
 
     private nonisolated static func renderCamera(
         source: CIImage,
         scene: FrameCameraScene,
+        tracking: CameraBeautyFrame?,
         over background: CIImage,
         canvasRect: CGRect
     ) -> CIImage {
@@ -1229,7 +1003,7 @@ enum SharedFrameRenderer {
             cameraLayer = border.composited(over: cameraLayer)
         }
 
-        let normalizedSource = normalized(source)
+        let normalizedSource = normalized(CameraBeautyRenderer.apply(to: source, settings: scene.beauty, tracking: tracking))
         guard let fill = scene.contentFill ?? CameraContentFill.layout(
             sourceWidth: normalizedSource.extent.width,
             sourceHeight: normalizedSource.extent.height,
@@ -1492,8 +1266,16 @@ enum SharedFrameRenderer {
         )
         let nativeTransparent = CIImage(color: .clear)
             .cropped(to: nativeProjectionRect)
-        var card = nativeSource
-            .composited(over: nativeChrome)
+        var nativeCard = nativeSource.composited(over: nativeChrome)
+        if let nativeForeground = SharedFrameChromeRenderer.foreground(
+            chrome,
+            canvasRect: canvasRect,
+            renderExtent: nativeProjectionRect,
+            coordinateTransform: canvasToNative
+        ) {
+            nativeCard = nativeForeground.composited(over: nativeCard)
+        }
+        var card = nativeCard
             .applyingFilter(
                 "CIBlendWithMask",
                 parameters: [

@@ -24,56 +24,46 @@ private struct EditorCameraSyncAuditionRequest: Equatable {
 struct EditorPlaybackMediaEndpoints {
     let generation: UInt64
     let screenOutput: AVPlayerItemVideoOutput
-    let screenPreferredTransform: CGAffineTransform
     let cameraOutput: AVPlayerItemVideoOutput?
-    let cameraPreferredTransform: CGAffineTransform
 }
 
 /// One immutable display-refresh sample. Scene evaluation and video-output
 /// lookup consume this exact value so geometry and pixels cannot independently
 /// sample the master player clock.
-struct EditorPlaybackRenderTick: Equatable {
+struct EditorPlaybackRenderTick: Equatable, Sendable {
     let mediaGeneration: UInt64
     let discontinuityID: UInt64
     let outputTime: TimeInterval
     let itemTime: CMTime
     let cameraIsAvailable: Bool
     let isPlaying: Bool
+    var sourceFrame: EditorPlaybackSourceFrame? = nil
 }
 
 struct EditorPlaybackClockPolicy {
+    /// A playhead can rest at the inclusive duration, but source slices are
+    /// half-open and their boundary tolerance exceeds a Double's nextDown.
+    static func frameLookupTime(_ time: TimeInterval, duration: TimeInterval) -> TimeInterval {
+        let end = max(duration - min(0.000_001, max(duration, 0) / 2), 0)
+        return min(max(time.isFinite ? time : 0, 0), end)
+    }
+
     static func clampedTime(_ time: TimeInterval, duration: TimeInterval) -> TimeInterval {
         guard time.isFinite else { return 0 }
         return min(max(time, 0), max(duration, 0))
     }
 
-    static func resolvedTime(
-        playerTime: TimeInterval,
-        anchorTime: TimeInterval,
-        anchorUptime: TimeInterval,
-        uptime: TimeInterval,
-        rate: Float,
-        transportIsAdvancing: Bool,
-        duration: TimeInterval
-    ) -> TimeInterval {
-        // PRE-SYNC-001: the audio-bearing AVPlayer is the editor's master
-        // clock. Its currentTime is a continuous item timebase; VFR changes
-        // when a new pixel buffer is available, not the speed of this clock.
-        // Predicting a second display-link clock here let preview video run
-        // ahead while audio was still following AVPlayer, which is perceived
-        // as lip-sync drift and can leave a cached camera frame on screen.
-        if playerTime.isFinite, playerTime >= 0 {
-            return clampedTime(playerTime, duration: duration)
+    static func playbackTime(playerTime: TimeInterval, rate: Double,
+                             displayTime: TimeInterval? = nil, duration: TimeInterval,
+                             maximumLead: TimeInterval = 1.0 / 30.0) -> TimeInterval? {
+        guard rate.isFinite, rate > 0, playerTime.isFinite, playerTime >= 0 else { return nil }
+        // A seek can retire the output's host-time mapping. Only a short lead
+        // over the audio timebase is a valid presentation prediction.
+        if let displayTime, displayTime.isFinite,
+           displayTime >= playerTime, displayTime - playerTime <= maximumLead {
+            return clampedTime(displayTime, duration: duration)
         }
-
-        // Keep a monotonic fallback only for the short interval in which
-        // AVFoundation cannot vend a numeric item time (item replacement or
-        // initial preparation). It must never override a valid media clock.
-        let safeRate = rate > 0 && transportIsAdvancing ? Double(rate) : 0
-        return clampedTime(
-            anchorTime + max(uptime - anchorUptime, 0) * safeRate,
-            duration: duration
-        )
+        return clampedTime(playerTime, duration: duration)
     }
 
 }
@@ -154,6 +144,9 @@ protocol EditorPlaybackTransport: AnyObject {
         toleranceBefore: CMTime,
         toleranceAfter: CMTime
     ) async -> Bool
+    /// Fills the decode/render pipeline at the paused position so the first
+    /// audio samples can be heard the moment the clock starts.
+    func prerollTransport(atRate rate: Float) async -> Bool
 }
 
 extension AVPlayer: EditorPlaybackTransport {
@@ -162,13 +155,32 @@ extension AVPlayer: EditorPlaybackTransport {
     var playbackRate: Float { rate }
     var playbackClockIsAdvancing: Bool { timeControlStatus == .playing }
 
-    func playTransport() { play() }
+    func playTransport() {
+        // The audio-bearing master starts on AVPlayer's ready clock. An
+        // external host deadline can advance past audio that is not ready yet.
+        automaticallyWaitsToMinimizeStalling = true
+        play()
+    }
     func playTransportImmediately(atRate rate: Float) { playImmediately(atRate: rate) }
     func playTransport(at itemTime: CMTime, hostTime: CMTime, rate: Float) {
         setRate(rate, time: itemTime, atHostTime: hostTime)
     }
-    func pauseTransport() { pause() }
+    func pauseTransport() {
+        cancelPendingPrerolls()
+        pause()
+        automaticallyWaitsToMinimizeStalling = false
+    }
     func cancelPendingSeeks() { currentItem?.cancelPendingSeeks() }
+
+    func prerollTransport(atRate rate: Float) async -> Bool {
+        // Explicit preroll uses a ready, paused transport. pauseTransport
+        // disables automatic waiting before this request.
+        guard status == .readyToPlay, currentItem?.status == .readyToPlay,
+              self.rate == 0, !automaticallyWaitsToMinimizeStalling else { return false }
+        return await withCheckedContinuation { continuation in
+            preroll(atRate: rate) { continuation.resume(returning: $0) }
+        }
+    }
 
     func seekTransport(
         to time: CMTime,
@@ -189,6 +201,20 @@ extension AVPlayer: EditorPlaybackTransport {
 /// in EditorMediaSession; project evaluation and pixel composition stay in the
 /// scene/renderer layers.
 @MainActor
+final class EditorPlaybackRestingClock: ObservableObject {
+    @Published private(set) var time: TimeInterval = 0
+    func publish(_ value: TimeInterval) {
+        if abs(value - time) > 0.000_5 { time = value }
+    }
+}
+
+/// Canvas-only publication of scrub/hover frame arrivals.
+@MainActor
+final class EditorPlaybackFrameClock: ObservableObject {
+    @Published var revision: UInt64 = 0
+}
+
+@MainActor
 final class EditorPlaybackController: ObservableObject {
     typealias TransportFactory = (_ item: AVPlayerItem, _ isMuted: Bool) -> any EditorPlaybackTransport
     typealias InitialFrameProvider = @MainActor (
@@ -204,8 +230,13 @@ final class EditorPlaybackController: ObservableObject {
     @Published var isPlaying = false {
         didSet {
             if oldValue != isPlaying { notifyNativeTimelineObservers() }
+            if !isPlaying { restingClock.publish(latestOutputTime) }
         }
     }
+    /// The playhead while it is at rest (paused, after a seek or scrub).
+    /// Controls that depend on "where the playhead is" observe this instead
+    /// of the per-frame clock, so they stay current without redrawing 60×/s.
+    let restingClock = EditorPlaybackRestingClock()
     @Published private(set) var duration: TimeInterval = 0 {
         didSet {
             if oldValue != duration { notifyNativeTimelineObservers() }
@@ -214,7 +245,15 @@ final class EditorPlaybackController: ObservableObject {
     @Published private(set) var endpoints: EditorPlaybackMediaEndpoints?
     @Published var pausedScreenImage: NSImage?
     @Published var pausedCameraImage: NSImage?
-    @Published private(set) var discontinuityID: UInt64 = 0
+    var pausedScreenSegmentID: UUID?
+    var pausedCameraSourceID: UUID?
+    /// Scrub and hover frames land tens of times per second. Only the canvas
+    /// consumes them, so they publish through `frameClock` instead of this
+    /// controller, which the editor root, timeline and inspector observe.
+    let frameClock = EditorPlaybackFrameClock()
+    private(set) var discontinuityID: UInt64 = 0 {
+        didSet { frameClock.revision &+= 1 }
+    }
     @Published private(set) var errorMessage: String?
     /// Acknowledges that the camera-only timing composition/player has been
     /// installed. Sync audition waits for this value, not merely for the
@@ -222,20 +261,13 @@ final class EditorPlaybackController: ObservableObject {
     @Published private(set) var cameraTimingRevision: UInt64 = 0 {
         didSet { startPendingCameraSyncAuditionIfReady() }
     }
-    /// Latest transport time without ObservableObject publication. The canvas
-    /// display link samples it once, then native timeline layers receive that
-    /// snapshot through the observer hub; publishing through SwiftUI laid out
-    /// the entire editor on every refresh.
-    private var defersNativeTimelineNotification = false
-    private var nativeTimelineNotificationIsPending = false
+    /// Latest UI progress report from the independent playback engine. Native
+    /// chrome can lag a busy UI without holding back audio or video.
     var latestOutputTime: TimeInterval = 0 {
         didSet {
+            if !isPlaying, !scrubIsActive { restingClock.publish(latestOutputTime) }
             if abs(oldValue - latestOutputTime) > 0.000_001 {
-                if defersNativeTimelineNotification {
-                    nativeTimelineNotificationIsPending = true
-                } else {
-                    notifyNativeTimelineObservers()
-                }
+                notifyNativeTimelineObservers()
             }
         }
     }
@@ -269,17 +301,6 @@ final class EditorPlaybackController: ObservableObject {
         nativeTimelineObservers.publish(nativeTimelineSnapshot)
     }
 
-    /// The display-link frame gives visual composition first use of the sampled
-    /// clock. Native playheads and labels still consume that exact snapshot in
-    /// the same callback, but only after the frame has been evaluated and queued.
-    /// Seek, pause and other non-display-link mutations continue to publish
-    /// immediately through `latestOutputTime.didSet`.
-    func flushDeferredNativeTimelineNotification() {
-        guard nativeTimelineNotificationIsPending else { return }
-        nativeTimelineNotificationIsPending = false
-        notifyNativeTimelineObservers()
-    }
-
     // 以下传输与令牌成员的读写放宽到模块内，仅供给
     // `EditorPlaybackHoverPreview.swift` 扩展使用；其他代码不得触碰。
     private(set) var primaryPlayer: (any EditorPlaybackTransport)?
@@ -287,6 +308,11 @@ final class EditorPlaybackController: ObservableObject {
     private(set) var preparedMedia: EditorPreparedMedia?
     private var endObserver: NSObjectProtocol?
     private var failureObserver: NSObjectProtocol?
+    private var installedTimelineAudio: PreparedTimelineAudio?
+    private var installedAudio = AudioStyle()
+    private var installedAudioOverrides: [UUID: PrimarySegmentAudioOverrides] = [:]
+    private var installedExternalClips: [AudioClip]?
+    private var installedSpeech: [OverlayTiming]?
     private var installToken: UInt64 = 0
     var seekToken: UInt64 = 0
     var playbackStartToken: UInt64 = 0
@@ -300,8 +326,6 @@ final class EditorPlaybackController: ObservableObject {
     }
     var cameraSeekIsPending = false
     private var lastCameraAvailability = false
-    private var playbackAnchorTime: TimeInterval = 0
-    private var playbackAnchorUptime: TimeInterval = 0
     var pausedFrameTask: Task<Void, Never>?
     var pausedFrameDecodeToken: UInt64 = 0
     var scrubSeekTask: Task<Void, Never>?
@@ -316,7 +340,9 @@ final class EditorPlaybackController: ObservableObject {
     /// 机器实现拆在 `EditorPlaybackHoverPreview.swift` 扩展（架构行数预算）；
     /// 存储属性只能留在主声明里，访问级别随之放宽到模块内，但仍只允许该
     /// 扩展写入。
-    @Published var hoverPreviewTime: TimeInterval?
+    var hoverPreviewTime: TimeInterval? {
+        didSet { if oldValue != hoverPreviewTime { frameClock.revision &+= 1 } }
+    }
     var hoverSeekTask: Task<Void, Never>?
     var hoverSeekCoalescer = EditorScrubSeekCoalescer()
     var hoverSeekGeneration: UInt64 = 0
@@ -327,9 +353,12 @@ final class EditorPlaybackController: ObservableObject {
     /// other decoding a retired seek in the background.
     var pausedFrameRequests: [PausedPreviewFrameRequest] = []
     private(set) var frameRate = 60
-    private var cameraFrameRate: Double = 30
+    /// Each recording's own capture rate, so an exact paused frame lands on
+    /// the grid of the source under the playhead, not the primary recording's.
+    private(set) var frameRatesBySource: [UUID: Int] = [:]
     private var deferredPlaybackIntent = false
     private let transportFactory: TransportFactory
+    private let audioSourceCache: AudioSourceCache
     private let suppliedInitialFrameProvider: InitialFrameProvider?
     private lazy var initialFrameColorProfile = try? CoreImageFrameColorProfile(
         contract: .sdrDesktop
@@ -349,10 +378,19 @@ final class EditorPlaybackController: ObservableObject {
             player.actionAtItemEnd = .pause
             return player
         },
-        initialFrameProvider: InitialFrameProvider? = nil
+        initialFrameProvider: InitialFrameProvider? = nil,
+        audioSourceCache: AudioSourceCache = .shared
     ) {
         self.transportFactory = transportFactory
         suppliedInitialFrameProvider = initialFrameProvider
+        self.audioSourceCache = audioSourceCache
+    }
+
+    /// The frame grid in force at one output time.
+    func frameRate(atOutputTime time: TimeInterval) -> Int {
+        guard let id = preparedMedia?.composition.frameMetadata(at: time).recordingSourceID,
+              let rate = frameRatesBySource[id] else { return frameRate }
+        return max(rate, 1)
     }
 
     var canPlay: Bool {
@@ -364,19 +402,33 @@ final class EditorPlaybackController: ObservableObject {
         _ prepared: EditorPreparedMedia?,
         audio: AudioStyle,
         primarySegmentAudioOverrides: [UUID: PrimarySegmentAudioOverrides],
+        externalClips: [AudioClip]? = nil,
+        speech: [OverlayTiming]? = nil,
         frameRate: Int,
+        frameRatesBySource: [UUID: Int] = [:],
         initialTime: TimeInterval? = nil,
-        cameraTimingRevision: UInt64 = 0
+        cameraTimingRevision: UInt64 = 0,
+        normalizesAudioLoudness: Bool = AppPreferences.isAudioLoudnessNormalizationEnabled
     ) async {
         installToken &+= 1
         let requestedInstall = installToken
         guard let prepared else {
-            teardownTransport(resetTime: false)
+            if primaryPlayer != nil {
+                deferredPlaybackIntent = deferredPlaybackIntent || isPlaying
+                pause()
+                endHoverPreview(restoreTransport: false)
+            } else {
+                teardownTransport(resetTime: false)
+            }
             lifecycle = .preparing
             return
         }
-        if endpoints?.generation == prepared.generation,
-           preparedMedia?.generation == prepared.generation {
+        self.frameRatesBySource = frameRatesBySource
+        updateAudio(audio, primarySegmentAudioOverrides: primarySegmentAudioOverrides,
+            externalClips: externalClips, speech: speech)
+        let sameGeneration = endpoints?.generation == prepared.generation
+            && preparedMedia?.generation == prepared.generation
+        if sameGeneration, installedTimelineAudio?.normalized == normalizesAudioLoudness {
             if preparedMedia?.plan.camera != prepared.plan.camera
                 || preparedMedia?.request.mediaManifest?.camera
                     != prepared.request.mediaManifest?.camera {
@@ -388,16 +440,12 @@ final class EditorPlaybackController: ObservableObject {
                 preparedMedia = prepared
             }
             self.frameRate = max(frameRate, 1)
-            cameraFrameRate = prepared.inventories.camera.videoFrameRate ?? 30
             guard installToken == requestedInstall else { return }
             self.cameraTimingRevision = cameraTimingRevision
-            updateAudio(
-                audio,
-                primarySegmentAudioOverrides: primarySegmentAudioOverrides
-            )
             return
         }
 
+        deferredPlaybackIntent = deferredPlaybackIntent || isPlaying
         // PRE-008: hold the last valid generation while the replacement items
         // seek. Clearing endpoints here made every split/delete expose the
         // renderer's black fallback until the new players became ready.
@@ -419,12 +467,21 @@ final class EditorPlaybackController: ObservableObject {
             cameraPlayer?.cancelPendingSeeks()
             isPlaying = false
             latestOutputTime = heldTime
-            resetPlaybackAnchor(to: heldTime)
         } else {
             teardownTransport(resetTime: false)
         }
         lifecycle = .preparing
         let bundle = prepared.composition
+        let showsEarlyFrames = primaryPlayer == nil
+        if showsEarlyFrames {
+            // Decode the resting picture from originals independently of audio.
+            // Playback remains gated on the complete processed sound graph.
+            preparedMedia = prepared
+            self.frameRate = max(frameRate, 1)
+            duration = prepared.outputDuration
+            latestOutputTime = EditorPlaybackClockPolicy.clampedTime(initialTime ?? outputTime, duration: duration)
+            refreshPausedFrames(at: latestOutputTime)
+        }
         let pixelBufferAttributes: [String: any Sendable] = [
             // Keep decoded H.264 frames in the hardware-native NV12 format.
             // Core Image consumes this directly; asking AVPlayer for BGRA
@@ -434,36 +491,41 @@ final class EditorPlaybackController: ObservableObject {
                 kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
             kCVPixelBufferMetalCompatibilityKey as String: true,
         ]
-        let item = AVPlayerItem(asset: bundle.primaryComposition)
-        item.videoComposition = bundle.primaryVideoComposition
-        if bundle.requiresAudioTimePitchProcessing {
-            item.audioTimePitchAlgorithm = .timeDomain
+        let timelineAudio: PreparedTimelineAudio
+        do {
+            timelineAudio = try await PreparedTimelineAudio.prepare(bundle, normalized: normalizesAudioLoudness,
+                reusing: installedTimelineAudio, cache: audioSourceCache)
+            try Task.checkCancellation()
+            guard installToken == requestedInstall else { return }
+        } catch {
+            guard !Task.isCancelled, installToken == requestedInstall else { return }
+            lifecycle = .failed(error.localizedDescription)
+            errorMessage = error.localizedDescription
+            return
         }
-        item.audioMix = Self.previewAudioMix(
-            for: audio,
-            primarySegmentAudioOverrides: primarySegmentAudioOverrides,
-            bundle: bundle
-        )
+        let item = AVPlayerItem(asset: timelineAudio.composition)
+        item.videoComposition = bundle.primaryVideoComposition
+        item.audioMix = timelineAudio.mix(audio: installedAudio, overrides: installedAudioOverrides,
+            externalClips: installedExternalClips, speech: installedSpeech)
+        item.audioTimePitchAlgorithm = .spectral
+        // Native faders operate on source PCM; no taps or per-play rebuilds.
         let screenOutput = AVPlayerItemVideoOutput(
             pixelBufferAttributes: pixelBufferAttributes
         )
         item.add(screenOutput)
         let player = transportFactory(item, false)
 
-        let cameraItem = bundle.cameraComposition.map { AVPlayerItem(asset: $0) }
-        let cameraOutput = cameraItem.map { item in
+        let reusesCamera = sameGeneration && preparedMedia?.plan.camera == prepared.plan.camera
+        let cameraItem = reusesCamera ? nil : bundle.cameraComposition.map { AVPlayerItem(asset: $0) }
+        let cameraOutput = reusesCamera ? endpoints?.cameraOutput : cameraItem.map { item in
             let output = AVPlayerItemVideoOutput(
                 pixelBufferAttributes: pixelBufferAttributes
             )
             item.add(output)
             return output
         }
-        let cameraPlayer = cameraItem.map { transportFactory($0, true) }
-        let screenPreferredTransform = bundle.primaryVideoComposition == nil
-            ? bundle.primaryVideoTrack.preferredTransform
-            : .identity
-        let cameraPreferredTransform = bundle.cameraVideoTrack?.preferredTransform ?? .identity
-        var pendingInitialTime = initialTime
+        let cameraPlayer = reusesCamera ? self.cameraPlayer : cameraItem.map { transportFactory($0, true) }
+        var pendingInitialTime = showsEarlyFrames ? nil : initialTime
         var safeTime: TimeInterval = 0
         var firstScreenImage: NSImage?
         var firstCameraImage: NSImage?
@@ -495,14 +557,15 @@ final class EditorPlaybackController: ObservableObject {
             // Keep first-frame protection, but a seek/Q/W during this await
             // owns a newer logical playhead. Chase it instead of committing
             // the earlier target back over the user's next edit.
+            let initialScreenTransform = bundle.frameMetadata(at: target).screenTransform
             async let decodedFirstScreen = loadInitialFrame(
-                screenOutput, initialFrameTime, screenPreferredTransform
+                screenOutput, initialFrameTime, initialScreenTransform
             )
             let cameraImage: NSImage?
             if let cameraOutput,
                prepared.plan.camera?.contains(outputTime: target) == true {
                 cameraImage = await loadInitialFrame(
-                    cameraOutput, initialFrameTime, cameraPreferredTransform
+                    cameraOutput, initialFrameTime, bundle.frameMetadata(at: target).cameraTransform
                 )
             } else {
                 cameraImage = nil
@@ -524,7 +587,8 @@ final class EditorPlaybackController: ObservableObject {
         // A ripple rebuild may have no camera pixel yet. Bridge only within
         // the same editor and camera asset, never into an unrelated project.
         let canBridgeCamera = preparedMedia?.request.editorSessionID == prepared.request.editorSessionID
-            && preparedMedia?.request.camera == prepared.request.camera
+            && pausedCameraSourceID == bundle.frameMetadata(at: safeTime).cameraSlice?.sourceID
+            && preparedMedia?.request.cameraInput(for: pausedCameraSourceID) == prepared.request.cameraInput(for: pausedCameraSourceID)
             && prepared.plan.camera?.contains(outputTime: safeTime) == true
         let cameraBridge = canBridgeCamera ? pausedCameraImage : nil
         // Swap the complete transport generation in one MainActor turn. The
@@ -538,29 +602,28 @@ final class EditorPlaybackController: ObservableObject {
         self.cameraPlayer?.pauseTransport()
         primaryPlayer?.cancelPendingSeeks()
         self.cameraPlayer?.cancelPendingSeeks()
+        installedTimelineAudio = timelineAudio
         primaryPlayer = player
         self.cameraPlayer = cameraPlayer
         primarySeekIsPending = false
         preparedMedia = prepared
         self.frameRate = max(frameRate, 1)
-        cameraFrameRate = prepared.inventories.camera.videoFrameRate ?? 30
         duration = prepared.outputDuration
         latestOutputTime = safeTime
+        pausedScreenSegmentID = bundle.frameMetadata(at: safeTime).screenSlice?.segmentID
+        pausedCameraSourceID = bundle.frameMetadata(at: safeTime).cameraSlice?.sourceID
         pausedScreenImage = firstScreenImage
         pausedCameraImage = firstCameraImage ?? cameraBridge
         endpoints = EditorPlaybackMediaEndpoints(
             generation: prepared.generation,
             screenOutput: screenOutput,
-            screenPreferredTransform: screenPreferredTransform,
-            cameraOutput: cameraOutput,
-            cameraPreferredTransform: cameraPreferredTransform
+            cameraOutput: cameraOutput
         )
         lifecycle = .ready(generation: prepared.generation)
         self.cameraTimingRevision = cameraTimingRevision
         errorMessage = nil
         lastCameraAvailability = cameraIsAvailable(at: safeTime)
         advanceDiscontinuity()
-        resetPlaybackAnchor(to: safeTime)
         installObservers(for: item)
         if deferredPlaybackIntent {
             deferredPlaybackIntent = false
@@ -574,16 +637,18 @@ final class EditorPlaybackController: ObservableObject {
         }
     }
 
-    func updateAudio(
-        _ audio: AudioStyle,
-        primarySegmentAudioOverrides: [UUID: PrimarySegmentAudioOverrides]
-    ) {
-        guard let preparedMedia else { return }
-        primaryPlayer?.item?.audioMix = Self.previewAudioMix(
-            for: audio,
-            primarySegmentAudioOverrides: primarySegmentAudioOverrides,
-            bundle: preparedMedia.composition
-        )
+    func updateAudio(_ audio: AudioStyle,
+                     primarySegmentAudioOverrides: [UUID: PrimarySegmentAudioOverrides],
+                     externalClips: [AudioClip]? = nil, speech: [OverlayTiming]? = nil) {
+        guard installedAudio != audio || installedAudioOverrides != primarySegmentAudioOverrides
+            || installedExternalClips != externalClips || installedSpeech != speech else { return }
+        installedAudio = audio
+        installedAudioOverrides = primarySegmentAudioOverrides
+        installedExternalClips = externalClips
+        installedSpeech = speech
+        guard let prepared = installedTimelineAudio else { return }
+        primaryPlayer?.item?.audioMix = prepared.mix(audio: audio, overrides: primarySegmentAudioOverrides,
+            externalClips: externalClips, speech: speech)
     }
 
     /// Reviews a camera timing edit only after the rebuilt camera composition
@@ -721,7 +786,7 @@ final class EditorPlaybackController: ObservableObject {
             firstCameraImage = await loadInitialFrame(
                 cameraOutput,
                 CMTime(seconds: target, preferredTimescale: 60_000),
-                bundle.cameraVideoTrack?.preferredTransform ?? .identity
+                bundle.frameMetadata(at: target).cameraTransform
             )
         } else {
             firstCameraImage = nil
@@ -737,20 +802,20 @@ final class EditorPlaybackController: ObservableObject {
         cameraPlayer?.pauseTransport()
         cameraPlayer = replacementPlayer
         preparedMedia = prepared
-        cameraFrameRate = prepared.inventories.camera.videoFrameRate ?? 30
-        pausedCameraImage = firstCameraImage ?? pausedCameraImage
+        let nextCameraSourceID = bundle.frameMetadata(at: target).cameraSlice?.sourceID
+        let cameraBridge = pausedCameraSourceID == nextCameraSourceID ? pausedCameraImage : nil
+        pausedCameraSourceID = nextCameraSourceID
+        pausedCameraImage = firstCameraImage ?? cameraBridge
         self.endpoints = EditorPlaybackMediaEndpoints(
             generation: endpoints.generation,
             screenOutput: endpoints.screenOutput,
-            screenPreferredTransform: endpoints.screenPreferredTransform,
-            cameraOutput: cameraOutput,
-            cameraPreferredTransform: bundle.cameraVideoTrack?.preferredTransform ?? .identity
+            cameraOutput: cameraOutput
         )
         lastCameraAvailability = self.cameraIsAvailable(at: target)
         advanceDiscontinuity()
 
         guard let replacementPlayer, lastCameraAvailability else { return }
-        if isPlaying, let primaryPlayer {
+        if isPlaying, let primaryPlayer, primaryPlayer.playbackClockIsAdvancing {
             let currentMasterTime = EditorPlaybackClockPolicy.clampedTime(
                 primaryPlayer.currentTimeSeconds,
                 duration: duration
@@ -797,85 +862,78 @@ final class EditorPlaybackController: ObservableObject {
 
     private func startPlaybackFromCurrentPosition() {
         guard isPreviewActive, canPlay, let primaryPlayer else { return }
-        if hoverPreviewTime != nil || primarySeekIsPending || scrubIsActive {
-            // 悬浮预览或拖动定位尚未完成时，先准确落到逻辑播放头再启动。
-            cancelScrubScheduling()
-            scrubIsActive = false
-            // 悬浮预览期间传输层物理位置停在所指帧；无摄像头路径的
-            // playTransport() 会从该位置起播。先走“精确 seek + 完成后
-            // 恢复播放”的既有编排，从播放头起播。
-            endHoverPreview(restoreTransport: false)
-            seek(to: outputTime, pausing: true, resumeAfterCompletion: true)
-            return
-        }
+        let target = EditorPlaybackClockPolicy.clampedTime(outputTime, duration: duration)
+        // Every play request takes ownership from both published and in-flight
+        // hover seeks. The logical playhead is the only start position.
+        endHoverPreview(restoreTransport: false)
         cancelScrubScheduling()
         scrubIsActive = false
-        primarySeekIsPending = false
         cancelPausedFrameDecode()
         playbackStartToken &+= 1
+        seekToken &+= 1
+        cameraSeekToken &+= 1
         let requestedStart = playbackStartToken
+        let requestedSeek = seekToken
+        let requestedCameraSeek = cameraSeekToken
         let requestedGeneration = endpoints?.generation
-        let target = EditorPlaybackClockPolicy.clampedTime(outputTime, duration: duration)
+        let camera = cameraIsAvailable(at: target) ? cameraPlayer : nil
+        primaryPlayer.pauseTransport()
+        cameraPlayer?.pauseTransport()
+        primaryPlayer.cancelPendingSeeks()
+        cameraPlayer?.cancelPendingSeeks()
+        primarySeekIsPending = true
+        cameraSeekIsPending = camera != nil
         isPlaying = true
-
-        // SYNC-001: the audio-bearing master must not start while the separate
-        // camera player is still seeking. After a ripple edit the camera item
-        // needs a fresh exact seek; starting the master first permanently puts
-        // the camera behind by that seek's wall-clock latency.
-        guard let cameraPlayer, cameraIsAvailable(at: target) else {
-            pausedScreenImage = nil
-            pausedCameraImage = nil
-            resetPlaybackAnchor(to: target)
-            primaryPlayer.playTransport()
-            synchronizeCamera(to: target, force: true)
-            return
+        let itemTime = CMTime(seconds: target, preferredTimescale: 60_000)
+        let isCurrent: @MainActor () -> Bool = { [weak self] in
+            guard let self else { return false }
+            return self.playbackStartToken == requestedStart && self.seekToken == requestedSeek
+                && self.cameraSeekToken == requestedCameraSeek
+                && self.endpoints?.generation == requestedGeneration && self.isPlaying
         }
 
-        primaryPlayer.pauseTransport()
-        cameraPlayer.pauseTransport()
-        cameraPlayer.cancelPendingSeeks()
-        cameraSeekToken &+= 1
-        let requestedCameraSeek = cameraSeekToken
-        cameraSeekIsPending = true
         Task { [weak self] in
-            let finished = await cameraPlayer.seekTransport(
-                to: CMTime(seconds: target, preferredTimescale: 60_000),
-                toleranceBefore: .zero,
-                toleranceAfter: .zero
-            )
+            guard isCurrent() else { return }
+            // Prime the audio-bearing master at the exact cut as well as the
+            // camera. Previously only the camera was guaranteed to seek here.
+            let primarySeek = Task { @MainActor in
+                guard isCurrent() else { return false }
+                return await primaryPlayer.seekTransport(to: itemTime, toleranceBefore: .zero, toleranceAfter: .zero)
+            }
+            let cameraSeek = Task { @MainActor in
+                guard isCurrent() else { return false }
+                return await camera?.seekTransport(to: itemTime, toleranceBefore: .zero, toleranceAfter: .zero) ?? true
+            }
+            let sought = await (primarySeek.value, cameraSeek.value)
             guard let self,
                   self.playbackStartToken == requestedStart,
+                  self.seekToken == requestedSeek,
                   self.cameraSeekToken == requestedCameraSeek,
-                  self.endpoints?.generation == requestedGeneration else { return }
-            self.cameraSeekIsPending = false
-            guard finished, self.isPlaying, self.cameraIsAvailable(at: target) else {
-                self.isPlaying = false
-                self.primaryPlayer?.pauseTransport()
-                self.cameraPlayer?.pauseTransport()
-                self.refreshPausedFrames(at: target)
+                  self.endpoints?.generation == requestedGeneration,
+                  self.isPlaying else { return }
+            guard sought.0, sought.1 else {
+                self.pause()
                 return
             }
+            if let camera {
+                let cameraPrimed = await camera.prerollTransport(atRate: 1)
+                guard self.playbackStartToken == requestedStart,
+                      self.seekToken == requestedSeek,
+                      self.cameraSeekToken == requestedCameraSeek,
+                      self.endpoints?.generation == requestedGeneration,
+                      self.isPlaying else { return }
+                guard cameraPrimed else {
+                    self.pause()
+                    return
+                }
+            }
+            self.primarySeekIsPending = false
+            self.cameraSeekIsPending = false
             self.pausedScreenImage = nil
             self.pausedCameraImage = nil
-            self.resetPlaybackAnchor(to: target)
-            // SYNC-002: schedule both independent AVPlayers against one future
-            // host-clock instant. Two immediate play calls merely happen near
-            // each other; `setRate(_:time:atHostTime:)` gives them the same
-            // native clock edge and prevents a cut/rebuild from baking in the
-            // call/decoder latency between camera and microphone playback.
-            let itemTime = CMTime(seconds: target, preferredTimescale: 60_000)
-            let sharedHostTime = CMClockGetTime(CMClockGetHostTimeClock())
-                + CMTime(seconds: 0.015, preferredTimescale: 60_000)
-            self.primaryPlayer?.playTransport(
-                at: itemTime,
-                hostTime: sharedHostTime,
-                rate: 1
-            )
-            self.cameraPlayer?.playTransport(
-                at: itemTime,
-                hostTime: sharedHostTime,
-                rate: 1
-            )
+            self.latestOutputTime = target
+            primaryPlayer.playTransport()
+            self.synchronizeCamera(to: target)
         }
     }
 
@@ -923,15 +981,17 @@ final class EditorPlaybackController: ObservableObject {
             return
         }
         let sampled = EditorPlaybackClockPolicy.clampedTime(
-            primaryPlayer.currentTimeSeconds,
+            primarySeekIsPending || !primaryPlayer.playbackClockIsAdvancing
+                ? outputTime : primaryPlayer.currentTimeSeconds,
             duration: duration
         )
+        seekToken &+= 1
+        primaryPlayer.cancelPendingSeeks()
         primaryPlayer.pauseTransport()
         cameraPlayer?.pauseTransport()
-        isPlaying = false
         primarySeekIsPending = false
         latestOutputTime = sampled
-        resetPlaybackAnchor(to: sampled)
+        isPlaying = false
         // Pausing at the transport's current sample is not a timeline
         // discontinuity. Advancing the epoch here invalidated the last valid
         // camera pixel before the exact paused-frame decoder finished, so the
@@ -948,7 +1008,11 @@ final class EditorPlaybackController: ObservableObject {
         loadsPausedFrame: Bool = true
     ) {
         guard let primaryPlayer else {
-            latestOutputTime = requestedTime
+            seekToken &+= 1
+            latestOutputTime = preparedMedia == nil ? requestedTime
+                : EditorPlaybackClockPolicy.clampedTime(requestedTime, duration: duration)
+            advanceDiscontinuity()
+            if loadsPausedFrame { refreshPausedFrames(at: latestOutputTime) }
             return
         }
         // 显式 seek（键盘步进、点击标尺等）接管传输层，悬浮预览立即让位。
@@ -972,7 +1036,6 @@ final class EditorPlaybackController: ObservableObject {
         // 保留上一张暂停帧继续显示：异步精确 seek + 新帧解码完成前不黑屏，
         // 快速拖动播放头时旧帧短暂停留远比全程黑帧好。
         latestOutputTime = target
-        resetPlaybackAnchor(to: target)
         advanceDiscontinuity()
         Task { [weak self] in
             let finished = await primaryPlayer.seekTransport(
@@ -986,7 +1049,6 @@ final class EditorPlaybackController: ObservableObject {
             self.primarySeekIsPending = false
             guard finished else { return }
             self.latestOutputTime = target
-            self.resetPlaybackAnchor(to: target)
             if resumeAfterCompletion {
                 self.startPlaybackFromCurrentPosition()
             } else if !self.isPlaying {
@@ -1004,69 +1066,35 @@ final class EditorPlaybackController: ObservableObject {
     }
 
 
-    /// Called by the canvas display link. When the video output can translate
-    /// the display's target host time into its item time, that value is the
-    /// canonical clock for both scene evaluation and pixel-buffer lookup.
-    /// Falling back to `AVPlayer.currentTime()` is reserved for the short
-    /// hand-off where the output timebase is not yet numeric.
-    func renderTick(
-        itemTimeForDisplay: CMTime? = nil,
-        uptime: TimeInterval = CACurrentMediaTime()
-    ) -> EditorPlaybackRenderTick? {
-        guard let primaryPlayer, let endpoints else { return nil }
-        let sampledPlayerTime = primaryPlayer.currentTimeSeconds
-        let displayItemSeconds = itemTimeForDisplay?.seconds
-        let time: TimeInterval
-        if let displayItemSeconds,
-           displayItemSeconds.isFinite,
-           displayItemSeconds >= 0 {
-            time = EditorPlaybackClockPolicy.clampedTime(
-                displayItemSeconds,
-                duration: duration
-            )
-        } else {
-            time = EditorPlaybackClockPolicy.resolvedTime(
-                playerTime: sampledPlayerTime,
-                anchorTime: playbackAnchorTime,
-                anchorUptime: playbackAnchorUptime,
-                uptime: uptime,
-                rate: primaryPlayer.playbackRate,
-                transportIsAdvancing: primaryPlayer.playbackClockIsAdvancing,
-                duration: duration
-            )
-        }
-        if sampledPlayerTime.isFinite, sampledPlayerTime >= 0 {
-            resetPlaybackAnchor(to: time, uptime: uptime)
-        }
-        defersNativeTimelineNotification = true
-        latestOutputTime = time
-        defersNativeTimelineNotification = false
-        let availability = cameraIsAvailable(at: time)
-        if availability != lastCameraAvailability {
-            lastCameraAvailability = availability
-            advanceDiscontinuity()
-        }
-        synchronizeCamera(to: time)
-        return EditorPlaybackRenderTick(
-            mediaGeneration: endpoints.generation,
-            discontinuityID: discontinuityID,
-            outputTime: time,
-            itemTime: CMTime(seconds: time, preferredTimescale: 60_000),
-            cameraIsAvailable: availability,
-            isPlaying: isPlaying
-        )
+    /// The renderer reads AVFoundation's timebase directly. This snapshot is
+    /// replaced on transport/seek changes, never on timeline viewport changes.
+    var previewPlaybackSource: PreviewPlaybackSource? {
+        guard isPlaying, !primarySeekIsPending, let preparedMedia, let endpoints,
+              let player = primaryPlayer as? AVPlayer, let clock = player.currentItem?.timebase else { return nil }
+        return PreviewPlaybackSource(clock: clock, cameraPlayer: cameraPlayer as? AVPlayer,
+            generation: endpoints.generation, discontinuityID: discontinuityID,
+            metadata: preparedMedia.composition.previewMetadata,
+            cameraFrameRates: preparedMedia.payload.inventoriesBySource.mapValues { $0.camera.videoFrameRate ?? 30 })
+    }
+
+    func acceptPreviewProgress(_ tick: EditorPlaybackRenderTick) {
+        guard isPlaying, !primarySeekIsPending, tick.mediaGeneration == endpoints?.generation,
+              tick.discontinuityID == discontinuityID else { return }
+        latestOutputTime = tick.outputTime
+        lastCameraAvailability = tick.cameraIsAvailable
     }
 
     var stationaryRenderTick: EditorPlaybackRenderTick? {
-        guard let endpoints else { return nil }
+        guard let generation = endpoints?.generation ?? preparedMedia?.generation else { return nil }
         let time = EditorPlaybackClockPolicy.clampedTime(scrubIsActive ? (scrubPreviewTime ?? outputTime) : outputTime, duration: duration)
         return EditorPlaybackRenderTick(
-            mediaGeneration: endpoints.generation,
+            mediaGeneration: generation,
             discontinuityID: discontinuityID,
             outputTime: time,
             itemTime: CMTime(seconds: time, preferredTimescale: 60_000),
-            cameraIsAvailable: cameraIsAvailable(at: time),
-            isPlaying: false
+            cameraIsAvailable: cameraIsAvailable(at: time) || (endpoints == nil && pausedCameraImage != nil),
+            isPlaying: false,
+            sourceFrame: preparedMedia?.composition.frameMetadata(at: time)
         )
     }
 
@@ -1090,12 +1118,24 @@ final class EditorPlaybackController: ObservableObject {
 
     func synchronizeCamera(to time: TimeInterval, force: Bool = false) {
         guard let primaryPlayer, let cameraPlayer, let preparedMedia else { return }
+        // Control changes may start a primed camera once. Continuous drift and
+        // gap handling belong to the render engine, with no UI seek loop.
+        if isPlaying {
+            if primaryPlayer.playbackClockIsAdvancing {
+                cameraPlayer.playTransport(at: CMTime(seconds: primaryPlayer.currentTimeSeconds, preferredTimescale: 60_000),
+                    hostTime: CMClockGetTime(CMClockGetHostTimeClock()), rate: primaryPlayer.playbackRate)
+            }
+            return
+        }
         let available = preparedMedia.plan.camera?.contains(outputTime: time) == true
+        let cameraFrameRate = preparedMedia.plan.camera?.slice(atOutputTime: time).flatMap {
+            preparedMedia.payload.inventoriesBySource[$0.sourceID]?.camera.videoFrameRate
+        } ?? 30
         let action = EditorCameraSyncPolicy.action(
             outputTime: time,
             isAvailable: available,
             cameraTime: cameraPlayer.currentTimeSeconds,
-            masterRate: primaryPlayer.playbackRate,
+            masterRate: 0,
             cameraRate: cameraPlayer.playbackRate,
             cameraFrameRate: cameraFrameRate,
             hasPendingSeek: cameraSeekIsPending,
@@ -1112,7 +1152,11 @@ final class EditorPlaybackController: ObservableObject {
             if rate == 0 {
                 cameraPlayer.pauseTransport()
             } else {
-                cameraPlayer.playTransportImmediately(atRate: rate)
+                cameraPlayer.playTransport(
+                    at: CMTime(seconds: time, preferredTimescale: 60_000),
+                    hostTime: CMClockGetTime(CMClockGetHostTimeClock()),
+                    rate: rate
+                )
             }
         case let .seek(target, tolerance):
             cameraSeekToken &+= 1
@@ -1138,26 +1182,8 @@ final class EditorPlaybackController: ObservableObject {
                     return
                 }
                 guard self.cameraIsAvailable(at: target) else { return }
-                if self.isPlaying, let primaryPlayer = self.primaryPlayer {
-                    // PRE-SYNC-002: the master kept advancing while the
-                    // camera's asynchronous seek decoded. Resuming from the
-                    // original `target` bakes that seek latency into every
-                    // subsequent frame. Rejoin at the master's *current* item
-                    // time on one future host-clock edge instead.
-                    let currentMasterTime = EditorPlaybackClockPolicy.clampedTime(
-                        primaryPlayer.currentTimeSeconds,
-                        duration: self.duration
-                    )
-                    let sharedHostTime = CMClockGetTime(CMClockGetHostTimeClock())
-                        + CMTime(seconds: 0.010, preferredTimescale: 60_000)
-                    self.cameraPlayer?.playTransport(
-                        at: CMTime(
-                            seconds: currentMasterTime,
-                            preferredTimescale: 60_000
-                        ),
-                        hostTime: sharedHostTime,
-                        rate: primaryPlayer.playbackRate
-                    )
+                if self.isPlaying {
+                    self.synchronizeCamera(to: target)
                 } else {
                     self.cameraPlayer?.pauseTransport()
                     // Publish the landed auxiliary frame, including hover seeks.
@@ -1200,7 +1226,8 @@ final class EditorPlaybackController: ObservableObject {
 
     func cameraIsAvailable(at time: TimeInterval) -> Bool {
         cameraPlayer != nil
-            && preparedMedia?.plan.camera?.contains(outputTime: time) == true
+            && preparedMedia?.plan.camera?.contains(outputTime:
+                EditorPlaybackClockPolicy.frameLookupTime(time, duration: duration)) == true
     }
 
 
@@ -1300,6 +1327,7 @@ final class EditorPlaybackController: ObservableObject {
         primaryPlayer?.pauseTransport()
         cameraPlayer?.pauseTransport()
         primaryPlayer = nil
+        installedTimelineAudio = nil
         cameraPlayer = nil
         preparedMedia = nil
         endpoints = nil
@@ -1326,33 +1354,6 @@ final class EditorPlaybackController: ObservableObject {
         discontinuityID &+= 1
     }
 
-    func resetPlaybackAnchor(
-        to time: TimeInterval,
-        uptime: TimeInterval = CACurrentMediaTime()
-    ) {
-        playbackAnchorTime = time.isFinite ? max(time, 0) : 0
-        playbackAnchorUptime = uptime
-    }
 
-    private static func previewAudioMix(
-        for audio: AudioStyle,
-        primarySegmentAudioOverrides: [UUID: PrimarySegmentAudioOverrides],
-        bundle: TimelineCompositionBundle
-    ) -> AVAudioMix? {
-        TimelineCompositionBuilder.audioMix(
-            systemTrack: bundle.systemAudioTrack,
-            systemVolume: audio.isSystemMuted
-                ? 0
-                : Float(min(max(audio.systemVolume, 0), 1)),
-            primarySegmentRanges: bundle.primarySegmentAudioMixRanges(
-                audio: audio,
-                overrides: primarySegmentAudioOverrides
-            ),
-            microphoneTrack: bundle.microphoneAudioTrack,
-            microphoneVolume: audio.isMicrophoneMuted
-                ? 0
-                : Float(min(max(audio.microphoneVolume, 0), 1)),
-            requiresTimePitchProcessing: bundle.requiresAudioTimePitchProcessing
-        )
-    }
+
 }

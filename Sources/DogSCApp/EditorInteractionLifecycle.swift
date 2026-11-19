@@ -4,9 +4,9 @@ import Foundation
 /// preview as if it were persisted project state.
 enum EditorExternalAction: Equatable, Sendable {
     case export
+    case importRecording
     case windowDeactivation
     case windowClosing
-    case projectReplacement
 
     var interactionPolicy: EditorInteractionEndPolicy {
         // Auto-committing before mouse-up would turn an accidental interruption

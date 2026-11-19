@@ -14,16 +14,16 @@ enum CoreAudioSystemAudioTapError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .unavailable:
-            return "Core Audio 系统声音捕获需要 macOS 14.2 或更高版本"
+            return appLocalized("Core Audio 系统声音捕获需要 macOS 14.2 或更高版本")
         case let .selectedApplicationUnavailable(bundleIdentifier):
-            return "Core Audio 没有找到所选 App 的输出进程：\(bundleIdentifier)"
+            return String(format: appLocalized("Core Audio 没有找到所选 App 的输出进程：%@"), bundleIdentifier)
         case let .coreAudio(operation, status):
             let code = Self.fourCharacterCode(status)
-            return "\(operation) 失败（\(status) / \(code)）"
+            return String(format: appLocalized("%@ 失败（%@）"), appLocalized(operation), "\(status) / \(code)")
         case .invalidFormat:
-            return "Core Audio 系统声音 Tap 返回了无效格式"
+            return appLocalized("Core Audio 系统声音 Tap 返回了无效格式")
         case .invalidInputBuffer:
-            return "Core Audio 系统声音 Tap 返回了无效样本块"
+            return appLocalized("Core Audio 系统声音 Tap 返回了无效样本块")
         }
     }
 
@@ -71,10 +71,8 @@ final class CoreAudioSystemAudioTap: @unchecked Sendable {
         let description: CATapDescription
         switch scope {
         case .all:
-            let ownProcess = try Self.processObjectID(for: getpid())
-            description = CATapDescription(
-                stereoGlobalTapButExcludeProcesses: ownProcess.map { [$0] } ?? []
-            )
+            // The complete output mix includes playback from DogSC's editor.
+            description = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
         case .selectedApplication:
             guard let selectedApplicationBundleIdentifier else {
                 throw CoreAudioSystemAudioTapError.selectedApplicationUnavailable("—")
@@ -285,30 +283,6 @@ final class CoreAudioSystemAudioTap: @unchecked Sendable {
             operation: "读取 Core Audio Tap 格式"
         )
         return format
-    }
-
-    private static func processObjectID(for pid: pid_t) throws -> AudioObjectID? {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyTranslatePIDToProcessObject,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var processID = pid
-        var objectID = AudioObjectID(kAudioObjectUnknown)
-        var size = UInt32(MemoryLayout<AudioObjectID>.size)
-        let status = withUnsafePointer(to: &processID) { qualifier in
-            AudioObjectGetPropertyData(
-                AudioObjectID(kAudioObjectSystemObject),
-                &address,
-                UInt32(MemoryLayout<pid_t>.size),
-                qualifier,
-                &size,
-                &objectID
-            )
-        }
-        if status == kAudioHardwareBadObjectError { return nil }
-        try check(status, operation: "查找当前 App 的 Core Audio 进程")
-        return objectID == kAudioObjectUnknown ? nil : objectID
     }
 
     private static func processObjectIDs(

@@ -14,14 +14,14 @@ struct RecorderSaveActionRow: View {
     var body: some View {
         ZStack {
             HStack(spacing: 10) {
-                Image(systemName: symbol).font(.system(size: 13, weight: .medium)).frame(width: 18)
+                EditorSymbol(symbol, size: 13).font(.system(size: 13, weight: .medium)).frame(width: 18)
                     .foregroundStyle(RecorderStyle.muted)
                 Text(appLocalized(title)).font(.appUI(size: 13)).lineLimit(1).truncationMode(.middle)
                 Spacer(minLength: 4)
                 if let detail {
                     Text(appLocalized(detail)).font(.appUI(size: 11)).foregroundStyle(RecorderStyle.muted)
                 } else if showsChevron {
-                    Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold)).foregroundStyle(RecorderStyle.faint)
+                    EditorSymbol("chevron.right", size: 9).font(.system(size: 9, weight: .bold)).foregroundStyle(RecorderStyle.faint)
                 }
             }
             .padding(.horizontal, 8)
@@ -48,7 +48,7 @@ struct RecorderSaveToggleRow: View {
         Toggle(isOn: $isOn) {
             HStack(spacing: 10) {
                 if let symbol {
-                    Image(systemName: symbol).font(.system(size: 13, weight: .medium)).frame(width: 18)
+                    EditorSymbol(symbol, size: 13).font(.system(size: 13, weight: .medium)).frame(width: 18)
                         .foregroundStyle(RecorderStyle.muted)
                 }
                 Text(appLocalized(title)).font(.appUI(size: 13))

@@ -4,7 +4,6 @@ import RecorderCore
 
 struct RecordingSession: Sendable {
     let packageURL: URL
-    let screenRecordingURL: URL
     let deviceRecordingURL: URL
     let cameraRecordingURL: URL
     let microphoneRecordingURL: URL
@@ -17,7 +16,6 @@ struct RecordingSession: Sendable {
         let mediaURL = packageURL.appendingPathComponent("media", isDirectory: true)
         let eventsURL = packageURL.appendingPathComponent("events", isDirectory: true)
         let recoveryURL = packageURL.appendingPathComponent("recovery", isDirectory: true)
-        screenRecordingURL = mediaURL.appendingPathComponent("screen-0001.mp4")
         deviceRecordingURL = mediaURL.appendingPathComponent("device-0001.mov")
         cameraRecordingURL = mediaURL.appendingPathComponent("camera-0001.mov")
         microphoneRecordingURL = mediaURL.appendingPathComponent("microphone.m4a")
@@ -109,17 +107,10 @@ struct EditorProjectAssetTransfer: Sendable {
 /// A process-local identity for one open project session. The package URL is
 /// deliberately not the identity because saving a project can move that
 /// package while delayed autosaves are still waiting to run.
-struct ProjectSessionEpoch: Hashable, Sendable {
-    let id: UUID
-
-    init(id: UUID = UUID()) {
-        self.id = id
-    }
-}
+final class ProjectSessionEpoch: NSObject, Sendable {}
 
 struct ProjectSaveReceipt: Equatable, Sendable {
     let committedRevision: Int
-    let didWrite: Bool
 }
 
 struct ProjectMoveReceipt: Sendable {
@@ -133,6 +124,9 @@ struct ProjectLoadResult: Sendable {
     /// True only when `project.json` could not be read/decoded/validated and
     /// the last known-good rolling snapshot was used instead.
     let recoveredFromPreviousRevision: Bool
+    /// Main-track segments dropped because their recording is gone from the
+    /// project. Loading repairs them so the editor can still open.
+    var droppedSourceSegments: Int = 0
 }
 
 enum ProjectRepositoryError: LocalizedError, Equatable, Sendable {
@@ -189,19 +183,14 @@ private final class ProjectStageContinuationGate: @unchecked Sendable {
 /// that epoch.
 actor ProjectRepository {
     private struct EpochState: Sendable {
-        var packagePath: String?
-        var knownPackagePaths: Set<String> = []
+        var packagePath: String
+        var knownPackagePaths: Set<String>
         var highestCommittedRevision: Int = -1
-        var isInvalidated = false
     }
 
     private var epochs: [ProjectSessionEpoch: EpochState] = [:]
-    /// Epochs whose session has been invalidated. The per-epoch state is
-    /// dropped on invalidation (bounded memory); this set only rejects late
-    /// writers that were already in flight. Bounded below: one entry per
-    /// closed session, and a handful covers the real scheduling window.
-    private var invalidatedEpochs: Set<ProjectSessionEpoch> = []
-    private var invalidatedEpochOrder: [ProjectSessionEpoch] = []
+    // Keep a closed token recognizable as long as any delayed writer holds it.
+    private let invalidatedEpochs = NSHashTable<ProjectSessionEpoch>.weakObjects()
 
     func save(
         project: RecorderProject,
@@ -250,45 +239,22 @@ actor ProjectRepository {
             throw ProjectRepositoryError.inactiveEpoch
         }
 
-        guard var state = epochs[epoch],
-              let currentPackagePath = state.packagePath else {
+        guard var state = epochs[epoch] else {
             throw ProjectRepositoryError.inactiveEpoch
         }
         let activeSession = RecordingSession(
-            packageURL: URL(fileURLWithPath: currentPackagePath, isDirectory: true)
+            packageURL: URL(fileURLWithPath: state.packagePath, isDirectory: true)
         )
         let moved = try ProjectStore.moveSession(activeSession, to: destinationURL)
-        guard !state.isInvalidated else {
-            throw ProjectRepositoryError.inactiveEpoch
-        }
         state.packagePath = Self.canonicalPath(for: moved)
-        // 旧路径已随包移走：不再接受指向它的写请求（见 persist 的路径检查）。
-        state.knownPackagePaths.remove(currentPackagePath)
         state.knownPackagePaths.insert(Self.canonicalPath(for: moved))
         epochs[epoch] = state
         return ProjectMoveReceipt(session: moved, save: receipt)
     }
 
-    /// Invalidating is a barrier. Calls already executing finish first; calls
-    /// arriving later are ignored even if they carry a numerically newer
-    /// revision. Per-epoch state is dropped (bounded memory); the epoch stays
-    /// in `invalidatedEpochs` only long enough to reject late writers.
     func invalidate(epoch: ProjectSessionEpoch) {
-        if invalidatedEpochs.insert(epoch).inserted {
-            invalidatedEpochOrder.append(epoch)
-        }
+        invalidatedEpochs.add(epoch)
         epochs.removeValue(forKey: epoch)
-        let overflow = invalidatedEpochOrder.count - 64
-        if overflow > 0 {
-            // A late writer can only be in flight for the few actor turns
-            // right after invalidation. Remove only the oldest tombstones;
-            // clearing the whole set also forgot the just-closed session and
-            // allowed its next delayed autosave to recreate project.json.
-            for expired in invalidatedEpochOrder.prefix(overflow) {
-                invalidatedEpochs.remove(expired)
-            }
-            invalidatedEpochOrder.removeFirst(overflow)
-        }
     }
 
     private func persist(
@@ -298,35 +264,20 @@ actor ProjectRepository {
         revision: Int
     ) async throws -> ProjectSaveReceipt? {
         guard !invalidatedEpochs.contains(epoch) else { return nil }
-        var state = epochs[epoch] ?? EpochState()
-
         let requestedPath = Self.canonicalPath(for: session)
-        if state.packagePath == nil {
-            state.packagePath = requestedPath
-            state.knownPackagePaths.insert(requestedPath)
-        } else if !state.knownPackagePaths.contains(requestedPath) {
-            // 包已被 move 走（旧路径不再存在）：迟到的 autosave 应静默丢弃，
-            // 不应制造虚假的"保存失败"。
-            guard FileManager.default.fileExists(atPath: requestedPath) else {
-                return ProjectSaveReceipt(
-                    committedRevision: state.highestCommittedRevision,
-                    didWrite: false
-                )
-            }
+        let state = epochs[epoch] ?? EpochState(packagePath: requestedPath, knownPackagePaths: [requestedPath])
+        guard state.knownPackagePaths.contains(requestedPath) else {
             throw ProjectRepositoryError.sessionMismatch
         }
 
         guard revision > state.highestCommittedRevision else {
             epochs[epoch] = state
             return ProjectSaveReceipt(
-                committedRevision: state.highestCommittedRevision,
-                didWrite: false
+                committedRevision: state.highestCommittedRevision
             )
         }
 
-        guard let activePackagePath = state.packagePath else {
-            throw ProjectRepositoryError.inactiveEpoch
-        }
+        let activePackagePath = state.packagePath
         let activeSession = RecordingSession(
             packageURL: URL(fileURLWithPath: activePackagePath, isDirectory: true)
         )
@@ -346,15 +297,13 @@ actor ProjectRepository {
                 session: activeSession
             )
         } catch {
-            if invalidatedEpochs.contains(epoch) {
-                return nil
+            guard let current = epochs[epoch] else { return nil }
+            if revision <= current.highestCommittedRevision {
+                return ProjectSaveReceipt(committedRevision: current.highestCommittedRevision)
             }
-            if !FileManager.default.fileExists(atPath: activePackagePath) {
-                return ProjectSaveReceipt(
-                    committedRevision: epochs[epoch]?.highestCommittedRevision
-                        ?? state.highestCommittedRevision,
-                    didWrite: false
-                )
+            if current.packagePath != activePackagePath {
+                // The move may have removed the staging directory mid-write.
+                return try await persist(project: project, session: session, epoch: epoch, revision: revision)
             }
             throw error
         }
@@ -364,30 +313,23 @@ actor ProjectRepository {
             ProjectStore.discardStagedProject(at: stagedURL)
             return nil
         }
-        guard currentState.packagePath == activePackagePath else {
-            ProjectStore.discardStagedProject(at: stagedURL)
-            return ProjectSaveReceipt(
-                committedRevision: currentState.highestCommittedRevision,
-                didWrite: false
-            )
-        }
+        // A package move carries an already-written private staging file with
+        // it. Publish or discard it at the current location, even if the old
+        // path now belongs to another open project.
+        let currentSession = RecordingSession(packageURL: URL(fileURLWithPath: currentState.packagePath, isDirectory: true))
+        let stagedRevision = currentSession.packageURL.appendingPathComponent(stagedURL.lastPathComponent)
+        defer { ProjectStore.discardStagedProject(at: stagedRevision) }
         guard revision > currentState.highestCommittedRevision else {
-            ProjectStore.discardStagedProject(at: stagedURL)
-            return ProjectSaveReceipt(
-                committedRevision: currentState.highestCommittedRevision,
-                didWrite: false
-            )
+            return ProjectSaveReceipt(committedRevision: currentState.highestCommittedRevision)
         }
-
-        do {
-            try ProjectStore.commitStagedProject(at: stagedURL, session: activeSession)
-        } catch {
+        if currentState.packagePath != activePackagePath && !FileManager.default.fileExists(atPath: stagedRevision.path) {
             ProjectStore.discardStagedProject(at: stagedURL)
-            throw error
+            return try await persist(project: project, session: session, epoch: epoch, revision: revision)
         }
+        try ProjectStore.commitStagedProject(at: stagedRevision, session: currentSession)
         currentState.highestCommittedRevision = revision
         epochs[epoch] = currentState
-        return ProjectSaveReceipt(committedRevision: revision, didWrite: true)
+        return ProjectSaveReceipt(committedRevision: revision)
     }
 
     private nonisolated static func stageProjectWithTimeout(
@@ -414,14 +356,7 @@ actor ProjectRepository {
 
 struct RecoveryManifestInfo: Equatable, Sendable {
     let state: String
-    let updatedAt: String?
-    let screenFile: String
     let fileSize: Int64
-    let cameraDiagnostics: CameraCaptureDiagnostics?
-    let systemAudioDiagnostics: AudioCaptureDiagnostics?
-    let microphoneDiagnostics: AudioCaptureDiagnostics?
-    let performanceDiagnosticsFile: String?
-    let performanceSummary: RecordingPerformanceSummary?
 }
 
 private struct RecoveryManifest: Codable, Sendable {
@@ -460,7 +395,6 @@ struct RecentProjectSummary: Identifiable, Equatable, Sendable {
     let title: String
     let hasAuthoredTitle: Bool
     let isEdited: Bool
-    let modificationDate: Date?
 
     var id: String { url.path }
 
@@ -481,7 +415,7 @@ struct RecentProjectSummary: Identifiable, Equatable, Sendable {
     }
 
     var menuTitle: String {
-        let statusTag = isEdited ? "已编辑" : "未编辑"
+        let statusTag = appLocalized(isEdited ? "已编辑" : "未编辑")
         let iconPrefix = isEdited ? "🎬" : "📄"
         return "\(iconPrefix) \(displayTitle) (\(statusTag))"
     }
@@ -648,18 +582,38 @@ enum ProjectStore {
         let destination = destinationURL.pathExtension == "dogscproject"
             ? destinationURL
             : destinationURL.appendingPathExtension("dogscproject")
-        guard session.packageURL.standardizedFileURL != destination.standardizedFileURL else {
-            return session
+        let fm = FileManager.default
+        let source = session.packageURL.standardizedFileURL.resolvingSymlinksInPath()
+        guard try source.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true else {
+            throw CocoaError(.fileReadUnknown)
         }
+        let target = destination.standardizedFileURL.resolvingSymlinksInPath()
+        guard !ExportFileTransaction.collides(outputURL: target, inputURLs: [source]) else { return session }
+        let exists = fm.fileExists(atPath: target.path)
+        // Reject both directions before creating folders or moving anything
+        // to the Trash, including paths reached through aliases.
+        var relationship: FileManager.URLRelationship = .other
+        if exists {
+            try fm.getRelationship(&relationship, ofDirectoryAt: target, toItemAt: source)
+        }
+        guard relationship != .contains, !target.path.hasPrefix(source.path + "/") else {
+            throw CocoaError(.fileWriteInvalidFileName)
+        }
+        let parent = target.deletingLastPathComponent()
+        try fm.createDirectory(at: parent, withIntermediateDirectories: true)
+        try fm.getRelationship(&relationship, ofDirectoryAt: source, toItemAt: parent)
+        guard relationship == .other else { throw CocoaError(.fileWriteInvalidFileName) }
 
-        try FileManager.default.createDirectory(
-            at: destination.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        if FileManager.default.fileExists(atPath: destination.path) {
-            try FileManager.default.trashItem(at: destination, resultingItemURL: nil)
+        var trashed: NSURL?
+        if exists { try fm.trashItem(at: destination, resultingItemURL: &trashed) }
+        do {
+            try fm.moveItem(at: session.packageURL, to: destination)
+        } catch {
+            if let trashed, !fm.fileExists(atPath: destination.path) {
+                try fm.moveItem(at: trashed as URL, to: destination)
+            }
+            throw error
         }
-        try FileManager.default.moveItem(at: session.packageURL, to: destination)
         return RecordingSession(packageURL: destination)
     }
 
@@ -669,15 +623,6 @@ enum ProjectStore {
         )
     }
 
-    static func saveProject(_ project: RecorderProject, session: RecordingSession) throws {
-        let stagedURL = try stageProject(project, session: session)
-        do {
-            try commitStagedProject(at: stagedURL, session: session)
-        } catch {
-            discardStagedProject(at: stagedURL)
-            throw error
-        }
-    }
 
     /// Builds one revision in a private file beside project.json. The caller
     /// decides whether that revision is still current before publishing it.
@@ -779,12 +724,6 @@ enum ProjectStore {
         }
     }
 
-    static func loadPointerEvents(session: RecordingSession) throws -> [PointerEventRecord] {
-        guard FileManager.default.fileExists(atPath: session.pointerEventsURL.path) else {
-            return []
-        }
-        return try decodePointerEvents(at: session.pointerEventsURL)
-    }
 
     static func loadPointerEvents(
         project: RecorderProject,
@@ -797,9 +736,10 @@ enum ProjectStore {
         return try decodePointerEvents(at: url)
     }
 
-    private static func decodePointerEvents(at url: URL) throws -> [PointerEventRecord] {
+    static func decodePointerEvents(at url: URL) throws -> [PointerEventRecord] {
         let data = try Data(contentsOf: url)
         guard !data.isEmpty else { return [] }
+        if let records = PointerEventJSONLScanner.decode(data) { return records }
 
         // JSONL's previous map decoded every line through a separately allocated
         // Data value. Long recordings can contain hundreds of thousands of
@@ -895,14 +835,7 @@ enum ProjectStore {
         let fileSize = (attributes?[.size] as? NSNumber)?.int64Value ?? 0
         return RecoveryManifestInfo(
             state: manifest.state,
-            updatedAt: manifest.updatedAt,
-            screenFile: manifest.screenFile,
-            fileSize: fileSize,
-            cameraDiagnostics: manifest.cameraDiagnostics,
-            systemAudioDiagnostics: manifest.systemAudioDiagnostics,
-            microphoneDiagnostics: manifest.microphoneDiagnostics,
-            performanceDiagnosticsFile: manifest.performanceDiagnosticsFile,
-            performanceSummary: manifest.performanceSummary
+            fileSize: fileSize
         )
     }
 
@@ -1042,6 +975,16 @@ enum ProjectStore {
         return FileManager.default.fileExists(atPath: candidate.path) ? candidate : nil
     }
 
+    /// Imported references may deliberately point outside the package. Keep
+    /// the strict package-relative resolver above unchanged for legacy uses.
+    static func resolveMediaPath(_ path: String, session: RecordingSession) -> URL? {
+        if path.hasPrefix("/") {
+            let url = URL(fileURLWithPath: path).standardizedFileURL
+            return FileManager.default.isReadableFile(atPath: url.path) ? url : nil
+        }
+        return resolve(relativePath: path, session: session)
+    }
+
     /// Repairs stale package-relative declarations without ever consulting an
     /// external directory. A relocation is accepted only when exactly one
     /// regular file with the same basename exists below the allowed package
@@ -1086,7 +1029,72 @@ enum ProjectStore {
         return matches.first
     }
 
-    static func loadProject(at packageURL: URL) throws -> ProjectLoadResult {
+    /// Collects the media of imported recordings that the project no longer
+    /// references.
+    ///
+    /// Removing a recording only edits the model, because undo (and redo)
+    /// must be able to bring its files back. Opening a package is the first
+    /// moment at which no edit history can reach those files again, so the
+    /// collection happens here rather than on save or on removal.
+    ///
+    /// Membership is decided on the encoded project, not on a hand-written
+    /// list of path fields: an import also relocates wallpapers, stickers,
+    /// audio and inserted videos into its directory, and a forgotten field
+    /// would delete media that is still on the timeline.
+    @discardableResult
+    static func collectUnusedImportedSources(
+        project: RecorderProject,
+        session: RecordingSession
+    ) -> Int {
+        let fm = FileManager.default
+        let package = session.packageURL.standardizedFileURL.resolvingSymlinksInPath()
+        let root = package.appendingPathComponent("Sources", isDirectory: true)
+        guard root.resolvingSymlinksInPath().path == root.path,
+              let names = try? fm.contentsOfDirectory(atPath: root.path), !names.isEmpty,
+              let packageFiles = try? fm.contentsOfDirectory(atPath: package.path) else { return 0 }
+
+        // A rolling snapshot (or a pre-migration copy) can still be opened
+        // after this visit. Preserve its imported files for as long as it exists.
+        let snapshots = packageFiles.filter {
+            $0 == "project.previous.json" || ($0.hasPrefix("project-v") && $0.hasSuffix("-before-migration.json"))
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes]
+        guard let data = try? encoder.encode(project), let current = String(data: data, encoding: .utf8) else { return 0 }
+        var references = [current.lowercased()]
+        for name in snapshots {
+            guard let data = try? Data(contentsOf: package.appendingPathComponent(name)),
+                  let json = try? JSONSerialization.jsonObject(with: data),
+                  JSONSerialization.isValidJSONObject(json),
+                  let normalized = try? JSONSerialization.data(withJSONObject: json, options: [.withoutEscapingSlashes]),
+                  let text = String(data: normalized, encoding: .utf8) else { return 0 }
+            references.append(text.lowercased())
+        }
+        var collected = 0
+        for name in names {
+            // `.import-*` is a staging directory an interrupted import left
+            // behind; it is never referenced by a saved project.
+            let isStaging = name.hasPrefix(".import-")
+            guard isStaging || UUID(uuidString: name) != nil else { continue }
+            let prefix = "sources/\(name.lowercased())/"
+            guard !references.contains(where: { $0.contains(prefix) }) else { continue }
+            let directory = root.appendingPathComponent(name, isDirectory: true)
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory),
+                  isDirectory.boolValue else { continue }
+            // An import into this package could in principle still be staging
+            // files while it is being reopened; only cold leftovers go.
+            if isStaging {
+                let modified = (try? directory.resourceValues(forKeys: [.contentModificationDateKey]))?
+                    .contentModificationDate ?? .distantPast
+                guard modified.timeIntervalSinceNow < -3_600 else { continue }
+            }
+            if (try? FileManager.default.removeItem(at: directory)) != nil { collected += 1 }
+        }
+        return collected
+    }
+
+    static func loadProject(at packageURL: URL, readOnly: Bool = false) throws -> ProjectLoadResult {
         let session = RecordingSession(packageURL: packageURL)
         let projectURL = packageURL.appendingPathComponent("project.json")
         var primaryFailure: (any Error)?
@@ -1098,16 +1106,18 @@ enum ProjectStore {
 
             // 先保护原始字节再尝试解码：若未来 schema 不兼容导致 decode 失败，
             // 备份必须已经落盘，否则旧项目将完全无法恢复。
-            if sourceVersion < ProjectSchema.currentVersion {
+            if !readOnly, sourceVersion < ProjectSchema.currentVersion {
                 let backupURL = packageURL.appendingPathComponent(
                     "project-v\(sourceVersion)-before-migration.json"
                 )
                 try writeMigrationBackupIfNeeded(data, to: backupURL)
             }
+            let decoded = try decodeProjectData(data)
             return ProjectLoadResult(
-                project: try decodeProjectData(data),
+                project: decoded.project,
                 session: session,
-                recoveredFromPreviousRevision: false
+                recoveredFromPreviousRevision: false,
+                droppedSourceSegments: decoded.droppedSourceSegments
             )
         } catch let schemaError as ProjectSchemaError {
             // A project written by a newer DogSC is not corruption. Falling
@@ -1124,22 +1134,36 @@ enum ProjectStore {
 
         let previousURL = packageURL.appendingPathComponent("project.previous.json")
         if let previousData = try? Data(contentsOf: previousURL),
-           let previousProject = try? decodeProjectData(previousData) {
+           let previous = try? decodeProjectData(previousData) {
             return ProjectLoadResult(
-                project: previousProject,
+                project: previous.project,
                 session: session,
-                recoveredFromPreviousRevision: true
+                recoveredFromPreviousRevision: true,
+                droppedSourceSegments: previous.droppedSourceSegments
             )
         }
         throw primaryFailure ?? CocoaError(.fileReadCorruptFile)
     }
 
-    private static func decodeProjectData(_ data: Data) throws -> RecorderProject {
+    private static func decodeProjectData(
+        _ data: Data
+    ) throws -> (project: RecorderProject, droppedSourceSegments: Int) {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        let project = try decoder.decode(RecorderProject.self, from: data)
+        var project = try decoder.decode(RecorderProject.self, from: data)
+        // EDT-072: Rive (.riv) and DogSC Motion JSON (.dmotion) are retired;
+        // their clips and bin entries would only draw empty boxes. The file
+        // on disk changes at the next save, like any edit.
+        let retired: (String) -> Bool = { ["riv", "dmotion"].contains(URL(fileURLWithPath: $0).pathExtension.lowercased()) }
+        project.timeline.animationClips.removeAll { retired($0.sourcePath) }
+        project.timeline.mediaAssets.removeAll { retired($0.path) }
+        // Validation rejects a main-track segment whose recording is missing,
+        // so the repair must run before it: a dangling reference must not
+        // make an otherwise healthy project unopenable.
+        let repaired = RecordingSourceEditing.droppingMissingSources(from: project)
+        project = repaired.project
         try ProjectValidator.validate(project)
-        return project
+        return (project, repaired.droppedSegments)
     }
 
     private static func writeMigrationBackupIfNeeded(_ data: Data, to backupURL: URL) throws {
@@ -1276,9 +1300,7 @@ enum ProjectStore {
     }
 
     static func projectSummary(at packageURL: URL) -> RecentProjectSummary {
-        let fileManager = FileManager.default
         let projectURL = packageURL.appendingPathComponent("project.json")
-        let modDate = (try? fileManager.attributesOfItem(atPath: packageURL.path)[.modificationDate]) as? Date
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         guard let data = try? Data(contentsOf: projectURL),
@@ -1288,8 +1310,7 @@ enum ProjectStore {
                 url: packageURL,
                 title: base,
                 hasAuthoredTitle: false,
-                isEdited: false,
-                modificationDate: modDate
+                isEdited: false
             )
         }
         let rawTitle = project.title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1312,8 +1333,7 @@ enum ProjectStore {
             url: packageURL,
             title: rawTitle.isEmpty ? packageURL.deletingPathExtension().lastPathComponent : rawTitle,
             hasAuthoredTitle: hasAuthoredTitle,
-            isEdited: isEdited,
-            modificationDate: modDate
+            isEdited: isEdited
         )
     }
 
@@ -1397,5 +1417,161 @@ enum ProjectStore {
                 let right = (try? $1.resourceValues(forKeys: keys).contentModificationDate) ?? .distantPast
                 return left > right
             }
+    }
+}
+
+enum PointerEventJSONLScanner {
+    static func decode(_ data: Data) -> [PointerEventRecord]? {
+        data.withUnsafeBytes { raw -> [PointerEventRecord]? in
+            guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return [] }
+            var scanner = Scanner(pointer: base, end: base + raw.count)
+            var records: [PointerEventRecord] = []
+            records.reserveCapacity(raw.count / 120)
+            while true {
+                scanner.skipWhitespace()
+                guard scanner.pointer < scanner.end else { return records }
+                guard let record = scanner.record() else { return nil }
+                records.append(record)
+            }
+        }
+    }
+
+    private struct Scanner {
+        var pointer: UnsafePointer<UInt8>
+        let end: UnsafePointer<UInt8>
+        var cursorIDs: [String: CursorAssetID] = [:]
+
+        mutating func skipWhitespace() {
+            while pointer < end {
+                switch pointer.pointee {
+                case 0x20, 0x0A, 0x0D, 0x09: pointer += 1
+                default: return
+                }
+            }
+        }
+
+        mutating func consume(_ byte: UInt8) -> Bool {
+            skipWhitespace()
+            guard pointer < end, pointer.pointee == byte else { return false }
+            pointer += 1
+            return true
+        }
+
+        mutating func isNull() -> Bool {
+            skipWhitespace()
+            guard end - pointer >= 4, memcmp(pointer, "null", 4) == 0 else { return false }
+            pointer += 4
+            return true
+        }
+
+        mutating func stringBytes() -> UnsafeBufferPointer<UInt8>? {
+            guard consume(0x22) else { return nil }
+            let start = pointer
+            while pointer < end, pointer.pointee != 0x22 {
+                guard pointer.pointee != 0x5C, pointer.pointee >= 0x20 else { return nil }
+                pointer += 1
+            }
+            guard pointer < end else { return nil }
+            defer { pointer += 1 }
+            return UnsafeBufferPointer(start: start, count: pointer - start)
+        }
+
+        mutating func string() -> String? {
+            stringBytes().map { String(decoding: $0, as: UTF8.self) }
+        }
+
+        mutating func number() -> Double? {
+            skipWhitespace()
+            let start = pointer
+            scan: while pointer < end {
+                switch pointer.pointee {
+                case 0x30...0x39, 0x2D, 0x2B, 0x2E, 0x45, 0x65: pointer += 1
+                default: break scan
+                }
+            }
+            guard pointer > start,
+                  let value = Double(String(
+                    decoding: UnsafeBufferPointer(start: start, count: pointer - start),
+                    as: UTF8.self
+                  )),
+                  value.isFinite else { return nil }
+            return value
+        }
+
+        mutating func location() -> NormalizedPoint? {
+            guard consume(0x7B) else { return nil }
+            var x: Double?
+            var y: Double?
+            repeat {
+                guard let key = stringBytes(), key.count == 1, consume(0x3A) else { return nil }
+                switch key[0] {
+                case 0x78 where x == nil: x = number()
+                case 0x79 where y == nil: y = number()
+                default: return nil
+                }
+            } while consume(0x2C)
+            guard consume(0x7D), let x, let y else { return nil }
+            return NormalizedPoint(x: x, y: y)
+        }
+
+        mutating func modifiers() -> [PointerModifier]? {
+            if isNull() { return [] }
+            guard consume(0x5B) else { return nil }
+            var result: [PointerModifier] = []
+            if consume(0x5D) { return result }
+            repeat {
+                guard let raw = string(), let modifier = PointerModifier(rawValue: raw) else { return nil }
+                result.append(modifier)
+            } while consume(0x2C)
+            return consume(0x5D) ? result : nil
+        }
+
+        mutating func cursorAssetID() -> CursorAssetID?? {
+            if isNull() { return .some(nil) }
+            guard let raw = string() else { return nil }
+            if let cached = cursorIDs[raw] { return cached }
+            let id = CursorAssetID(rawValue: raw)
+            cursorIDs[raw] = id
+            return id
+        }
+
+        mutating func record() -> PointerEventRecord? {
+            guard consume(0x7B) else { return nil }
+            var time: Double?
+            var location: NormalizedPoint?
+            var kind: PointerEventKind?
+            var modifiers: [PointerModifier]?
+            var cursor: CursorAssetID??
+            repeat {
+                guard let key = string(), consume(0x3A) else { return nil }
+                switch key {
+                case "time" where time == nil:
+                    guard let value = number() else { return nil }
+                    time = value
+                case "location" where location == nil:
+                    guard let value = self.location() else { return nil }
+                    location = value
+                case "kind" where kind == nil:
+                    guard let value = string().flatMap(PointerEventKind.init(rawValue:)) else { return nil }
+                    kind = value
+                case "modifiers" where modifiers == nil:
+                    guard let value = self.modifiers() else { return nil }
+                    modifiers = value
+                case "cursorAssetID" where cursor == nil:
+                    guard let value = cursorAssetID() else { return nil }
+                    cursor = .some(value)
+                default:
+                    return nil
+                }
+            } while consume(0x2C)
+            guard consume(0x7D), let time, let location, let kind else { return nil }
+            return PointerEventRecord(
+                time: time,
+                location: location,
+                kind: kind,
+                modifiers: modifiers ?? [],
+                cursorAssetID: cursor ?? nil
+            )
+        }
     }
 }

@@ -12,13 +12,21 @@ enum RecorderStyle {
         }
     }
     static let chromeNSColor = adaptive(.black, .white)
-    static let inkNSColor = adaptive(NSColor(white: 0.10, alpha: 1), NSColor(white: 1, alpha: 0.96))
+    // Same neutral family as the editor (EditorTheme): raised white, ink type.
+    static let inkNSColor = adaptive(
+        NSColor(calibratedRed: 0.110, green: 0.110, blue: 0.106, alpha: 1),
+        NSColor(calibratedRed: 0.925, green: 0.925, blue: 0.914, alpha: 1))
     static let baseNSColor = adaptive(
-        NSColor(calibratedRed: 0.992, green: 0.992, blue: 0.996, alpha: 1),
-        NSColor(calibratedRed: 0.063, green: 0.065, blue: 0.072, alpha: 1))
+        NSColor(calibratedRed: 1.000, green: 1.000, blue: 1.000, alpha: 1),
+        NSColor(calibratedRed: 0.176, green: 0.176, blue: 0.169, alpha: 1))
     static let canvasNSColor = adaptive(
-        NSColor(calibratedRed: 0.925, green: 0.929, blue: 0.937, alpha: 1),
-        NSColor(calibratedRed: 0.028, green: 0.029, blue: 0.033, alpha: 1))
+        NSColor(calibratedRed: 0.949, green: 0.949, blue: 0.941, alpha: 1),
+        NSColor(calibratedRed: 0.106, green: 0.106, blue: 0.102, alpha: 1))
+    /// The one accent (EditorTheme.accent): record, start, primary actions.
+    static let accentNSColor = adaptive(
+        NSColor(calibratedRed: 0.769, green: 0.388, blue: 0.247, alpha: 1),
+        NSColor(calibratedRed: 0.855, green: 0.478, blue: 0.322, alpha: 1))
+    static let accent = Color(nsColor: accentNSColor)
     static let ink = Color(nsColor: inkNSColor)
     static let chrome = Color(nsColor: chromeNSColor)
     static let muted = Color(nsColor: adaptive(NSColor(white: 0.36, alpha: 1), NSColor(white: 1, alpha: 0.56)))
@@ -28,14 +36,15 @@ enum RecorderStyle {
     static let positiveInk = Color(nsColor: adaptive(
         NSColor(calibratedRed: 0.10, green: 0.46, blue: 0.28, alpha: 1),
         NSColor(calibratedRed: 0.30, green: 0.85, blue: 0.55, alpha: 1)))
-    static let mintWash = mint.opacity(0.18)
     static let silver = chrome.opacity(0.06)
     static let well = chrome.opacity(0.08)
     static let selectionNSColor = adaptive(.black.withAlphaComponent(0.075), .white.withAlphaComponent(0.14))
     static let selection = Color(nsColor: selectionNSColor)
     static let line = chrome.opacity(0.09)
     static let lift = Color(nsColor: adaptive(.black.withAlphaComponent(0.14), .black.withAlphaComponent(0.4)))
-    static let recording = Color(red: 1.0, green: 0.27, blue: 0.23)
+    /// The take itself: record, start and stop keep the familiar red.
+    static let recordingNSColor = NSColor(calibratedRed: 1.0, green: 0.27, blue: 0.23, alpha: 1)
+    static let recording = Color(nsColor: recordingNSColor)
     static let destructiveInk = Color(nsColor: adaptive(
         NSColor(calibratedRed: 0.76, green: 0.16, blue: 0.13, alpha: 1),
         NSColor(calibratedRed: 1.0, green: 0.27, blue: 0.23, alpha: 1)))
@@ -47,10 +56,15 @@ enum RecorderStyle {
     // contrasting backdrop adapts; the media itself is never recoloured.
     static let mediaOverlay = Color(nsColor: adaptive(NSColor(white: 0.99, alpha: 0.94), .black.withAlphaComponent(0.55)))
     static let mediaInk = Color(nsColor: adaptive(NSColor(white: 0.1, alpha: 1), .white))
-    static let primaryFill = Color(nsColor: adaptive(NSColor(white: 0.12, alpha: 1), .white))
-    static let onPrimary = Color(nsColor: adaptive(.white, NSColor(white: 0.08, alpha: 1)))
-    static let edgeTop = Color(nsColor: adaptive(.white, .white.withAlphaComponent(0.17)))
-    static let edgeBottom = Color(nsColor: adaptive(.black.withAlphaComponent(0.07), .white.withAlphaComponent(0.04)))
+    static let primaryFill = accent
+    static let onPrimary = Color(nsColor: adaptive(.white, NSColor(calibratedRed: 0.106, green: 0.106, blue: 0.102, alpha: 1)))
+    // One hairline all round, like every editor surface.
+    static let edgeTop = Color(nsColor: adaptive(.black.withAlphaComponent(0.08), .white.withAlphaComponent(0.08)))
+    static let edgeBottom = edgeTop
+    /// Surface radii shared with the editor's floating panels.
+    static let islandRadius: CGFloat = 14
+    static let cardRadius: CGFloat = 14
+    static let controlRadius: CGFloat = 10
 }
 
 /// Shared timing. Shapes travel on a soft spring; content follows a beat later
@@ -68,6 +82,7 @@ enum RecorderMotion {
     }
     static var quick: Animation? { reduces ? nil : .spring(response: 0.26, dampingFraction: 0.86) }
     static var fade: Animation { .easeOut(duration: 0.18) }
+    static var handoffSettleDuration: TimeInterval { reduces ? 0.2 : 0.45 }
 }
 
 /// The one surface: a solid shape with a machined top edge.
@@ -86,7 +101,7 @@ struct RecorderSurfaceShape: View {
     var body: some View {
         RoundedRectangle(cornerRadius: radius, style: .continuous)
             .fill(RecorderStyle.base)
-            .shadow(color: RecorderStyle.lift.opacity(castsShadow ? 0.85 : 0), radius: 22, y: 10)
+            .shadow(color: RecorderStyle.lift.opacity(castsShadow ? 0.6 : 0), radius: 20, y: 8)
             .overlay {
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
                     .strokeBorder(LinearGradient(colors: [RecorderStyle.edgeTop, RecorderStyle.edgeBottom],
@@ -122,9 +137,11 @@ struct RecorderPillButtonStyle: ButtonStyle {
                 .foregroundStyle(foreground)
                 .padding(.horizontal, kind == .quiet ? 14 : 18)
                 .frame(height: 44)
-                .background(fill(hovered: hovered && isEnabled, pressed: pressed), in: Capsule())
-                .contentShape(Capsule())
-                .appKeyboardFocus(in: Capsule(), color: (kind == .primary ? RecorderStyle.onPrimary : RecorderStyle.chrome).opacity(0.7))
+                .background(fill(hovered: hovered && isEnabled, pressed: pressed),
+                            in: RoundedRectangle(cornerRadius: RecorderStyle.controlRadius, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: RecorderStyle.controlRadius, style: .continuous))
+                .appKeyboardFocus(in: RoundedRectangle(cornerRadius: RecorderStyle.controlRadius, style: .continuous),
+                                  color: (kind == .quiet || kind == .soft ? RecorderStyle.chrome : RecorderStyle.onPrimary).opacity(0.7))
                 .scaleEffect(pressed && !RecorderMotion.reduces ? 0.96 : 1)
                 .opacity(isEnabled ? 1 : 0.4)
                 .onHover { hovered = $0 }
@@ -143,8 +160,8 @@ struct RecorderPillButtonStyle: ButtonStyle {
 
         private func fill(hovered: Bool, pressed: Bool) -> Color {
             switch kind {
-            case .record: RecorderStyle.recording.opacity(pressed ? 0.78 : hovered ? 0.9 : 1)
-            case .primary: RecorderStyle.primaryFill.opacity(pressed ? 0.78 : hovered ? 0.9 : 0.96)
+            case .record: RecorderStyle.recording.opacity(pressed ? 0.8 : hovered ? 0.9 : 1)
+            case .primary: RecorderStyle.accent.opacity(pressed ? 0.8 : hovered ? 0.9 : 1)
             case .soft: RecorderStyle.chrome.opacity(pressed ? 0.2 : hovered ? 0.15 : 0.1)
             case .quiet: RecorderStyle.chrome.opacity(pressed ? 0.14 : hovered ? 0.09 : 0)
             }
@@ -193,55 +210,22 @@ struct CaptureViewfinder: Shape {
     }
 }
 
-/// The few controls that keep a fill use one quiet tone, with no outline and
-/// no drop shadow.
-struct RecorderRaisedSurface: ViewModifier {
-    var radius: CGFloat = EditorInterfaceRadius.group
-    var selected = false
-    func body(content: Content) -> some View {
-        content.background {
-            RoundedRectangle(cornerRadius: radius, style: .continuous)
-                .fill(selected ? RecorderStyle.selection : RecorderStyle.well)
-        }
-    }
-}
-
-struct RecorderButtonStyle: ButtonStyle {
-    var primary = false
-    /// The primary action starts a take: the one red button on the glass.
-    var records = false
-    @Environment(\.isEnabled) private var isEnabled
-    func makeBody(configuration: Configuration) -> some View {
-        let pressed = configuration.isPressed && isEnabled
-        return configuration.label
-            .foregroundStyle(primary ? (records ? Color.white : RecorderStyle.onPrimary) : RecorderStyle.ink)
-            .background(primary ? AnyShapeStyle(records ? RecorderStyle.recording.opacity(pressed ? 0.8 : 1) : RecorderStyle.primaryFill.opacity(pressed ? 0.8 : 0.95))
-                                : AnyShapeStyle(RecorderStyle.well), in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
-            .appKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous),
-                              color: RecorderStyle.chrome.opacity(0.65))
-            .modifier(RecorderPressFeedback(isPressed: pressed, cornerRadius: EditorInterfaceRadius.control))
-    }
-}
-
 /// Keep compact configuration actions inside their existing hit bounds while
 /// sharing the toolbar's short pressed settle and reduced-motion behavior.
 struct RecorderPlainPressButtonStyle: ButtonStyle {
-    var cornerRadius: CGFloat = 10
     @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .modifier(RecorderPressFeedback(isPressed: configuration.isPressed,
-                                           isEnabled: isEnabled, cornerRadius: cornerRadius))
+                                           isEnabled: isEnabled))
     }
 }
 
-/// Artwork reacts inside its existing native hit target. The inset edge and
-/// shade remain visible when accessibility settings suppress physical motion.
+/// Press feedback stays inside the hit target; reduced motion keeps only opacity.
 struct RecorderPressFeedback: ViewModifier {
     let isPressed: Bool
     var isEnabled = true
-    var cornerRadius: CGFloat = 10
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
@@ -272,8 +256,7 @@ struct RecorderNativeActionButton<Label: View>: View {
         ZStack {
             label()
                 .frame(width: width, height: height)
-                .modifier(RecorderPressFeedback(isPressed: pressed, isEnabled: isEnabled,
-                                               cornerRadius: cornerRadius))
+                .modifier(RecorderPressFeedback(isPressed: pressed, isEnabled: isEnabled))
                 .accessibilityHidden(true)
             RecorderActionTrigger(action: action, accessibilityLabel: accessibilityLabel,
                 isEnabled: isEnabled, accessibilityIdentifier: accessibilityIdentifier,
@@ -326,8 +309,7 @@ struct RecorderCirclePressStyle: ButtonStyle {
                         .allowsHitTesting(false)
                 }
                 .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .modifier(RecorderPressFeedback(isPressed: configuration.isPressed, isEnabled: isEnabled,
-                                               cornerRadius: 18))
+                .modifier(RecorderPressFeedback(isPressed: configuration.isPressed, isEnabled: isEnabled))
                 .onHover { hovered = $0 }
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: hovered)
         }

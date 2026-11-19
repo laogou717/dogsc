@@ -36,7 +36,8 @@ final class EditorTimelineMagneticSnap: ObservableObject {
         suppressed = suppressed.filter { point in
             offsets.contains { abs(proposed + $0 - point) <= escape }
         }
-        if NSEvent.modifierFlags.contains(.shift) { release(); return proposed }
+        // ⌘ held while dragging suspends the magnet (Shift kept as before).
+        if !NSEvent.modifierFlags.intersection([.command, .shift]).isEmpty { release(); return proposed }
         if let targetTime, abs(proposed + heldOffset - targetTime) <= escape {
             return targetTime - heldOffset
         }
@@ -93,6 +94,9 @@ extension EditorTimelineView {
         return ids
     }
 
+    /// The magnet catches three things only: the playhead, neighbouring
+    /// clip edges (any lane, so stacked clips line up) and subtitle in/out
+    /// points. Recording markers count as playhead-like references.
     private func magneticTargets(duration: TimeInterval) -> [TimeInterval] {
         let excluded = snapExcludedIDs
         var points: [Double] = [0, duration]
@@ -115,14 +119,11 @@ extension EditorTimelineView {
                 points += [clip.timing.startTime, clip.timing.endTime]
             }
         }
-        if showsOverlayTimeline {
-            for clip in timeline.mosaicClips where !excluded.contains(clip.id) {
-                points += [clip.timing.startTime, clip.timing.endTime]
-            }
-            for clip in timeline.stickerClips where !excluded.contains(clip.id) {
-                points += [clip.timing.startTime, clip.timing.endTime]
-            }
+        // Added material: subtitles, overlays, regions and audio.
+        for clip in overlayTimelineClips where !excluded.contains(clip.id) {
+            points += [clip.timing.startTime, clip.timing.endTime]
         }
+        points += recordingMarkers.map(\.outputTime)
         if gestureOwnership.activeIntent != .scrub { points.append(playbackTime) }
         return points.filter { $0 >= 0 && $0 <= duration }
     }
@@ -149,17 +150,22 @@ extension EditorTimelineView {
 
     @ViewBuilder
     func magneticGuide(width: CGFloat, duration: TimeInterval) -> some View {
-        // Only while something is being dragged: a target left over from the
-        // last gesture must not stay drawn over the playhead.
+        // Mockup `.snap`: a dashed accent line below the ruler, only while
+        // something is being dragged.
         if let time = timelineSnap.targetTime,
            gestureOwnership.activeIntent != nil || draggedPrimarySegmentID != nil {
-            Rectangle().fill(EditorConsole.Track.primary.stroke.opacity(0.8))
-                .frame(width: 1, height: timelineCanvasHeight)
-                .overlay(alignment: .top) {
-                    EditorSnapPulse(color: EditorConsole.Track.primary.stroke).id(time)
-                }
-                .offset(x: CGFloat(time / max(duration, 0.001)) * width - 0.5)
-                .allowsHitTesting(false).accessibilityHidden(true).zIndex(40)
+            let height = max(timelineCanvasHeight - timelineRulerHeight, 0)
+            Path { path in
+                path.move(to: CGPoint(x: 0.5, y: 0))
+                path.addLine(to: CGPoint(x: 0.5, y: height))
+            }
+            .stroke(EditorTheme.accent.opacity(0.7), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+            .frame(width: 1, height: height)
+            .overlay(alignment: .top) {
+                EditorSnapPulse(color: EditorTheme.accent).id(time)
+            }
+            .offset(x: CGFloat(time / max(duration, 0.001)) * width - 0.5, y: timelineRulerHeight)
+            .allowsHitTesting(false).accessibilityHidden(true).zIndex(40)
         }
     }
 }

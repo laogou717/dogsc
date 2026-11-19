@@ -10,15 +10,13 @@ import SwiftUI
 /// 后台预览渲染任务负载：全部为值类型或不可变引用（CIImage 不可变），
 /// 可安全跨队列传递。
 struct PreviewRenderJob: @unchecked Sendable {
+    /// Configuration revision; live frames do not invalidate one another.
     let generation: UInt64
+    let drawable: any CAMetalDrawable
     /// Stable across consecutive playback frames, but changes for pause,
-    /// seek/scrub discontinuities and prepared-media replacement. Generation
-    /// orders every submitted frame; epoch decides whether an older playback
-    /// job still belongs to the currently visible transport interval.
+    /// seek/scrub discontinuities and prepared-media replacement. The epoch
+    /// decides whether a live job still belongs to the visible interval.
     let presentationEpochID: UInt64
-    /// The display-link deadline this playback frame was evaluated for.
-    /// Stationary frames have no deadline and present immediately.
-    let presentationHostTime: CFTimeInterval?
     let diagnostics: PreviewFrameDiagnostics.Frame?
     let plan: FrameRenderPlan
     /// A bounded set of upcoming combined effect plans. Prepared only after
@@ -32,9 +30,8 @@ struct PreviewRenderJob: @unchecked Sendable {
     let destinationPixelSize: CGSize
     let colorProfile: CoreImageFrameColorProfile
     let colorContract: FrameColorContract?
-    /// The view-owned drawable target. CAMetalLayer is internally thread-safe
-    /// for `nextDrawable()`; this unchecked boundary is confined to the one
-    /// serial preview render queue.
+    /// The view-owned target. PreviewDisplayDriver exclusively acquires its
+    /// drawables; the serial render queue only encodes into supplied textures.
     let metalLayer: CAMetalLayer
     /// Whether this came from a stationary/inspector edit rather than the
     /// playback display link. Stale paused frames may be discarded safely;
@@ -48,15 +45,17 @@ struct PreviewRenderJob: @unchecked Sendable {
 
 struct PreviewVisualSignature: Equatable {
     let plan: FrameRenderPlan
-    let separatesCursor: Bool
     let contentRevision: UInt64
     let backingScale: CGFloat
     let destinationPixelSize: CGSize
     let colorContract: FrameColorContract?
+    /// Same decoded frame has a stable identity in ImageMediaFrameCache.
+    /// Static images stay idle; GIF changes bypass the stand-in video's cadence.
+    var insertedImageFrame: CIImage? = nil
 
     static func == (lhs: Self, rhs: Self) -> Bool {
-        guard lhs.separatesCursor == rhs.separatesCursor,
-              lhs.contentRevision == rhs.contentRevision,
+        guard lhs.contentRevision == rhs.contentRevision,
+              lhs.insertedImageFrame === rhs.insertedImageFrame,
               lhs.backingScale == rhs.backingScale,
               lhs.destinationPixelSize == rhs.destinationPixelSize,
               lhs.colorContract == rhs.colorContract,
@@ -73,15 +72,13 @@ struct PreviewVisualSignature: Equatable {
         // visible phase is evaluated by the renderer from scene.time.
         return scenesMatchVisually(
             lhs.plan.scene,
-            rhs.plan.scene,
-            ignoringCursor: lhs.separatesCursor
+            rhs.plan.scene
         )
     }
 
     private static func scenesMatchVisually(
         _ lhs: FrameScene,
-        _ rhs: FrameScene,
-        ignoringCursor: Bool
+        _ rhs: FrameScene
     ) -> Bool {
         guard lhs.canvasSize == rhs.canvasSize,
               lhs.color == rhs.color,
@@ -89,123 +86,42 @@ struct PreviewVisualSignature: Equatable {
               lhs.screen == rhs.screen,
               lhs.camera == rhs.camera,
               lhs.stickers == rhs.stickers,
-              lhs.stickerBackdrop == rhs.stickerBackdrop else {
+              lhs.stickerBackdrop == rhs.stickerBackdrop,
+              animationsMatch(lhs.animations, rhs.animations),
+              lhs.subtitle == rhs.subtitle,
+              lhs.videos == rhs.videos,
+              insertedMotionsMatch(lhs.insertedMotion, rhs.insertedMotion) else {
             return false
         }
-        if !ignoringCursor, lhs.cursor != rhs.cursor {
-            return false
-        }
-        return layerOrdersMatch(
-            lhs.layerOrder,
-            rhs.layerOrder,
-            ignoringCursor: ignoringCursor
-        )
+        return lhs.cursor == rhs.cursor && lhs.layerOrder == rhs.layerOrder
     }
 
-    private static func layerOrdersMatch(
-        _ lhs: [FrameLayerRole],
-        _ rhs: [FrameLayerRole],
-        ignoringCursor: Bool
-    ) -> Bool {
-        guard ignoringCursor else { return lhs == rhs }
-        var lhsIndex = lhs.startIndex
-        var rhsIndex = rhs.startIndex
-        while true {
-            while lhsIndex < lhs.endIndex, lhs[lhsIndex] == .cursor {
-                lhs.formIndex(after: &lhsIndex)
-            }
-            while rhsIndex < rhs.endIndex, rhs[rhsIndex] == .cursor {
-                rhs.formIndex(after: &rhsIndex)
-            }
-            if lhsIndex == lhs.endIndex || rhsIndex == rhs.endIndex {
-                return lhsIndex == lhs.endIndex && rhsIndex == rhs.endIndex
-            }
-            guard lhs[lhsIndex] == rhs[rhsIndex] else { return false }
-            lhs.formIndex(after: &lhsIndex)
-            rhs.formIndex(after: &rhsIndex)
+    /// A main-track HTML motion changes picture on the native preview grid
+    /// (60 Hz). Without this, playback redrew it only when the black stand-in
+    /// video under it delivered a frame — 5 times a second.
+    private static func insertedMotionsMatch(_ lhs: FrameInsertedMotionScene?, _ rhs: FrameInsertedMotionScene?) -> Bool {
+        guard let lhs, let rhs else { return lhs == nil && rhs == nil }
+        return lhs.sourcePath == rhs.sourcePath
+            && lhs.properties == rhs.properties
+            && lhs.elementEdits == rhs.elementEdits
+            && motionFrame(lhs.localTime) == motionFrame(rhs.localTime)
+    }
+
+    private static func motionFrame(_ time: TimeInterval) -> Double {
+        (time * HTMLMotionPreviewBuffer.frameRate + 1e-6).rounded(.down)
+    }
+
+    private static func animationsMatch(_ lhs: [FrameAnimationScene], _ rhs: [FrameAnimationScene]) -> Bool {
+        guard lhs.count == rhs.count else { return false }
+        return zip(lhs, rhs).allSatisfy { left, right in
+            var left = left, right = right
+            left.localTime = motionFrame(left.localTime)
+            right.localTime = motionFrame(right.localTime)
+            return left == right
         }
     }
-}
 
-/// The cursor's Core Animation appearance changes far less often than its
-/// position. Keeping that distinction explicit prevents the 60 Hz playback
-/// path from rebuilding the same image, color and vector path for every mouse
-/// movement while still allowing geometry/projection to update every frame.
-struct PreviewCursorOverlayAppearance: Equatable {
-    let assetID: CursorAssetID
-    let shadow: FrameShadow?
-    let clickColor: HexColor
-    let clickStyle: CursorClickEffectStyle
-    let clickOpacity: Double
-    let clickScale: Double
-    let clickDiameter: Double
-    let clickLineWidth: Double
 
-    init(cursor: FrameCursorScene) {
-        assetID = cursor.assetID
-        shadow = cursor.shadow
-        clickColor = cursor.effectiveClickColor
-        clickStyle = cursor.clickStyle
-        clickOpacity = cursor.clickOpacity
-        clickScale = cursor.clickScale
-        clickDiameter = cursor.layout.clickDiameter * cursor.clickScale
-        clickLineWidth = cursor.layout.clickLineWidth
-    }
-}
-
-/// Rasterized cursor contents cache key: the on-screen pixel size changes only
-/// on zoom/resize, while the pointer position updates every display tick.
-struct PreviewCursorContentsSignature: Equatable {
-    let assetID: CursorAssetID
-    let width: Int
-    let height: Int
-
-    /// Rotation/projective basis arithmetic can turn an exact 110 pixels into
-    /// 110.00000000000003. Do not allocate another bitmap for that roundoff.
-    static func pixelDimension(_ value: CGFloat) -> Int {
-        guard value.isFinite, value > 0 else { return 1 }
-        return max(Int(ceil(value - 0.000_001)), 1)
-    }
-}
-
-/// Keep a few recently used cursor shapes/sizes for hover and zoom changes.
-/// This cache owns only tiny preview bitmaps, never full-canvas textures.
-struct PreviewCursorBitmapCache {
-    private struct Entry {
-        let signature: PreviewCursorContentsSignature
-        let image: CGImage
-        var cost: Int { image.bytesPerRow * image.height }
-    }
-
-    private var entries: [Entry] = []
-    private var totalCost = 0
-    private let costLimit = 2 * 1_024 * 1_024
-    private let countLimit = 12
-
-    mutating func image(
-        for signature: PreviewCursorContentsSignature,
-        make: () -> CGImage?
-    ) -> CGImage? {
-        if let index = entries.firstIndex(where: { $0.signature == signature }) {
-            let entry = entries.remove(at: index)
-            entries.append(entry)
-            return entry.image
-        }
-        guard let image = make() else { return nil }
-        let entry = Entry(signature: signature, image: image)
-        guard entry.cost <= costLimit else { return image }
-        while entries.count >= countLimit || totalCost + entry.cost > costLimit {
-            totalCost -= entries.removeFirst().cost
-        }
-        entries.append(entry)
-        totalCost += entry.cost
-        return image
-    }
-
-    mutating func reset() {
-        entries.removeAll(keepingCapacity: false)
-        totalCost = 0
-    }
 }
 
 /// Keeps the editor's time-invariant background as one stable Core Image
@@ -280,12 +196,8 @@ struct PreviewPresentationEpoch: Equatable, Sendable {
     let isPlaying: Bool
 }
 
-/// At an auxiliary-camera gap (for example an inserted standalone primary
-/// video), the camera player must seek before it can vend the first resumed
-/// pixel. A fullscreen camera scene must never reveal the screen layer during
-/// that decoder hand-off; keeping the already presented drawable for a few
-/// milliseconds is visually continuous and does not alter project/export
-/// timing.
+/// Cached camera pixels have their own source/epoch ownership. An unavailable
+/// auxiliary layer never holds the rest of a playing composition.
 enum PreviewCameraFrameContinuityPolicy {
     /// A paused seek evaluates the destination scene immediately, while the
     /// camera's exact frame arrives asynchronously. The screen path already
@@ -305,15 +217,7 @@ enum PreviewCameraFrameContinuityPolicy {
             || presentationIsPaused
     }
 
-    static func shouldHoldPresentedFrame(
-        scene: FrameScene,
-        cameraIsExpected: Bool,
-        hasCameraFrame: Bool
-    ) -> Bool {
-        // A bubble disappearing is as visible as a fullscreen flash. Hold
-        // the complete presented frame until both required layers are ready.
-        cameraIsExpected && !hasCameraFrame && (scene.camera?.opacity ?? 0) > 0.001
-    }
+
 }
 
 enum PreviewPresentationVisibilityPolicy {
@@ -343,14 +247,7 @@ enum PreviewLayerRetirementPolicy {
     }
 }
 
-enum PreviewRenderBackpressurePolicy {
-    static func maximumInFlight(
-        isPausedFrame: Bool,
-        playbackLimit: Int
-    ) -> Int {
-        isPausedFrame ? 1 : max(playbackLimit, 1)
-    }
-
+enum PreviewRenderValidity {
     static func shouldDiscardBeforeRendering(
         isPausedFrame: Bool,
         generation: UInt64,
@@ -380,7 +277,7 @@ struct SharedPreviewPlaybackFrame: Sendable {
     let semanticScene: FrameScene
 }
 
-typealias SharedPreviewPlaybackFrameProvider = @MainActor (
+typealias SharedPreviewPlaybackFrameProvider = @Sendable (
     EditorPlaybackRenderTick
 ) -> SharedPreviewPlaybackFrame
 
@@ -388,104 +285,9 @@ typealias SharedPreviewPlaybackFrameProvider = @MainActor (
 /// in `FrameSceneEvaluator`; this value only carries decoded media frames into
 /// the same compositor used by export.
 enum SharedPreviewFramePipeline {
-    nonisolated static func canSeparateCursor(in plan: FrameRenderPlan) -> Bool {
-        let scene = plan.scene
-        // The cursor is part of the suppressed recording. Keep it in the
-        // shared composite while stickers hide the screen so the independent
-        // CALayer cannot remain visible over a continuous sticker handoff.
-        if scene.stickerBackdrop.screenSuppression > 0 { return false }
-        // A separated CALayer cursor would sit above the raster spotlight and
-        // stay sharp outside its focus. Keep it in the base composite whenever
-        // spotlight is active so "everything below" has one visual result.
-        if scene.layerOrder.contains(.spotlight) { return false }
-        // CUR-002/PRE-002: a 3D screen still keeps its pointer in a tiny
-        // independent layer. A later camera layer remains the only reason to
-        // retain raster composition under perspective.
-        return !SharedFrameRenderer.isIdentityProjection(scene.screen)
-            ? scene.camera == nil
-            : !cursorIntersectsLaterCamera(in: scene)
-    }
-
-    /// The authored camera is above the cursor. A separate SwiftUI cursor is
-    /// above the raster surface, so it is only equivalent while its complete
-    /// visual footprint does not overlap that later camera layer. This keeps
-    /// the fast path for almost all pointer motion without changing z-order
-    /// when the pointer travels behind the camera bubble.
-    private nonisolated static func cursorIntersectsLaterCamera(
-        in scene: FrameScene
-    ) -> Bool {
-        guard let cursor = scene.cursor,
-              let camera = scene.camera,
-              camera.opacity > 0,
-              let cursorIndex = scene.layerOrder.firstIndex(of: .cursor),
-              let cameraIndex = scene.layerOrder.firstIndex(of: .camera),
-              cursorIndex < cameraIndex else { return false }
-
-        var cursorRect = CGRect(
-            x: cursor.layout.origin.x,
-            y: cursor.layout.origin.y,
-            width: cursor.layout.size.width,
-            height: cursor.layout.size.height
-        )
-        if cursor.isClicking {
-            let footprint = max(cursor.layout.clickDiameter, cursor.layout.clickEffectHeight * 2.5) * cursor.clickScale
-            let radius = footprint / 2
-            cursorRect = cursorRect.union(CGRect(
-                x: cursor.layout.pointer.x - radius,
-                y: cursor.layout.pointer.y - radius,
-                width: radius * 2,
-                height: radius * 2
-            ))
-        }
-        if let shadow = cursor.shadow, shadow.opacity > 0 {
-            cursorRect = cursorRect.union(
-                cursorRect
-                    .offsetBy(dx: shadow.offset.x, dy: shadow.offset.y)
-                    .insetBy(dx: -shadow.radius, dy: -shadow.radius)
-            )
-        }
-
-        var cameraRect = CGRect(
-            x: camera.rect.x,
-            y: camera.rect.y,
-            width: camera.rect.width,
-            height: camera.rect.height
-        ).insetBy(dx: -camera.borderWidth, dy: -camera.borderWidth)
-        if let shadow = camera.shadow, shadow.opacity > 0 {
-            cameraRect = cameraRect.union(
-                cameraRect
-                    .offsetBy(dx: shadow.offset.x, dy: shadow.offset.y)
-                    .insetBy(dx: -shadow.radius, dy: -shadow.radius)
-            )
-        }
-        return cursorRect.intersects(cameraRect)
-    }
-
-    /// The synthetic cursor gets its own cheap Core Animation layer in the
-    /// editor. Removing it from the full-canvas Core Image pass lets a 120 Hz
-    /// cursor move independently while the base video only recomposites when a
-    /// decoded frame or authored screen/camera geometry actually changes.
     nonisolated static func rasterPlan(_ plan: FrameRenderPlan) -> FrameRenderPlan {
-        rasterPlan(plan, separatesCursor: canSeparateCursor(in: plan))
-    }
-
-    /// The visible preview surface already needs this decision for its CALayer
-    /// cursor, so pass the same per-frame result into raster preparation.
-    nonisolated static func rasterPlan(
-        _ plan: FrameRenderPlan,
-        separatesCursor: Bool
-    ) -> FrameRenderPlan {
         var result = plan
-        result.presentationTime = 0
         result.outputDuration = 0
-        var scene = plan.scene
-        // Keep the evaluated time: static scenes ignore it, while animated
-        // backgrounds use it as their visible phase in preview and export.
-        if separatesCursor {
-            scene.cursor = nil
-            scene.layerOrder.removeAll { $0 == .cursor }
-        }
-        result.scene = scene
         return result
     }
 
@@ -510,44 +312,34 @@ enum SharedPreviewFramePipeline {
             width: max(scene.canvasSize.width, 2),
             height: max(scene.canvasSize.height, 2)
         )
-        return SharedFrameCompositor.composite(
+        let image = SharedFrameCompositor.composite(
             plan,
             resources: resources,
             extent: extent
         )
+        PreviewSnapshot.store(image)
+        return image
     }
 
-    /// Compatibility entry for static surfaces such as the crop tool.
-    /// It still travels through the render-plan compositor, so a sharp preview
-    /// cannot acquire a separate pixel path from export.
-    nonisolated static func render(
-        scene: FrameScene,
-        screen: CIImage,
-        camera: CIImage?,
-        wallpaper: CIImage?,
-        cursor: CIImage?
-    ) -> CIImage {
-        let plan = FrameRenderPlan(
-            presentationTime: scene.time,
-            outputDuration: max(scene.time, 0),
-            frameRate: 1,
-            scene: scene
-        )
-        let resources = SharedFrameRenderResources(
-            screen: screen,
-            camera: camera,
-            wallpaper: wallpaper,
-            cursor: cursor
-        )
-        return render(plan: plan, resources: resources) ?? SharedFrameRenderer.render(
-            scene: scene,
-            resources: SharedFrameRenderResources(
-                screen: screen,
-                camera: camera,
-                wallpaper: wallpaper,
-                cursor: cursor
-            )
-        )
+}
+
+/// EDT-054: the most recent composed preview frame, so the AI can look at
+/// the picture it is editing (`canvas.snapshot`).
+enum PreviewSnapshot {
+    private final class Box: @unchecked Sendable {
+        let lock = NSLock()
+        var image: CIImage?
+    }
+    private static let box = Box()
+
+    static func store(_ image: CIImage?) {
+        guard let image else { return }
+        box.lock.lock(); box.image = image; box.lock.unlock()
+    }
+
+    static var latest: CIImage? {
+        box.lock.lock(); defer { box.lock.unlock() }
+        return box.image
     }
 }
 

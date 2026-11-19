@@ -19,23 +19,7 @@ enum EditorTimelineClipEmphasis: Equatable {
         return .idle
     }
 
-    var strokeOpacity: Double {
-        switch self {
-        case .idle: 0.08
-        case .hovered: 0.30
-        case .selected: 0.90
-        case .editing: 1
-        }
-    }
 
-    var strokeWidth: CGFloat {
-        switch self {
-        case .idle: 0.65
-        case .hovered: 0.9
-        case .selected: 1.45
-        case .editing: 1.5
-        }
-    }
 
     var handleOpacity: Double {
         switch self {
@@ -47,20 +31,20 @@ enum EditorTimelineClipEmphasis: Equatable {
     /// Track-colour wash for effect clips (light appearance).
     var trackLightFillOpacity: Double {
         switch self {
-        case .idle: 0.26
-        case .hovered: 0.34
-        case .selected: 0.46
-        case .editing: 0.50
+        case .idle: 0.22
+        case .hovered: 0.28
+        case .selected: 0.28
+        case .editing: 0.32
         }
     }
 
     /// Track-colour wash for effect clips (dark appearance).
     var trackDarkFillOpacity: Double {
         switch self {
-        case .idle: 0.22
-        case .hovered: 0.30
-        case .selected: 0.40
-        case .editing: 0.44
+        case .idle: 0.20
+        case .hovered: 0.26
+        case .selected: 0.26
+        case .editing: 0.30
         }
     }
 
@@ -111,12 +95,12 @@ extension View {
         let active = emphasis == .selected || emphasis == .editing
         let restOpacity = tint == nil
             ? (emphasis == .hovered ? 0.2 : 0.1)
-            : (emphasis == .hovered ? 0.7 : 0.45)
+            : (emphasis == .hovered ? 0.35 : 0)
         return overlay {
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .strokeBorder(
                     active ? ring : (tint ?? EditorTheme.chrome()),
-                    lineWidth: active ? 1.5 : 0.75
+                    lineWidth: active ? 2 : 1
                 )
                 // Only the ink fades; geometry and media stay at their exact
                 // edit positions, including selection changes during a cut.

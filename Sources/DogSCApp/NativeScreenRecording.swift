@@ -37,10 +37,8 @@ enum NativeScreenRecordingBackendPolicy {
         source: CaptureSource,
         codec: CaptureCodec,
         requestedFramesPerSecond: Int,
-        recordsSystemAudio: Bool,
         nativeAPIIsAvailable: Bool
     ) -> Bool {
-        _ = recordsSystemAudio
         guard nativeAPIIsAvailable else { return false }
         if codec == .h264 {
             return requestedFramesPerSecond <= 30
@@ -76,10 +74,8 @@ enum NativeScreenRecordingBackendPolicy {
         sourceWidth: Int,
         sourceHeight: Int,
         codec: CaptureCodec,
-        usesNativeWriter: Bool,
         legacyH264Maximum: CaptureDimensions
     ) -> CaptureDimensions {
-        _ = usesNativeWriter
         if codec != .h264 {
             return CaptureDimensions.h264Compatible(
                 sourceWidth: sourceWidth,
@@ -118,7 +114,6 @@ enum NativeScreenRecordingBackendPolicy {
 
 protocol NativeScreenRecordingSegmentProtocol: AnyObject, Sendable {
     var outputURL: URL { get }
-    var startedAtHostTime: TimeInterval? { get }
     func waitForStart(timeout: TimeInterval) async throws -> Date
     func waitForFinish(timeout: TimeInterval) async throws
 }
@@ -141,14 +136,8 @@ final class NativeScreenRecordingSegment: NSObject,
     private var finishResult: Result<Void, any Error>?
     private var startWaiters: [UUID: CheckedContinuation<Date, any Error>] = [:]
     private var finishWaiters: [UUID: CheckedContinuation<Void, any Error>] = [:]
-    private var startedAtHostTimeStorage: TimeInterval?
     private let onFailure: @Sendable (any Error) -> Void
 
-    var startedAtHostTime: TimeInterval? {
-        lock.lock()
-        defer { lock.unlock() }
-        return startedAtHostTimeStorage
-    }
 
     init(
         outputURL: URL,
@@ -162,10 +151,6 @@ final class NativeScreenRecordingSegment: NSObject,
     }
 
     func recordingOutputDidStartRecording(_ recordingOutput: SCRecordingOutput) {
-        let hostTime = CMClockGetTime(CMClockGetHostTimeClock()).seconds
-        lock.lock()
-        startedAtHostTimeStorage = hostTime.isFinite ? hostTime : nil
-        lock.unlock()
         resolveStart(.success(Date()))
     }
 
@@ -307,6 +292,8 @@ struct NativeScreenFirstFrame: Sendable {
 final class NativeScreenFrameMonitor: NSObject, SCStreamOutput, @unchecked Sendable {
     private let lock = NSLock()
     private let target: OutputFrameRate
+    private let previousMeasurement: FrameRateMeasurement?
+    private let completedDuration: TimeInterval
     private var firstFrame: NativeScreenFirstFrame?
     private var firstHostTime: TimeInterval?
     private var lastObservedHostTime: TimeInterval?
@@ -320,8 +307,14 @@ final class NativeScreenFrameMonitor: NSObject, SCStreamOutput, @unchecked Senda
         UUID: CheckedContinuation<NativeScreenFirstFrame, any Error>
     ] = [:]
 
-    init(target: OutputFrameRate) {
+    init(
+        target: OutputFrameRate,
+        previousMeasurement: FrameRateMeasurement? = nil,
+        completedDuration: TimeInterval = 0
+    ) {
         self.target = target
+        self.previousMeasurement = previousMeasurement
+        self.completedDuration = completedDuration
         super.init()
     }
 
@@ -427,11 +420,11 @@ final class NativeScreenFrameMonitor: NSObject, SCStreamOutput, @unchecked Senda
         let elapsed = max(lastObservedHostTime - firstHostTime - pausedDuration, 0)
         return FrameRateMeasurement(
             target: target,
-            receivedFrames: receivedFrames,
-            deliveredFrames: receivedFrames,
-            idleFrames: idleFrames,
-            elapsed: elapsed,
-            maxFrameInterval: maximumFrameInterval
+            receivedFrames: receivedFrames + (previousMeasurement?.receivedFrames ?? 0),
+            deliveredFrames: receivedFrames + (previousMeasurement?.deliveredFrames ?? 0),
+            idleFrames: idleFrames + (previousMeasurement?.idleFrames ?? 0),
+            elapsed: completedDuration + elapsed,
+            maxFrameInterval: max(maximumFrameInterval, previousMeasurement?.maxFrameInterval ?? 0)
         )
     }
 
@@ -468,7 +461,7 @@ final class NativeScreenFrameMonitor: NSObject, SCStreamOutput, @unchecked Senda
 struct NativeSystemAudioCaptureResult: Sendable {
     let outputURL: URL
     /// Raw ScreenCaptureKit PTS on Core Media's host clock. The native video
-    /// start delegate records the same clock so the final mux can preserve the
+    /// frame monitor observes the same clock so the final mux can preserve the
     /// audio lead/lag instead of guessing from wall-clock callback dates.
     let firstRawPresentationTime: TimeInterval
     let diagnostics: AudioCaptureDiagnostics
@@ -481,7 +474,7 @@ struct NativeSystemAudioCaptureResult: Sendable {
 /// REC-001/REC-002/REC-004: system audio must not force desktop frames back
 /// through a second 4K encoder. Keeping this writer audio-only makes its load
 /// negligible, while raw host-clock PTS and pause compensation preserve A/V
-/// alignment when the AAC track is later muxed into the native H.264 file.
+/// alignment when the AAC track is later muxed into the native video file.
 final class NativeSystemAudioCaptureOutput: NSObject, SCStreamOutput, @unchecked Sendable {
     fileprivate static let logger = Logger(
         subsystem: "cn.laogou.dogsc",
@@ -502,6 +495,7 @@ final class NativeSystemAudioCaptureOutput: NSObject, SCStreamOutput, @unchecked
     private var isFinishing = false
     private var isPaused = false
     private var isAwaitingResumeSample = false
+    private var resumeUsesSharedClock = false
     private var expectedResumeRawTime: CMTime?
     private var accumulatedPauseDuration: CMTime = .zero
     private var firstRawPresentationTime: CMTime?
@@ -602,13 +596,23 @@ final class NativeSystemAudioCaptureOutput: NSObject, SCStreamOutput, @unchecked
             expectedFormatDescription = format
         }
 
+        var padsResumeGap = false
         if isAwaitingResumeSample, let expectedResumeRawTime {
-            let interruption = rawTime - expectedResumeRawTime
-            if interruption.isNumeric, interruption > .zero {
-                accumulatedPauseDuration = accumulatedPauseDuration + interruption
+            if resumeUsesSharedClock {
+                // A late callback may still carry a pre-resume sample. Keep
+                // the shared video boundary instead of folding that delay out.
+                guard rawTime >= expectedResumeRawTime else { return }
+                padsResumeGap = true
+            } else {
+                let interruption = rawTime - expectedResumeRawTime
+                if interruption.isNumeric, interruption > .zero {
+                    accumulatedPauseDuration = accumulatedPauseDuration + interruption
+                }
             }
-            self.expectedResumeRawTime = nil
-            isAwaitingResumeSample = false
+            if !resumeUsesSharedClock {
+                self.expectedResumeRawTime = nil
+                isAwaitingResumeSample = false
+            }
         }
 
         let firstRawTime = firstRawPresentationTime ?? rawTime
@@ -621,6 +625,10 @@ final class NativeSystemAudioCaptureOutput: NSObject, SCStreamOutput, @unchecked
             return
         }
         let adjustedTime = adjusted.presentationTimeStamp
+        if padsResumeGap, let lastAdjustedPresentationTime,
+           adjustedTime < lastAdjustedPresentationTime + lastRawDuration {
+            return
+        }
         if let lastAdjustedPresentationTime,
            adjustedTime < lastAdjustedPresentationTime {
             nonMonotonicTimestampDrops += 1
@@ -647,13 +655,33 @@ final class NativeSystemAudioCaptureOutput: NSObject, SCStreamOutput, @unchecked
             writerBackpressureDrops += 1
             return
         }
-        guard audioInput.append(adjusted) else {
+        var inputSample = adjusted
+        if padsResumeGap, let lastAdjustedPresentationTime {
+            do {
+                inputSample = try SampleBufferTimeRetimer.audioResumeSample(
+                    matching: adjusted,
+                    from: lastAdjustedPresentationTime + lastRawDuration,
+                    to: adjustedTime
+                ) ?? adjusted
+            } catch {
+                terminalError = error
+                otherDrops += 1
+                return
+            }
+        }
+        guard audioInput.append(inputSample) else {
             otherDrops += 1
             if writer.status == .failed || writer.error != nil {
                 terminalError = writer.error
                     ?? ScreenRecorderError.recordingFailed("系统声音写入失败")
             }
             return
+        }
+
+        if padsResumeGap {
+            expectedResumeRawTime = nil
+            isAwaitingResumeSample = false
+            resumeUsesSharedClock = false
         }
 
         lastRawPresentationTime = rawTime
@@ -663,7 +691,7 @@ final class NativeSystemAudioCaptureOutput: NSObject, SCStreamOutput, @unchecked
         appendedSampleBufferCount += 1
     }
 
-    func setPaused(_ paused: Bool) async {
+    func setPaused(_ paused: Bool, resumeTiming: RecordingResumeTiming? = nil) async {
         await withCheckedContinuation { continuation in
             writerQueue.async { [self] in
                 guard !isFinishing, isPaused != paused else {
@@ -672,12 +700,23 @@ final class NativeSystemAudioCaptureOutput: NSObject, SCStreamOutput, @unchecked
                 }
                 if paused {
                     isPaused = true
+                    resumeUsesSharedClock = false
                     skipsNextDiagnosticSampleInterval = true
                     if let lastRawPresentationTime {
                         expectedResumeRawTime = lastRawPresentationTime + lastRawDuration
                     }
                 } else {
                     isPaused = false
+                    if let resumeTiming {
+                        accumulatedPauseDuration = SampleBufferTimeRetimer.audioPauseOffset(
+                            resumeTiming.accumulatedPauseDuration, format: expectedFormatDescription
+                        )
+                        expectedResumeRawTime = CMTime(
+                            seconds: resumeTiming.hostTime,
+                            preferredTimescale: 1_000_000_000
+                        )
+                        resumeUsesSharedClock = true
+                    }
                     isAwaitingResumeSample = expectedResumeRawTime != nil
                 }
                 continuation.resume()
@@ -885,7 +924,9 @@ enum NativeScreenRecordingFinalizer {
             throw ScreenRecorderError.noFrames
         }
         let reader = try AVAssetReader(asset: asset)
-        let output = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
+        // Frame diagnostics need the encoded samples' timing, not their data.
+        // Reference buffers avoid another read of a multi-GB recording.
+        let output = AVAssetReaderSampleReferenceOutput(track: track)
         guard reader.canAdd(output) else {
             throw ScreenRecorderError.recordingFailed("无法读取苹果原生录制帧")
         }
@@ -896,8 +937,25 @@ enum NativeScreenRecordingFinalizer {
 
         var orderedTimes: [TimeInterval] = []
         while let sample = output.copyNextSampleBuffer() {
-            let pts = sample.presentationTimeStamp.seconds
-            if pts.isFinite { orderedTimes.append(pts) }
+            let count = CMSampleBufferGetNumSamples(sample)
+            if count == 1 {
+                let pts = sample.presentationTimeStamp.seconds
+                if pts.isFinite { orderedTimes.append(pts) }
+            } else {
+                for index in 0..<count {
+                    var timing = CMSampleTimingInfo()
+                    guard CMSampleBufferGetSampleTimingInfo(
+                        sample, at: index, timingInfoOut: &timing
+                    ) == noErr else {
+                        throw ScreenRecorderError.recordingFailed("无法读取苹果原生录制帧")
+                    }
+                    let pts = timing.presentationTimeStamp.seconds
+                    if pts.isFinite { orderedTimes.append(pts) }
+                }
+            }
+        }
+        guard reader.status == .completed else {
+            throw reader.error ?? ScreenRecorderError.recordingFailed("无法分析苹果原生录制")
         }
         // Compressed H.264 samples can arrive from AVAssetReader in decode
         // order. Sort presentation timestamps before deriving frame gaps or B
@@ -936,8 +994,7 @@ enum NativeScreenRecordingFinalizer {
         if segmentURLs.count == 1 {
             let only = segmentURLs[0].standardizedFileURL
             if only != finalURL.standardizedFileURL {
-                try? FileManager.default.removeItem(at: finalURL)
-                try FileManager.default.moveItem(at: only, to: finalURL)
+                try ExportFileTransaction.promote(temporaryURL: only, to: finalURL)
             }
             return
         }
@@ -986,16 +1043,23 @@ enum NativeScreenRecordingFinalizer {
         )
         defer { try? FileManager.default.removeItem(at: temporaryURL) }
         try await exporter.export(to: temporaryURL, as: .mp4)
-        if FileManager.default.fileExists(atPath: finalURL.path) {
-            _ = try FileManager.default.replaceItemAt(finalURL, withItemAt: temporaryURL)
-        } else {
-            try FileManager.default.moveItem(at: temporaryURL, to: finalURL)
-        }
+        try ExportFileTransaction.promote(temporaryURL: temporaryURL, to: finalURL)
         for segmentURL in segmentURLs where segmentURL.standardizedFileURL != finalURL.standardizedFileURL {
             try? FileManager.default.removeItem(at: segmentURL)
         }
     }
 
+    static func muxSystemAudio(
+        _ audio: NativeSystemAudioCaptureResult,
+        videoStartedAtHostTime: TimeInterval,
+        into videoURL: URL
+    ) async throws {
+        try await RecordingAudioMuxer.muxSystemAudio(
+            audio, videoStartedAtHostTime: videoStartedAtHostTime, into: videoURL)
+    }
+}
+
+enum RecordingAudioMuxer {
     /// Adds the independently captured AAC track without touching the native
     /// H.264 samples. Both timestamps come from Core Media's host clock, so a
     /// stream that starts just before/after the first native frame is trimmed or
@@ -1064,11 +1128,21 @@ enum NativeScreenRecordingFinalizer {
         ) else {
             throw ScreenRecorderError.recordingFailed("无法建立原生录制无损封装器")
         }
+        let isMOV = videoURL.pathExtension.lowercased() == "mov"
         let temporaryURL = videoURL.deletingLastPathComponent().appendingPathComponent(
-            ".native-av-mux-\(UUID().uuidString).mp4"
+            ".native-av-mux-\(UUID().uuidString).\(isMOV ? "mov" : "mp4")"
         )
         defer { try? FileManager.default.removeItem(at: temporaryURL) }
-        try await exporter.export(to: temporaryURL, as: .mp4)
+        if #available(macOS 15.0, *) {
+            try await exporter.export(to: temporaryURL, as: isMOV ? .mov : .mp4)
+        } else {
+            exporter.outputURL = temporaryURL
+            exporter.outputFileType = isMOV ? .mov : .mp4
+            await exporter.export()
+            guard exporter.status == .completed else {
+                throw exporter.error ?? ScreenRecorderError.recordingFailed("系统声音无损封装失败")
+            }
+        }
         _ = try FileManager.default.replaceItemAt(videoURL, withItemAt: temporaryURL)
         let message = "muxed independent system audio offset="
             + "\(String(format: "%.4f", rawOffset))s "

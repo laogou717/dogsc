@@ -4,12 +4,14 @@ import SwiftUI
 
 extension EditorView {
     var activeScenePreset: EditorStylePreset? {
-        savedStylePresets.first { $0.id == activeStylePresetID }
+        let selectedID = scenePresetCurrentSegment?.sceneStyle?.presetID
+        let id = selectedID ?? (editorStore.project.segmentSceneStyles.isEmpty ? activeStylePresetID : nil)
+        return savedStylePresets.first { $0.id == id }
     }
 
     var scenePresetIsModified: Bool {
-        guard let activeStyleSnapshot else { return false }
-        var current = editorStore.project
+        guard let activeStyleSnapshot, activeScenePreset?.id == activeStylePresetID else { return false }
+        var current = scenePresetEditingProject
         if let preset = activeScenePreset,
            isKnownScenePresetBackground(current.canvas.backgroundSource, for: preset) {
             current.canvas.backgroundSource = activeStyleSnapshot.canvas.backgroundSource
@@ -51,18 +53,17 @@ extension EditorView {
     }
 
     @ViewBuilder
-    func stylePresetControl(compact: Bool) -> some View {
+    func stylePresetControl() -> some View {
         if savedStylePresets.isEmpty {
             Button { beginSavingScenePreset() } label: {
-                scenePresetLabel(title: appLocalized("保存场景"), compact: compact, showsMenu: false)
+                scenePresetLabel(title: appLocalized("保存场景"), showsMenu: false)
             }
-            .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 16))
+            .buttonStyle(EditorToolbarPressButtonStyle())
         } else {
             Button { showsScenePresetPopover.toggle() } label: {
-                scenePresetLabel(title: activeScenePreset?.name ?? appLocalized("场景预设"),
-                                 compact: compact, showsMenu: true)
+                scenePresetLabel(title: activeScenePreset?.name ?? appLocalized("场景预设"), showsMenu: true)
             }
-            .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 16))
+            .buttonStyle(EditorToolbarPressButtonStyle())
             .focusEffectDisabled()
             .editorPopoverKeyboardEntry { showsScenePresetPopover = true }
             .editorPopover(isPresented: $showsScenePresetPopover, arrowEdge: .bottom) {
@@ -72,106 +73,71 @@ extension EditorView {
     }
 
     private var scenePresetMenu: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("场景预设").font(EditorTypography.sectionTitle)
-                Spacer()
-                Button {
-                    showsScenePresetPopover = false
-                    beginSavingScenePreset()
-                } label: { EditorSymbol("plus", size: 14).frame(width: 30, height: 30) }
-                .buttonStyle(EditorSoftRaisedButtonStyle()).help("另存为新预设")
-                .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .accessibilityLabel("另存为新预设")
-            }
+        VStack(alignment: .leading, spacing: 0) {
             ScrollView {
-                VStack(spacing: 8) {
+                VStack(spacing: 0) {
                     ForEach(savedStylePresets) { preset in
-                        VStack(spacing: 0) {
-                            Button {
+                        EditorScenePresetRow(
+                            name: preset.name,
+                            isActive: preset.id == activeScenePreset?.id,
+                            isDefault: defaultStylePresetID == preset.id,
+                            onApply: {
                                 showsScenePresetPopover = false
                                 requestScenePresetApplication(preset)
-                            } label: {
-                                HStack(spacing: 10) {
-                                    EditorSymbol("rectangle.3.group", size: 14)
-                                        .foregroundStyle(preset.id == activeStylePresetID ? EditorTheme.primaryText : EditorTheme.secondaryText)
-                                        .frame(width: 28, height: 28)
-                                        .background(
-                                            preset.id == activeStylePresetID ? EditorTheme.selectionWash : EditorTheme.chrome(0.06),
-                                            in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous)
-                                        )
-                                        .accessibilityHidden(true)
-                                    Text(preset.name).lineLimit(1).truncationMode(.middle)
-                                    Spacer(minLength: 8)
-                                    if preset.id == activeStylePresetID {
-                                        EditorSymbol("checkmark", size: 14).foregroundStyle(EditorTheme.primaryText)
-                                            .accessibilityHidden(true)
-                                    }
-                                }.font(.appUI(size: 13, weight: .medium))
-                                    .padding(12).contentShape(Rectangle())
-                            }.buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: EditorInterfaceRadius.control))
-                                .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                                .accessibilityLabel(preset.name)
-                                .accessibilityAddTraits(preset.id == activeStylePresetID ? .isSelected : [])
-                            HStack(spacing: 8) {
-                                Button {
-                                    setDefaultScenePreset(defaultStylePresetID == preset.id ? nil : preset.id)
-                                } label: {
-                                    EditorSymbolLabel(appLocalized(defaultStylePresetID == preset.id ? "新录制默认" : "设为新录制默认"),
-                                          systemImage: defaultStylePresetID == preset.id ? "checkmark.circle.fill" : "circle")
-                                    .padding(.horizontal, 4).frame(height: 26)
-                                }.buttonStyle(.editorToolbarPress)
-                                .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                                Spacer(minLength: 4)
-                                Button {
-                                    deleteStylePreset(preset)
-                                } label: { EditorSymbol("trash", size: 14).frame(width: 26, height: 24) }
-                                .buttonStyle(.editorToolbarPress).help(String(format: appLocalized("删除预设：%@"), preset.name))
-                                .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                                .accessibilityLabel(String(format: appLocalized("删除预设：%@"), preset.name))
-                            }
-                            .font(.appUI(size: 11)).foregroundStyle(EditorTheme.popoverSecondaryText)
-                            .padding(.horizontal, 8).padding(.bottom, 8)
-                        }
-                        .background(EditorTheme.cardFill,
-                                    in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous)
-                                .strokeBorder(EditorTheme.platinumAccent.opacity(preset.id == activeStylePresetID ? 1 : 0), lineWidth: 1.5)
-                                .allowsHitTesting(false)
-                        }
+                            },
+                            onToggleDefault: {
+                                setDefaultScenePreset(defaultStylePresetID == preset.id ? nil : preset.id)
+                            },
+                            onDelete: { deleteStylePreset(preset) }
+                        )
                     }
                 }
             }
             .scrollIndicators(.hidden)
-            .frame(height: min(CGFloat(savedStylePresets.count) * 84, 320))
+            .frame(height: min(CGFloat(savedStylePresets.count) * 32, 288))
+            Rectangle().fill(EditorTheme.hairline).frame(height: 1).padding(.vertical, 4)
             if let active = activeScenePreset {
-                Button {
+                menuAction(String(format: appLocalized("更新“%@”…"), active.name), systemImage: "arrow.triangle.2.circlepath") {
                     showsScenePresetPopover = false
                     beginSavingScenePreset(updating: active)
-                } label: {
-                    EditorSymbolLabel("更新此预设…", systemImage: "arrow.triangle.2.circlepath")
-                        .font(.appUI(size: 13)).frame(maxWidth: .infinity).frame(height: 36)
-                }.buttonStyle(EditorSoftRaisedButtonStyle())
-                    .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
+                }
             }
-            Text(appLocalized(defaultStylePresetID == nil ? "新录制沿用上次外观" : "新录制将应用已选默认场景"))
-                .font(.appUI(size: 11)).foregroundStyle(EditorTheme.popoverSecondaryText)
+            menuAction("另存为新预设…", systemImage: "plus") {
+                showsScenePresetPopover = false
+                beginSavingScenePreset()
+            }
+            Text(appLocalized(defaultStylePresetID == nil ? "新录制沿用上次外观" : "星标预设会用于新录制"))
+                .font(EditorTypography.helper).foregroundStyle(EditorTheme.popoverSecondaryText)
+                .padding(.horizontal, 8).padding(.top, 6).padding(.bottom, 2)
         }
-        .padding(18).frame(width: 320)
+        .padding(4).frame(width: 260)
     }
 
-    private func scenePresetLabel(title: String, compact: Bool, showsMenu: Bool) -> some View {
+    private func menuAction(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                EditorSymbol(systemImage, size: 13).foregroundStyle(EditorTheme.secondaryText).frame(width: 16)
+                Text(appLocalized(title)).font(.appUI(size: 13)).lineLimit(1).truncationMode(.middle)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8).frame(height: 28)
+        }
+        .buttonStyle(EditorActionRowStyle(selected: false))
+    }
+
+    private func scenePresetLabel(title: String, showsMenu: Bool) -> some View {
         EditorToolbarControlSurface(accessibilityTitle: title) {
             HStack(spacing: 6) {
                 AppLineIcon(kind: .layers, size: 15)
-                Text(title.count > 14 ? String(title.prefix(13)) + "…" : title)
+                Text(title)
                     .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: 160)
                     .fixedSize(horizontal: true, vertical: false)
                 if scenePresetIsModified {
-                    EditorSymbol("circle.fill", size: 9)
-                        .font(.appUI(size: 5))
-                        .foregroundStyle(EditorTheme.amberAccent)
+                    Circle()
+                        .fill(EditorTheme.amberAccent)
+                        .frame(width: 5, height: 5)
                         .accessibilityLabel("已修改")
                 }
                 if showsMenu {
@@ -189,18 +155,31 @@ extension EditorView {
     }
 
     func requestScenePresetApplication(_ preset: EditorStylePreset) {
-        if preset.includesCrop, preset.canvas.crop != .full,
-           let dimensions = preset.sourceDimensions, dimensions != scenePresetSourceDimensions {
-            pendingStylePreset = preset
+        _ = editorStore.prepareForExternalAction(.export)
+        playbackController.pause()
+        stylePresetAppliedNotice = nil
+        let segments = scenePresetSegments
+        guard !segments.isEmpty else { return }
+        var selected = Set(editorStore.groupSelection.compactMap { selection -> UUID? in
+            if case let .primarySegment(id) = selection { return id }; return nil
+        })
+        selected.formUnion(selectedPrimarySegmentIDs)
+        if case let .primarySegment(id) = editorStore.selection { selected.insert(id) }
+        selected.formIntersection(segments.map(\.id))
+        if selected.isEmpty, let id = scenePresetCurrentSegment?.id { selected.insert(id) }
+        scenePresetSelectedIDs = selected
+        scenePresetAppliesToAll = false
+        if segments.count == 1 {
+            applyStylePreset(preset, segmentIDs: Set(segments.map(\.id)))
         } else {
-            applyStylePreset(preset)
+            pendingStylePreset = preset
         }
     }
 
     func saveCurrentStylePreset() {
         let name = stylePresetName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, !stylePresetNameConflict, !isSavingStylePreset else { return }
-        let project = editorStore.project
+        let project = scenePresetEditingProject
         let sourceURL = context.wallpaperURL(for: project.canvas.backgroundSource)
         var snapshot = EditorStylePreset(
             id: updatingStylePresetID ?? UUID(), name: name, project: project,
@@ -246,9 +225,11 @@ extension EditorView {
         }
     }
 
-    func applyStylePreset(_ preset: EditorStylePreset) {
+    func applyStylePreset(_ preset: EditorStylePreset, segmentIDs: Set<UUID>) {
         guard !isSavingStylePreset else { return }
         let baseline = editorStore.project
+        let segments = scenePresetSegments
+        guard !segmentIDs.isEmpty, segmentIDs.isSubset(of: Set(segments.map(\.id))) else { return }
         let knownBackgroundSources = activeStylePresetID == preset.id
             && activeStyleSnapshot?.backgroundAsset == preset.backgroundAsset
             ? activeStylePresetBackgroundSources : []
@@ -261,7 +242,7 @@ extension EditorView {
                 if let asset = preset.backgroundAsset, asset.isAvailable, let url = asset.url {
                     // Keep references proven to represent this asset during
                     // the current preset session, including references restored by Undo.
-                    let currentSource = baseline.canvas.backgroundSource
+                    let currentSource = baseline.sceneProject(forSegmentID: segments.first { segmentIDs.contains($0.id) }?.id).canvas.backgroundSource
                     if isKnownScenePresetBackground(currentSource, for: preset) {
                         background = currentSource
                     } else {
@@ -276,18 +257,40 @@ extension EditorView {
                 guard editorStore.project == baseline else {
                     throw ProjectCommandError.staleState(domain: "场景配置")
                 }
-                let result = preset.applying(to: baseline, backgroundOverride: background)
-                try editorStore.performBatch([
-                    ProjectCommand.replacingCanvas(in: baseline, with: result.canvas),
-                    ProjectCommand.replacingCamera(in: baseline, with: result.camera),
-                    ProjectCommand.replacingCursor(in: baseline, with: result.cursorStyle),
-                    ProjectCommand.replacingMotion(in: baseline, with: result.motion),
-                    ProjectCommand.replacingAudio(in: baseline, with: result.audio),
-                    baseline.openingSequence == result.openingSequence ? nil
-                        : .replaceOpening(before: baseline.openingSequence, after: result.openingSequence),
-                ], actionName: "\(appLocalized("应用场景预设"))“\(preset.name)”")
+                var result = baseline
+                var authored = segments.map { segment in
+                    RecordingSegment(id: segment.id, sourceStart: segment.sourceStart,
+                        sourceDuration: segment.sourceDuration, playbackRate: segment.playbackRate,
+                        media: segment.media, sourceID: segment.sourceID, sceneStyle: segment.sceneStyle,
+                        crop: segment.crop)
+                }
+                for index in authored.indices where segmentIDs.contains(authored[index].id) {
+                    let segment = authored[index]
+                    let local = baseline.sceneProject(forSegmentID: segment.id)
+                    let applied = preset.applying(to: local, backgroundOverride: background)
+                    authored[index].sceneStyle = SegmentSceneStyle(project: applied, presetID: preset.id, presetName: preset.name)
+                    if authored[index].media != nil { authored[index].media?.usesFrameStyle = true }
+                    // A v2 preset still carries a crop, and the crop's owner is
+                    // the recording, so it lands on the source itself — unless
+                    // this clip was deliberately framed on its own, in which
+                    // case a preset must not quietly widen it back.
+                    if preset.includesCrop, segment.media == nil {
+                        if segment.crop != nil {
+                            authored[index].crop = applied.canvas.crop.clamped()
+                        } else {
+                            result.setCrop(applied.canvas.crop, for: segment.resolvedSourceID)
+                        }
+                    }
+                }
+                result.timeline.sourceSequence = .edited(authored)
+                try editorStore.replaceProject(with: result, actionName: String(format: appLocalized("应用场景预设“%@”"), preset.name))
+                stylePresetAppliedNotice = String(format: appLocalized("已将「%@」应用到 %lld 个片段"), preset.name, Int64(segmentIDs.count))
+                stylePresetAppliedRevision = editorStore.revision
+                pendingStylePreset = nil
+                editorStore.scenePresetPreviewSegmentIDs = nil
+                if let id = scenePresetCurrentSegment?.id { editorStore.sceneEditingSegmentID = id }
                 activeStylePresetID = preset.id
-                activeStyleSnapshot = EditorStylePreset(name: preset.name, project: editorStore.project, zoomCreationScale: AppPreferences.rememberedZoomCreationScale)
+                activeStyleSnapshot = EditorStylePreset(name: preset.name, project: scenePresetEditingProject, zoomCreationScale: AppPreferences.rememberedZoomCreationScale)
                 activeStylePresetBackgroundSources = []
                 if let background {
                     activeStyleSnapshot?.backgroundAsset = preset.backgroundAsset
@@ -303,7 +306,7 @@ extension EditorView {
                 if !preset.includesCrop {
                     notices.append(appLocalized("这是旧版外观预设，已保留当前裁切和摄像头显隐。更新此预设后可保存完整场景。"))
                 }
-                if !result.camera.isHidden, baseline.media?.camera == nil {
+                if !preset.camera.isHidden, !baseline.sources.contains(where: { $0.media.camera != nil }) {
                     notices.append(appLocalized("摄像头布局已应用；当前项目没有摄像头素材。"))
                 }
                 if !notices.isEmpty { stylePresetNotice = notices.joined(separator: "\n\n") }
@@ -328,5 +331,63 @@ extension EditorView {
         } catch {
             hostActions.reportError(error.localizedDescription)
         }
+    }
+}
+
+
+/// One preset in the scene menu: click to apply; on hover a star marks it
+/// as the default for new recordings and a bin deletes it.
+private struct EditorScenePresetRow: View {
+    let name: String
+    let isActive: Bool
+    let isDefault: Bool
+    let onApply: () -> Void
+    let onToggleDefault: () -> Void
+    let onDelete: () -> Void
+    @State private var hovered = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Button(action: onApply) {
+                HStack(spacing: 8) {
+                    EditorSymbol("checkmark", size: 12)
+                        .opacity(isActive ? 1 : 0)
+                        .frame(width: 16)
+                    Text(name).font(.appUI(size: 13, weight: isActive ? .semibold : .regular))
+                        .lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 8).frame(height: 28)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(name)
+            .accessibilityAddTraits(isActive ? .isSelected : [])
+            if hovered || isDefault {
+                Button(action: onToggleDefault) {
+                    EditorSymbol(isDefault ? "star.fill" : "star", size: 12)
+                        .foregroundStyle(isDefault ? EditorTheme.amberAccent : EditorTheme.secondaryText)
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(EditorToolbarPressButtonStyle())
+                .help(appLocalized(isDefault ? "取消新录制默认" : "设为新录制默认"))
+                .accessibilityLabel(appLocalized(isDefault ? "取消新录制默认" : "设为新录制默认"))
+            }
+            if hovered {
+                Button(action: onDelete) {
+                    AppLineIcon(kind: .trash, size: 12)
+                        .foregroundStyle(EditorTheme.secondaryText)
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(EditorToolbarPressButtonStyle())
+                .help(String(format: appLocalized("删除预设：%@"), name))
+                .accessibilityLabel(String(format: appLocalized("删除预设：%@"), name))
+            }
+        }
+        .padding(.trailing, 2)
+        .background(RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous)
+            .fill(EditorTheme.chrome(hovered ? EditorStateWash.hover : 0)))
+        .foregroundStyle(EditorTheme.primaryText)
+        .onHover { hovered = $0 }
     }
 }

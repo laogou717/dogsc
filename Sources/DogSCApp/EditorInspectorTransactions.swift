@@ -212,15 +212,19 @@ func updateEditorContinuousInteraction(
 /// every parameter in every page lines up on the same vertical edges.
 /// Repositioning (not replacing) keeps an active text draft alive.
 enum EditorPropertyRowMetrics {
-    static let labelWidth: CGFloat = 72
-    static let valueWidth: CGFloat = 56
-    static let gap: CGFloat = 12
-    static let height: CGFloat = 32
+    /// EDT-079 (界面细则): one line — name, track, number.
+    static let labelWidth: CGFloat = 64
+    static let valueWidth: CGFloat = 52
+    static let gap: CGFloat = 10
+    static let height: CGFloat = 30
+    /// The number field's height inside the row.
+    static let headHeight: CGFloat = 26
 }
 
-private struct EditorSliderRowLayout: Layout {
-    var compact: Bool
-
+/// A parameter on one line: the name at the left (64), the track filling
+/// the middle, and the editable number at the right (52). The thumb travels
+/// inside the track, so nothing reaches the panel's edge.
+struct EditorSliderRowLayout: Layout {
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         CGSize(width: proposal.width ?? 320, height: EditorPropertyRowMetrics.height)
     }
@@ -228,21 +232,19 @@ private struct EditorSliderRowLayout: Layout {
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         guard subviews.count == 3 else { return }
         let m = EditorPropertyRowMetrics.self
-        let labelWidth = min(m.labelWidth, max(bounds.width * 0.3, 0))
         subviews[0].place(
             at: CGPoint(x: bounds.minX, y: bounds.midY), anchor: .leading,
-            proposal: ProposedViewSize(width: labelWidth, height: m.height)
+            proposal: ProposedViewSize(width: m.labelWidth, height: m.height)
         )
         subviews[1].place(
-            at: CGPoint(x: bounds.maxX - m.valueWidth, y: bounds.minY), anchor: .topLeading,
-            proposal: ProposedViewSize(width: m.valueWidth, height: m.height)
+            at: CGPoint(x: bounds.maxX, y: bounds.midY), anchor: .trailing,
+            proposal: ProposedViewSize(width: m.valueWidth, height: m.headHeight)
         )
-        let sliderX = bounds.minX + labelWidth + m.gap
+        let trackX = bounds.minX + m.labelWidth + m.gap
+        let trackWidth = max(bounds.width - m.labelWidth - m.valueWidth - m.gap * 2, 40)
         subviews[2].place(
-            at: CGPoint(x: sliderX, y: bounds.minY), anchor: .topLeading,
-            proposal: ProposedViewSize(
-                width: max(bounds.maxX - m.valueWidth - m.gap - sliderX, 0), height: m.height
-            )
+            at: CGPoint(x: trackX, y: bounds.midY), anchor: .leading,
+            proposal: ProposedViewSize(width: trackWidth, height: m.height)
         )
     }
 }
@@ -263,7 +265,6 @@ struct EditorTransactionalSliderRow: View {
     let commandScope: EditorInteractionCommandScope
     var format: EditorSliderValueFormat = .decimal2
     var accessibilityTitle: String? = nil
-    var compact: Bool = false
     var style: EditorSliderRowStyle = .bar
     let onError: (String) -> Void
     @State private var isSliderEditing = false
@@ -273,56 +274,18 @@ struct EditorTransactionalSliderRow: View {
     private var parameterTitle: String { accessibilityTitle ?? title }
 
     var body: some View {
-        switch style {
-        case .bar: barBody
-        case .slim: slimBody
-        }
-    }
-
-    /// The parameter as an extent: its name above, then a bar with the value
-    /// written inside it.
-    private var barBody: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(appLocalized(title))
-                .font(.appUI(size: 13))
-                .foregroundStyle(EditorTheme.secondaryText)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-                .accessibilityHidden(true)
-            EditorBarSlider(
-                title: title,
-                value: value.wrappedValue,
-                range: range,
-                format: format,
-                accessibilityTitle: accessibilityTitle,
-                isTextEditing: $isTextEditing,
-                edit: EditorInspectorParameterEditConfiguration(
-                    draftText: format.editingText(for: value.wrappedValue),
-                    onBegin: beginTextEditing,
-                    onPreview: previewTextValue,
-                    onCommit: commitTextEditing,
-                    onCancel: cancelTextEditing
-                ),
-                onBegin: { _ = editorStore.beginContinuousInteraction(commandScope: commandScope) },
-                onChange: { value.wrappedValue = $0 },
-                onEnd: {
-                    updateEditorContinuousInteraction(
-                        store: editorStore, isEditing: false, commandScope: commandScope,
-                        actionName: title, onError: onError
-                    )
-                }
-            )
-        }
+        // One parameter grammar everywhere: label, rail, editable value.
+        slimBody
     }
 
     /// The quiet rail with the number at the right, for expert tuning rows.
     private var slimBody: some View {
-        EditorSliderRowLayout(compact: compact) {
+        EditorSliderRowLayout {
             Text(appLocalized(title))
                 .font(.appUI(size: 13))
                 .foregroundStyle(EditorTheme.secondaryText)
                 .lineLimit(1)
-                .minimumScaleFactor(0.8)
+                .minimumScaleFactor(0.75)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityHidden(true)
             EditorInspectorParameterReadout(
@@ -339,7 +302,7 @@ struct EditorTransactionalSliderRow: View {
                 showsTitle: false,
                 isEmbedded: false
             )
-            .frame(width: EditorPropertyRowMetrics.valueWidth, height: 32, alignment: .trailing)
+            .frame(width: EditorPropertyRowMetrics.valueWidth, height: EditorPropertyRowMetrics.headHeight, alignment: .trailing)
             EditorTransactionalSlider(
                 editorStore: editorStore,
                 value: value,
@@ -426,9 +389,31 @@ func editorCanvasBinding<Value>(
     editorDomainBinding(
         store: store,
         commandScope: .canvas,
-        get: { $0.canvas[keyPath: keyPath] },
+        get: { $0.sceneProject(forSegmentID: store.sceneEditingSegmentID).canvas[keyPath: keyPath] },
         set: { $0.canvas[keyPath: keyPath] = $1 },
         replace: { try store.replaceCanvas(with: $0.canvas, actionName: actionName) },
+        onError: onError
+    )
+}
+
+@MainActor
+func editorScreenAppearanceBinding<Value>(
+    store: EditorStore,
+    target: ScreenAppearanceTarget,
+    keyPath: WritableKeyPath<CanvasStyle, Value>,
+    actionName: String,
+    onError: @escaping (String) -> Void
+) -> Binding<Value> {
+    editorDomainBinding(
+        store: store,
+        commandScope: .project,
+        get: { $0.screenCanvas(for: target)[keyPath: keyPath] },
+        set: { project, value in
+            var canvas = project.screenCanvas(for: target)
+            canvas[keyPath: keyPath] = value
+            project.setScreenAppearance(ScreenCardAppearance(canvas: canvas), for: target)
+        },
+        replace: { try store.replaceProject(with: $0, actionName: actionName) },
         onError: onError
     )
 }
@@ -443,7 +428,7 @@ func editorCameraBinding<Value>(
     editorDomainBinding(
         store: store,
         commandScope: .camera,
-        get: { $0.camera[keyPath: keyPath] },
+        get: { $0.sceneProject(forSegmentID: store.sceneEditingSegmentID).camera[keyPath: keyPath] },
         set: { $0.camera[keyPath: keyPath] = $1 },
         replace: { try store.replaceCamera(with: $0.camera, actionName: actionName) },
         onError: onError
@@ -477,7 +462,7 @@ func editorCursorBinding<Value>(
     editorDomainBinding(
         store: store,
         commandScope: .cursor,
-        get: { $0.cursorStyle[keyPath: keyPath] },
+        get: { $0.sceneProject(forSegmentID: store.sceneEditingSegmentID).cursorStyle[keyPath: keyPath] },
         set: { $0.cursorStyle[keyPath: keyPath] = $1 },
         replace: { try store.replaceCursor(with: $0.cursorStyle, actionName: actionName) },
         onError: onError
@@ -494,7 +479,7 @@ func editorMotionBinding<Value>(
     editorDomainBinding(
         store: store,
         commandScope: .motion,
-        get: { $0.motion[keyPath: keyPath] },
+        get: { $0.sceneProject(forSegmentID: store.sceneEditingSegmentID).motion[keyPath: keyPath] },
         set: { $0.motion[keyPath: keyPath] = $1 },
         replace: { try store.replaceMotion(with: $0.motion, actionName: actionName) },
         onError: onError
@@ -588,6 +573,30 @@ func editorPrimarySegmentAudioBinding<Value>(
 }
 
 @MainActor
+func editorAudioClipBinding<Value>(
+    store: EditorStore,
+    clipID: UUID,
+    default fallback: Value,
+    keyPath: WritableKeyPath<AudioClip, Value>,
+    actionName: String,
+    onError: @escaping (String) -> Void
+) -> Binding<Value> {
+    editorDomainBinding(
+        store: store,
+        commandScope: .selection,
+        get: { project in
+            project.timeline.audioClips.first(where: { $0.id == clipID })?[keyPath: keyPath] ?? fallback
+        },
+        set: { project, value in
+            guard let index = project.timeline.audioClips.firstIndex(where: { $0.id == clipID }) else { return }
+            project.timeline.audioClips[index][keyPath: keyPath] = value
+        },
+        replace: { try store.replaceProject(with: $0, actionName: actionName) },
+        onError: onError
+    )
+}
+
+@MainActor
 private func editorDomainBinding<Value>(
     store: EditorStore,
     commandScope: EditorInteractionCommandScope,
@@ -603,7 +612,8 @@ private func editorDomainBinding<Value>(
                 store.updateInteraction { set(&$0, value) }
                 return
             }
-            var replacement = store.project
+            let editsScene = commandScope == .canvas || commandScope == .camera || commandScope == .cursor || commandScope == .motion
+            var replacement = editsScene ? store.sceneEditingProject : store.project
             set(&replacement, value)
             do {
                 try replace(replacement)

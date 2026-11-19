@@ -50,8 +50,4 @@ public struct AudioCaptureDiagnostics: Codable, Equatable, Sendable {
             + otherDrops
     }
 
-    public var appendedSampleBuffersPerSecond: Double {
-        guard elapsed > 0 else { return 0 }
-        return Double(appendedSampleBuffers) / elapsed
-    }
 }

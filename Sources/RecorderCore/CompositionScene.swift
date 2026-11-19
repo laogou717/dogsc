@@ -32,36 +32,16 @@ public struct ScreenSceneEvaluation: Equatable, Sendable {
     public var baseRect: CompositionRect
     public var finalRect: CompositionRect
     public var manualScale: Double
-    public var manualOffset: CompositionPoint
     public var rotationX: Double
     public var rotationY: Double
     public var rotationZ: Double
     public var perspective: Double
     public var projectionAnchor: NormalizedPoint
-    public var baseCornerRadius: Double
-    public var baseBorderWidth: Double
     public var finalCornerRadius: Double
     public var finalBorderWidth: Double
     public var zoom: ZoomSample
     public var viewport: ZoomViewportTransform
 
-    public var projectedQuad: ProjectedScreenQuad {
-        // The authored 3D target selects a point inside the recorded screen.
-        // Border/chrome travel with that screen, but must not move the pivot
-        // away from the selected content merely because their insets differ.
-        let anchor = CompositionPoint(
-            x: finalRect.x + finalRect.width * projectionAnchor.x,
-            y: finalRect.y + finalRect.height * projectionAnchor.y
-        )
-        return ScreenProjection.project(
-            rect: finalRect,
-            rotationX: rotationX,
-            rotationY: rotationY,
-            rotationZ: rotationZ,
-            perspective: perspective,
-            anchor: anchor
-        )
-    }
 }
 
 public struct ScreenDecorationInsets: Equatable, Sendable {
@@ -108,11 +88,11 @@ public enum ScreenFrameGeometry {
             ))
         case .devicePhone, .devicePhonePortrait, .devicePhoneLandscape:
             let shortEdge = max(min(fittedWidth, fittedHeight), 1)
-            let bezel = min(max(shortEdge * 0.026 * authoredFrameScale, 2 * safeStyleScale), shortEdge * 0.07)
+            let bezel = min(max(shortEdge * 0.036 * authoredFrameScale, 2 * safeStyleScale), shortEdge * 0.08)
             return ScreenDecorationInsets(top: bezel, right: bezel, bottom: bezel, left: bezel)
         case .deviceTablet, .deviceTabletPortrait, .deviceTabletLandscape:
             let shortEdge = max(min(fittedWidth, fittedHeight), 1)
-            let bezel = min(max(shortEdge * 0.035 * authoredFrameScale, 2 * safeStyleScale), shortEdge * 0.08)
+            let bezel = min(max(shortEdge * 0.046 * authoredFrameScale, 2 * safeStyleScale), shortEdge * 0.09)
             return ScreenDecorationInsets(top: bezel, right: bezel, bottom: bezel, left: bezel)
 
         }
@@ -124,9 +104,7 @@ public struct CameraSceneEvaluation: Equatable, Sendable {
     public var rect: CompositionRect
     public var cornerRadius: Double
     public var borderWidth: Double
-    public var zoomScale: Double
     public var opacity: Double
-    public var fullscreenProgress: Double
 }
 
 public struct CompositionSceneEvaluation: Equatable, Sendable {
@@ -170,7 +148,8 @@ public enum CompositionSceneEvaluator {
         reanchorAutomaticEntry: Bool = false,
         zoomTrack: ZoomAnimationTrack? = nil,
         screenMotionTrack: ScreenMotionTrack? = nil,
-        cameraMotionTrack: CameraMotionTrack? = nil
+        cameraMotionTrack: CameraMotionTrack? = nil,
+        cameraMotionBase: CameraMotionSample? = nil
     ) -> CompositionSceneEvaluation {
         let width = max(canvasWidth, 2)
         let height = max(canvasHeight, 2)
@@ -312,14 +291,11 @@ public enum CompositionSceneEvaluator {
             baseRect: baseRect,
             finalRect: finalRect,
             manualScale: manualScale,
-            manualOffset: CompositionPoint(x: offsetX, y: offsetY),
             rotationX: min(max(screenMotion.rotationX, -89), 89),
             rotationY: min(max(screenMotion.rotationY, -89), 89),
             rotationZ: screenMotion.rotationZ,
             perspective: min(max(screenMotion.perspective, 0), 2),
             projectionAnchor: screenMotionSample.projectionAnchor,
-            baseCornerRadius: max(project.canvas.cornerRadius, 0) * scale * manualScale,
-            baseBorderWidth: baseBorderWidth,
             // Full-canvas content has no inner card cut-outs. Keep the authored
             // radius in the project so it returns when the layout has margins.
             finalCornerRadius: keepsCanvasCovered ? 0 : max(project.canvas.cornerRadius, 0)
@@ -330,13 +306,9 @@ public enum CompositionSceneEvaluator {
         )
 
         let camera = cameraAspectRatio.map { aspectRatio in
-            let baseCameraMotion = CameraMotionState(
-                layout: .shape(project.camera.shape),
-                position: project.camera.position,
-                size: project.camera.size,
-                roundness: project.camera.roundness,
-                opacity: 1
-            )
+            // `project` 已按这一刻解析到当前片段（FrameScene 调用前写入
+            // settledCamera），所以这里的基准就是逐片段摄像头姿态。
+            let baseCameraMotion = CameraMotionState(base: project.camera)
             let cameraMotion = (cameraMotionTrack ?? motionTrackCache.cameraTrack(
                 for: project.timeline.cameraMotionClips
             )).sample(
@@ -344,7 +316,8 @@ public enum CompositionSceneEvaluator {
                 base: baseCameraMotion,
                 cameraAspectRatio: aspectRatio,
                 canvasAspectRatio: width / height,
-                motion: project.motion
+                motion: project.motion,
+                baseSample: cameraMotionBase
             )
             return evaluateCamera(
                 style: project.camera,
@@ -358,36 +331,6 @@ public enum CompositionSceneEvaluator {
         return CompositionSceneEvaluation(screen: screen, camera: camera)
     }
 
-    public static func evaluateCamera(
-        style: CameraStyle,
-        cameraAspectRatio: Double,
-        screenZoomScale: Double,
-        canvasWidth: Double,
-        canvasHeight: Double,
-        styleScale: Double = 1
-    ) -> CameraSceneEvaluation {
-        let base = CameraMotionState(
-            layout: .shape(style.shape),
-            position: style.position,
-            size: style.size,
-            roundness: style.roundness,
-            opacity: 1
-        )
-        let sample = CameraMotionTrack([]).sample(
-            at: 0,
-            base: base,
-            cameraAspectRatio: cameraAspectRatio,
-            canvasAspectRatio: max(canvasWidth, 2) / max(canvasHeight, 2)
-        )
-        return evaluateCamera(
-            style: style,
-            motion: sample,
-            screenZoomScale: screenZoomScale,
-            canvasWidth: canvasWidth,
-            canvasHeight: canvasHeight,
-            styleScale: styleScale
-        )
-    }
 
     /// Resolves a continuous camera-motion sample into final canvas geometry.
     /// Shape changes and fullscreen transitions therefore use the same rect,
@@ -421,10 +364,14 @@ public enum CompositionSceneEvaluator {
         let cameraHeight = preferredCameraHeight * fitScale
         let positionX = min(max(sample.position.x, 0), 1)
         let positionY = min(max(sample.position.y, 0), 1)
-        // 超出画布的相机允许贴着两侧停靠（x 可为负），大目标才能真正覆盖角落。
+        // 0 and 1 dock against a safe margin (border and shadow included), not
+        // the canvas edge, so a corner camera is never cut. A camera larger
+        // than the canvas still docks flush and may overhang (x can be negative).
+        let insetX = cameraEdgeInset(canvas: width, camera: cameraWidth, base: base, style: style, styleScale: styleScale)
+        let insetY = cameraEdgeInset(canvas: height, camera: cameraHeight, base: base, style: style, styleScale: styleScale)
         let shapedRect = CompositionRect(
-            x: positionX * (width - cameraWidth),
-            y: positionY * (height - cameraHeight),
+            x: insetX + positionX * (width - cameraWidth - insetX * 2),
+            y: insetY + positionY * (height - cameraHeight - insetY * 2),
             width: cameraWidth,
             height: cameraHeight
         )
@@ -443,10 +390,24 @@ public enum CompositionSceneEvaluator {
             borderWidth: min(max(style.borderWidth, 0), 18)
                 * max(styleScale, 0.000_1)
                 * (1 - fullscreenProgress),
-            zoomScale: zoomScale,
-            opacity: min(max(sample.opacity, 0), 1),
-            fullscreenProgress: fullscreenProgress
+            opacity: min(max(sample.opacity, 0), 1)
         )
+    }
+
+    /// Distance kept between a docked camera and the canvas edge along one
+    /// axis: 3.5 % of the short side plus the border and the shadow's reach,
+    /// shrinking to zero when the camera leaves no room for it.
+    public static func cameraEdgeInset(
+        canvas: Double,
+        camera: Double,
+        base: Double,
+        style: CameraStyle,
+        styleScale: Double = 1
+    ) -> Double {
+        let scale = max(styleScale, 0.000_1)
+        let border = min(max(style.borderWidth, 0), 18) * scale
+        let wanted = base * 0.035 + border
+        return min(wanted, max((canvas - camera) / 2, 0))
     }
 
     private static func mix(_ from: Double, _ to: Double, _ progress: Double) -> Double {

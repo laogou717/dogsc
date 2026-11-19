@@ -18,15 +18,26 @@ jobs:
       - name: Validate release inputs
         run: |
           set -euo pipefail
+          private_files="$(git ls-files -- \
+            'Tests/**' 'AGENTS.md' '.env' '.env.*' '**/.env' '**/.env.*' \
+            '*.p12' '*.pfx' '*.pem' '*.p8' '*.key' '*.keychain-db' \
+            '*.dogscproject/**' '*.silkyproject/**' '*.log' '*.ips' '*.trace/**')"
+          if [[ -n "$private_files" ]]; then
+            echo "::error::Local-only files must not be committed to a release."
+            printf '%s\n' "$private_files"
+            exit 1
+          fi
           [[ -s ".github/release-notes/${GITHUB_REF_NAME}.md" ]]
           release_version="${GITHUB_REF_NAME#v}"
           short_version="${release_version%%-*}"
           [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)" = "$short_version" ]]
           build_number="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' Resources/Info.plist)"
           [[ "$build_number" =~ ^[1-9][0-9]*$ ]]
-          for resource in en.lproj zh-Hans.lproj Fonts Onboarding Support; do
+          for resource in en.lproj zh-Hans.lproj Fonts Onboarding Support Agent; do
             [[ -d "Resources/$resource" ]]
           done
+          [[ -s Resources/Agent/DogSC-Skill.md ]]
+          [[ -s Resources/Agent/DogSC-Guide.md ]]
 
       - name: Import stable signing identity
         env:
@@ -81,7 +92,9 @@ jobs:
         run: |
           set -euo pipefail
           swift build -c release --product DogSC
+          swift build -c release --product dogsc-mcp
           binary_dir="$(swift build -c release --show-bin-path)"
+          [[ -x "$binary_dir/DogSC" && -x "$binary_dir/dogsc-mcp" ]]
 
           app="$RUNNER_TEMP/DogSC.app"
           mkdir -p \
@@ -89,9 +102,10 @@ jobs:
             "$app/Contents/Frameworks" \
             "$app/Contents/Resources"
           cp "$binary_dir/DogSC" "$app/Contents/MacOS/DogSC"
+          cp "$binary_dir/dogsc-mcp" "$app/Contents/MacOS/dogsc-mcp"
           cp "Resources/Info.plist" "$app/Contents/Info.plist"
           cp "Resources/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
-          for resource in en.lproj zh-Hans.lproj Fonts Onboarding Support; do
+          for resource in en.lproj zh-Hans.lproj Fonts Onboarding Support Agent; do
             ditto "Resources/$resource" "$app/Contents/Resources/$resource"
             diff -qr "Resources/$resource" "$app/Contents/Resources/$resource"
           done
@@ -156,6 +170,14 @@ jobs:
             --force \
             --options runtime \
             --timestamp=none \
+            --keychain "$DOGSC_SIGNING_KEYCHAIN" \
+            --sign "$SIGNING_IDENTITY" \
+            "$app/Contents/MacOS/dogsc-mcp"
+          codesign --verify --strict "$app/Contents/MacOS/dogsc-mcp"
+          codesign \
+            --force \
+            --options runtime \
+            --timestamp=none \
             --entitlements "Resources/DogSC.entitlements" \
             --keychain "$DOGSC_SIGNING_KEYCHAIN" \
             --sign "$SIGNING_IDENTITY" \
@@ -165,10 +187,14 @@ jobs:
           signature_details="$(codesign -dvvv "$app" 2>&1)"
           requirements="$(codesign -dr - "$app" 2>&1)"
           grep -F 'Authority=Apple Development:' <<< "$signature_details"
+          grep -F 'flags=0x10000(runtime)' <<< "$signature_details"
           ! grep -F 'Signature=adhoc' <<< "$signature_details"
           ! grep -F 'TeamIdentifier=not set' <<< "$signature_details"
           grep -F 'identifier "cn.laogou.dogsc"' <<< "$requirements"
           grep -F 'anchor apple generic' <<< "$requirements"
+          for executable in DogSC dogsc-mcp; do
+            [[ "$(lipo -archs "$app/Contents/MacOS/$executable")" = arm64 ]]
+          done
 
       - name: Create disk image
         run: |
@@ -253,6 +279,9 @@ jobs:
           [[ -L "$mounted_image/Applications" ]]
           [[ "$(readlink "$mounted_image/Applications")" = "/Applications" ]]
           [[ -f "$mounted_image/.DS_Store" ]]
+          [[ -x "$mounted_image/DogSC.app/Contents/MacOS/dogsc-mcp" ]]
+          diff -qr Resources/Agent "$mounted_image/DogSC.app/Contents/Resources/Agent"
+          codesign --verify --strict "$mounted_image/DogSC.app/Contents/MacOS/dogsc-mcp"
           codesign --verify --deep --strict "$mounted_image/DogSC.app"
           diskutil eject "$mounted_image"
           trap - EXIT

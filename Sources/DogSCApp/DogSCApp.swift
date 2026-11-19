@@ -55,6 +55,7 @@ private struct DogSCModernApp: App {
 
 private struct DogSCSettingsScene: Scene {
     @ObservedObject private var guideAccess = FirstLaunchGuideAccess.shared
+    @AppStorage(RecordingSourceCanvasBadge.visibilityKey) private var showsRecordingName = false
 
     var body: some Scene {
         // The normal app owns no SwiftUI-created main window. A dedicated
@@ -77,9 +78,24 @@ private struct DogSCSettingsScene: Scene {
                 .disabled(!guideAccess.isAvailable)
             }
             CommandGroup(after: .toolbar) {
+                Button(appLocalized("显示 / 隐藏素材面板")) {
+                    EditorMenuBridge.shared.toggleLibraryRequest.send()
+                }
+                .keyboardShortcut("l", modifiers: [.command, .option])
+                Button(appLocalized("显示 / 隐藏检查器")) {
+                    EditorMenuBridge.shared.toggleInspectorRequest.send()
+                }
+                Toggle(appLocalized("在预览中显示录制名称"), isOn: $showsRecordingName)
+
+                Button(appLocalized("让 AI 修改…")) {
+                    EditorMenuBridge.shared.quickPromptRequest.send()
+                }
+                .keyboardShortcut("k", modifiers: .command)
+                Divider()
                 Button(appLocalized("快捷键速查")) {
                     EditorMenuBridge.shared.shortcutCheatsheetRequest.send()
                 }
+                .keyboardShortcut("/", modifiers: .command)
             }
         }
         .environment(\.locale, AppLocalization.shared.locale)
@@ -119,7 +135,7 @@ struct RecorderMainWindowRoot: View {
 
     var body: some View {
         ZStack {
-            RecorderSurfaceShape(radius: islandSize.height / 2)
+            RecorderSurfaceShape(radius: RecorderStyle.islandRadius)
                 .frame(width: islandSize.width, height: islandSize.height)
                 .allowsHitTesting(false)
             // Keep entering and retiring controls inside the same animated
@@ -132,7 +148,6 @@ struct RecorderMainWindowRoot: View {
                     island {
                         RecorderPhaseProgressView(
                             title: model.recorderTransitionStage.title,
-                            phase: .preparing,
                             accessibilityIdentifier: RecorderAccessibilityID.phasePreparing
                         )
                     }
@@ -142,7 +157,6 @@ struct RecorderMainWindowRoot: View {
                     island {
                         RecorderPhaseProgressView(
                             title: model.recorderTransitionStage.title,
-                            phase: .finishing,
                             accessibilityIdentifier: RecorderAccessibilityID.phaseFinishing
                         )
                     }
@@ -152,21 +166,20 @@ struct RecorderMainWindowRoot: View {
                     island {
                         RecorderPhaseProgressView(
                             title: appLocalized("正在打开编辑器…"),
-                            phase: .editor,
                             accessibilityIdentifier: "recorder.phase.editor-transition"
                         )
                     }
                 }
             }
             .frame(width: islandSize.width, height: islandSize.height)
-            .clipShape(Capsule())
+            .clipShape(RoundedRectangle(cornerRadius: RecorderStyle.islandRadius, style: .continuous))
         }
         .background {
             RecorderIslandInteractionRegion()
                 .frame(width: islandSize.width, height: islandSize.height)
                 .allowsHitTesting(false)
         }
-        .contentShape(Capsule())
+        .contentShape(RoundedRectangle(cornerRadius: RecorderStyle.islandRadius, style: .continuous))
         .modifier(RecorderSystemWindowDragModifier())
         .animation(RecorderMotion.morph, value: islandSize)
         .animation(RecorderMotion.morph, value: phase)
@@ -280,7 +293,6 @@ private struct RecorderSystemWindowDragModifier: ViewModifier {
 
 struct RecorderPhaseProgressView: View {
     let title: String
-    let phase: AppPhase
     let accessibilityIdentifier: String
 
     var body: some View {
@@ -455,6 +467,10 @@ enum WindowCoordinator {
         case .setup, .preparing, .recording, .finishing:
             recorderPanelController.present(phase: phase)
         }
+        RecorderMemoController.shared.resumeAfterPhaseChange(
+            phase, isSelectingSource: model.captureSetup.isPresentingSelection,
+            relativeTo: recorderPanelController.window
+        )
     }
 
     private static func showEditor(model: AppModel) {
@@ -468,6 +484,10 @@ enum WindowCoordinator {
     }
 
     static var hasRecordingProjectEditor: Bool { recordingProjectEditor.model != nil }
+
+    static var recorderTransitionSettleTime: TimeInterval {
+        recorderPanelController?.remainingTransitionSettleTime ?? 0
+    }
 
     /// All URL entrances share this routing, including Dock, Finder and the
     /// editor's own picker. A live take is never replaced by an editing file.

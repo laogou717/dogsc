@@ -35,23 +35,6 @@ struct CameraPixelBufferLayout: Equatable, Sendable {
         }
     }
 
-    init(
-        width: Int,
-        height: Int,
-        pixelFormat: OSType,
-        planeCount: Int,
-        planeWidths: [Int],
-        planeHeights: [Int],
-        bytesPerRow: [Int]
-    ) {
-        self.width = width
-        self.height = height
-        self.pixelFormat = pixelFormat
-        self.planeCount = planeCount
-        self.planeWidths = planeWidths
-        self.planeHeights = planeHeights
-        self.bytesPerRow = bytesPerRow
-    }
 
     /// Validate metadata only. Locking and scanning a 1080p pixel buffer on
     /// the capture callback would itself cause dropped frames.

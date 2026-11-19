@@ -69,81 +69,78 @@ struct EditorHexColorInput: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(appLocalized(title))
-                .font(.appUI(size: 11))
-                // Both actual controls below already carry this context:
-                // "选择\(title)" and "\(title)十六进制值". Keep the
-                // visual heading without adding a third, non-actionable stop.
-                .accessibilityHidden(true)
-
-            HStack(spacing: 8) {
-                Button(action: presentColorPicker) {
-                    RoundedRectangle(cornerRadius: 5)
-                        .fill(Color(hex: draft.parsed ?? draft.committed))
-                        .frame(width: 32, height: 26)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 5)
-                                .stroke(EditorTheme.chrome(0.24), lineWidth: 1)
-                        )
-                        .frame(width: 36, height: 30)
-                        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                }
-                .buttonStyle(.editorSwatch)
-                .accessibilityLabel(String(format: appLocalized("选择%@"), appLocalized(title)))
-                .help(String(format: appLocalized("打开%@取色器"), appLocalized(title)))
-                .editorPopoverKeyboardEntry(action: presentColorPicker)
-                .editorPopover(isPresented: $showsPicker, arrowEdge: .trailing, establishesKeyboardEntry: false) {
-                    pickerPopover
-                }
-
-                TextField(
-                    "#RRGGBB",
-                    text: Binding(
-                        get: { draft.text },
-                        set: { updateTextDraft($0) }
-                    )
-                )
-                .textFieldStyle(.plain)
-                .tint(nil)
-                .font(.appUI(size: 12, weight: .medium, design: .monospaced))
-                .padding(.horizontal, 9)
-                .frame(height: 30)
-                .background(
-                    textIsFocused ? EditorTheme.cardElevated : EditorTheme.chrome(0.035),
-                    in: RoundedRectangle(cornerRadius: 7, style: .continuous)
-                )
-                .overlay {
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .stroke(
-                            EditorTheme.chrome(textIsFocused ? 0.24 : 0.085),
-                            lineWidth: textIsFocused ? 1 : 0.75
-                        )
-                }
-                .focused($textIsFocused)
-                .onSubmit(submitTextDraft)
-                .onExitCommand {
-                    pickerDraft = draft.committed
-                    draft.cancel()
-                    onPreview(draft.committed)
-                    textIsFocused = false
-                }
-                .onChange(of: textIsFocused) { _, isFocused in
-                    if isFocused {
-                        beginColorInteraction()
-                    } else {
-                        finishTextEditing()
-                        endColorInteraction()
+        VStack(alignment: .leading, spacing: 4) {
+            // Same row grammar as every parameter: name on the left, the
+            // value (a swatch and its hex) on the right.
+            HStack(spacing: EditorPropertyRowMetrics.gap) {
+                Text(appLocalized(title))
+                    .font(.appUI(size: 13))
+                    .foregroundStyle(EditorTheme.secondaryText)
+                    .lineLimit(1)
+                    .frame(width: EditorPropertyRowMetrics.labelWidth, alignment: .leading)
+                    .accessibilityHidden(true)
+                HStack(spacing: 7) {
+                    Button(action: presentColorPicker) {
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(Color(hex: draft.parsed ?? draft.committed))
+                            .frame(width: 16, height: 16)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                    .strokeBorder(.black.opacity(0.14), lineWidth: 1)
+                            )
+                            .frame(width: 22, height: 28)
+                            .contentShape(Rectangle())
                     }
+                    .buttonStyle(.editorSwatch)
+                    .accessibilityLabel(String(format: appLocalized("选择%@"), appLocalized(title)))
+                    .help(String(format: appLocalized("打开%@取色器"), appLocalized(title)))
+                    .editorPopoverKeyboardEntry(action: presentColorPicker)
+                    .editorPopover(isPresented: $showsPicker, arrowEdge: .trailing, establishesKeyboardEntry: false) {
+                        pickerPopover
+                    }
+
+                    TextField(
+                        "#RRGGBB",
+                        text: Binding(
+                            get: { draft.text },
+                            set: { updateTextDraft($0) }
+                        )
+                    )
+                    .textFieldStyle(.plain)
+                    .tint(nil)
+                    .font(.appUI(size: 13).monospacedDigit())
+                    .focused($textIsFocused)
+                    .onSubmit(submitTextDraft)
+                    .onExitCommand {
+                        pickerDraft = draft.committed
+                        draft.cancel()
+                        onPreview(draft.committed)
+                        textIsFocused = false
+                    }
+                    .onChange(of: textIsFocused) { _, isFocused in
+                        if isFocused {
+                            beginColorInteraction()
+                        } else {
+                            finishTextEditing()
+                            endColorInteraction()
+                        }
+                    }
+                    .accessibilityLabel(String(format: appLocalized("%@十六进制值"), appLocalized(title)))
                 }
-                .accessibilityLabel(String(format: appLocalized("%@十六进制值"), appLocalized(title)))
-                .animation(SpringMotion.interactive, value: textIsFocused)
+                .padding(.leading, 5)
+                .padding(.trailing, 9)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(height: EditorPropertyRowMetrics.height)
+                .background(
+                    EditorTheme.chrome(textIsFocused ? 0.08 : 0.045),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                )
             }
 
             if draft.isDirty, !draft.isValid {
                 Text("请输入 6 位十六进制颜色，例如 #D8B26A")
-                    .font(.appUI(size: 10))
-                    .foregroundStyle(.red)
+                    .font(EditorTypography.helper)
+                    .foregroundStyle(RecorderStyle.destructiveInk)
                     .accessibilityLabel(String(format: appLocalized("%@格式无效"), appLocalized(title)))
             }
         }

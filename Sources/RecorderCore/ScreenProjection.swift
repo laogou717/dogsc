@@ -123,15 +123,6 @@ public struct ProjectedScreenQuad: Equatable, Sendable {
         [topLeft, topRight, bottomRight, bottomLeft]
     }
 
-    /// The projected centre used by interaction affordances. For a
-    /// perspective quad this is intentionally the average of all four visible
-    /// corners, rather than the centre of the axis-aligned bounds.
-    public var center: CompositionPoint {
-        CompositionPoint(
-            x: corners.reduce(0) { $0 + $1.x } / 4,
-            y: corners.reduce(0) { $0 + $1.y } / 4
-        )
-    }
 
     /// The semantic lower-right corner remains the resize affordance even
     /// after rotation. Using `bounds.maxX/maxY` would put the handle on an
@@ -182,91 +173,8 @@ public struct ProjectedScreenQuad: Equatable, Sendable {
         return projectedTravel * identityEquivalentGain / max(referenceLength, 1)
     }
 
-    /// Returns whether a canvas-space point lies inside the projected screen.
-    /// Boundary points are included. The winding implementation works for
-    /// clockwise and counter-clockwise quads and safely returns `false` for
-    /// non-finite or collapsed geometry.
-    public func contains(
-        _ point: CompositionPoint,
-        tolerance: Double = 0.000_001
-    ) -> Bool {
-        guard point.x.isFinite,
-              point.y.isFinite,
-              tolerance.isFinite,
-              corners.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else {
-            return false
-        }
 
-        let epsilon = max(tolerance, 0)
-        let twiceArea = corners.indices.reduce(0.0) { result, index in
-            let start = corners[index]
-            let end = corners[(index + 1) % corners.count]
-            return result + start.x * end.y - end.x * start.y
-        }
-        guard abs(twiceArea) > epsilon else { return false }
 
-        var windingNumber = 0
-
-        for index in corners.indices {
-            let start = corners[index]
-            let end = corners[(index + 1) % corners.count]
-
-            if Self.point(
-                point,
-                liesOnSegmentFrom: start,
-                to: end,
-                tolerance: epsilon
-            ) {
-                return true
-            }
-
-            if start.y <= point.y {
-                if end.y > point.y,
-                   Self.cross(start, end, point) > epsilon {
-                    windingNumber += 1
-                }
-            } else if end.y <= point.y,
-                      Self.cross(start, end, point) < -epsilon {
-                windingNumber -= 1
-            }
-        }
-
-        return windingNumber != 0
-    }
-
-    private static func cross(
-        _ start: CompositionPoint,
-        _ end: CompositionPoint,
-        _ point: CompositionPoint
-    ) -> Double {
-        (end.x - start.x) * (point.y - start.y)
-            - (end.y - start.y) * (point.x - start.x)
-    }
-
-    private static func point(
-        _ point: CompositionPoint,
-        liesOnSegmentFrom start: CompositionPoint,
-        to end: CompositionPoint,
-        tolerance: Double
-    ) -> Bool {
-        let dx = end.x - start.x
-        let dy = end.y - start.y
-        let lengthSquared = dx * dx + dy * dy
-        guard lengthSquared > tolerance * tolerance else {
-            return hypot(point.x - start.x, point.y - start.y) <= tolerance
-        }
-
-        let parameter = ((point.x - start.x) * dx + (point.y - start.y) * dy)
-            / lengthSquared
-        guard parameter >= -tolerance, parameter <= 1 + tolerance else {
-            return false
-        }
-        let nearest = CompositionPoint(
-            x: start.x + parameter * dx,
-            y: start.y + parameter * dy
-        )
-        return hypot(point.x - nearest.x, point.y - nearest.y) <= tolerance
-    }
 }
 
 /// Deterministic projection geometry for the decorated screen layer.

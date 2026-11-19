@@ -158,10 +158,7 @@ final class ProjectSessionPersistenceController {
         status = .clean
 
         guard let previousEpoch else { return }
-        Task { [weak self, repository] in
-            await repository.invalidate(epoch: previousEpoch)
-            guard let self, self.epoch == newEpoch else { return }
-        }
+        Task { [repository] in await repository.invalidate(epoch: previousEpoch) }
     }
 
     func scheduleAutosave(_ project: RecorderProject) {
@@ -391,6 +388,7 @@ final class ProjectSessionPersistenceController {
                 // ever start another write.
                 self.autosaveWriteTask = nil
                 self.report(ProjectPersistenceControllerError.autosaveInterrupted)
+                self.scheduleAutosaveDebounceIfNeeded()
             } catch {
                 guard let self,
                       !Task.isCancelled,
@@ -398,6 +396,7 @@ final class ProjectSessionPersistenceController {
                       self.isCurrent(request) else { return }
                 self.autosaveWriteTask = nil
                 self.report(error)
+                self.scheduleAutosaveDebounceIfNeeded()
             }
         }
     }

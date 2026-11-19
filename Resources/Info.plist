@@ -24,9 +24,9 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-	<string>0.1.8</string>
+    <string>0.2.0</string>
     <key>CFBundleVersion</key>
-    <string>19</string>
+    <string>20</string>
     <key>SUFeedURL</key>
     <string>https://github.com/laogou717/dogsc/releases/latest/download/appcast.xml</string>
     <key>SUPublicEDKey</key>
@@ -71,6 +71,18 @@
     <key>UTExportedTypeDeclarations</key>
     <array>
         <dict>
+            <key>UTTypeIdentifier</key>
+            <string>cn.laogou.dogsc.media-drag</string>
+            <key>UTTypeConformsTo</key>
+            <array><string>public.data</string></array>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>cn.laogou.dogsc.recording-drag</string>
+            <key>UTTypeConformsTo</key>
+            <array><string>public.data</string></array>
+        </dict>
+        <dict>
             <key>UTTypeConformsTo</key>
             <array>
                 <string>com.apple.package</string>
@@ -89,5 +101,7 @@
             </dict>
         </dict>
     </array>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>DogSC uses the built-in macOS recognizer to turn your narration into subtitles.</string>
 </dict>
 </plist>

@@ -2,7 +2,7 @@ import CoreGraphics
 
 /// The picture and compact waveform share one clip and one edit boundary.
 enum EditorTimelineClipGeometry {
-    static let contentInset: CGFloat = 3
+    static let contentInset: CGFloat = 0
     static let waveformBandFraction: CGFloat = 0.26
 
     /// Local coordinates of the part of a clip that can receive pointer input.

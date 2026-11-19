@@ -75,18 +75,6 @@ enum CaptureDevicePreferenceKey {
     static let microphoneName = "capture.microphone.device-name"
 }
 
-enum DeviceScreenFrameRecommendation {
-    static func style(
-        deviceName: String?,
-        width: Int? = nil,
-        height: Int? = nil
-    ) -> ScreenFrameStyle {
-        // The authored shell follows the actual source dimensions; separate
-        // phone/tablet and orientation choices duplicate the same frame.
-        .devicePhone
-    }
-}
-
 /// Fast microphone-meter updates live outside AppModel.objectWillChange.
 /// Otherwise every 55 ms level sample invalidates the complete setup toolbar,
 /// including camera menus and device-format discovery.
@@ -164,6 +152,9 @@ final class AppModel: ObservableObject {
     /// barrier finishes. Keep the completion card present and disable repeat
     /// actions instead of briefly opening an editor or another recording.
     @Published var isResolvingCompletedRecording = false
+    /// Where the last completed take was saved (the completion card's
+    /// "Saved" strip opens it from there).
+    var lastSavedRecordingURL: URL?
     /// Non-fatal mid-recording interruptions (e.g. microphone unplugged).
     /// Merged into the stop-reporting message once recording finalizes.
     var recordingInterruptionWarnings: [String] = []
@@ -183,6 +174,14 @@ final class AppModel: ObservableObject {
         didSet {
             UserDefaults.standard.set(recordingCameraMirrored, forKey: "recording.camera-mirrored")
             cameraPreviewController.setMirrored(recordingCameraMirrored)
+        }
+    }
+    @Published var recordingCameraBeauty = UserDefaults.standard.data(forKey: "recording.camera-beauty")
+        .flatMap { try? JSONDecoder().decode(CameraBeautySettings.self, from: $0) } ?? CameraBeautySettings() {
+        didSet {
+            UserDefaults.standard.set(try? JSONEncoder().encode(recordingCameraBeauty), forKey: "recording.camera-beauty")
+            cameraBeautyPreviewProcessor.setSettings(recordingCameraBeauty)
+            if phase == .recording || phase == .preparing { project.camera.beauty = recordingCameraBeauty }
         }
     }
     @Published var editorSessionID = UUID()
@@ -207,7 +206,6 @@ final class AppModel: ObservableObject {
     var availableDisplays: [CaptureDisplay] { captureSetup.availableDisplays }
     var availableWindows: [CaptureWindowInfo] { captureSetup.availableWindows }
     var availableScreenDevices: [CaptureDeviceInfo] { captureSetup.availableScreenDevices }
-    var isRefreshingWindows: Bool { captureSetup.isRefreshingWindows }
     var captureReadiness: CaptureReadiness { captureSetup.readiness }
 
     var hasScreenRecordingPermissionForOnboarding: Bool {
@@ -231,8 +229,9 @@ final class AppModel: ObservableObject {
     lazy var cameraRecorder = CameraRecorder()
     lazy var deviceRecorder = CameraRecorder(role: .iosDevice)
     lazy var microphoneRecorder = MicrophoneRecorder()
-    lazy var cameraPreviewController = CameraPreviewWindowController(
-        session: cameraRecorder.previewSession
+    lazy var cameraPreviewController = CameraPreviewWindowController()
+    lazy var cameraBeautyPreviewProcessor = CameraBeautyPreviewProcessor(
+        sinks: [cameraPreviewController.frameSink, configurationCameraFrameSink], settings: recordingCameraBeauty
     )
     lazy var pointerRecorder = PointerEventRecorder()
     lazy var trackFinalizer = RecordingTrackFinalizer(operations: .live(
@@ -312,6 +311,16 @@ final class AppModel: ObservableObject {
         recorder.onUnexpectedStop = { [weak self] runID, error in
             self?.handleUnexpectedCaptureStop(runID: runID, error: error)
         }
+        recorder.onNativeStreamWillPause = { [weak self] runID in
+            guard let self, let run = recordingRuns.active, run.id == runID else { return }
+            pauseAuxiliaryTracks(for: run)
+            beginPauseAccounting()
+        }
+        recorder.onNativeStreamDidResume = { [weak self] runID, timing in
+            guard let self, let run = recordingRuns.active, run.id == runID else { return }
+            resumeAuxiliaryTracks(for: run, at: timing)
+            resumePauseAccounting()
+        }
         deviceRecorder.onUnexpectedStop = { [weak self] error in
             guard let self, let runID = self.recordingRuns.active?.id else { return }
             self.handleUnexpectedCaptureStop(runID: runID, error: error)
@@ -332,11 +341,9 @@ final class AppModel: ObservableObject {
         // REC-PRE-001: present the newest capture sample immediately. The sink
         // is thread-safe and intentionally receives samples on the capture
         // queue, avoiding a per-frame MainActor task that could itself backlog.
-        let cameraPreviewFrameSink = cameraPreviewController.frameSink
-        let configurationFrameSink = configurationCameraFrameSink
+        let cameraPreviewProcessor = cameraBeautyPreviewProcessor
         cameraRecorder.onPreviewSampleBuffer = { sampleBuffer in
-            cameraPreviewFrameSink.enqueue(sampleBuffer)
-            configurationFrameSink.enqueue(sampleBuffer)
+            cameraPreviewProcessor.enqueue(sampleBuffer)
         }
         self.captureSetup.onError = { [weak self] message in self?.errorMessage = message }
         self.captureSetup.onStartRequested = { [weak self] in self?.startRecording() }
@@ -360,12 +367,6 @@ final class AppModel: ObservableObject {
         captureSetup.selectedSource
     }
 
-    /// A source button can be active while its full-screen selector is still
-    /// waiting for a concrete display/window/area/device. Do not present that
-    /// transient mode as a confirmed recording target.
-    var confirmedCaptureSource: CaptureSource? {
-        captureSetup.target?.source
-    }
     var cameraReadiness: RecorderCameraReadiness {
         RecorderCameraReadiness(
             recordsCamera: configuration.recordsCamera,
@@ -379,8 +380,6 @@ final class AppModel: ObservableObject {
             cameraReadiness: cameraReadiness
         )
     }
-
-    var canStartRecording: Bool { recorderStartAvailability.permitsRecording }
 
     func startRecording() {
         guard purpose == .recording, phase == .setup else { return }
@@ -528,6 +527,7 @@ final class AppModel: ObservableObject {
                 let customTitle = recordingTitleDraft.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !customTitle.isEmpty { project.title = String(customTitle.prefix(120)) }
                 project.camera.isMirrored = recordingCameraMirrored
+                project.camera.beauty = recordingCameraBeauty
                 let session = try ProjectStore.createSession(
                     preferredTitle: project.title,
                     createdAt: recordingCreatedAt
@@ -537,9 +537,8 @@ final class AppModel: ObservableObject {
                     volumeURL: session.packageURL
                 )
                 if plan.configuration.source == .device {
-                    project.canvas.applyScreenFrameStyle(DeviceScreenFrameRecommendation.style(
-                        deviceName: plan.configuration.deviceName
-                    ))
+                    project.canvas.crop = .full
+                    project.canvas.applyScreenFrameStyle(.devicePhone)
                 }
                 project.media = plan.initialMediaManifest
                 _ = try await workspace.flush(project)
@@ -615,16 +614,12 @@ final class AppModel: ObservableObject {
                         try await deviceRecorder.start(
                             to: session.deviceRecordingURL,
                             deviceUniqueID: plan.configuration.deviceID,
-                            capturesDeviceAudio: plan.configuration.recordsSystemAudio
+                            capturesDeviceAudio: plan.configuration.recordsSystemAudio,
+                            captureCodec: plan.configuration.captureCodec
                         )
                         guard recordingRuns.isCurrent(run.id) else { return }
                         recordingRuns.markStarted(.device, for: run.id)
-                        let dimensions = deviceRecorder.configuredVideoDimensions
-                        project.canvas.applyScreenFrameStyle(DeviceScreenFrameRecommendation.style(
-                            deviceName: plan.configuration.deviceName,
-                            width: dimensions?.width,
-                            height: dimensions?.height
-                        ))
+                        project.canvas.applyScreenFrameStyle(.devicePhone)
                     } else {
                         try await recorder.start(
                             runID: run.id, configuration: plan.configuration,
@@ -823,7 +818,6 @@ final class AppModel: ObservableObject {
             let rawPointerEvents = stopResult.pointerEvents
             let pointerStartOffset = pointerReference?.startOffset ?? 0
             let pointerSourceStartTime = pointerReference?.sourceStartTime ?? 0
-            let createsAutomaticZooms = run.plan.automaticallyCreatesZooms
             let zoomEasing = project.motion.defaultZoomEasing
             let zoomTransitionDuration = project.motion.defaultZoomTransitionDuration
             let pointerWorker = Task.detached(priority: .userInitiated) {
@@ -831,7 +825,6 @@ final class AppModel: ObservableObject {
                     events: rawPointerEvents,
                     startOffset: pointerStartOffset,
                     sourceStartTime: pointerSourceStartTime,
-                    createsAutomaticZooms: createsAutomaticZooms,
                     easing: zoomEasing,
                     transitionDuration: zoomTransitionDuration
                 )
@@ -885,16 +878,8 @@ final class AppModel: ObservableObject {
             if !recordingIsUsable {
                 recordingURL = nil
             }
-            if recordingIsUsable,
-               run.plan.configuration.source == .device,
-               let recordingURL,
-               let displayedSize = await displayedVideoSize(at: recordingURL) {
-                guard recordingRuns.isCurrent(run.id) else { return }
-                project.canvas.applyScreenFrameStyle(DeviceScreenFrameRecommendation.style(
-                    deviceName: run.plan.configuration.deviceName,
-                    width: Int(displayedSize.width.rounded()),
-                    height: Int(displayedSize.height.rounded())
-                ))
+            if recordingIsUsable, run.plan.configuration.source == .device {
+                project.canvas.applyScreenFrameStyle(.devicePhone)
             }
             if var media = project.media {
                 if cameraRecordingURL.map(isNonemptyFile) != true {
@@ -1002,7 +987,8 @@ final class AppModel: ObservableObject {
             if recordingIsUsable {
                 if !missingTracks.isEmpty {
                     finalizationErrors.insert(
-                        "屏幕录制已保存，但\(missingTracks.joined(separator: "和"))轨道未成功写入。",
+                        String(format: appLocalized("屏幕录制已保存，但%@轨道未成功写入。"),
+                               missingTracks.map(appLocalized).joined(separator: appLocalized("和"))),
                         at: 0
                     )
                 }
@@ -1053,15 +1039,24 @@ final class AppModel: ObservableObject {
                 }
             }
             guard phase == .recording, recordingRuns.isCurrent(run.id) else { return }
+            let renewsNativeStream = !run.startedTracks.contains(.device)
+                && recorder.usesNativePauseSessions
             if isRecordingPaused {
-                if run.startedTracks.contains(.camera) { cameraRecorder.resume() }
-                if run.startedTracks.contains(.microphone) { microphoneRecorder.resume() }
-                if run.startedTracks.contains(.pointer) { pointerRecorder.resume() }
-                if run.startedTracks.contains(.device) {
-                    deviceRecorder.resume()
+                if renewsNativeStream {
+                    // A replacement SCK stream has a real startup interval.
+                    // Keep auxiliary tracks paused until its first frame, then
+                    // use the video media clock rather than callback wall time.
+                    guard await recorder.resume(runID: run.id) != nil,
+                          recordingRuns.isCurrent(run.id), recorder.isCapturing,
+                          !recorder.isPaused else { return }
                 } else {
-                    await recorder.resume(runID: run.id)
-                    guard recordingRuns.isCurrent(run.id), !recorder.isPaused else { return }
+                    resumeAuxiliaryTracks(for: run)
+                    if run.startedTracks.contains(.device) {
+                        deviceRecorder.resume()
+                    } else {
+                        await recorder.resume(runID: run.id)
+                        guard recordingRuns.isCurrent(run.id), !recorder.isPaused else { return }
+                    }
                 }
                 resumePauseAccounting()
                 isRecordingPaused = false
@@ -1072,9 +1067,7 @@ final class AppModel: ObservableObject {
                     await recorder.pause(runID: run.id)
                     guard recordingRuns.isCurrent(run.id), recorder.isPaused else { return }
                 }
-                if run.startedTracks.contains(.camera) { cameraRecorder.pause() }
-                if run.startedTracks.contains(.microphone) { microphoneRecorder.pause() }
-                if run.startedTracks.contains(.pointer) { pointerRecorder.pause() }
+                if !renewsNativeStream { pauseAuxiliaryTracks(for: run) }
                 beginPauseAccounting()
                 isRecordingPaused = true
             }

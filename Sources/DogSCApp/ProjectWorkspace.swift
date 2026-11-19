@@ -2,23 +2,12 @@ import Combine
 import Foundation
 import RecorderCore
 
-/// The narrow persistence surface required by an active recording. Recording
-/// orchestration consumes immutable project snapshots and never owns or copies
-/// the workspace document.
-@MainActor
-protocol RecordingSessionWorkspacePort: AnyObject {
-    var session: RecordingSession? { get }
-
-    func activate(session: RecordingSession, isSaved: Bool)
-    func flush(_ project: RecorderProject) async throws -> ProjectSaveReceipt?
-    func invalidateCurrentSession() async -> RecordingSession?
-}
 
 /// Owns the one project document and its complete persistence epoch lifecycle.
 /// UI policy, app phase transitions, media presentation, and recording control
 /// deliberately remain in AppModel.
 @MainActor
-final class ProjectWorkspace: ObservableObject, RecordingSessionWorkspacePort {
+final class ProjectWorkspace: ObservableObject {
     let document: ProjectDocument
     var onFailure: ((String) -> Void)?
 
@@ -60,19 +49,7 @@ final class ProjectWorkspace: ObservableObject, RecordingSessionWorkspacePort {
         )
     }
 
-    convenience init(document: ProjectDocument) {
-        self.init(
-            document: document,
-            persistence: ProjectSessionPersistenceController()
-        )
-    }
 
-    convenience init(persistence: ProjectSessionPersistenceController) {
-        self.init(
-            document: ProjectDocument(project: RecorderProject()),
-            persistence: persistence
-        )
-    }
 
     func activate(session: RecordingSession, isSaved: Bool) {
         persistence.activate(session: session, isSaved: isSaved)

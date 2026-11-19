@@ -50,13 +50,6 @@ public struct RecordingPerformanceSummary: Codable, Equatable, Sendable {
     public let minimumAvailableDiskBytes: Int64?
     public let worstThermalState: RecordingThermalState
 
-    public init(samples: [RecordingPerformanceSample]) {
-        var summary: Self?
-        for sample in samples {
-            summary = summary?.including(sample) ?? Self(sample: sample)
-        }
-        self = summary ?? Self.empty
-    }
 
     public init(sample: RecordingPerformanceSample) {
         sampleCount = 1
@@ -114,17 +107,6 @@ public struct RecordingPerformanceSummary: Codable, Equatable, Sendable {
         self.worstThermalState = worstThermalState
     }
 
-    private static var empty: Self {
-        Self(
-            sampleCount: 0,
-            peakProcessCPUPercent: 0,
-            peakSystemCPUPercent: 0,
-            peakProcessResidentBytes: 0,
-            peakProcessMetalAllocatedBytes: nil,
-            minimumAvailableDiskBytes: nil,
-            worstThermalState: .unknown
-        )
-    }
 
     private static func maximum<T: Comparable>(_ lhs: T?, _ rhs: T?) -> T? {
         switch (lhs, rhs) {

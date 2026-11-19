@@ -43,5 +43,4 @@ enum RecorderStartAvailability: Equatable, Sendable {
         self = cameraReadiness.permitsRecording ? .ready : .preparingCamera
     }
 
-    var permitsRecording: Bool { self == .ready }
 }

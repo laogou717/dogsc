@@ -4,9 +4,6 @@ import Foundation
 import RecorderCore
 
 struct MediaAssetInventory: Equatable, Sendable {
-    var duration: TimeInterval
-    var videoWidth: Double?
-    var videoHeight: Double?
     var videoTimeRange: MediaTimeRange?
     var audioTimeRange: MediaTimeRange?
     var videoFrameRate: Double? = nil
@@ -15,9 +12,6 @@ struct MediaAssetInventory: Equatable, Sendable {
     var hasAudio: Bool { audioTimeRange != nil }
 
     static let empty = MediaAssetInventory(
-        duration: 0,
-        videoWidth: nil,
-        videoHeight: nil,
         videoTimeRange: nil,
         audioTimeRange: nil
     )
@@ -33,15 +27,15 @@ enum MediaAnalysisError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .missingAudioTrack:
-            return "媒体中没有可用的音频轨。"
+            return appLocalized("媒体中没有可用的音频轨。")
         case .cannotReadAudio:
-            return "无法创建音频读取器。"
+            return appLocalized("无法创建音频读取器。")
         case .unsupportedAudioFormat:
-            return "音频轨格式无法用于波形分析。"
+            return appLocalized("音频轨格式无法用于波形分析。")
         case .invalidAudioTimeRange:
-            return "音频轨的时间范围为空或无效。"
+            return appLocalized("音频轨的时间范围为空或无效。")
         case let .readerFailed(message):
-            return "音频分析失败：\(message)"
+            return String(format: appLocalized("音频分析失败：%@"), appLocalized(message))
         }
     }
 }
@@ -55,15 +49,6 @@ struct TimestampedWaveformAccumulator: Equatable, Sendable {
         peaks = Array(repeating: 0, count: max(sampleCount, 1))
     }
 
-    mutating func record(peak: Double, atPresentationTime timestamp: TimeInterval) {
-        guard peak.isFinite,
-              peak >= 0,
-              let bucket = timeRange.bucketIndex(
-                forPresentationTime: timestamp,
-                bucketCount: peaks.count
-              ) else { return }
-        peaks[bucket] = max(peaks[bucket], peak)
-    }
 
     /// Records one interleaved PCM buffer by contiguous waveform buckets.
     ///
@@ -175,58 +160,11 @@ struct TimestampedWaveformAccumulator: Equatable, Sendable {
 /// derived from the files that actually exist, never from the recorder setup
 /// toggles that happened to be active when the project was created.
 enum MediaAnalyzer {
-    static func inspect(_ url: URL?) async -> MediaAssetInventory {
-        guard let url, FileManager.default.fileExists(atPath: url.path) else {
-            return .empty
-        }
-
-        let asset = AVURLAsset(url: url)
-        let assetDuration = (try? await asset.load(.duration).seconds)
-        let videoTracks = (try? await asset.loadTracks(withMediaType: .video)) ?? []
-        let audioTracks = (try? await asset.loadTracks(withMediaType: .audio)) ?? []
-        let videoTimeRange = await timeRange(for: videoTracks.first)
-        let audioTimeRange = await timeRange(for: audioTracks.first)
-
-        var width: Double?
-        var height: Double?
-        var frameRate: Double?
-        if videoTimeRange != nil,
-           let videoTrack = videoTracks.first,
-           let naturalSize = try? await videoTrack.load(.naturalSize),
-           let transform = try? await videoTrack.load(.preferredTransform) {
-            let displayed = CGRect(origin: .zero, size: naturalSize)
-                .applying(transform)
-                .standardized
-                .size
-            if displayed.width > 0, displayed.height > 0 {
-                width = displayed.width.rounded()
-                height = displayed.height.rounded()
-            }
-            if let nominal = try? await videoTrack.load(.nominalFrameRate),
-               nominal.isFinite,
-               nominal > 0 {
-                frameRate = Double(nominal)
-            }
-        }
-
-        let validAssetDuration = assetDuration.flatMap { duration -> TimeInterval? in
-            guard duration.isFinite, duration > 0 else { return nil }
-            return duration
-        } ?? 0
-        let duration = [
-            validAssetDuration,
-            videoTimeRange.map { max($0.end, 0) } ?? 0,
-            audioTimeRange.map { max($0.end, 0) } ?? 0,
-        ].max() ?? 0
-
-        return MediaAssetInventory(
-            duration: duration,
-            videoWidth: width,
-            videoHeight: height,
-            videoTimeRange: videoTimeRange,
-            audioTimeRange: audioTimeRange,
-            videoFrameRate: frameRate
-        )
+    /// Immutable metadata handed to one decoder worker. No reader is shared
+    /// with the task that loaded the track.
+    private struct WaveformSource: @unchecked Sendable {
+        let asset: AVAsset
+        let track: AVAssetTrack
     }
 
     /// Produces normalized peak samples from the actual PCM stream. Silence is
@@ -252,7 +190,19 @@ enum MediaAnalyzer {
 
         let sampleRate = max(streamDescription.pointee.mSampleRate, 1)
         let channels = max(Int(streamDescription.pointee.mChannelsPerFrame), 1)
+        try Task.checkCancellation()
+        let source = WaveformSource(asset: asset, track: track)
+        return try await MediaWaveformWork().run { cancellation in
+            try readWaveform(asset: source.asset, track: source.track, timeRange: trackTimeRange,
+                             sampleRate: sampleRate, channels: channels, count: count,
+                             cancellation: cancellation)
+        }
+    }
 
+    private static func readWaveform(asset: AVAsset, track: AVAssetTrack, timeRange: MediaTimeRange,
+                                     sampleRate: Double, channels: Int, count: Int,
+                                     cancellation: ExportCancellationLatch) throws -> [Double] {
+        if cancellation.isRequested { throw CancellationError() }
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderTrackOutput(
             track: track,
@@ -275,11 +225,11 @@ enum MediaAnalyzer {
         }
 
         var accumulator = TimestampedWaveformAccumulator(
-            timeRange: trackTimeRange,
+            timeRange: timeRange,
             sampleCount: count
         )
         while reader.status == .reading, let sampleBuffer = output.copyNextSampleBuffer() {
-            try Task.checkCancellation()
+            if cancellation.isRequested { throw CancellationError() }
             let presentationTime = sampleBuffer.presentationTimeStamp.seconds
             guard presentationTime.isFinite else { continue }
             guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { continue }
@@ -310,7 +260,7 @@ enum MediaAnalyzer {
         if reader.status == .failed {
             throw MediaAnalysisError.readerFailed(reader.error?.localizedDescription ?? "未知错误")
         }
-
+        if cancellation.isRequested { throw CancellationError() }
         return accumulator.normalizedSamples
     }
 

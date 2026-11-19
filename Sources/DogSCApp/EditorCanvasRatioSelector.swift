@@ -8,26 +8,60 @@ struct EditorCanvasRatioSelector: View {
     @State private var editingCustom = false
     @State private var widthText = "16"
     @State private var heightText = "9"
+    @State private var showsPortrait = false
+    @Namespace private var orientationThumb
     @FocusState private var customField: CustomField?
-    @Namespace private var highlight
 
     private enum CustomField: Hashable { case width, height }
 
-    private let presets: [CanvasAspectRatio] = [.adaptive, .landscape, .standard, .cinema, .square, .custom]
-    private var portrait: Bool { (canvas.resolvedFixedAspectRatio ?? 1) < 1 }
-    private var selectedPreset: CanvasAspectRatio {
-        if editingCustom { return .custom }
-        switch canvas.aspectRatio {
-        case .portrait: return .landscape
-        case .standardPortrait: return .standard
-        case .cinemaPortrait: return .cinema
-        default: return canvas.aspectRatio
+    /// The list follows the orientation switch: landscape shows the
+    /// widescreen formats, portrait the phone ones (each with where it is
+    /// used), so both sides get a real choice instead of a flipped copy.
+    private struct Preset: Identifiable {
+        let id: String
+        let label: String
+        let hint: String?
+        let width: Double
+        let height: Double
+        let ratio: CanvasAspectRatio
+    }
+
+    private static let landscapePresets: [Preset] = [
+        Preset(id: "16:9", label: "16:9", hint: "B站 · YouTube", width: 16, height: 9, ratio: .landscape),
+        Preset(id: "4:3", label: "4:3", hint: "课件 · iPad", width: 4, height: 3, ratio: .standard),
+        Preset(id: "2.39:1", label: "2.39:1", hint: "电影宽银幕", width: 2.39, height: 1, ratio: .cinema),
+        Preset(id: "1:1", label: "1:1", hint: "方形", width: 1, height: 1, ratio: .square),
+    ]
+    private static let portraitPresets: [Preset] = [
+        Preset(id: "9:16", label: "9:16", hint: "抖音 · 视频号 · Reels", width: 9, height: 16, ratio: .portrait),
+        Preset(id: "3:4", label: "3:4", hint: "小红书", width: 3, height: 4, ratio: .standardPortrait),
+        Preset(id: "4:5", label: "4:5", hint: "Instagram", width: 4, height: 5, ratio: .custom),
+        Preset(id: "1:1", label: "1:1", hint: "方形", width: 1, height: 1, ratio: .square),
+    ]
+
+    private var presets: [Preset] { showsPortrait ? Self.portraitPresets : Self.landscapePresets }
+
+    private func isSelected(_ preset: Preset) -> Bool {
+        guard !editingCustom else { return false }
+        if preset.ratio == .custom {
+            return canvas.aspectRatio == .custom
+                && abs(canvas.customAspectRatio.width / canvas.customAspectRatio.height - preset.width / preset.height) < 0.001
         }
+        return canvas.aspectRatio == preset.ratio
+    }
+
+    private var customIsSelected: Bool {
+        editingCustom || (canvas.aspectRatio == .custom && !presets.contains(where: isSelected))
     }
     private var valueLabel: String {
         // Keep even very large user-entered pairs inside the popover; the
         // toolbar must never grow wider because of the authored ratio text.
-        appLocalized(canvas.aspectRatio.rawValue)
+        if canvas.aspectRatio == .custom {
+            let w = canvas.customAspectRatio.width, h = canvas.customAspectRatio.height
+            if abs(w / h - 0.8) < 0.001 { return "4:5" }
+            return w / h < 10 && number(w).count + number(h).count <= 6 ? "\(number(w)):\(number(h))" : appLocalized("自定义")
+        }
+        return appLocalized(canvas.aspectRatio.rawValue)
     }
     private var customValue: CanvasCustomAspectRatio? {
         guard let width = Double(widthText), let height = Double(heightText),
@@ -41,16 +75,17 @@ struct EditorCanvasRatioSelector: View {
     }
 
     private func prepareFields() {
-        editingCustom = canvas.aspectRatio == .custom
+        showsPortrait = (canvas.resolvedFixedAspectRatio ?? 1) < 1
+        editingCustom = false
         widthText = number(canvas.customAspectRatio.width)
         heightText = number(canvas.customAspectRatio.height)
     }
 
     private var entryButton: some View {
         Button(action: presentPanel) {
-            EditorToolbarControlSurface(accessibilityTitle: "画布比例") { entryLabel }
+            EditorMonitorBarButtonSurface(accessibilityTitle: "画布比例", isActive: isPresented) { entryLabel }
         }
-        .buttonStyle(EditorToolbarPressButtonStyle())
+        .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 8, showsHover: false))
         .accessibilityLabel("画布比例")
         .accessibilityValue(valueLabel)
         .editorPopoverKeyboardEntry(action: presentPanel)
@@ -63,65 +98,133 @@ struct EditorCanvasRatioSelector: View {
     }
 
     private var entryLabel: some View {
-        HStack(spacing: 8) {
-            EditorSymbol("aspectratio", size: 11.5)
+        // 编辑器第二版: the ratio glyph and the value, no disclosure chevron.
+        HStack(spacing: 6) {
+            AppLineIcon(kind: .aspect, size: 16)
             Text(valueLabel).lineLimit(1).fixedSize()
-            EditorSymbol("chevron.down", size: 11.5).font(.appUI(size: 10, weight: .medium))
-                .foregroundStyle(.secondary)
         }
     }
 
+    /// A short list in the editor's menu language: each ratio with a small
+    /// outline of its shape, orientation as a two-way switch under it, and
+    /// a custom pair that applies on Return.
     private var panel: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Text("画布比例").font(.appUI(size: 14, weight: .semibold))
-                Spacer()
-                Button { isPresented = false } label: { EditorSymbol("xmark", size: 14) }
-                    .buttonStyle(.editorGhost)
-                    .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous))
-                    .accessibilityLabel("关闭")
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 2) {
+                orientationButton("横屏", kind: .shapeWide, isPortrait: false)
+                orientationButton("竖屏", kind: .portrait, isPortrait: true)
             }
-            controls
-        }
-        .padding(16).frame(width: 320)
-        .animation(SpringMotion.fluid, value: editingCustom)
-    }
-
-    private var controls: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 8) {
-                ForEach(presets) { ratio in presetButton(ratio) }
+            .padding(2)
+            .background(EditorTheme.chrome(0.045), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .padding(.horizontal, 4)
+            .padding(.top, 2)
+            .padding(.bottom, 6)
+            simpleRow(title: "适应素材", kind: .expand, selected: canvas.aspectRatio == .adaptive && !editingCustom) {
+                editingCustom = false
+                var updated = canvas
+                updated.aspectRatio = .adaptive
+                canvas = updated
+            }
+            // The two lists cross-fade and slide toward the chosen side.
+            VStack(spacing: 0) {
+                ForEach(presets) { preset in presetRow(preset) }
+            }
+            .id(showsPortrait)
+            .transition(.asymmetric(
+                insertion: .opacity.combined(with: .offset(x: showsPortrait ? 14 : -14)),
+                removal: .opacity.combined(with: .offset(x: showsPortrait ? -14 : 14))
+            ))
+            simpleRow(title: "自定义", kind: .pencil, selected: customIsSelected) {
+                widthText = number(canvas.customAspectRatio.width)
+                heightText = number(canvas.customAspectRatio.height)
+                editingCustom = true
             }
             if editingCustom {
-                HStack(spacing: 8) {
-                    HStack(spacing: 6) {
-                        customRatioField("宽", text: $widthText, field: .width)
-                        Text(":").foregroundStyle(.secondary)
-                        customRatioField("高", text: $heightText, field: .height)
-                    }
-                    .padding(.horizontal, 6)
-                    .background(EditorChoiceStyle.track,
-                                in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous))
-                    Button("应用") {
-                        guard let value = customValue else { return }
-                        var updated = canvas
-                        updated.customAspectRatio = value
-                        updated.aspectRatio = .custom
-                        withAnimation(SpringMotion.fluid) { canvas = updated }
-                    }.buttonStyle(.editorQuiet).disabled(customValue == nil)
+                Rectangle().fill(EditorTheme.hairline).frame(height: 1).padding(.vertical, 4)
+                HStack(spacing: 6) {
+                    customRatioField("宽", text: $widthText, field: .width)
+                    Text(":").foregroundStyle(EditorTheme.tertiaryText)
+                    customRatioField("高", text: $heightText, field: .height)
+                    Button("应用") { applyCustom() }
+                        .buttonStyle(.editorQuiet)
+                        .disabled(customValue == nil)
                 }
-                Text("输入宽高比例，例如 3:2（支持 1:10 至 10:1）")
-                    .font(.appUI(size: 11)).foregroundStyle(EditorTheme.popoverSecondaryText)
-            } else if selectedPreset != .adaptive && selectedPreset != .square {
-                HStack(spacing: 4) {
-                    orientationButton("横向", symbol: "rectangle", isPortrait: false)
-                    orientationButton("竖向", symbol: "rectangle.portrait", isPortrait: true)
-                }
-                .padding(2)
-                .background(EditorChoiceStyle.track,
-                            in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
+                .padding(.horizontal, 4)
+                .padding(.bottom, 2)
+                .onSubmit(applyCustom)
             }
         }
+        .padding(4)
+        .frame(width: 260)
+        .animation(SpringMotion.canvasMorph, value: showsPortrait)
+    }
+
+    private func applyCustom() {
+        guard let value = customValue else { return }
+        var updated = canvas
+        updated.customAspectRatio = value
+        updated.aspectRatio = .custom
+        canvas = updated
+        editingCustom = false
+    }
+
+    private func presetRow(_ preset: Preset) -> some View {
+        let selected = isSelected(preset)
+        let aspect = CGFloat(preset.width / preset.height)
+        return Button {
+            editingCustom = false
+            var updated = canvas
+            if preset.ratio == .custom {
+                updated.customAspectRatio = .init(width: preset.width, height: preset.height)
+            }
+            updated.aspectRatio = preset.ratio
+            canvas = updated
+        } label: {
+            HStack(spacing: 8) {
+                RoundedRectangle(cornerRadius: 1.5).strokeBorder(lineWidth: 1.2)
+                    .frame(width: aspect >= 1 ? 16 : 16 * aspect, height: aspect >= 1 ? 16 / aspect : 16)
+                    .foregroundStyle(EditorTheme.secondaryText)
+                    .frame(width: 18, height: 16)
+                Text(preset.label)
+                    .font(.appUI(size: 13, weight: selected ? .semibold : .regular).monospacedDigit())
+                if let hint = preset.hint {
+                    Text(appLocalized(hint))
+                        .font(.appUI(size: 11.5))
+                        .foregroundStyle(EditorTheme.tertiaryText)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                EditorSymbol("checkmark", size: 12).opacity(selected ? 1 : 0)
+            }
+            .foregroundStyle(EditorTheme.primaryText)
+            .padding(.horizontal, 8)
+            .frame(height: 30)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(EditorActionRowStyle(selected: selected))
+        .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    private func simpleRow(title: String, kind: AppLineIcon.Kind, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                AppLineIcon(kind: kind, size: 13)
+                    .foregroundStyle(EditorTheme.secondaryText)
+                    .frame(width: 18, height: 16)
+                Text(appLocalized(title))
+                    .font(.appUI(size: 13, weight: selected ? .semibold : .regular))
+                Spacer(minLength: 8)
+                EditorSymbol("checkmark", size: 12).opacity(selected ? 1 : 0)
+            }
+            .foregroundStyle(EditorTheme.primaryText)
+            .padding(.horizontal, 8)
+            .frame(height: 30)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(EditorActionRowStyle(selected: selected))
+        .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private func customRatioField(_ title: LocalizedStringKey, text: Binding<String>, field: CustomField) -> some View {
@@ -130,10 +233,11 @@ struct EditorCanvasRatioSelector: View {
             // The workspace's pale graphite tint makes selected white text
             // disappear in Dark Aqua. Text editing uses the system highlight.
             .tint(nil)
-            .font(.appUI(size: 13, weight: .medium))
+            .font(.appUI(size: 12, weight: .medium))
             .monospacedDigit()
             .multilineTextAlignment(.center)
             .frame(maxWidth: .infinity, minHeight: EditorInterfaceHeight.compact)
+            .background(EditorTheme.controlWell, in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
             .focused($customField, equals: field)
             .appKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous),
                               isFocused: customField == field)
@@ -141,82 +245,57 @@ struct EditorCanvasRatioSelector: View {
             .accessibilityIdentifier(field == .width ? "editor.canvas.custom.width" : "editor.canvas.custom.height")
     }
 
-    private func presetButton(_ ratio: CanvasAspectRatio) -> some View {
-        let selected = selectedPreset == ratio
-        let aspect: CGFloat = switch ratio {
-        case .landscape: 16 / 9
-        case .standard: 4 / 3
-        case .cinema: 2.39
-        default: 1
-        }
+    /// Switches the list; a preset already in use flips to its partner
+    /// (16:9 ↔ 9:16, 4:3 ↔ 3:4). 适应、1:1 and custom values stay.
+    private func orientationButton(_ title: String, kind: AppLineIcon.Kind, isPortrait: Bool) -> some View {
+        let on = showsPortrait == isPortrait
         return Button {
-            if ratio == .custom { editingCustom = true; return }
-            editingCustom = false
-            var updated = canvas
-            updated.aspectRatio = oriented(ratio, portrait: portrait)
-            withAnimation(SpringMotion.fluid) { canvas = updated }
-        } label: {
-            VStack(spacing: 7) {
-                if ratio == .custom || ratio == .adaptive {
-                    EditorSymbol(ratio == .custom ? "slider.horizontal.3" : "arrow.up.left.and.arrow.down.right", size: 14)
-                        .frame(height: 24)
-                } else {
-                    RoundedRectangle(cornerRadius: 3).strokeBorder(lineWidth: 1.3)
-                        .frame(width: min(24, 32 / aspect) * aspect, height: min(24, 32 / aspect)).frame(height: 24)
-                }
-                Text(appLocalized(ratio == .cinema ? "电影" : ratio.rawValue))
-                    .font(.appUI(size: 12, weight: selected ? .medium : .regular)).lineLimit(1)
+            guard !on else { return }
+            withAnimation(SpringMotion.canvasMorph) { showsPortrait = isPortrait }
+            let flipped: CanvasAspectRatio? = switch canvas.aspectRatio {
+            case .landscape where isPortrait: .portrait
+            case .portrait where !isPortrait: .landscape
+            case .standard where isPortrait: .standardPortrait
+            case .standardPortrait where !isPortrait: .standard
+            case .cinema where isPortrait: .portrait
+            case .cinemaPortrait where !isPortrait: .cinema
+            default: nil
             }
-            .foregroundStyle(EditorTheme.primaryText)
-            .frame(maxWidth: .infinity).frame(height: 68)
+            if let flipped {
+                var updated = canvas
+                updated.aspectRatio = flipped
+                canvas = updated
+            } else if canvas.aspectRatio == .custom, isSelectedFourFive, !isPortrait {
+                var updated = canvas
+                updated.aspectRatio = .standard
+                canvas = updated
+            }
+        } label: {
+            HStack(spacing: 6) {
+                AppLineIcon(kind: kind, size: 13)
+                Text(appLocalized(title))
+            }
+            .font(.appUI(size: 12.5, weight: .medium))
+            .foregroundStyle(on ? EditorTheme.primaryText : EditorTheme.secondaryText)
+            .frame(maxWidth: .infinity).frame(height: 26)
             .background {
-                RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous)
-                    .fill(EditorTheme.cardFill)
-                if selected {
-                    RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous)
-                        .fill(EditorTheme.selectionWash)
-                        .overlay {
-                            RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous)
-                                .strokeBorder(EditorTheme.platinumAccent, lineWidth: 1.5)
-                        }
-                        .matchedGeometryEffect(id: "ratio", in: highlight)
+                if on {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(EditorTheme.segmentThumb)
+                        .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(EditorTheme.hairline, lineWidth: 0.5))
+                        .shadow(color: .black.opacity(0.08), radius: 1, y: 1)
+                        .matchedGeometryEffect(id: "orientationThumb", in: orientationThumb)
                 }
             }
-            .contentShape(RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
-        }.buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: EditorInterfaceRadius.control))
-        .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
-        .help(appLocalized(ratio.rawValue))
-        .accessibilityAddTraits(selected ? .isSelected : [])
-    }
-
-    private func orientationButton(_ title: String, symbol: String, isPortrait: Bool) -> some View {
-        Button {
-            var updated = canvas
-            updated.aspectRatio = oriented(selectedPreset, portrait: isPortrait)
-            withAnimation(SpringMotion.fluid) { canvas = updated }
-        } label: {
-            EditorSymbolLabel(appLocalized(title), systemImage: symbol)
-                .font(.appUI(size: 12, weight: .medium))
-                .foregroundStyle(portrait == isPortrait ? EditorTheme.primaryText : EditorTheme.secondaryText)
-                .frame(maxWidth: .infinity).frame(height: EditorInterfaceHeight.selection)
-                .background {
-                    if portrait == isPortrait {
-                        EditorRaisedThumb(shape: RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous), usesAccent: false)
-                    }
-                }
-        }.buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: EditorInterfaceRadius.compact))
-        .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous))
-        .accessibilityAddTraits(portrait == isPortrait ? .isSelected : [])
-    }
-
-    private func oriented(_ ratio: CanvasAspectRatio, portrait: Bool) -> CanvasAspectRatio {
-        guard portrait else { return ratio }
-        switch ratio {
-        case .landscape: return .portrait
-        case .standard: return .standardPortrait
-        case .cinema: return .cinemaPortrait
-        default: return ratio
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .accessibilityAddTraits(on ? .isSelected : [])
+    }
+
+    private var isSelectedFourFive: Bool {
+        abs(canvas.customAspectRatio.width / canvas.customAspectRatio.height - 0.8) < 0.001
     }
 
     private func number(_ value: Double) -> String {

@@ -85,15 +85,42 @@ enum EditorConsole {
             fillNSColor: NSColor(calibratedWhite: 0.12, alpha: 1)
         )
         /// 缩放：青柠绿（与「运镜」页点缀色一致）。
-        static let zoom = vivid(fill: 0xB5E655, lightStroke: 0x5A9E1C, ink: 0x223400, lightText: 0x2F5A05)
+        static let zoom = vivid(fill: 0x99BB81, lightStroke: 0x658D49, ink: 0x2B3E1E, lightText: 0x486534)
         /// 屏幕 3D：琥珀黄。
-        static let screenMotion = vivid(fill: 0xF7C548, lightStroke: 0xB98200, ink: 0x3A2800, lightText: 0x6E4E00)
+        static let screenMotion = vivid(fill: 0xBBA881, lightStroke: 0x8D7749, ink: 0x3E331E, lightText: 0x655534)
         /// 摄像运动：珊瑚橙（与「摄像头」页点缀色一致）。
-        static let cameraMotion = vivid(fill: 0xFF8A5C, lightStroke: 0xDD5420, ink: 0x3D1200, lightText: 0x86300C)
+        static let cameraMotion = vivid(fill: 0xBB9281, lightStroke: 0x8D5D49, ink: 0x3E271E, lightText: 0x654334)
         /// 叠加（柔化／突出／贴图）：青绿。
-        static let overlay = vivid(fill: 0x45CBB8, lightStroke: 0x0F8C7A, ink: 0x00352D, lightText: 0x0A5E52)
+        static let overlay = vivid(fill: 0x81BBB1, lightStroke: 0x498D82, ink: 0x1E3E39, lightText: 0x34655D)
         /// 摄像同步：玫红（只在校正同步时出现的曲线轨）。
-        static let cameraSync = vivid(fill: 0xF27E9F, lightStroke: 0xD03B67, ink: 0x4A0A22, lightText: 0x9E2449)
+        static let cameraSync = vivid(fill: 0xBB8194, lightStroke: 0x8D4960, ink: 0x3E1E29, lightText: 0x653444)
+        /// EDT-054 后期素材：每类一色，一眼分清轨道里放的是什么。
+        /// 视频：天蓝。
+        static let video = vivid(fill: 0x81A3BB, lightStroke: 0x49718D, ink: 0x1E313E, lightText: 0x345165)
+        /// 图片：青绿（沿用叠加色）。
+        static let image = overlay
+        /// 动效：丁香紫。
+        static let animation = vivid(fill: 0x9981BB, lightStroke: 0x65498D, ink: 0x2B1E3E, lightText: 0x483465)
+        /// 字幕：石板灰蓝（文字类，低饱和）。
+        static let subtitle = vivid(fill: 0x9199AC, lightStroke: 0x5C657A, ink: 0x252A37, lightText: 0x404859)
+        /// 音乐：靛蓝。
+        static let music = vivid(fill: 0x8189BB, lightStroke: 0x49528D, ink: 0x1E223E, lightText: 0x343B65)
+        /// 音效：洋红。
+        static let soundEffect = vivid(fill: 0xBB81AD, lightStroke: 0x8D497C, ink: 0x3E1E36, lightText: 0x653459)
+        /// 柔化与突出：暖沙色。
+        static let region = vivid(fill: 0xB1A28B, lightStroke: 0x837054, ink: 0x3C3120, lightText: 0x5F503A)
+    }
+
+    /// The colour of an added-material clip and of its lane.
+    static func palette(for kind: EditorOverlayTimelineKind, isEffect: Bool = false) -> EditorConsolePalette {
+        switch kind {
+        case .video: Track.video
+        case .sticker: Track.image
+        case .animation: Track.animation
+        case .subtitle: Track.subtitle
+        case .audio: isEffect ? Track.soundEffect : Track.music
+        case .mosaic: Track.region
+        }
     }
 
     /// 主片段波形：中性石墨灰，大面积内容不染色。
@@ -121,7 +148,12 @@ enum EditorConsole {
         case .zoomTrack, .zoom: Track.zoom
         case .screenMotionTrack, .screenMotion: Track.screenMotion
         case .camera, .cameraMotion: Track.cameraMotion
-        case .mosaic, .sticker: Track.overlay
+        case .mosaic: Track.region
+        case .sticker: Track.image
+        case .animation: Track.animation
+        case .audioClip: Track.music
+        case .subtitle: Track.subtitle
+        case .videoClip: Track.video
         }
     }
 }

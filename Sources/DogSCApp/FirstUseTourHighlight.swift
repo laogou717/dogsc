@@ -15,8 +15,7 @@ struct FirstUseTourHighlight: Equatable {
         Self(radius: radius, corners: corners)
     }
 
-    static let recorderSources = Self(radius: 20, continuous: false, segments: 4, spacing: 2, inset: 2)
-    static let recorderInputs = Self(radius: 20, continuous: false, segments: 3, spacing: 0, inset: 2)
+    static let recorderInputs = Self(radius: RecorderStyle.controlRadius, segments: 3, spacing: 0, inset: 2)
 
     func path(in bounds: CGRect) -> CGPath {
         let rect = bounds.insetBy(dx: inset, dy: inset)

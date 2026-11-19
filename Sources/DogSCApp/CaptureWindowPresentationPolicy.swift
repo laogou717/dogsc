@@ -39,6 +39,19 @@ enum CaptureWindowLevelPolicy {
 }
 
 enum CaptureOverlayScreenPolicy {
+    static func localCutout(targetFrame: CGRect?, screenFrame: CGRect) -> CGRect? {
+        guard let targetFrame, !targetFrame.isNull, !targetFrame.isInfinite,
+              !targetFrame.isEmpty,
+              targetFrame.minX.isFinite, targetFrame.minY.isFinite,
+              targetFrame.width.isFinite, targetFrame.height.isFinite else { return nil }
+        let intersection = targetFrame.intersection(screenFrame)
+        // Match the mask's minimum visible cutout. A screen without a hole
+        // must never become a solid recording dimmer.
+        guard !intersection.isNull, !intersection.isInfinite,
+              intersection.width > 1, intersection.height > 1 else { return nil }
+        return intersection.offsetBy(dx: -screenFrame.minX, dy: -screenFrame.minY)
+    }
+
     static func keyScreenIndex(
         pointer: CGPoint,
         screenFrames: [CGRect]

@@ -9,43 +9,43 @@ extension EditorPlaybackController {
         guard isPreviewActive, let preparedMedia, !isPlaying else { return }
         let requestedGeneration = preparedMedia.generation
         let requestedSeek = seekToken ?? self.seekToken
-        let pausedFrameRate = max(frameRate, 1)
+        let pausedFrameRate = max(frameRate(atOutputTime: time), 1)
         let frame = floor(EditorPlaybackClockPolicy.clampedTime(time, duration: duration)
             * Double(pausedFrameRate))
         let requestedTime = CMTime(
             seconds: frame / Double(pausedFrameRate),
             preferredTimescale: 60_000
         )
-        let primaryAsset = ImmutablePreviewAsset(
-            preparedMedia.composition.primaryComposition,
-            videoComposition: preparedMedia.composition.primaryVideoComposition
-        )
-        let cameraAsset = preparedMedia.composition.cameraComposition.map {
-            ImmutablePreviewAsset($0)
-        }
-        let shouldLoadCamera = cameraIsAvailable(at: frame / Double(pausedFrameRate))
+        guard let primaryInput = preparedMedia.screenFrameInput(at: requestedTime.seconds) else { return }
+        let cameraInput = preparedMedia.cameraFrameInput(at: requestedTime.seconds)
+        let shouldLoadCamera = cameraInput != nil
         cancelPausedFrameDecode()
-        // Own the generators for the whole request: Task cancellation alone
-        // would leave them decoding in the background during fast scrubbing.
-        let screenRequest = PausedPreviewFrameRequest(
-            primaryAsset.asset,
-            videoComposition: primaryAsset.videoComposition
-        )
-        let cameraRequest = shouldLoadCamera
-            ? cameraAsset.map { PausedPreviewFrameRequest($0.asset) }
-            : nil
+        let screenRequest = PausedPreviewFrameRequest(primaryInput.asset.asset)
+        let cameraRequest = cameraInput.map { PausedPreviewFrameRequest($0.asset.asset) }
+        let screenTime = CMTime(seconds: primaryInput.assetTime, preferredTimescale: 60_000)
+        let cameraTime = CMTime(seconds: cameraInput?.assetTime ?? 0, preferredTimescale: 60_000)
         pausedFrameRequests = [screenRequest] + (cameraRequest.map { [$0] } ?? [])
         let requestedDecode = pausedFrameDecodeToken
+        let imageInput = preparedMedia.composition.frameMetadata(at: requestedTime.seconds).screenSlice.flatMap { slice in
+            slice.media?.imagePath.map { path in
+                (ProjectFiles.url(path), slice.sourceStart + max(requestedTime.seconds - slice.outputStart, 0) * slice.sourceTimeScale)
+            }
+        }
         pausedFrameTask = Task { [weak self] in
             // The screen and camera compositions have independent generators.
             // Waiting for them serially made every pause/cut/scrub on a camera
             // project pay both exact-seek latencies before either frame could
             // be published. Structured children keep cancellation ownership
             // while reducing the refresh to the slower of the two branches.
-            async let screenImageTask = try? await screenRequest.image(at: requestedTime)
+            async let screenImageTask: CGImage? = {
+                if let (url, localTime) = imageInput {
+                    return ImageMediaFrameCache.shared.cgImage(at: url, time: localTime)
+                }
+                return try? await screenRequest.image(at: screenTime)
+            }()
             async let cameraImageTask: CGImage? = {
                 guard let cameraRequest else { return nil }
-                return try? await cameraRequest.image(at: requestedTime)
+                return try? await cameraRequest.image(at: cameraTime)
             }()
             let (screenImage, cameraImage) = await (
                 screenImageTask,
@@ -59,13 +59,16 @@ extension EditorPlaybackController {
                       self.pausedFrameDecodeToken == requestedDecode,
                       !self.isPlaying else { return }
                 if let screenImage {
+                    self.pausedScreenSegmentID = preparedMedia.composition.frameMetadata(at: requestedTime.seconds).screenSlice?.segmentID
                     self.pausedScreenImage = NSImage(cgImage: screenImage,
                         size: NSSize(width: screenImage.width, height: screenImage.height))
                 }
                 if let cameraImage {
+                    self.pausedCameraSourceID = preparedMedia.composition.frameMetadata(at: requestedTime.seconds).cameraSlice?.sourceID
                     self.pausedCameraImage = NSImage(cgImage: cameraImage,
                         size: NSSize(width: cameraImage.width, height: cameraImage.height))
                 } else if !shouldLoadCamera {
+                    self.pausedCameraSourceID = nil
                     self.pausedCameraImage = nil
                 }
                 self.pausedFrameTask = nil

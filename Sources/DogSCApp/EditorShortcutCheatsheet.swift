@@ -43,7 +43,6 @@ struct EditorShortcutCheatsheet: View {
             Entry(keys: "拖动缩放轨空白", action: "创建缩放片段"),
             Entry(keys: "拖动运动轨空白", action: "创建屏幕 3D / 摄像运动"),
             Entry(keys: "双击同步轨空白", action: "添加摄像头同步点"),
-            Entry(keys: "双击分栏柄", action: "恢复时间线默认高度"),
         ]),
         Group(title: "通用", entries: [
             Entry(keys: "⌘Z", action: "撤销"),
@@ -51,7 +50,13 @@ struct EditorShortcutCheatsheet: View {
             Entry(keys: "⌘O", action: "打开项目"),
             Entry(keys: "⌘E", action: "导出成片"),
             Entry(keys: "⌥X", action: "导出选中的主片段范围"),
-            Entry(keys: "⌥⌘I", action: "显示 / 隐藏检查器"),
+            Entry(keys: "⌥⌘L", action: "显示 / 隐藏素材面板"),
+            Entry(keys: "⌥⌘I", action: "导入录屏项目"),
+            Entry(keys: "⌘/", action: "快捷键速查"),
+            Entry(keys: "⌘K", action: "让 AI 修改…"),
+            Entry(keys: "⌘[", action: "返回全片设置"),
+            Entry(keys: "⌘V（画布）", action: "粘贴剪贴板图片为贴图"),
+            Entry(keys: "双击分栏柄", action: "恢复面板默认尺寸"),
             Entry(keys: "Esc", action: "取消裁切 / 中止时间线拖动"),
         ]),
     ]

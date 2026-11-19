@@ -7,53 +7,134 @@ private struct CanvasQuickEditorPlacement {
     let transitionAnchor: UnitPoint
 }
 
-private struct CanvasQuickControlSurface: ViewModifier {
-    var isSelected = false
-    @Environment(\.consolePalette) private var palette
-    @State private var isHovered = false
+// MARK: - Shared float bar (画面 · 浮条)
 
-    func body(content: Content) -> some View {
-        content
-        .font(.appUI(size: 12, weight: .medium))
-        .foregroundStyle(isSelected ? (palette?.ink ?? EditorTheme.primaryText) : EditorTheme.chrome(isHovered ? 0.82 : 0.62))
-        .lineLimit(1)
-        .fixedSize(horizontal: true, vertical: false)
-        .padding(.horizontal, 10)
-        .frame(height: 30)
-        // Same grammar as every capsule toolbar: the current choice is the
-        // raised thumb, hover is a flat wash of the same capsule.
-        .background {
-            if isSelected {
-                EditorRaisedThumb(shape: Capsule(style: .continuous))
-            } else {
-                Capsule(style: .continuous).fill(EditorTheme.chrome(isHovered ? EditorStateWash.hover : 0))
-            }
-        }
-        .contentShape(Capsule(style: .continuous))
-        .onHover { hovering in
-            withAnimation(SpringMotion.hover) {
-                isHovered = hovering
-            }
-        }
+/// One float-bar look for everything selected on the canvas (柔化与突出,
+/// 贴图, 动效里的元素, 屏幕 3D): a raised white plate, 10 corners, a hairline
+/// edge and a light cast shadow, 3 pt around 28-high buttons.
+enum EditorFloatBarMetrics {
+    static let buttonHeight: CGFloat = 28
+    static let inset: CGFloat = 3
+    static let cornerRadius: CGFloat = 10
+    static var height: CGFloat { buttonHeight + inset * 2 }
+}
+
+struct EditorFloatBar<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: EditorFloatBarMetrics.cornerRadius, style: .continuous)
+        HStack(spacing: 1) { content() }
+            .padding(EditorFloatBarMetrics.inset)
+            .frame(height: EditorFloatBarMetrics.height)
+            .fixedSize(horizontal: true, vertical: false)
+            .background(EditorTheme.panelRaised, in: shape)
+            .overlay { shape.strokeBorder(EditorTheme.chrome(0.075), lineWidth: 0.5).allowsHitTesting(false) }
+            .shadow(color: .black.opacity(0.16), radius: 11, y: 6)
+            .environment(\.consolePalette, EditorConsole.opening)
+            .contentShape(shape)
     }
 }
 
-private struct CanvasQuickMenuLabel: View {
-    let title: String
-    let systemImage: String
+struct EditorFloatBarSeparator: View {
+    var body: some View {
+        Rectangle().fill(EditorTheme.hairline)
+            .frame(width: 1, height: 18)
+            .padding(.horizontal, 3)
+            .accessibilityHidden(true)
+    }
+}
+
+/// `.bb`: transparent, 28 high, 12.5-pt label; hover a light wash, the
+/// current choice a deeper wash (or, inside a segment, a raised thumb).
+struct EditorFloatBarButtonSurface<Content: View>: View {
+    enum OnStyle { case wash, thumb }
+    var isOn = false
+    var onStyle: OnStyle = .wash
+    @ViewBuilder let content: () -> Content
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var hovered = false
 
     var body: some View {
-        HStack(spacing: 5) {
-            EditorSymbolLabel(appLocalized(title), systemImage: systemImage)
-            EditorSymbol("chevron.down", size: 10.5)
-                .font(.appUI(size: 8, weight: .bold))
-                .foregroundStyle(EditorTheme.secondaryText)
+        let shape = RoundedRectangle(cornerRadius: 7, style: .continuous)
+        let lit = isOn || (hovered && isEnabled)
+        content()
+            .font(.appUI(size: 12.5, weight: .medium))
+            .lineLimit(1)
+            .fixedSize()
+            .foregroundStyle(lit ? EditorTheme.primaryText : EditorTheme.secondaryText)
+            .padding(.horizontal, 7)
+            .frame(minWidth: EditorFloatBarMetrics.buttonHeight)
+            .frame(height: EditorFloatBarMetrics.buttonHeight)
+            .background {
+                if isOn, onStyle == .thumb {
+                    shape.fill(EditorTheme.segmentThumb)
+                        .overlay(shape.strokeBorder(EditorTheme.hairline, lineWidth: 0.5))
+                        .shadow(color: .black.opacity(0.08), radius: 1, y: 1)
+                } else {
+                    shape.fill(EditorTheme.chrome(isOn ? 0.08 : hovered && isEnabled ? 0.045 : 0))
+                }
+            }
+            .contentShape(shape)
+            .onHover { hovered = $0 }
+            .animation(SpringMotion.micro, value: hovered)
+            .animation(SpringMotion.micro, value: isOn)
+    }
+}
+
+struct EditorFloatBarButton: View {
+    var title: String? = nil
+    var icon: AppLineIcon.Kind? = nil
+    var symbol: String? = nil
+    let help: String
+    var isOn = false
+    var onStyle: EditorFloatBarButtonSurface<AnyView>.OnStyle = .wash
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            EditorFloatBarButtonSurface(isOn: isOn, onStyle: onStyle) {
+                AnyView(HStack(spacing: 5) {
+                    if let icon { AppLineIcon(kind: icon, size: title == nil ? 16 : 14) }
+                    else if let symbol { EditorSymbol(symbol, size: title == nil ? 16 : 14) }
+                    if let title { Text(appLocalized(title)) }
+                })
+            }
         }
-        .modifier(CanvasQuickControlSurface())
+        .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 7, showsHover: false))
+        .help(appLocalized(help))
+        .accessibilityLabel(appLocalized(title ?? help))
+        .accessibilityAddTraits(isOn ? .isSelected : [])
+    }
+}
+
+/// `.mini`: a short label and a 72-wide track inside the bar.
+struct EditorFloatBarSlider: View {
+    let title: String
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    let formatValue: (Double) -> String
+    let onEditingChanged: (Bool) -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(appLocalized(title))
+                .font(.appUI(size: 12))
+                .foregroundStyle(EditorTheme.secondaryText)
+                .fixedSize()
+            EditorSlider(value: $value, range: range, formatValue: formatValue, onEditingChanged: onEditingChanged)
+                .frame(width: 72)
+        }
+        .padding(.horizontal, 6)
+        .frame(height: EditorFloatBarMetrics.buttonHeight)
     }
 }
 
 extension CanvasPreview {
+    /// The float bar of whatever is selected, positioned in the workspace
+    /// layer above the picture: never under the spotlight's dimming, never
+    /// clipped by the monitor, always clickable. Placed above the object,
+    /// below it when there is no room; hidden while dragging.
     @ViewBuilder
     func overlayQuickEditor(
         scene: FrameScene,
@@ -62,307 +143,295 @@ extension CanvasPreview {
         time: TimeInterval
     ) -> some View {
         Group {
-            switch editorStore.selection {
-            case let .mosaic(id):
-                if let clip = editorStore.previewProject.timeline.mosaicClips.first(
-                    where: { $0.id == id && $0.timing.contains(time) }
-                ), let quad = mosaicSelectionQuad(clip: clip, screen: scene.screen) {
-                    let editorWidth = min(mosaicQuickEditorPreferredWidth(clip), max(availableSize.width - 16, 1))
-                    let placement = quickEditorPlacement(
-                        bounds: CGRect(
-                            x: quad.bounds.x,
-                            y: quad.bounds.y,
-                            width: quad.bounds.width,
-                            height: quad.bounds.height
-                        ),
-                        canvasSize: canvasSize,
-                        availableSize: availableSize,
-                        width: editorWidth
-                    )
-                    mosaicQuickEditor(clip, width: editorWidth)
-                        .position(placement.point)
-                        .transition(
-                            quickEditorTransition(anchor: placement.transitionAnchor)
-                        )
-                }
-            case let .sticker(id):
-                if let clip = editorStore.previewProject.timeline.stickerClips.first(
-                    where: { $0.id == id }
-                ), let sticker = scene.stickers.first(where: { $0.id == id }) {
-                    let width = canvasSize.width * sticker.width * sticker.scale
-                    let sourceSize = resolvedStickerImages[sticker.relativePath]?.size
-                        ?? CGSize(width: 1, height: 1)
-                    let height = width * max(sourceSize.height, 1) / max(sourceSize.width, 1)
-                    let center = CGPoint(
-                        x: canvasSize.width * (sticker.position.x + sticker.offset.x),
-                        y: canvasSize.height * (sticker.position.y + sticker.offset.y)
-                    )
-                    let bounds = rotatedStickerBounds(
-                        center: center,
-                        size: CGSize(width: width, height: height),
-                        rotation: sticker.rotationRadians
-                    )
-                    let rotationHandle = stickerRotationHandleGeometry(
-                        center: center,
-                        size: CGSize(width: width, height: height),
-                        rotation: sticker.rotationRadians,
-                        canvasSize: canvasSize
-                    )
-                    let interactionBounds = bounds.union(CGRect(
-                        x: rotationHandle.handle.x - 9,
-                        y: rotationHandle.handle.y - 9,
-                        width: 18,
-                        height: 18
-                    ))
-                    let editorWidth = min(stickerQuickEditorPreferredWidth(clip), max(availableSize.width - 16, 1))
-                    let placement = quickEditorPlacement(
-                        bounds: interactionBounds,
-                        canvasSize: canvasSize,
-                        availableSize: availableSize,
-                        width: editorWidth
-                    )
-                    stickerQuickEditor(clip, width: editorWidth)
-                        .position(placement.point)
-                        .transition(
-                            quickEditorTransition(anchor: placement.transitionAnchor)
-                        )
-                }
-            default:
-                EmptyView()
+            if let bar = floatBarTarget(scene: scene, canvasSize: canvasSize, time: time) {
+                let width = min(
+                    quickEditorMeasuredWidths[bar.key] ?? bar.estimatedWidth,
+                    max(availableSize.width - 16, 1)
+                )
+                let placement = quickEditorPlacement(
+                    bounds: bar.bounds, canvasSize: canvasSize,
+                    availableSize: availableSize, width: width
+                )
+                floatBar(bar.kind)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { measured in
+                        guard measured.isFinite, measured > 0,
+                              abs((quickEditorMeasuredWidths[bar.key] ?? 0) - measured) > 0.5 else { return }
+                        quickEditorMeasuredWidths[bar.key] = ceil(measured)
+                    }
+                    .position(placement.point)
+                    .transition(.opacity)
+                    .id(bar.key)
             }
         }
-        .animation(SpringMotion.fluid, value: editorStore.selection)
+        .animation(SpringMotion.fade, value: editorStore.selection)
     }
 
-    func quickEditorTransition(anchor: UnitPoint) -> AnyTransition {
-        .scale(scale: 0.94, anchor: anchor).combined(with: .opacity)
+    fileprivate enum FloatBarKind {
+        case mosaic(MosaicClip)
+        case sticker(StickerClip)
+        case element(MotionElementTarget, MotionElement, MotionElementEdit)
+        case screenMotion(ScreenMotionClip)
     }
 
-    private func mosaicQuickEditorPreferredWidth(_ clip: MosaicClip) -> CGFloat {
-        // Preserve the original Chinese strip and slider space. Longer
-        // translations add only their measured width; placement still uses
-        // the same visible-canvas clamp and selected-object anchor.
-        let labels: [(key: String, size: CGFloat)] = [
-            ("柔化", 11), ("突出", 11),
-            (clip.style == .spotlight ? "暗度" : "强度", 10), ("圆角", 10),
-        ]
-        return localizedQuickEditorPreferredWidth(baseWidth: 436, labels: labels)
+    fileprivate struct FloatBarTarget {
+        let key: String
+        let kind: FloatBarKind
+        let bounds: CGRect
+        let estimatedWidth: CGFloat
     }
 
-    private func stickerQuickEditorPreferredWidth(_ clip: StickerClip) -> CGFloat {
-        localizedQuickEditorPreferredWidth(baseWidth: 334, labels: [
-            (stickerAnimationTitle(clip.animation), 11), ("虚化", 10), ("仅背景", 11),
-        ])
-    }
-
-    private func localizedQuickEditorPreferredWidth(
-        baseWidth: CGFloat,
-        labels: [(key: String, size: CGFloat)]
-    ) -> CGFloat {
-        let additionalWidth = labels.reduce(CGFloat.zero) { width, label in
-            let font = NSFont(name: "AlibabaPuHuiTi_3_65_Medium", size: label.size)
-                ?? NSFont.systemFont(ofSize: label.size, weight: .medium)
-            let attributes: [NSAttributedString.Key: Any] = [.font: font]
-            let original = (label.key as NSString).size(withAttributes: attributes).width
-            let localized = (appLocalized(label.key) as NSString).size(withAttributes: attributes).width
-            return width + max(localized - original, 0)
+    fileprivate func floatBarTarget(scene: FrameScene, canvasSize: CGSize, time: TimeInterval) -> FloatBarTarget? {
+        switch editorStore.selection {
+        case let .mosaic(id):
+            guard let clip = editorStore.previewProject.timeline.mosaicClips.first(
+                where: { $0.id == id && $0.timing.contains(time) }
+            ), let quad = mosaicSelectionQuad(clip: clip, screen: scene.screen) else { return nil }
+            return FloatBarTarget(
+                key: Self.mosaicQuickEditorKey, kind: .mosaic(clip),
+                bounds: CGRect(x: quad.bounds.x, y: quad.bounds.y, width: quad.bounds.width, height: quad.bounds.height),
+                estimatedWidth: 300
+            )
+        case let .sticker(id):
+            guard let clip = editorStore.previewProject.timeline.stickerClips.first(where: { $0.id == id }),
+                  let sticker = scene.stickers.first(where: { $0.id == id }) else { return nil }
+            let width = canvasSize.width * sticker.width * sticker.scale
+            let sourceSize = resolvedStickerImages[sticker.relativePath]?.size ?? CGSize(width: 1, height: 1)
+            let height = width * max(sourceSize.height, 1) / max(sourceSize.width, 1)
+            let center = CGPoint(
+                x: canvasSize.width * (sticker.position.x + sticker.offset.x),
+                y: canvasSize.height * (sticker.position.y + sticker.offset.y)
+            )
+            let size = CGSize(width: width, height: height)
+            let bounds = rotatedStickerBounds(center: center, size: size, rotation: sticker.rotationRadians)
+            let handle = stickerRotationHandleGeometry(
+                center: center, size: size, rotation: sticker.rotationRadians, canvasSize: canvasSize
+            )
+            return FloatBarTarget(
+                key: Self.stickerQuickEditorKey, kind: .sticker(clip),
+                bounds: bounds.union(CGRect(x: handle.handle.x - 9, y: handle.handle.y - 9, width: 18, height: 18)),
+                estimatedWidth: 190
+            )
+        case .animation, .primarySegment:
+            // 动效里的元素: one element picked inside the motion.
+            guard let target = motionElementEditor.target,
+                  target.selection == editorStore.selection,
+                  motionElementEditor.selected.count == 1,
+                  let id = motionElementEditor.selected.first,
+                  let element = motionElementEditor.elements.first(where: { $0.id == id }),
+                  let placement = MotionElementPlacement.resolve(target, scene: scene, canvasSize: canvasSize)
+            else { return nil }
+            let rect = placement.canvasRect(element, measured: motionElementEditor.measuredEdits)
+            return FloatBarTarget(
+                key: "element", kind: .element(target, element, placement.edits[id] ?? MotionElementEdit()),
+                // Clear the element's name tag above the selection box.
+                bounds: rect.insetBy(dx: -6, dy: -4).offsetBy(dx: 0, dy: -12).union(rect),
+                estimatedWidth: element.text == nil ? 110 : 170
+            )
+        case let .screenMotion(id):
+            guard let clip = editorStore.previewProject.timeline.screenMotionClips.first(where: { $0.id == id }),
+                  clip.focusEffect == nil else { return nil }
+            let quad = scene.screen.projectedQuad.bounds
+            return FloatBarTarget(
+                key: "screenMotion", kind: .screenMotion(clip),
+                bounds: CGRect(x: quad.x, y: quad.y, width: quad.width, height: quad.height),
+                estimatedWidth: 260
+            )
+        default:
+            return nil
         }
-        return baseWidth + ceil(additionalWidth)
     }
 
-    func mosaicQuickEditor(_ clip: MosaicClip, width: CGFloat) -> some View {
-        quickEditorCard(width: width) {
-            HStack(spacing: 8) {
-                // The two modes are one choice: a pair in a single groove.
-                HStack(spacing: 2) {
-                    quickToggle(
-                        title: "柔化",
-                        symbol: "drop.halffull",
-                        isSelected: clip.style == .blur
-                    ) {
-                        replaceMosaic(id: clip.id, actionName: "切换区域效果") {
-                            $0.style = .blur
+    @ViewBuilder
+    fileprivate func floatBar(_ kind: FloatBarKind) -> some View {
+        switch kind {
+        case let .mosaic(clip): mosaicQuickEditor(clip)
+        case let .sticker(clip): stickerQuickEditor(clip)
+        case let .element(target, element, edit): elementQuickEditor(target: target, element: element, edit: edit)
+        case let .screenMotion(clip): screenMotionQuickEditor(clip)
+        }
+    }
+
+    static let mosaicQuickEditorKey = "mosaic"
+    static let stickerQuickEditorKey = "sticker"
+
+    // MARK: 柔化与突出
+
+    func mosaicQuickEditor(_ clip: MosaicClip) -> some View {
+        let editsSpotlight = clip.style == .spotlight
+        return EditorFloatBar {
+            // The two modes are one choice: a pair in a single groove.
+            HStack(spacing: 0) {
+                EditorFloatBarButton(title: "柔化", icon: .drop, help: "柔化",
+                                     isOn: clip.style == .blur, onStyle: .thumb) {
+                    replaceMosaic(id: clip.id, actionName: "切换区域效果") { $0.style = .blur }
+                }
+                EditorFloatBarButton(title: "突出", icon: .spotlight, help: "突出",
+                                     isOn: editsSpotlight, onStyle: .thumb) {
+                    replaceMosaic(id: clip.id, actionName: "切换区域效果") { $0.style = .spotlight }
+                }
+            }
+            EditorFloatBarSeparator()
+            EditorFloatBarSlider(
+                title: editsSpotlight ? "暗度" : "强度",
+                value: quickMosaicBinding(
+                    id: clip.id,
+                    keyPath: editsSpotlight ? \.spotlightDimming : \.intensity,
+                    fallback: editsSpotlight ? clip.spotlightDimming : clip.intensity
+                ),
+                range: editsSpotlight ? 0...0.75 : 0...1,
+                formatValue: { "\(Int(($0 * 100).rounded()))%" },
+                onEditingChanged: { editing in
+                    finishQuickOverlayInteraction(
+                        editing: editing,
+                        actionName: editsSpotlight ? "调整突出暗度" : "调整柔化强度"
+                    )
+                }
+            )
+            .accessibilityLabel(appLocalized(editsSpotlight ? "突出暗度" : "柔化强度"))
+            EditorFloatBarSeparator()
+            EditorFloatBarButton(icon: .duplicate, help: "复制") { duplicateMosaic(clip) }
+            EditorFloatBarButton(icon: .trash, help: "删除") { removeSelectedFloatBarOverlay() }
+        }
+    }
+
+    func duplicateMosaic(_ clip: MosaicClip) {
+        var copy = clip
+        copy.id = UUID()
+        var rect = copy.sourceRect
+        rect.x = min(rect.x + 0.03, max(1 - rect.width, 0))
+        rect.y = min(rect.y + 0.03, max(1 - rect.height, 0))
+        copy.sourceRect = rect
+        var timeline = editorStore.project.timeline
+        timeline.mosaicClips.append(copy)
+        replaceOverlayTimeline(timeline, actionName: "复制柔化区域")
+        editorStore.selection = .mosaic(copy.id)
+    }
+
+    func removeSelectedFloatBarOverlay() {
+        do { try editorStore.removeSelectedOverlay() } catch { onError(error.localizedDescription) }
+    }
+
+    // MARK: 贴图
+
+    /// The two things reached for most on a pasted picture: how it comes
+    /// in, and whether the recording steps aside. Everything else lives in
+    /// the inspector.
+    func stickerQuickEditor(_ clip: StickerClip) -> some View {
+        let motion = StickerMotionStyle(clip.animation)
+        return EditorFloatBar {
+            EditorActionMenu(title: "贴图动画", items: StickerMotionStyle.allCases.map { style in
+                .action(style.entranceTitle, isOn: motion == style) {
+                    guard style != motion else { return }
+                    replaceSticker(id: clip.id, actionName: "选择贴图动画") {
+                        $0.animation = style.preset(direction: StickerSlideDirection($0.animation) ?? .left)
+                    }
+                }
+            }, showsHover: false) {
+                EditorFloatBarButtonSurface {
+                    HStack(spacing: 5) {
+                        Text(appLocalized(motion.entranceTitle))
+                        AppLineIcon(kind: .chevronDown, size: 9).foregroundStyle(EditorTheme.tertiaryText)
+                    }
+                }
+            }
+            .help("选择贴图动画")
+            .accessibilityValue(appLocalized(motion.entranceTitle))
+            EditorFloatBarSeparator()
+            EditorFloatBarButton(
+                title: "仅背景",
+                help: clip.hidesScreen ? "恢复录屏画面" : "隐藏录屏画面，仅保留画布背景与贴图",
+                isOn: clip.hidesScreen
+            ) {
+                replaceSticker(id: clip.id, actionName: clip.hidesScreen ? "关闭贴图仅背景" : "开启贴图仅背景") {
+                    $0.hidesScreen.toggle()
+                }
+            }
+            EditorFloatBarSeparator()
+            EditorFloatBarButton(icon: .trash, help: "删除") { removeSelectedFloatBarOverlay() }
+        }
+    }
+
+    // MARK: 动效里的元素
+
+    func elementQuickEditor(target: MotionElementTarget, element: MotionElement, edit: MotionElementEdit) -> some View {
+        EditorFloatBar {
+            if element.text != nil {
+                EditorFloatBarTextButton(
+                    text: edit.text ?? element.text ?? "",
+                    isPresented: Binding(
+                        get: { motionElementEditor.target == target && motionElementEditor.textEditingElementID == element.id },
+                        set: { motionElementEditor.textEditingElementID = $0 ? element.id : nil }
+                    ),
+                    onCommit: { value in
+                        changeMotionElement(target, id: element.id, actionName: "修改动效文字") {
+                            $0.text = value
                         }
                     }
-                    quickToggle(
-                        title: "突出",
-                        symbol: "viewfinder",
-                        isSelected: clip.style == .spotlight
-                    ) {
-                        replaceMosaic(id: clip.id, actionName: "切换区域效果") {
-                            $0.style = .spotlight
-                        }
+                )
+                EditorMotionTypographyControls(element: element, edit: edit) { family in
+                    changeMotionElement(target, id: element.id, actionName: "修改动效字体") { $0.fontFamily = family }
+                } onWeight: { weight in
+                    changeMotionElement(target, id: element.id, actionName: "切换动效粗体") { $0.fontWeight = weight }
+                }
+            }
+            let colorKey = element.text != nil ? edit.color ?? element.color : edit.fill ?? element.fill
+            if element.kind != "image" {
+                EditorFloatBarColorButton(
+                    title: element.text != nil ? "文字颜色" : "填充颜色",
+                    value: colorKey.flatMap { HexColor($0) } ?? HexColor(rgb24: 0x161817)
+                ) { color in
+                    changeMotionElement(target, id: element.id, actionName: "修改动效颜色") {
+                        if element.text != nil { $0.color = color.hexString } else { $0.fill = color.hexString }
                     }
                 }
-                .padding(2)
-                .background(EditorChoiceStyle.track, in: Capsule(style: .continuous))
-                Color.clear.frame(width: 6, height: 22)
-                let editsSpotlight = clip.style == .spotlight
-                EditorSymbolLabel(
-                    appLocalized(editsSpotlight ? "暗度" : "强度"),
-                    systemImage: "circle.lefthalf.filled"
-                )
-                    .font(.appUI(size: 10, weight: .medium))
-                    .foregroundStyle(EditorTheme.secondaryText)
-                    .fixedSize(horizontal: true, vertical: false)
-                EditorSlider(
-                    value: quickMosaicBinding(
-                        id: clip.id,
-                        keyPath: editsSpotlight
-                            ? \.spotlightDimming
-                            : \.intensity,
-                        fallback: editsSpotlight
-                            ? clip.spotlightDimming
-                            : clip.intensity
-                    ),
-                    range: editsSpotlight ? 0...0.75 : 0...1,
-                    formatValue: { "\(Int(($0 * 100).rounded()))%" },
-                    onEditingChanged: { editing in
-                        finishQuickOverlayInteraction(
-                            editing: editing,
-                            actionName: editsSpotlight
-                                ? "调整突出暗度"
-                                : "调整柔化强度"
-                        )
-                    }
-                )
-                .frame(minWidth: 36, maxWidth: 70)
-                .accessibilityLabel(appLocalized(editsSpotlight ? "突出暗度" : "柔化强度"))
-                .accessibilityValue(
-                    "\(Int(((editsSpotlight ? clip.spotlightDimming : clip.intensity) * 100).rounded()))%"
-                )
-                Color.clear.frame(width: 6, height: 22)
-                EditorSymbolLabel("圆角", systemImage: "square")
-                    .font(.appUI(size: 10, weight: .medium))
-                    .foregroundStyle(EditorTheme.secondaryText)
-                    .fixedSize(horizontal: true, vertical: false)
-                EditorSlider(
-                    value: quickMosaicBinding(
-                        id: clip.id,
-                        keyPath: \.cornerRadius,
-                        fallback: clip.cornerRadius
-                    ),
-                    range: 0...0.5,
-                    formatValue: { "\(Int(($0 * 100).rounded()))%" },
-                    onEditingChanged: { editing in
-                        finishQuickOverlayInteraction(
-                            editing: editing,
-                            actionName: "调整效果圆角"
-                        )
-                    }
-                )
-                .frame(minWidth: 36, maxWidth: 70)
-                .accessibilityLabel(appLocalized("区域效果圆角"))
-                .accessibilityValue("\(Int((clip.cornerRadius * 100).rounded()))%")
+            }
+            EditorFloatBarButton(icon: .eye, help: "隐藏") {
+                changeMotionElement(target, id: element.id, actionName: "隐藏动效元素") { $0.hidden = true }
+                motionElementEditor.selected.remove(element.id)
             }
         }
     }
 
-    func stickerQuickEditor(_ clip: StickerClip, width: CGFloat) -> some View {
-        quickEditorCard(width: width) {
-            HStack(spacing: 9) {
-                EditorActionMenu(title: "贴图动画", items: StickerAnimationPreset.allCases.map { preset in
-                    .action(stickerAnimationTitle(preset), isOn: clip.animation == preset) {
-                        replaceSticker(id: clip.id, actionName: "选择贴图动画") { $0.animation = preset }
-                    }
-                }) {
-                    CanvasQuickMenuLabel(
-                        title: stickerAnimationTitle(clip.animation),
-                        systemImage: "sparkles"
-                    )
+    func changeMotionElement(
+        _ target: MotionElementTarget, id: String, actionName: String,
+        _ change: @escaping (inout MotionElementEdit) -> Void
+    ) {
+        editorStore.changeMotionElementEdits(target, actionName: actionName) { edits in
+            var edit = edits[id] ?? MotionElementEdit()
+            change(&edit)
+            edits[id] = edit
+        }
+    }
+
+    // MARK: 屏幕 3D
+
+    func screenMotionQuickEditor(_ clip: ScreenMotionClip) -> some View {
+        let current = EditorScreenTiltPreset.matching(rotationX: clip.target.rotationX, rotationY: clip.target.rotationY)
+        return EditorFloatBar {
+            ForEach(EditorScreenTiltPreset.allCases) { preset in
+                EditorFloatBarButton(title: preset.title, help: preset.title, isOn: current == preset) {
+                    applyScreenTilt(clipID: clip.id, x: preset.rotationX, y: preset.rotationY, actionName: "套用 3D 姿态")
                 }
-                .help("选择贴图动画")
-                .accessibilityLabel("贴图动画")
-                .accessibilityValue(appLocalized(stickerAnimationTitle(clip.animation)))
-                Color.clear.frame(width: 6, height: 22)
-                EditorSymbolLabel("虚化", systemImage: "drop.halffull")
-                    .font(.appUI(size: 10, weight: .medium))
-                    .foregroundStyle(EditorTheme.secondaryText)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .opacity(clip.hidesScreen ? 0.45 : 1)
-                EditorSlider(
-                    value: quickStickerBinding(
-                        id: clip.id,
-                        keyPath: \.backdropBlur,
-                        fallback: clip.backdropBlur
-                    ),
-                    range: 0...60,
-                    formatValue: { String(format: "%.0f", $0) },
-                    onEditingChanged: { editing in
-                        finishQuickOverlayInteraction(
-                            editing: editing,
-                            actionName: "调整贴图录屏虚化"
-                        )
-                    }
-                )
-                .frame(width: 72)
-                .disabled(clip.hidesScreen)
-                .opacity(clip.hidesScreen ? 0.42 : 1)
-                .accessibilityLabel("贴图录屏虚化")
-                .accessibilityValue(
-                    clip.hidesScreen
-                        ? appLocalized("仅背景模式下不可用")
-                        : String(format: "%.0f", clip.backdropBlur)
-                )
-                Color.clear.frame(width: 6, height: 22)
-                quickToggle(
-                    title: "仅背景",
-                    symbol: "rectangle.slash",
-                    isSelected: clip.hidesScreen
-                ) {
-                    replaceSticker(
-                        id: clip.id,
-                        actionName: clip.hidesScreen
-                            ? "关闭贴图仅背景"
-                            : "开启贴图仅背景"
-                    ) {
-                        $0.hidesScreen.toggle()
-                    }
+            }
+            EditorFloatBarSeparator()
+            EditorFloatBarButton(icon: .trash, help: "删除") {
+                do {
+                    try editorStore.removeScreenMotion(id: clip.id)
+                    editorStore.selection = .screen
+                } catch {
+                    onError(error.localizedDescription)
                 }
-                .help(
-                    appLocalized(clip.hidesScreen
-                        ? "恢复录屏画面"
-                        : "隐藏录屏画面，仅保留画布背景与贴图")
-                )
             }
         }
     }
 
-    func quickEditorCard<Content: View>(
-        width: CGFloat? = nil,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        // Mosaics and stickers share the overlay colour: the chosen mode and
-        // the sliders' filled run carry it instead of default black.
-        content()
-            .font(.appUI(size: 11, weight: .medium))
-            .padding(.horizontal, 8)
-            .frame(width: width, height: 44)
-            .foregroundStyle(EditorTheme.primaryText)
-            .environment(\.consolePalette, EditorConsole.opening)
-            .editorCapsuleIsland()
-            .frame(height: 48)
-    }
-
-    func quickToggle(
-        title: String,
-        symbol: String,
-        isSelected: Bool,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button {
-            withAnimation(SpringMotion.interactive) {
-                action()
-            }
-        } label: {
-            EditorSymbolLabel(appLocalized(title), systemImage: symbol)
-                .modifier(CanvasQuickControlSurface(isSelected: isSelected))
-        }
-        .buttonStyle(EditorToolbarPressButtonStyle(showsHover: false))
-        .animation(SpringMotion.settle, value: isSelected)
-        .accessibilityLabel(appLocalized(title))
-        .accessibilityValue(appLocalized(isSelected ? "已选择" : "未选择"))
-        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    func applyScreenTilt(clipID: UUID, x: Double, y: Double, actionName: String) {
+        var timeline = editorStore.project.timeline
+        guard let index = timeline.screenMotionClips.firstIndex(where: { $0.id == clipID }) else { return }
+        timeline.screenMotionClips[index].target.rotationX = x
+        timeline.screenMotionClips[index].target.rotationY = y
+        replaceOverlayTimeline(timeline, actionName: actionName)
+        editorStore.selection = .screenMotion(clipID)
     }
 
     private func quickEditorPlacement(
@@ -371,7 +440,7 @@ extension CanvasPreview {
         availableSize: CGSize,
         width: CGFloat
     ) -> CanvasQuickEditorPlacement {
-        let editorHeight: CGFloat = 48
+        let editorHeight = EditorFloatBarMetrics.height
         let edgeMargin: CGFloat = 8
         let objectGap: CGFloat = 8
         let visibleBounds = bounds.intersection(CGRect(origin: .zero, size: canvasSize))
@@ -384,38 +453,23 @@ extension CanvasPreview {
         ).insetBy(dx: edgeMargin, dy: edgeMargin)
         let half = width / 2
         let halfHeight = editorHeight / 2
+        // The mockup aligns the bar to the object's leading edge.
         let x = min(
-            max(targetBounds.midX, availableBounds.minX + half),
+            max(targetBounds.minX + half, availableBounds.minX + half),
             availableBounds.maxX - half
         )
         let aboveY = targetBounds.minY - objectGap - halfHeight
         let belowY = targetBounds.maxY + objectGap + halfHeight
-        let fitsAbove = aboveY - halfHeight >= availableBounds.minY
-        let fitsBelow = belowY + halfHeight <= availableBounds.maxY
-
-        if fitsAbove {
-            return CanvasQuickEditorPlacement(
-                point: CGPoint(x: x, y: aboveY),
-                transitionAnchor: .bottom
-            )
+        if aboveY - halfHeight >= availableBounds.minY {
+            return CanvasQuickEditorPlacement(point: CGPoint(x: x, y: aboveY), transitionAnchor: .bottom)
         }
-        if fitsBelow {
-            return CanvasQuickEditorPlacement(
-                point: CGPoint(x: x, y: belowY),
-                transitionAnchor: .top
-            )
+        if belowY + halfHeight <= availableBounds.maxY {
+            return CanvasQuickEditorPlacement(point: CGPoint(x: x, y: belowY), transitionAnchor: .top)
         }
-
-        let prefersAbove = targetBounds.midY >= canvasSize.height / 2
-        let proposedY = prefersAbove ? aboveY : belowY
-        let clampedY = min(
-            max(proposedY, availableBounds.minY + halfHeight),
-            availableBounds.maxY - halfHeight
-        )
-        return CanvasQuickEditorPlacement(
-            point: CGPoint(x: x, y: clampedY),
-            transitionAnchor: prefersAbove ? .bottom : .top
-        )
+        // No room either side: inside the object's top edge.
+        let insideY = min(max(targetBounds.minY + objectGap + halfHeight, availableBounds.minY + halfHeight),
+                          availableBounds.maxY - halfHeight)
+        return CanvasQuickEditorPlacement(point: CGPoint(x: x, y: insideY), transitionAnchor: .top)
     }
 
     private func rotatedStickerBounds(
@@ -533,20 +587,58 @@ extension CanvasPreview {
         }
     }
 
-    func stickerAnimationTitle(_ preset: StickerAnimationPreset) -> String {
-        switch preset {
-        case .none: return "无动画"
-        case .fade: return "淡入"
-        case .pop: return "弹出"
-        case .slideLeft: return "从左"
-        case .slideRight: return "从右"
-        case .slideUp: return "从上"
-        case .slideDown: return "从下"
-        case .slideTopLeft: return "左上"
-        case .slideTopRight: return "右上"
-        case .slideBottomLeft: return "左下"
-        case .slideBottomRight: return "右下"
+}
+
+/// The float bar's "编辑文字" button: opens a small field for the element's
+/// text; Return or clicking away commits.
+private struct EditorFloatBarTextButton: View {
+    let text: String
+    @Binding var isPresented: Bool
+    let onCommit: (String) -> Void
+
+    var body: some View {
+        EditorFloatBarButton(icon: .pencil, help: "编辑文字", isOn: isPresented) { isPresented = true }
+            .editorPopover(isPresented: $isPresented, arrowEdge: .bottom, establishesKeyboardEntry: false) {
+                EditorCommittingTextField(title: appLocalized("文字"), text: text, showsTitle: false,
+                    focusesOnAppear: true, onSubmitAction: { isPresented = false }, onCommit: onCommit)
+                    .frame(width: 240)
+                    .padding(10)
+            }
+    }
+}
+
+/// The float bar's colour button: the swatch itself; click for the palette.
+private struct EditorFloatBarColorButton: View {
+    let title: String
+    let value: HexColor
+    let onPreview: (HexColor) -> Void
+    @State private var isPresented = false
+    @State private var commit: Task<Void, Never>?
+
+    var body: some View {
+        Button { isPresented = true } label: {
+            EditorFloatBarButtonSurface(isOn: isPresented) {
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(Color(hex: value))
+                    .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .strokeBorder(Color.black.opacity(0.14), lineWidth: 1))
+                    .frame(width: 14, height: 14)
+            }
+        }
+        .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 7, showsHover: false))
+        .help(appLocalized(title))
+        .accessibilityLabel(appLocalized(title))
+        .accessibilityValue(value.hexString)
+        .editorPopover(isPresented: $isPresented, arrowEdge: .bottom, establishesKeyboardEntry: false) {
+            EditorColorPalette(title: title, value: value) { color in
+                // One undo step per settled colour, like the inspector row.
+                commit?.cancel()
+                commit = Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(350))
+                    guard !Task.isCancelled else { return }
+                    onPreview(color)
+                }
+            }
         }
     }
-
 }

@@ -10,13 +10,6 @@ struct CaptureWindowGeometry: Equatable, Sendable {
 }
 
 enum CaptureWindowSelectionPolicy {
-    static func hover(
-        previous: CaptureWindowInfo?,
-        pointerIsInsideRecorderWindow: Bool,
-        frontmostCandidate: CaptureWindowInfo?
-    ) -> CaptureWindowInfo? {
-        pointerIsInsideRecorderWindow ? previous : frontmostCandidate
-    }
 
     static func lockedWindow(
         id: UInt32,

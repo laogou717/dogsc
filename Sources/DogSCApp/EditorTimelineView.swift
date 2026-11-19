@@ -4,19 +4,6 @@ import SwiftUI
 
 let editorTimelineDocumentCoordinateSpace = "editor.timeline.document"
 
-enum EditorTimelineSizing {
-    static let defaultPrimaryLaneHeight: CGFloat = 132
-    static let minimumPrimaryLaneHeight: CGFloat = 124
-    static let maximumPrimaryLaneHeight: CGFloat = 280
-
-    static func clampedPrimaryLaneHeight(_ proposed: CGFloat) -> CGFloat {
-        min(max(proposed.isFinite ? proposed : defaultPrimaryLaneHeight,
-                minimumPrimaryLaneHeight),
-            maximumPrimaryLaneHeight)
-    }
-
-}
-
 /// Pure timing constraints for motion bars. A gesture can change only its own
 /// typed clip and cannot cross a neighbour, reorder targets, or escape the
 /// final output clock. 与缩放轨同一语义：可以拖到与邻段相接（回落休眠），
@@ -24,19 +11,6 @@ enum EditorTimelineSizing {
 enum EditorMotionTimelinePresentation {
     static let minimumDuration: TimeInterval = 0.08
 
-    static func bounds(
-        for id: UUID,
-        timings: [(id: UUID, timing: TransitionTiming)],
-        timelineDuration: TimeInterval
-    ) -> EditorMotionTimelineBounds? {
-        bounds(
-            for: id,
-            items: timings,
-            id: { $0.id },
-            timing: { $0.timing },
-            timelineDuration: timelineDuration
-        )
-    }
 
     static func bounds<Element>(
         for targetID: UUID,
@@ -326,132 +300,6 @@ enum EditorTimelineRulerPresentation {
     }
 }
 
-/// 桥接 SwiftUI ScrollView 与底层 NSScrollView：滚轮缩放需要读/写真实滚动
-/// 偏移，macOS 14 没有 scrollPosition API 可用，只能从 enclosingScrollView 取。
-struct TimelineScrollViewBridge: NSViewRepresentable {
-    let playbackController: EditorPlaybackController
-    let onResolve: (NSScrollView?) -> Void
-
-    @MainActor
-    final class Coordinator: NSObject, EditorPlaybackTimelineObserver {
-        weak var resolvedScrollView: NSScrollView?
-        weak var playbackController: EditorPlaybackController?
-        var resolutionIsScheduled = false
-        private var previousIsPlaying: Bool?
-
-        func configure(playbackController: EditorPlaybackController) {
-            guard self.playbackController !== playbackController else { return }
-            self.playbackController?.removeNativeTimelineObserver(self)
-            previousIsPlaying = nil
-            self.playbackController = playbackController
-            playbackController.addNativeTimelineObserver(self)
-        }
-
-        func resolve(_ scrollView: NSScrollView?) {
-            resolvedScrollView = scrollView
-        }
-
-        func invalidate() {
-            playbackController?.removeNativeTimelineObserver(self)
-            playbackController = nil
-            resolvedScrollView = nil
-            previousIsPlaying = nil
-        }
-
-        func editorPlaybackTimelineDidUpdate(
-            _ snapshot: EditorPlaybackTimelineSnapshot
-        ) {
-            let previous = previousIsPlaying
-            previousIsPlaying = snapshot.isPlaying
-            // Initial attachment and ordinary clock ticks never move the
-            // viewport. Only a real play/pause transition may reveal it.
-            guard let previous, previous != snapshot.isPlaying,
-                  snapshot.allowsViewportReveal,
-                  let playbackController else { return }
-            // Pause publishes its state before the final sampled time. Wait
-            // until that synchronous operation finishes, then use the actual
-            // stopped position rather than the preceding display refresh.
-            DispatchQueue.main.async { [weak self, weak playbackController] in
-                guard let self, let playbackController,
-                      self.playbackController === playbackController else { return }
-                self.revealPlayheadIfOutsideViewport(
-                    outputTime: playbackController.outputTime,
-                    duration: playbackController.duration
-                )
-            }
-        }
-
-        private func revealPlayheadIfOutsideViewport(
-            outputTime: TimeInterval,
-            duration: TimeInterval
-        ) {
-            guard let scrollView = resolvedScrollView,
-                  outputTime.isFinite,
-                  duration.isFinite,
-                  duration > 0 else { return }
-            let clipView = scrollView.contentView
-            let viewportWidth = max(clipView.bounds.width, 1)
-            let documentWidth = max(
-                scrollView.documentView?.bounds.width ?? viewportWidth,
-                viewportWidth
-            )
-            let progress = min(max(outputTime / duration, 0), 1)
-            let playheadX = documentWidth * CGFloat(progress)
-            guard playheadX < clipView.bounds.minX ||
-                  playheadX > clipView.bounds.maxX else { return }
-            let maximumOffset = max(documentWidth - viewportWidth, 0)
-            let targetOffset = min(
-                max(playheadX - viewportWidth / 2, 0),
-                maximumOffset
-            )
-            guard abs(clipView.bounds.origin.x - targetOffset) > 0.5 else { return }
-            clipView.scroll(
-                to: NSPoint(x: targetOffset, y: clipView.bounds.origin.y)
-            )
-            scrollView.reflectScrolledClipView(clipView)
-        }
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator()
-    }
-
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView(frame: .zero)
-        context.coordinator.configure(playbackController: playbackController)
-        resolveScrollView(for: view, coordinator: context.coordinator)
-        return view
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {
-        context.coordinator.configure(playbackController: playbackController)
-        resolveScrollView(for: nsView, coordinator: context.coordinator)
-    }
-
-    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
-        coordinator.invalidate()
-    }
-
-    func resolveScrollView(for view: NSView, coordinator: Coordinator) {
-        guard !coordinator.resolutionIsScheduled else { return }
-        coordinator.resolutionIsScheduled = true
-        DispatchQueue.main.async {
-            coordinator.resolutionIsScheduled = false
-            let resolved = view.enclosingScrollView
-            guard coordinator.resolvedScrollView !== resolved else { return }
-            coordinator.resolve(resolved)
-            // The timeline document owns the complete 0...duration range.
-            // Native content/scroller insets create unreachable-looking air
-            // at both ends when the document is highly zoomed.
-            resolved?.automaticallyAdjustsContentInsets = false
-            resolved?.contentInsets = NSEdgeInsets()
-            resolved?.scrollerInsets = NSEdgeInsets()
-            resolved?.horizontalScrollElasticity = .none
-            onResolve(resolved)
-        }
-    }
-}
-
 /// Keeps interactive timeline views bounded to the portion of the document
 /// that can actually become visible. The native scroll view still owns the
 /// complete document and all hit testing continues to use the complete model;
@@ -487,7 +335,7 @@ enum EditorTimelineViewportPresentation {
         let lower = min(max(visibleRange.lowerBound, 0), safeWidth)
         let upper = min(max(visibleRange.upperBound, lower), safeWidth)
         let measuredViewportWidth = upper - lower
-        // Before TimelineScrollViewBridge resolves, 0...1 is only a sentinel.
+        // Before the native scroll view resolves, 0...1 is only a sentinel.
         // Prepare a realistic first viewport instead of briefly materializing
         // either the complete document or a one-point strip.
         let viewportWidth = measuredViewportWidth > 1
@@ -657,16 +505,17 @@ struct EditorTimelineWaveformPresentation {
         )
     }
 
-    /// 波形不自己猜剪辑后的时间：先通过与预览/导出相同的
-    /// `TimelineMediaPlan` 回到音频母片时间，再取实际 PCM 峰值。
+    /// Use the slice already resolved through the shared preview/export plan.
     static func peak(
         samples: [Double],
         sourceRange: MediaTimeRange,
-        plan: TimelineMediaPlan,
+        slice: TimelineMediaSlice,
+        sourceID: UUID? = nil,
         atOutputTime outputTime: TimeInterval
     ) -> Double {
         guard !samples.isEmpty,
-              let sourceTime = plan.sourceTime(atOutputTime: outputTime),
+              sourceID == nil || slice.sourceID == sourceID,
+              let sourceTime = slice.sourceTime(atOutputTime: outputTime),
               sourceTime >= sourceRange.start,
               sourceTime < sourceRange.end else { return 0 }
         let progress = (sourceTime - sourceRange.start) / sourceRange.duration
@@ -738,12 +587,6 @@ enum EditorTimelineWaveformLane: Equatable {
     case system
     case microphone
 
-    var title: String {
-        switch self {
-        case .system: appLocalized("系统")
-        case .microphone: appLocalized("麦克风")
-        }
-    }
 
 
 }
@@ -808,11 +651,42 @@ enum EditorTimelineWaveformLoader {
 /// source of truth for editing and error display. Media inventory comes from
 /// EditorMediaSession; transport and the output clock come from the sole
 /// EditorPlaybackController.
+@MainActor
+final class EditorTimelineLaneHover: ObservableObject {
+    @Published var zoom: CGPoint?
+    @Published var motion: [EditorMotionTimelineTrack: CGPoint] = [:]
+    /// Subtitle and effect lanes, which also create on click.
+    @Published var post: [TimelineLane: CGPoint] = [:]
+}
+
+/// Draws a lane's "+" create hint from the observed hover position.
+struct EditorTimelineCreateIndicator: View {
+    @ObservedObject var hover: EditorTimelineLaneHover
+    let x: (EditorTimelineLaneHover) -> CGFloat?
+    let fill: Color
+    let ink: Color
+    var size: CGFloat = 16
+
+    var body: some View {
+        if let indicatorX = x(hover) {
+            AppLineIcon(kind: .plus, size: size * 0.6)
+                .foregroundStyle(ink)
+                .frame(width: size, height: size)
+                .background(Circle().fill(fill))
+                .offset(x: indicatorX - size / 2)
+                .allowsHitTesting(false)
+        }
+    }
+}
+
 struct EditorTimelineView: View {
     let context: EditorSessionContext
     @ObservedObject var editorStore: EditorStore
+    @ObservedObject private var timelinePreview: EditorTimelineInteractionState
     @ObservedObject var mediaSession: EditorMediaSession
     @ObservedObject var playbackController: EditorPlaybackController
+    /// Keeps playhead-dependent toolbar state (split enabled) current.
+    @ObservedObject var restingClock: EditorPlaybackRestingClock
     let isCameraSyncEditing: Bool
     /// Parent-window key-loss epoch. It changes even when the app itself stays
     /// active, for example when a system notification covers the editor.
@@ -825,6 +699,7 @@ struct EditorTimelineView: View {
     @Binding var selectedPrimarySegmentIDs: Set<UUID>
     let onError: (String) -> Void
 
+    @Environment(\.undoManager) var undoManager
     @State private var lastHeightReportLayout: EditorWorkspaceLayout?
     @State var derivedPresentationCache: EditorTimelineDerivedPresentationCache
     @State var timelineZoom: Double
@@ -833,6 +708,7 @@ struct EditorTimelineView: View {
     @State var timelineScrollView: NSScrollView?
     @State var timelineVisibleDocumentRange: ClosedRange<CGFloat> = 0...1
     @State var timelineBoundsObservation: NSObjectProtocol?
+    @State var timelineViewportUpdate = EditorMainAction()
     @State var isTimelineTrackManagerPresented = false
     /// The track-name column can fold to icons for more timeline width.
     @AppStorage("editor.timeline.labelsCollapsed") var timelineLabelsCollapsed = false
@@ -848,14 +724,28 @@ struct EditorTimelineView: View {
     @State var hoveredPrimarySegmentID: UUID?
     @State var draggedPrimarySegmentID: UUID?
     @State var primarySegmentDragTranslation: CGFloat = 0
+    @State var primaryVisualTransferTarget: EditorDropLane?
+    @State var primaryVisualTransferOffsetY: CGFloat = 0
+    @State var primaryVisualTransferTime: TimeInterval = 0
+    @State var visualTransferTask: Task<Void, Never>?
     @State var primaryReorderDraft: PrimarySegmentReorderDraft?
     @State var primaryReorderPreviewTimeline: ProjectTimeline?
     @State var primarySegmentDragDocumentX: CGFloat?
     @State var primarySegmentDragLocalMonitor: Any?
     @State var primarySegmentDragGlobalMonitor: Any?
+    @State var primaryPointerSession: PrimarySegmentPointerSession?
     @State var primaryTrimDraft: PrimarySegmentTrimDraft?
     @State var primaryRetimeDraft: PrimarySegmentRetimeDraft?
     @State var isRestoreCutMode = false
+    /// 选择 (A) / 切割 (B).
+    @State var timelineTool: EditorTimelineTool = .select
+    @State var toolKeyMonitor: Any?
+    /// Folded lane groups (画面叠加 / 柔化与突出), comma separated.
+    @AppStorage("editor.timeline.collapsedGroups") var collapsedTimelineGroupsRaw = "effects"
+    /// "还有 N 层 · 展开" was clicked: show every picture layer.
+    @State var showsAllOverlayLayers = false
+    /// Hovered cut seam on the main track (shows "剪掉 1.2 秒 · 点击合并").
+    @State var hoveredSeamID: UUID?
     @State var usesWaveformClips: Bool
     @Namespace var displayModeSelection
     /// 时间轴悬浮预览轴开关（Skimming）：默认关闭，主动开启后按悬浮位置预览。
@@ -864,7 +754,9 @@ struct EditorTimelineView: View {
     @AppStorage("editorTimelineSnappingEnabled") var isSnappingEnabled = false
     @State var manualZoomDragStart: TimeInterval?
     @State var manualZoomDragEnd: TimeInterval?
-    @State var hoveredZoomTrackLocation: CGPoint?
+    /// Pointer over the zoom/motion lanes. Held in @State without observing
+    /// it, so moving the mouse redraws only the small "+" indicator.
+    @State var laneHover = EditorTimelineLaneHover()
     @State var hoveredZoomID: UUID?
     @State var zoomGestureOrigin: ZoomAnimationClip?
     @State var zoomTrackDrag: ZoomTrackDrag?
@@ -872,11 +764,32 @@ struct EditorTimelineView: View {
     @State var motionGestureOrigin: EditorMotionTimelineGestureOrigin?
     @State var motionTrackDrag: MotionTrackDrag?
     @State var motionCreateDrag: MotionCreateDragState?
-    @State var motionTrackHover: [EditorMotionTimelineTrack: CGPoint] = [:]
     @State var hoveredOverlaySelection: EditorSelection?
+    @State var overlayPointerPress: EditorOverlayPointerPress?
     @State var overlayTimelineDrag: EditorOverlayTimelineDrag?
     @State var overlayCreateStart: TimeInterval?
     @State var overlayCreateRange: ClosedRange<TimeInterval>?
+    @State var subtitleCreateRange: ClosedRange<TimeInterval>?
+    /// Vertical follow and target track while a clip is dragged across tracks.
+    @State var overlayDragOffsetY: CGFloat = 0
+    @State var overlayDragOriginY: CGFloat?
+    @State var overlayDragTarget: EditorDropLane?
+    /// Track under a media item dragged in from the library.
+    @State var mediaDropLane: TimelineLane?
+    @State var timelineMediaDragActive = false
+    @State var isMediaDropOverCanvas = false
+    /// Insertion point while a library item hovers over the main track.
+    @State var mainTrackDropX: CGFloat?
+    @StateObject var recordingDropPreview = EditorRecordingDropPreview()
+    /// EDT-055: clips selected together (besides primary segments, which keep
+    /// their own set). The inspector follows `editorStore.selection`.
+    @State var multiSelection: Set<EditorSelection> = []
+    @State var marqueeModel = TimelineMarqueeModel()
+    @State var rulerPress: EditorTimelineRulerPress?
+    /// Start timings of the other selected clips while a group is dragged.
+    @State var overlayGroupOriginals: [EditorSelection: OverlayTiming] = [:]
+    /// Lanes the user hid from the track menu (presentation only).
+    @AppStorage("editor.timeline.hiddenPostLanes") var hiddenPostLanesRaw = ""
     @State var timelineInteractionID: UUID?
     @State var emptyClickClearsSelection = false
     @StateObject var timelineSnap = EditorTimelineMagneticSnap()
@@ -884,8 +797,10 @@ struct EditorTimelineView: View {
     @State var deleteKeyMonitor: Any?
     @State var clipboardContextTime: TimeInterval?
     @State var clipPasteTask: Task<Void, Never>?
-    @State var systemWaveform: EditorTimelineWaveformData?
-    @State var microphoneWaveform: EditorTimelineWaveformData?
+    @State var systemWaveforms: [UUID: EditorTimelineWaveformData] = [:]
+    @State var microphoneWaveforms: [UUID: EditorTimelineWaveformData] = [:]
+    /// Sound of clips inserted on the main track, by `InsertedMedia.ownAudioPath`.
+    @State var insertedWaveforms: [String: EditorTimelineWaveformData] = [:]
     @State var selectedCameraSyncAnchorID: UUID?
     @State var cameraSyncAnchorDrag: CameraSyncAnchorDrag?
 
@@ -908,8 +823,10 @@ struct EditorTimelineView: View {
         self.isLayoutTransitioning = isLayoutTransitioning
         _usesWaveformClips = State(initialValue: UserDefaults.standard.bool(forKey: "cn.laogou.dogsc.editor.waveform-clips"))
         _editorStore = ObservedObject(wrappedValue: editorStore)
+        _timelinePreview = ObservedObject(wrappedValue: editorStore.timelinePreview)
         _mediaSession = ObservedObject(wrappedValue: mediaSession)
         _playbackController = ObservedObject(wrappedValue: playbackController)
+        _restingClock = ObservedObject(wrappedValue: playbackController.restingClock)
         self.isCameraSyncEditing = isCameraSyncEditing
         self.windowDeactivationRevision = windowDeactivationRevision
         self.panelHeight = panelHeight
@@ -929,22 +846,10 @@ struct EditorTimelineView: View {
 
     var playbackTime: TimeInterval { playbackController.outputTime }
 
-    static func resolvedDuration(
-        sourceInventory: MediaAssetInventory,
-        project: RecorderProject
-    ) -> TimeInterval {
-        let fullSourceDuration = sourceInventory.videoTimeRange?.duration ?? 0
-        guard let map = try? EditorPrimaryTimelinePresentation.timelineMap(
-            fullSourceDuration: fullSourceDuration,
-            project: project
-        ) else { return 0 }
-        return map.outputDuration
-    }
 
-    var sourceInventory: MediaAssetInventory { mediaSession.inventories.source }
 
-    var fullSourceDuration: TimeInterval {
-        sourceInventory.videoTimeRange?.duration ?? 0
+    var sourceDurations: [UUID: TimeInterval] {
+        mediaSession.sourceDurations
     }
 
     var timelineMap: TimelineMap? {
@@ -953,10 +858,10 @@ struct EditorTimelineView: View {
         // displayed total immediately from that committed sequence; otherwise
         // clips move first while the clock keeps the previous duration and
         // then visibly snaps into place when preparation completes.
-        if fullSourceDuration > 0,
+        if !sourceDurations.isEmpty,
            let current = derivedPresentationCache.timelineMap(
                sourceSequence: editorStore.project.timeline.sourceSequence,
-               fullSourceDuration: fullSourceDuration
+               sourceDurations: sourceDurations
            ) {
             return current
         }
@@ -1024,9 +929,16 @@ struct EditorTimelineView: View {
     /// One activation path for mouse, keyboard and accessibility. Timed clips
     /// reveal themselves only when the playhead is outside their authored
     /// interval, so an intentional frame inside the clip is never disturbed.
-    func activateTimelineSelection(_ selection: EditorSelection) {
+    func activateTimelineSelection(_ selection: EditorSelection,
+                                   extendingWith modifiers: NSEvent.ModifierFlags = NSEvent.modifierFlags) {
         primaryTrimDraft = nil
         primaryRetimeDraft = nil
+        // Use the modifiers from the press, before any selection/drag edit.
+        if modifiers.contains(.shift) || modifiers.contains(.command), Self.isGroupSelectable(selection) {
+            toggleInMultiSelection(selection)
+            return
+        }
+        multiSelection = []
         editorStore.selection = selection
         guard let revealTime = EditorTimelineSelectionReveal.time(
             for: selection,
@@ -1052,36 +964,43 @@ struct EditorTimelineView: View {
     }
 
     var showsSystemWaveform: Bool {
-        mediaSession.inventories.source.hasAudio
+        mediaSession.prepared?.payload.inventoriesBySource.values.contains { $0.source.hasAudio } == true
     }
 
     var showsMicrophoneWaveform: Bool {
-        mediaSession.inventories.microphone.hasAudio
+        mediaSession.prepared?.payload.inventoriesBySource.values.contains { $0.microphone.hasAudio } == true
     }
 
     var showsClipWaveforms: Bool {
-        showsSystemWaveform || showsMicrophoneWaveform
+        showsSystemWaveform || showsMicrophoneWaveform || !insertedWaveforms.isEmpty
+    }
+
+    var cameraSyncSourceID: UUID? {
+        guard let timelineMap else { return nil }
+        return timelineMap.sourcePosition(atOutputTime:
+            EditorPlaybackClockPolicy.frameLookupTime(playbackTime, duration: timelineMap.outputDuration))?.sourceID
+    }
+
+    var cameraSyncMedia: ProjectMediaManifest? {
+        cameraSyncSourceID.flatMap { editorStore.project.source($0)?.media }
     }
 
     var showsCameraSyncTimeline: Bool {
-        isCameraSyncEditing && editorStore.project.media?.camera != nil
+        isCameraSyncEditing && cameraSyncMedia?.camera != nil
     }
 
-    var cameraSyncAnchors: [MediaSyncAnchor] {
-        editorStore.project.media?.camera?.syncAnchors ?? []
-    }
+    var cameraSyncAnchors: [MediaSyncAnchor] { cameraSyncMedia?.camera?.syncAnchors ?? [] }
 
     var cameraSyncBaselineOffset: TimeInterval {
-        guard let camera = editorStore.project.media?.camera else { return 0 }
-        let microphoneStart = editorStore.project.media?.microphone?.sourceStartTime ?? 0
-        return camera.sourceStartTime - microphoneStart
+        guard let camera = cameraSyncMedia?.camera else { return 0 }
+        return camera.sourceStartTime - (cameraSyncMedia?.microphone?.sourceStartTime ?? 0)
     }
 
     /// A lip-sync correction smaller than one captured camera frame is hard to
     /// judge by eye. Keep 40 ms as the useful minimum even for higher-FPS
     /// sources, while slower cameras still advance by one native frame.
     var cameraSyncAdjustmentStep: TimeInterval {
-        let frameRate = max(mediaSession.inventories.camera.videoFrameRate ?? 25, 1)
+        let frameRate = max(cameraSyncSourceID.map { mediaSession.inventories(for: $0).camera.videoFrameRate ?? 25 } ?? 25, 1)
         return max(1 / frameRate, 0.040)
     }
 
@@ -1093,7 +1012,7 @@ struct EditorTimelineView: View {
         let duration = max(timelineDuration, 0.001)
         return EditorTimelineColumnLayout(labelWidth: timelineLabelWidth) { presentedLabelWidth in
         VStack(spacing: 0) {
-            timelineControls(duration: duration)
+            timelineControls()
             EditorFadingHairline(opacity: 0.08)
                 .frame(height: timelineDividerHeight, alignment: .center)
             GeometryReader { geometry in
@@ -1105,20 +1024,18 @@ struct EditorTimelineView: View {
                     timelineLabels
                         .frame(width: presentedLabelWidth)
 
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        timelineCanvas(width: contentWidth, duration: duration)
+                    NativeEditorTimelineScrollView(
+                        playbackController: playbackController,
+                        documentWidth: contentWidth,
+                        documentHeight: timelineDocumentHeight,
+                        onResolve: { resolved in
+                            guard timelineScrollView !== resolved else { return }
+                            timelineScrollView = resolved
+                            installTimelineBoundsObservation(on: resolved)
+                        },
+                        content: timelineCanvas(width: contentWidth, duration: duration)
                             .allowsHitTesting(!isLayoutTransitioning)
-                            .background {
-                                TimelineScrollViewBridge(
-                                    playbackController: playbackController
-                                ) { resolved in
-                                    guard timelineScrollView !== resolved else { return }
-                                    timelineScrollView = resolved
-                                    installTimelineBoundsObservation(on: resolved)
-                                }
-                                .frame(width: 0, height: 0)
-                            }
-                    }
+                    )
                     .onContinuousHover(coordinateSpace: .local) { phase in
                         if case .ended = phase {
                             clearTimelineHoverLocation()
@@ -1164,7 +1081,7 @@ struct EditorTimelineView: View {
                 .accessibilityHidden(timelineZoom <= 1.01)
                 .accessibilityLabel("时间线总览")
                 .accessibilityValue(
-                    "当前缩放 \(String(format: "%.1f", timelineZoom)) 倍；拖动可定位"
+                    String(format: appLocalized("当前缩放 %@ 倍；拖动可定位"), String(format: "%.1f", timelineZoom))
                 )
                 .help("拖动总览快速定位播放头和当前可视范围")
             }
@@ -1172,12 +1089,14 @@ struct EditorTimelineView: View {
 
         }
         }
-        .animation(EditorSwapTiming.layout, value: timelineLabelsCollapsed)
+        .transaction(value: timelineLabelsCollapsed) { $0.animation = nil }
         .frame(height: timelineHeight)
         .onChange(of: preferredPanelHeight, initial: true) { _, height in
             // Live window resizing must follow the pointer, without repeatedly
             // starting the track-expansion animation or disabling gestures.
-            let animate = lastHeightReportLayout == layout
+            // A temporary drop row must not invoke the parent's animated
+            // workspace reflow, which disables timeline hit testing for 320 ms.
+            let animate = lastHeightReportLayout == layout && !timelineMediaDragActive
             lastHeightReportLayout = layout
             onPreferredHeightChange(height, animate)
         }
@@ -1244,6 +1163,18 @@ struct EditorTimelineView: View {
             if selectedCameraSyncAnchorID != nil {
                 dismissCameraSyncSelection()
             }
+            // Selecting something outside the group (e.g. on the canvas)
+            // ends the group selection.
+            let modifiers = NSEvent.modifierFlags
+            if !multiSelection.isEmpty, !marqueeModel.isActive,
+               !modifiers.contains(.shift), !modifiers.contains(.command) {
+                let kept: Bool = switch selection {
+                case let .primarySegment(id)?: selectedPrimarySegmentIDs.contains(id)
+                case let item?: multiSelection.contains(item)
+                case nil: false
+                }
+                if !kept { multiSelection = [] }
+            }
             guard case let .primarySegment(id) = selection,
                   primaryTrimDraft?.segmentID == id
                     || primaryRetimeDraft?.segmentID == id else {
@@ -1251,6 +1182,10 @@ struct EditorTimelineView: View {
                 primaryRetimeDraft = nil
                 return
             }
+        }
+        // The inspector's multi-select page ("3 个柔化") reads the group.
+        .onChange(of: multiSelection, initial: true) { _, group in
+            if editorStore.groupSelection != group { editorStore.groupSelection = group }
         }
         .onChange(of: cameraSyncAnchors) { _, anchors in
             guard let selectedCameraSyncAnchorID,
@@ -1280,6 +1215,7 @@ struct EditorTimelineView: View {
             dismissCameraSyncSelection()
         }
         .onAppear(perform: installDeleteKeyMonitor)
+        .onAppear(perform: installTimelineToolKeyMonitor)
         .onAppear(perform: installScrollWheelMonitor)
         .onAppear(perform: installHoverTrackingMonitor)
         .onAppear(perform: installModifierFlagsMonitor)
@@ -1301,8 +1237,11 @@ struct EditorTimelineView: View {
             dismissCameraSyncSelection()
             playbackController.endHoverPreview()
         }
-        .task(id: mediaSession.prepared?.generation) {
+        .task(id: audioWaveformSourceKey) {
             await loadAudioWaveforms()
+        }
+        .task(id: insertedAudioPaths) {
+            await loadInsertedWaveforms()
         }
         .task(id: usesWaveformClips) {
             // Persist only the settled preference; rapid reversals stay local to the timeline.
@@ -1310,7 +1249,9 @@ struct EditorTimelineView: View {
             UserDefaults.standard.set(usesWaveformClips, forKey: "cn.laogou.dogsc.editor.waveform-clips")
         }
         .onDisappear {
+            visualTransferTask?.cancel()
             clipPasteTask?.cancel()
+            editorStore.groupSelection = []
             UserDefaults.standard.set(usesWaveformClips, forKey: "cn.laogou.dogsc.editor.waveform-clips")
             persistTimelineZoomImmediately()
             cancelActiveTimelineGesture()
@@ -1318,6 +1259,7 @@ struct EditorTimelineView: View {
             playbackController.cancelCameraSyncAudition()
             timelineZoomInputCoalescer.cancel()
             removeDeleteKeyMonitor()
+            removeTimelineToolKeyMonitor()
             removeScrollWheelMonitor()
             removeHoverTrackingMonitor()
             removeModifierFlagsMonitor()

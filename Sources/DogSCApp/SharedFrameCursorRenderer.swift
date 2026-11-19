@@ -34,16 +34,23 @@ enum SharedFrameCursorRenderer {
         guard normalizedSource.extent.width > 0,
               normalizedSource.extent.height > 0 else { return nil }
         let layout = scene.layout
+        // Mouse-down press: scale the bitmap around the hotspot so the tip
+        // stays on the recorded point. Click effects keep `layout` as is.
+        let press = scene.pressScale
+        let spriteWidth = layout.size.width * press
+        let spriteHeight = layout.size.height * press
+        let spriteOriginX = layout.pointer.x + (layout.origin.x - layout.pointer.x) * press
+        let spriteOriginY = layout.pointer.y + (layout.origin.y - layout.pointer.y) * press
         let scaled = normalizedSource.transformed(
             by: CGAffineTransform(
-                scaleX: layout.size.width / normalizedSource.extent.width,
-                y: layout.size.height / normalizedSource.extent.height
+                scaleX: spriteWidth / normalizedSource.extent.width,
+                y: spriteHeight / normalizedSource.extent.height
             )
         )
         let placed = scaled.transformed(
             by: CGAffineTransform(
-                translationX: layout.origin.x,
-                y: Double(canvasRect.maxY) - layout.origin.y - layout.size.height
+                translationX: spriteOriginX,
+                y: Double(canvasRect.maxY) - spriteOriginY - spriteHeight
             )
         )
         let pointer = CGPoint(

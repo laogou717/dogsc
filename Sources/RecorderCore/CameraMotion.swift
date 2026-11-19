@@ -58,6 +58,26 @@ public struct CameraMotionState: Codable, Equatable, Sendable {
     }
 }
 
+public extension CameraMotionState {
+    /// 摄像机动画写的是绝对值：`CameraMotionClip.target` 就是画面上的最终
+    /// 姿态，不是相对基准的偏移。基准只决定两件事——没有动画的时间显示成
+    /// 什么样，以及一个片段从哪里进、回落到哪里去。这个初始化器就是那个
+    /// 基准：摄像头自己的静态姿态。
+    ///
+    /// `opacity` 恒为 1：摄像头显示还是隐藏是摄像头自己的开关（渲染最后一
+    /// 步按 `isHidden` 处理），不是运动轨道的事；隐藏时若把 0 当基准，烘焙
+    /// 出来的目标会把"看不见"写进片段，之后取消隐藏也还是看不见。
+    init(base style: CameraStyle) {
+        self.init(
+            layout: .shape(style.shape),
+            position: style.position,
+            size: style.size,
+            roundness: style.roundness,
+            opacity: 1
+        )
+    }
+}
+
 public struct CameraMotionClip: Codable, Equatable, Identifiable, Sendable {
     public var id: UUID
     public var timing: TransitionTiming
@@ -141,9 +161,10 @@ public struct CameraMotionTrack: Equatable, Sendable {
         base: CameraMotionState,
         cameraAspectRatio: Double,
         canvasAspectRatio: Double,
-        motion: MotionStyle = MotionStyle()
+        motion: MotionStyle = MotionStyle(),
+        baseSample: CameraMotionSample? = nil
     ) -> CameraMotionSample {
-        let resolvedBase = Self.resolve(
+        let resolvedBase = baseSample ?? Self.resolve(
             base,
             cameraAspectRatio: cameraAspectRatio,
             canvasAspectRatio: canvasAspectRatio
@@ -335,7 +356,7 @@ public struct CameraMotionTrack: Equatable, Sendable {
     /// 过渡采样：隐藏目标（opacity≈0）不做位移动画——原地淡出；
     /// 从隐藏进入可见目标——在目标位置/形状处淡入。
     /// 其余情况走完整几何插值。
-    private static func transitionSample(
+    static func transitionSample(
         from inherited: CameraMotionSample,
         to target: CameraMotionSample,
         progress: Double
@@ -355,7 +376,7 @@ public struct CameraMotionTrack: Equatable, Sendable {
         return Self.interpolate(from: inherited, to: target, progress: progress)
     }
 
-    private static func resolve(
+    static func resolve(
         _ state: CameraMotionState,
         cameraAspectRatio: Double,
         canvasAspectRatio: Double

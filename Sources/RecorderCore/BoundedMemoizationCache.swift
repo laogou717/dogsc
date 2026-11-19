@@ -31,11 +31,6 @@ final class BoundedMemoizationCache<Key: Hashable, Value>: @unchecked Sendable {
         return finishBuild(created, for: key)
     }
 
-    var count: Int {
-        condition.lock()
-        defer { condition.unlock() }
-        return values.count
-    }
 
     /// Returns an existing value, or reserves this key for the caller. Other
     /// threads asking for the same key wait for that one build instead of

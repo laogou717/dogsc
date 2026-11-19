@@ -3,7 +3,6 @@ import AVKit
 import RecorderCore
 
 struct CanvasPreviewLayout {
-    let sourceAspect: CGFloat
     let scene: CompositionSceneEvaluation
     /// Point-space scene used only by SwiftUI hit targets and overlays.
     let frameScene: FrameScene
@@ -32,11 +31,22 @@ struct CanvasPlaybackEvaluationContext: Equatable, Sendable {
     let screenMotionTrack: ScreenMotionTrack
     let cameraMotionTrack: CameraMotionTrack
     let stickerTrack: StickerTransitionTrack
+    var primaryPlan: TimelineMediaPlan? = nil
+    var recordingGeometry: [UUID: EditorRecordingGeometry] = [:]
+    var aspectTransitions: RecordingAspectTransitions? = nil
 
     func refreshingCursor(
         in cached: SharedPreviewPlaybackFrame,
         at presentationTime: TimeInterval
     ) -> SharedPreviewPlaybackFrame {
+        // A 60 Hz cached animation sample must not cross a recording or
+        // camera-availability boundary relative to the exact media clock.
+        let current = primaryPlan?.slice(atOutputTime: presentationTime)
+        let previous = primaryPlan?.slice(atOutputTime: cached.renderPlan.scene.time)
+        if current?.segmentID != previous?.segmentID
+            || cameraPlan?.contains(outputTime: presentationTime) != cameraPlan?.contains(outputTime: cached.renderPlan.scene.time) {
+            return frame(at: presentationTime)
+        }
         let plan = FrameSceneEvaluator.refreshingCursor(
             in: cached.renderPlan,
             at: presentationTime,
@@ -60,14 +70,20 @@ struct CanvasPlaybackEvaluationContext: Equatable, Sendable {
     }
 
     func frame(at presentationTime: TimeInterval) -> SharedPreviewPlaybackFrame {
+        let time = EditorPlaybackClockPolicy.frameLookupTime(presentationTime, duration: outputDuration)
+        let slice = primaryPlan?.slice(atOutputTime: time)
+        let sourceID = slice.flatMap { $0.media == nil ? $0.sourceID : nil }
+        let geometry = sourceID.flatMap { recordingGeometry[$0] }
+        let aspect = geometry.map { Double($0.screenSize.width / max($0.screenSize.height, 1)) } ?? sourceAspectRatio
+        let cameraSize = geometry?.cameraSize.map { CompositionSize(width: $0.width, height: $0.height) }
         let plan = FrameSceneEvaluator.renderPlan(
             project: project,
-            presentationTime: presentationTime,
+            presentationTime: time,
             outputDuration: outputDuration,
             frameRate: frameRate,
             canvasSize: rasterCanvasSize,
-            sourceAspectRatio: sourceAspectRatio,
-            cameraSourceSize: cameraSourceSize,
+            sourceAspectRatio: aspect,
+            cameraSourceSize: primaryPlan == nil ? cameraSourceSize : cameraSize,
             pointerTrack: pointerTrack,
             cursorMetrics: cursorMetrics,
             cursorMetricsByAssetID: cursorMetricsByAssetID,
@@ -75,7 +91,9 @@ struct CanvasPlaybackEvaluationContext: Equatable, Sendable {
             screenMotionTrack: screenMotionTrack,
             cameraMotionTrack: cameraMotionTrack,
             stickerTrack: stickerTrack,
-            cameraTimeline: cameraPlan
+            cameraTimeline: cameraPlan,
+            recordingSourceID: sourceID,
+            geometrySourceAspectRatio: aspectTransitions?.sourceAspectRatio(atOutputTime: time, sourceID: sourceID)
         )
         // Reuse the already-evaluated presentation scene instead of running
         // the complete pointer/zoom/projection evaluator a second time.
@@ -97,15 +115,15 @@ enum EditorPreviewResolutionMode: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .low: return appLocalized("清晰预览")
-        case .full: return appLocalized("完整分辨率")
+        case .low: return appLocalized("流畅")
+        case .full: return appLocalized("原画")
         }
     }
 
     var detail: String {
         switch self {
-        case .low: return appLocalized("播放更流畅")
-        case .full: return appLocalized("保留素材细节")
+        case .low: return appLocalized("降低预览分辨率，播放更流畅")
+        case .full: return appLocalized("按素材原分辨率预览")
         }
     }
 }

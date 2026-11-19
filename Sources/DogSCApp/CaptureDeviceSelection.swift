@@ -1,6 +1,5 @@
 import AppKit
 import CoreText
-import RecorderCore
 import ScreenCaptureKit
 import SwiftUI
 
@@ -288,7 +287,7 @@ private struct IOSDeviceSelectionOverlay: View {
                     Text("选择要录制的设备").font(.appUI(size: 15, weight: .semibold))
                     Spacer()
                     Button(action: onRefresh) {
-                        Image(systemName: "arrow.clockwise").font(.system(size: 12, weight: .semibold))
+                        EditorSymbol("arrow.clockwise", size: 12).font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(RecorderStyle.muted).frame(width: 30, height: 30)
                     }
                     .buttonStyle(RecorderCirclePressStyle())
@@ -347,7 +346,7 @@ private struct IOSDeviceSelectionOverlay: View {
             .padding(.horizontal, 8).padding(.top, 14).padding(.bottom, 8)
             .frame(width: 380)
             .foregroundStyle(RecorderStyle.ink)
-            .recorderSurface(radius: 30, castsShadow: true)
+            .recorderSurface(radius: RecorderStyle.cardRadius, castsShadow: true)
             .modifier(RecorderSelectionEntrance())
             .position(cardCenter)
         }
@@ -370,7 +369,7 @@ private struct DeviceSelectionRow: View {
     var body: some View {
         Button(action: onSelect) {
             HStack(spacing: 12) {
-                Image(systemName: selected ? "ipad.landscape" : "ipad")
+                EditorSymbol(selected ? "ipad.landscape" : "ipad", size: 16)
                     .font(.system(size: 16, weight: .medium))
                     .foregroundStyle(selected ? RecorderStyle.ink : RecorderStyle.muted)
                     .frame(width: 28)
@@ -384,7 +383,7 @@ private struct DeviceSelectionRow: View {
                         .foregroundStyle(RecorderStyle.muted)
                 }
                 Spacer()
-                Image(systemName: "checkmark")
+                EditorSymbol("checkmark", size: 12)
                     .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(RecorderStyle.ink)
                     .opacity(selected ? 1 : 0).scaleEffect(selected ? 1 : 0.4)

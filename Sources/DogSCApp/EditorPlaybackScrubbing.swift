@@ -30,7 +30,10 @@ extension EditorPlaybackController {
     }
 
     func updateScrubbing(to requestedTime: TimeInterval) {
-        guard primaryPlayer != nil else { return }
+        guard primaryPlayer != nil else {
+            seek(to: requestedTime)
+            return
+        }
         if !scrubIsActive { beginScrubbing() }
         let target = EditorPlaybackClockPolicy.clampedTime(
             requestedTime,
@@ -39,7 +42,6 @@ extension EditorPlaybackController {
         // The pointer clock never waits for decoding. A completed seek only
         // publishes a preview frame; it must never pull this clock backwards.
         latestOutputTime = target
-        resetPlaybackAnchor(to: target)
         scrubSeekCoalescer.update(target)
         scheduleScrubSeekIfNeeded()
     }
@@ -48,6 +50,7 @@ extension EditorPlaybackController {
         guard scrubIsActive else { return }
         let finalTime = scrubSeekCoalescer.pendingTarget ?? outputTime
         scrubIsActive = false
+        restingClock.publish(finalTime)
         cancelScrubScheduling()
         seek(to: finalTime, pausing: true, loadsPausedFrame: true)
     }

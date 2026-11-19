@@ -4,52 +4,154 @@ import SwiftUI
 
 /// Original vector frame family. Device shells follow the actual recording
 /// rectangle; legacy portrait/landscape projects retain their source plane.
+private enum ScreenFrameFamily: CaseIterable, Hashable {
+    case none, window, browser, phone, tablet
+
+    var title: String {
+        switch self {
+        case .none: "无边框"
+        case .window: "macOS 窗口"
+        case .browser: "浏览器"
+        case .phone: "iPhone"
+        case .tablet: "iPad"
+        }
+    }
+
+    var supportsAppearance: Bool { self == .window || self == .browser }
+
+    func style(dark: Bool) -> ScreenFrameStyle {
+        switch self {
+        case .none: .none
+        case .window: dark ? .windowDark : .windowLight
+        case .browser: dark ? .browserDark : .browserLight
+        case .phone: .devicePhone
+        case .tablet: .deviceTablet
+        }
+    }
+
+    init(_ style: ScreenFrameStyle) {
+        switch style {
+        case .none: self = .none
+        case .windowLight, .windowDark: self = .window
+        case .browserLight, .browserDark: self = .browser
+        case .devicePhone, .devicePhonePortrait, .devicePhoneLandscape: self = .phone
+        case .deviceTablet, .deviceTabletPortrait, .deviceTabletLandscape: self = .tablet
+        }
+    }
+}
+
+private enum ScreenFrameAppearance: Hashable, CaseIterable {
+    case light, dark
+
+    var title: String { self == .light ? "浅色" : "深色" }
+    var icon: String { self == .light ? "sun.max" : "moon" }
+}
+
 struct EditorScreenFramePicker: View {
     @ObservedObject var editorStore: EditorStore
+    var target: ScreenAppearanceTarget = .recording(RecordingSource.primaryID)
     var screenImage: NSImage? = nil
     let onError: (String) -> Void
+    @State private var prefersDarkChrome = false
 
-    private let visibleStyles = ScreenFrameStyle.allCases
+    private var currentStyle: ScreenFrameStyle { editorStore.previewProject.screenCanvas(for: target).screenFrame }
+    private var currentFamily: ScreenFrameFamily { ScreenFrameFamily(currentStyle) }
+    private var usesDarkChrome: Bool {
+        currentFamily.supportsAppearance
+            ? currentStyle == .windowDark || currentStyle == .browserDark
+            : prefersDarkChrome
+    }
+
+    private func select(_ style: ScreenFrameStyle) {
+        do {
+            try ScreenFrameEditorCommand.select(style, store: editorStore, target: target)
+        } catch {
+            onError(error.localizedDescription)
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            EditorMockupTurntable(
-                styles: visibleStyles,
-                selected: editorStore.previewProject.canvas.screenFrame,
-                screenImage: screenImage
-            ) { style in
-                do {
-                    try ScreenFrameEditorCommand.select(style, store: editorStore)
-                } catch {
-                    onError(error.localizedDescription)
+            LazyVGrid(
+                columns: Array(repeating: GridItem(.flexible(), spacing: 8, alignment: .top), count: 3),
+                spacing: 12
+            ) {
+                ForEach(ScreenFrameFamily.allCases, id: \.self) { family in
+                    let isSelected = family == currentFamily
+                    Button {
+                        select(family.style(dark: usesDarkChrome))
+                    } label: {
+                        VStack(spacing: 6) {
+                            EditorMockupCard(
+                                style: family.style(dark: usesDarkChrome),
+                                screenImage: screenImage,
+                                isSelected: isSelected
+                            )
+                            Text(appLocalized(family.title))
+                                .font(.appUI(size: 11, weight: isSelected ? .semibold : .medium))
+                                .foregroundStyle(isSelected ? EditorTheme.primaryText : EditorTheme.secondaryText)
+                                .lineLimit(1)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .help("边框会和屏幕、光标一起缩放并进行 3D 变形")
+                    .accessibilityLabel(appLocalized(family.title))
+                    .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
                 }
+            }
+
+            if currentFamily.supportsAppearance {
+                HStack(spacing: 10) {
+                    Text("外观")
+                        .font(.appUI(size: 12))
+                        .foregroundStyle(EditorTheme.secondaryText)
+                    Spacer(minLength: 0)
+                    EditorSegmentedControl(
+                        options: ScreenFrameAppearance.allCases,
+                        title: { $0.title },
+                        icon: { $0.icon },
+                        selection: Binding(
+                            get: { usesDarkChrome ? .dark : .light },
+                            set: { appearance in
+                                prefersDarkChrome = appearance == .dark
+                                select(currentFamily.style(dark: appearance == .dark))
+                            }
+                        )
+                    )
+                    .frame(maxWidth: 190)
+                }
+                .transition(.opacity)
             }
 
             HStack {
                 Spacer()
                 Button {
                     do {
-                        try ScreenFrameEditorCommand.select(editorStore.previewProject.canvas.screenFrame,
-                            store: editorStore, resetDefaults: true)
+                        try ScreenFrameEditorCommand.select(editorStore.previewProject.screenCanvas(for: target).screenFrame,
+                            store: editorStore, target: target, resetDefaults: true)
                     } catch { onError(error.localizedDescription) }
                 } label: {
                     EditorSymbolLabel("还原样式", systemImage: "arrow.counterclockwise")
                         .font(.appUI(size: 12))
                 }
                 .buttonStyle(.editorGhost)
-                .appButtonKeyboardFocus(in: Capsule(style: .continuous))
+                .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
                 .help("恢复当前样机的默认外观，保留标题和网址")
             }
 
-            if editorStore.previewProject.canvas.screenFrame.isWindowFrame {
+            if editorStore.previewProject.screenCanvas(for: target).screenFrame.isWindowFrame {
                 ScreenFrameMetadataField(
                     editorStore: editorStore,
+                    target: target,
                     kind: .windowTitle,
                     onError: onError
                 )
-            } else if editorStore.previewProject.canvas.screenFrame.isBrowserFrame {
+            } else if editorStore.previewProject.screenCanvas(for: target).screenFrame.isBrowserFrame {
                 ScreenFrameMetadataField(
                     editorStore: editorStore,
+                    target: target,
                     kind: .browserAddress,
                     onError: onError
                 )
@@ -115,23 +217,24 @@ enum ScreenFrameEditorCommand {
     static func select(
         _ style: ScreenFrameStyle,
         store: EditorStore,
+        target: ScreenAppearanceTarget = .recording(RecordingSource.primaryID),
         resetDefaults: Bool = false
     ) throws {
-        guard resetDefaults || store.previewProject.canvas.screenFrame != style else { return }
-        if store.interaction?.commandScope == .canvas {
-            store.updateInteraction { project in
-                project.canvas.applyScreenFrameStyle(style)
-            }
+        guard resetDefaults || store.previewProject.screenCanvas(for: target).screenFrame != style else { return }
+        let apply: (inout RecorderProject) -> Void = { project in
+            var canvas = project.screenCanvas(for: target)
+            canvas.applyScreenFrameStyle(style)
+            project.setScreenAppearance(ScreenCardAppearance(canvas: canvas), for: target)
+        }
+        if store.interaction?.commandScope == .project {
+            store.updateInteraction(apply)
             _ = try store.commitInteraction(actionName: "更换屏幕边框")
             return
         }
-
-        if store.interaction != nil {
-            store.cancelInteraction()
-        }
-        var canvas = store.project.canvas
-        canvas.applyScreenFrameStyle(style)
-        try store.replaceCanvas(with: canvas, actionName: "更换屏幕边框")
+        if store.interaction != nil { store.cancelInteraction() }
+        var project = store.project
+        apply(&project)
+        try store.replaceProject(with: project, actionName: "更换屏幕边框")
     }
 
     static func beginMetadataEditing(
@@ -139,7 +242,7 @@ enum ScreenFrameEditorCommand {
         store: EditorStore
     ) {
         _ = store.beginContinuousInteraction(
-            commandScope: .canvas,
+            commandScope: .project,
             commitsWhenReplacedAs: kind.actionName
         )
     }
@@ -147,34 +250,40 @@ enum ScreenFrameEditorCommand {
     static func previewMetadata(
         _ rawValue: String,
         kind: ScreenFrameMetadataKind,
-        store: EditorStore
+        store: EditorStore,
+        target: ScreenAppearanceTarget = .recording(RecordingSource.primaryID)
     ) {
         beginMetadataEditing(kind, store: store)
         let value = String(rawValue.prefix(kind.maximumLength))
         store.updateInteraction { project in
-            kind.setValue(value, in: &project.canvas)
+            var canvas = project.screenCanvas(for: target)
+            kind.setValue(value, in: &canvas)
+            project.setScreenAppearance(ScreenCardAppearance(canvas: canvas), for: target)
         }
     }
 
     static func commitMetadata(
         _ rawValue: String,
         kind: ScreenFrameMetadataKind,
-        store: EditorStore
+        store: EditorStore,
+        target: ScreenAppearanceTarget = .recording(RecordingSource.primaryID)
     ) throws {
-        guard store.interaction?.commandScope == .canvas else { return }
+        guard store.interaction?.commandScope == .project else { return }
         let value = String(
             rawValue
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .prefix(kind.maximumLength)
         )
         store.updateInteraction { project in
-            kind.setValue(value, in: &project.canvas)
+            var canvas = project.screenCanvas(for: target)
+            kind.setValue(value, in: &canvas)
+            project.setScreenAppearance(ScreenCardAppearance(canvas: canvas), for: target)
         }
         _ = try store.commitInteraction(actionName: kind.actionName)
     }
 
     static func cancelMetadataEditing(store: EditorStore) {
-        guard store.interaction?.commandScope == .canvas else { return }
+        guard store.interaction?.commandScope == .project else { return }
         store.cancelInteraction()
     }
 }
@@ -182,6 +291,7 @@ enum ScreenFrameEditorCommand {
 private struct ScreenFrameMetadataField: View {
 
     @ObservedObject var editorStore: EditorStore
+    let target: ScreenAppearanceTarget
     let kind: ScreenFrameMetadataKind
     let onError: (String) -> Void
     @State private var draft = ""
@@ -215,10 +325,10 @@ private struct ScreenFrameMetadataField: View {
                 .frame(height: 30)
                 .background(
                     EditorTheme.chrome(isFocused ? 0.09 : 0.055),
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    in: RoundedRectangle(cornerRadius: 6, style: .continuous)
                 )
                 .overlay {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .stroke(
                             isFocused
                                 ? EditorTheme.platinumAccent.opacity(0.46)
@@ -246,7 +356,8 @@ private struct ScreenFrameMetadataField: View {
             ScreenFrameEditorCommand.previewMetadata(
                 value,
                 kind: kind,
-                store: editorStore
+                store: editorStore,
+                target: target
             )
         }
         .onChange(of: currentValue) { _, value in
@@ -255,11 +366,11 @@ private struct ScreenFrameMetadataField: View {
     }
 
     private var currentValue: String {
-        kind.value(in: editorStore.previewProject.canvas)
+        kind.value(in: editorStore.previewProject.screenCanvas(for: target))
     }
 
     private var projectValue: String {
-        kind.value(in: editorStore.project.canvas)
+        kind.value(in: editorStore.project.screenCanvas(for: target))
     }
 
     private func commitAndEndEditing() {
@@ -278,7 +389,8 @@ private struct ScreenFrameMetadataField: View {
             try ScreenFrameEditorCommand.commitMetadata(
                 value,
                 kind: kind,
-                store: editorStore
+                store: editorStore,
+                target: target
             )
         } catch {
             ScreenFrameEditorCommand.cancelMetadataEditing(store: editorStore)
@@ -287,230 +399,6 @@ private struct ScreenFrameMetadataField: View {
         }
     }
 }
-
-private struct ScreenFrameMiniature: View {
-    let style: ScreenFrameStyle
-
-    var body: some View {
-        GeometryReader { proxy in
-            let size = proxy.size
-            let outer = miniatureOuterRect(in: size)
-            let isDevice = style.isDevice
-            let toolbarHeight = style == .none
-                ? 0
-                : (isDevice ? max(min(outer.width, outer.height) * 0.055, 1.8)
-                    : max(outer.height * 0.22, 5))
-            let sideBezel: CGFloat = isDevice
-                ? max(min(outer.width, outer.height) * (style.isPhone ? 0.055 : 0.043), 1.6)
-                : 0
-            let leadingBezel = isDevice && !style.isPortraitDevice && style.isPhone
-                ? sideBezel : sideBezel
-            let trailingBezel = isDevice && !style.isPortraitDevice && style.isPhone
-                ? sideBezel : sideBezel
-            let topBezel = isDevice ? toolbarHeight : (style == .none ? 0 : toolbarHeight)
-            let bottomBezel = isDevice ? toolbarHeight : (style == .none ? 0 : 2)
-            let content = CGRect(
-                x: outer.minX + (isDevice ? leadingBezel : (style == .none ? 0 : 2)),
-                y: outer.minY + topBezel,
-                width: max(
-                    outer.width - (isDevice ? leadingBezel + trailingBezel
-                        : (style == .none ? 0 : 4)),
-                    1
-                ),
-                height: max(outer.height - topBezel - bottomBezel, 1)
-            )
-
-            ZStack(alignment: .topLeading) {
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(EditorTheme.chrome(0.16))
-                    .frame(width: outer.width, height: outer.height)
-                    .position(x: outer.midX, y: outer.midY)
-
-                if style != .none {
-                    RoundedRectangle(
-                        cornerRadius: isDevice
-                            ? min(outer.width, outer.height) * (style.isPhone ? 0.12 : 0.075)
-                            : 5,
-                        style: .continuous
-                    )
-                    .fill(frameSurface)
-                    .frame(width: outer.width, height: outer.height)
-                    .position(x: outer.midX, y: outer.midY)
-
-                    if isDevice {
-                        RoundedRectangle(cornerRadius: min(outer.width, outer.height) * (style.isPhone ? 0.12 : 0.075))
-                            .strokeBorder(LinearGradient(colors: [Color(white: 0.65), Color(white: 0.18), Color(white: 0.47)],
-                                startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 1.1)
-                            .frame(width: outer.width, height: outer.height)
-                            .position(x: outer.midX, y: outer.midY)
-                    } else {
-                        Rectangle()
-                            .fill(frameToolbar)
-                            .frame(width: outer.width, height: toolbarHeight)
-                            .position(
-                                x: outer.midX,
-                                y: outer.minY + toolbarHeight / 2
-                            )
-                            .mask(
-                                UnevenRoundedRectangle(
-                                    cornerRadii: RectangleCornerRadii(
-                                        topLeading: 5,
-                                        bottomLeading: 0,
-                                        bottomTrailing: 0,
-                                        topTrailing: 5
-                                    ),
-                                    style: .continuous
-                                )
-                                .frame(width: outer.width, height: toolbarHeight)
-                                .position(
-                                    x: outer.midX,
-                                    y: outer.minY + toolbarHeight / 2
-                                )
-                            )
-
-                        HStack(spacing: 2) {
-                            Circle().fill(Color.red.opacity(0.86))
-                            Circle().fill(Color.yellow.opacity(0.86))
-                            Circle().fill(Color.green.opacity(0.86))
-                        }
-                        .frame(width: 13, height: 3)
-                        .position(
-                            x: outer.minX + 9,
-                            y: outer.minY + toolbarHeight / 2
-                        )
-
-                        if style.isBrowser {
-                            Capsule(style: .continuous)
-                                .fill(frameField)
-                                .frame(
-                                    width: max(outer.width * 0.44, 12),
-                                    height: max(toolbarHeight * 0.38, 3)
-                                )
-                                .position(
-                                    x: outer.midX + outer.width * 0.035,
-                                    y: outer.minY + toolbarHeight / 2
-                                )
-                        }
-                    }
-                }
-
-                RoundedRectangle(cornerRadius: isDevice ? min(content.width, content.height) * (style.isPhone ? 0.10 : 0.06) : 4, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color(red: 0.27, green: 0.33, blue: 0.38),
-                                Color(red: 0.75, green: 0.80, blue: 0.81),
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .frame(width: content.width, height: content.height)
-                    .position(x: content.midX, y: content.midY)
-            }
-        }
-        .clipped()
-        .accessibilityHidden(true)
-    }
-
-    private func miniatureOuterRect(in size: CGSize) -> CGRect {
-        let bounds = CGRect(x: 1, y: 1, width: max(size.width - 2, 1), height: max(size.height - 2, 1))
-        let aspect = style.devicePreviewAspectRatio ?? (16.0 / 10.0)
-        let width = min(bounds.width, bounds.height * aspect)
-        let height = min(bounds.height, width / aspect)
-        return CGRect(
-            x: bounds.midX - width / 2,
-            y: bounds.midY - height / 2,
-            width: width,
-            height: height
-        )
-    }
-
-    private var isDark: Bool {
-        style == .windowDark || style == .browserDark || style.isDevice
-    }
-
-    private var frameSurface: Color {
-        isDark ? Color(white: 0.14) : Color(white: 0.86)
-    }
-
-    private var frameToolbar: Color {
-        isDark ? Color(white: 0.20) : Color(white: 0.95)
-    }
-
-    private var frameField: Color {
-        isDark ? Color(white: 0.09) : Color.white
-    }
-}
-
-private extension ScreenFrameStyle {
-    var editorDisplayName: String {
-        switch self {
-        case .none: "无边框"
-        case .windowLight: "macOS 窗口·浅色"
-        case .windowDark: "macOS 窗口·深色"
-        case .browserLight: "浏览器·浅色"
-        case .browserDark: "浏览器·深色"
-        case .devicePhone: "自适应设备框"
-        case .deviceTablet: "通用平板样机"
-        case .devicePhonePortrait: "手机·竖屏"
-        case .devicePhoneLandscape: "手机·横屏"
-        case .deviceTabletPortrait: "平板·竖屏"
-        case .deviceTabletLandscape: "平板·横屏"
-        }
-    }
-
-    var editorShortName: String {
-        switch self {
-        case .none: "无"
-        case .windowLight: "窗口浅色"
-        case .windowDark: "窗口深色"
-        case .browserLight: "浏览器浅色"
-        case .browserDark: "浏览器深色"
-        case .devicePhone: "设备框"
-        case .deviceTablet: "通用平板"
-        case .devicePhonePortrait: "手机竖屏"
-        case .devicePhoneLandscape: "手机横屏"
-        case .deviceTabletPortrait: "平板竖屏"
-        case .deviceTabletLandscape: "平板横屏"
-        }
-    }
-
-    var isBrowser: Bool {
-        self == .browserLight || self == .browserDark
-    }
-
-    var isDevice: Bool {
-        switch self {
-        case .devicePhone, .deviceTablet, .devicePhonePortrait,
-             .devicePhoneLandscape, .deviceTabletPortrait,
-             .deviceTabletLandscape: true
-        default: false
-        }
-    }
-
-    var isPhone: Bool {
-        self == .devicePhone || self == .devicePhonePortrait
-            || self == .devicePhoneLandscape
-    }
-
-    var isPortraitDevice: Bool {
-        self == .devicePhonePortrait || self == .deviceTabletPortrait
-    }
-
-    var devicePreviewAspectRatio: CGFloat? {
-        switch self {
-        case .devicePhonePortrait: 9.0 / 19.5
-        case .devicePhoneLandscape: 19.5 / 9.0
-        case .deviceTabletPortrait: 3.0 / 4.0
-        case .deviceTabletLandscape: 4.0 / 3.0
-        case .devicePhone: 4.0 / 3.0
-        case .deviceTablet: 4.0 / 3.0
-        default: nil
-        }
-    }
-}
-
 
 // MARK: - Mockup cards
 
@@ -521,11 +409,10 @@ struct EditorMockupCard: View {
     let style: ScreenFrameStyle
     let screenImage: NSImage?
     let isSelected: Bool
-    @Environment(\.consolePalette) private var palette
     @State private var isHovered = false
 
     var body: some View {
-        let card = RoundedRectangle(cornerRadius: 14, style: .continuous)
+        let card = RoundedRectangle(cornerRadius: 10, style: .continuous)
         GeometryReader { proxy in
             let size = proxy.size
             ZStack {
@@ -540,7 +427,7 @@ struct EditorMockupCard: View {
         .aspectRatio(1.45, contentMode: .fit)
         .clipShape(card)
         .overlay {
-            card.strokeBorder(isSelected ? EditorTheme.platinumAccent : EditorTheme.chrome(0.06),
+            card.strokeBorder(isSelected ? EditorTheme.selectionTint : EditorTheme.chrome(0.06),
                               lineWidth: isSelected ? 2 : 0.5)
         }
         .animation(SpringMotion.settle, value: isSelected)
@@ -558,55 +445,99 @@ struct EditorMockupCard: View {
                 .frame(width: size.width * 0.66, height: size.width * 0.66 / 1.6)
                 .shadow(color: .black.opacity(0.2), radius: 8, y: 4)
         case .windowLight, .windowDark, .browserLight, .browserDark:
-            let width = size.width * 0.7
-            let bar: CGFloat = max(width * 0.075, 9)
+            let width = size.width * 0.74
+            let bar: CGFloat = max(width * 0.095, 7)
+            let corner = max(width * 0.06, 4)
             VStack(spacing: 0) {
-                HStack(spacing: 3) {
-                    Circle().fill(Color(red: 1, green: 0.37, blue: 0.34))
-                    Circle().fill(Color(red: 1, green: 0.74, blue: 0.18))
-                    Circle().fill(Color(red: 0.16, green: 0.78, blue: 0.25))
-                    if style.isBrowserFrame {
-                        Capsule(style: .continuous)
-                            .fill(isDark ? Color.white.opacity(0.1) : Color.black.opacity(0.06))
-                            .frame(width: width * 0.42, height: bar * 0.5)
-                            .frame(maxWidth: .infinity)
-                        Color.clear.frame(width: 14, height: 1)
-                    } else {
-                        Spacer(minLength: 0)
-                    }
-                }
-                .frame(height: bar * 0.38)
-                .padding(.horizontal, bar * 0.45)
-                .frame(height: bar)
-                .background(isDark ? Color(white: 0.17) : Color(white: 0.965))
+                desktopBar(width: width, height: bar, isDark: isDark, isBrowser: style.isBrowserFrame)
                 screen(radius: 0)
             }
             .frame(width: width, height: width / 1.6 + bar)
-            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .strokeBorder(isDark ? Color.white.opacity(0.12) : Color.black.opacity(0.08), lineWidth: 0.5)
+                RoundedRectangle(cornerRadius: corner, style: .continuous)
+                    .strokeBorder(isDark ? Color.white.opacity(0.14) : Color.black.opacity(0.14), lineWidth: 0.5)
             }
-            .shadow(color: .black.opacity(0.22), radius: 9, y: 4)
-        default:
-            // Device: a graphite bezel with a fine machined rim.
-            let width = size.width * 0.62
-            let bezel = max(width * 0.045, 3)
-            screen(radius: 4)
-                .padding(bezel)
-                .frame(width: width, height: width / 1.6 + bezel * 2)
-                .background {
-                    RoundedRectangle(cornerRadius: bezel * 3.2, style: .continuous)
-                        .fill(LinearGradient(colors: [Color(white: 0.16), Color(white: 0.08)],
-                                             startPoint: .top, endPoint: .bottom))
-                }
-                .overlay {
-                    RoundedRectangle(cornerRadius: bezel * 3.2, style: .continuous)
-                        .strokeBorder(LinearGradient(colors: [Color(white: 0.72), Color(white: 0.32)],
-                                                     startPoint: .top, endPoint: .bottom), lineWidth: 0.8)
-                }
-                .shadow(color: .black.opacity(0.25), radius: 9, y: 4)
+            .shadow(color: .black.opacity(0.24), radius: 7, y: 3)
+        case .devicePhone, .devicePhonePortrait, .devicePhoneLandscape:
+            let height = size.height * 0.84
+            appleDevice(size: CGSize(width: height * 0.49, height: height), isPhone: true)
+        case .deviceTablet, .deviceTabletPortrait, .deviceTabletLandscape:
+            let width = size.width * 0.70
+            appleDevice(size: CGSize(width: width, height: width / 1.40), isPhone: false)
         }
+    }
+
+    private func desktopBar(width: CGFloat, height: CGFloat, isDark: Bool, isBrowser: Bool) -> some View {
+        let glyph = isDark ? Color.white.opacity(0.42) : Color.black.opacity(0.32)
+        let dot = height * 0.30
+        return ZStack {
+            (isDark ? Color(white: 0.175) : Color(white: 0.97))
+            HStack(spacing: dot * 0.62) {
+                ForEach([Color(red: 1, green: 0.37, blue: 0.34), Color(red: 1, green: 0.74, blue: 0.18),
+                         Color(red: 0.16, green: 0.78, blue: 0.25)], id: \.self) {
+                    Circle().fill($0).frame(width: dot, height: dot)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, height * 0.42)
+            if isBrowser {
+                RoundedRectangle(cornerRadius: height * 0.18, style: .continuous)
+                    .fill(isDark ? Color.white.opacity(0.12) : Color.black.opacity(0.07))
+                    .frame(width: width * 0.40, height: height * 0.54)
+                    .overlay {
+                        HStack(spacing: height * 0.12) {
+                            Circle().fill(glyph).frame(width: height * 0.16, height: height * 0.16)
+                            Capsule().fill(glyph).frame(width: width * 0.16, height: height * 0.10)
+                        }
+                    }
+            } else {
+                Capsule().fill(glyph).frame(width: width * 0.18, height: height * 0.12)
+            }
+        }
+        .frame(width: width, height: height)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(isDark ? Color.black.opacity(0.5) : Color.black.opacity(0.09)).frame(height: 0.5)
+        }
+    }
+
+    private func appleDevice(size: CGSize, isPhone: Bool) -> some View {
+        let shortEdge = min(size.width, size.height)
+        let bezel = max(shortEdge * (isPhone ? 0.05 : 0.055), 2)
+        let rim = max(bezel * 0.32, 0.8)
+        let screenSize = CGSize(width: size.width - bezel * 2, height: size.height - bezel * 2)
+        let screenRadius = min(screenSize.width, screenSize.height) * (isPhone ? 0.15 : 0.04)
+        let outer = RoundedRectangle(cornerRadius: screenRadius + bezel, style: .continuous)
+        return ZStack {
+            outer.fill(LinearGradient(colors: [Color(white: 0.62), Color(white: 0.25)],
+                                      startPoint: .top, endPoint: .bottom))
+            RoundedRectangle(cornerRadius: screenRadius + bezel - rim, style: .continuous)
+                .fill(Color(white: 0.02))
+                .padding(rim)
+            screen(radius: screenRadius)
+                .frame(width: screenSize.width, height: screenSize.height)
+                .overlay(alignment: .top) {
+                    if isPhone {
+                        Capsule(style: .continuous)
+                            .fill(Color.black)
+                            .frame(width: screenSize.width * 0.33, height: screenSize.width * 0.10)
+                            .padding(.top, screenSize.width * 0.035)
+                    }
+                }
+            if !isPhone {
+                Circle()
+                    .fill(Color(red: 0.07, green: 0.08, blue: 0.10))
+                    .frame(width: bezel * 0.32, height: bezel * 0.32)
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .padding(.top, bezel / 2 - bezel * 0.16)
+            }
+        }
+        .frame(width: size.width, height: size.height)
+        .overlay {
+            outer.strokeBorder(LinearGradient(colors: [Color.white.opacity(0.75), Color.white.opacity(0.05)],
+                                              startPoint: .top, endPoint: .bottom), lineWidth: 0.6)
+        }
+        .shadow(color: .black.opacity(0.28), radius: 7, y: 3)
     }
 
     private func screen(radius: CGFloat) -> some View {

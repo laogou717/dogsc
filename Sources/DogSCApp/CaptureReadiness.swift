@@ -18,9 +18,6 @@ struct CaptureDisplay: Identifiable, Equatable, Sendable {
         return CaptureDimensions.h264Compatible(sourceWidth: width, sourceHeight: height)
     }
 
-    var pickerLabel: String {
-        "\(name) · \(width)×\(height) · \(refreshRate) Hz"
-    }
 
     @MainActor
     static func available(screens: [NSScreen] = NSScreen.screens) -> [CaptureDisplay] {
@@ -51,7 +48,6 @@ struct CaptureReadiness: Equatable, Sendable {
     let estimatedOneMinuteBytes: Int64
     let displayRefreshRate: Int?
     let targetFrameRate: OutputFrameRate
-    let captureCodec: CaptureCodec
 
     var hasSufficientDisk: Bool {
         guard let availableDiskBytes else { return true }
@@ -69,10 +65,6 @@ struct CaptureReadiness: Equatable, Sendable {
         )
     }
 
-    var displayCanShowTargetRate: Bool {
-        guard let displayRefreshRate else { return true }
-        return displayRefreshRate >= targetFrameRate.rawValue
-    }
 
     var frameRateWarningText: String? {
         guard let displayRefreshRate,
@@ -112,8 +104,7 @@ struct CaptureReadiness: Equatable, Sendable {
             availableDiskBytes: availableDiskCapacity(),
             estimatedOneMinuteBytes: estimatedBytes,
             displayRefreshRate: display.refreshRate,
-            targetFrameRate: targetFrameRate,
-            captureCodec: captureCodec
+            targetFrameRate: targetFrameRate
         )
     }
 
@@ -130,7 +121,7 @@ struct CaptureReadiness: Equatable, Sendable {
             // raster dimensions and cadence and intentionally remains large.
             videoBitsPerSecond = max(width * height * frameRate.rawValue * 2, 100_000_000)
         } else {
-            videoBitsPerSecond = ExportEncodingPolicy.videoBitrate(
+            videoBitsPerSecond = CaptureEncodingPolicy.videoBitrate(
                 width: width,
                 height: height,
                 frameRate: frameRate.rawValue

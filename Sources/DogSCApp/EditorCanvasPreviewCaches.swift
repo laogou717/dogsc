@@ -99,6 +99,7 @@ final class EditorCanvasCropSourceFrameCache {
         let normalizedProject: RecorderProject
         let size: CGSize
         let sourceAspect: CGFloat
+        let time: TimeInterval
     }
 
     private var input: Input?
@@ -108,12 +109,14 @@ final class EditorCanvasCropSourceFrameCache {
         normalizedProject: RecorderProject,
         size: CGSize,
         sourceAspect: CGFloat,
+        time: TimeInterval = 0,
         build: () -> SharedPreviewPlaybackFrame
     ) -> SharedPreviewPlaybackFrame {
         let nextInput = Input(
             normalizedProject: normalizedProject,
             size: size,
-            sourceAspect: sourceAspect
+            sourceAspect: sourceAspect,
+            time: time
         )
         if input == nextInput, let frame {
             return frame
@@ -201,16 +204,9 @@ final class EditorCanvasPlaybackPlanCache {
         )
     }
 
-    func frame(
-        at outputTime: TimeInterval,
-        handle: Handle
-    ) -> SharedPreviewPlaybackFrame? {
-        guard handle.generation == generation,
-              outputTime.isFinite else { return nil }
-        let index = Int(
-            (max(outputTime, 0) * Double(max(handle.frameRate, 1))).rounded()
-        )
-        return frames[index]
+    func snapshot(handle: Handle?) -> [Int: SharedPreviewPlaybackFrame] {
+        guard handle?.generation == generation else { return [:] }
+        return frames
     }
 
     func invalidate() {

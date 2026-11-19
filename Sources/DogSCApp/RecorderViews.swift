@@ -3,18 +3,13 @@ import RecorderCore
 import SwiftUI
 
 // 全局表面跟随统一明暗外观；内容身份色与侧栏任务调色板同源。
-let appBackground = EditorTheme.backgroundDeep
-let panelBackground = EditorTheme.panelSurface
 let dividerColor = EditorTheme.hairline
 /// 中性控件的基础强调色；任务控件使用各自的 EditorConsole 调色板。
 let editorAccent = EditorTheme.platinumAccent
-/// 缩放／屏幕运镜片段的身份色。
-let editorZoomClip = EditorTheme.timelineZoomAccent
 let editorCameraSyncClip = EditorConsole.Track.cameraSync.fill
 let editorOverlayClip = EditorConsole.Track.overlay.fill
 
-func setupWindowWidth() -> CGFloat { 714 }
-func recordingWindowWidth(recordsMicrophone: Bool) -> CGFloat {
+func recordingWindowWidth() -> CGFloat {
     // Initial size only; the live bar reports its actual localized width.
     312
 }
@@ -186,7 +181,6 @@ struct SetupView: View {
 
 struct RecordingBar: View {
     @ObservedObject var model: AppModel
-    var onContentWidthChange: (CGFloat) -> Void = { _ in }
     @State private var pendingAction: RecordingBarAction?
     @State private var qualityWarningMonitor = RecordingQualityWarningMonitor()
 
@@ -278,7 +272,7 @@ struct RecordingBar: View {
     @ViewBuilder private var recordingQualityWarning: some View {
         if let warning = qualityWarningMonitor.warning {
             RecorderPopoverButton(id: "recording-quality", title: warning.title, width: 24, height: 28) {
-                Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 12, weight: .medium))
+                EditorSymbol("exclamationmark.triangle.fill", size: 12).font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.orange)
             } panel: {
                 RecorderActionList(title: warning.title, items: [
@@ -314,7 +308,7 @@ struct RecordingBar: View {
                 accessibilityIdentifier: RecorderAccessibilityID.recordingPauseResume,
                 isEnabled: !model.isPauseTransitioning, action: model.toggleRecordingPause)
             RecorderPopoverButton(id: "recording-more", title: "更多录制操作", width: 32, height: 36) {
-                Image(systemName: "ellipsis").font(.system(size: 14, weight: .semibold)).foregroundStyle(RecorderStyle.muted)
+                EditorSymbol("ellipsis", size: 14).font(.system(size: 14, weight: .semibold)).foregroundStyle(RecorderStyle.muted)
             } panel: { RecorderActionList(title: "录制操作", items: recordingMenuItems) }
             stopButton.padding(.leading, 6)
         }
@@ -324,9 +318,9 @@ struct RecordingBar: View {
     private var stopButton: some View {
         RecorderNativeActionButton(accessibilityLabel: appLocalized("结束录制"),
             accessibilityIdentifier: RecorderAccessibilityID.recordingStop, isEnabled: true,
-            width: 36, height: 36, cornerRadius: 18, highlightOpacity: 0, action: model.stopRecording) {
+            width: 36, height: 36, cornerRadius: RecorderStyle.controlRadius, highlightOpacity: 0, action: model.stopRecording) {
             ZStack {
-                Circle().fill(RecorderStyle.recording)
+                RoundedRectangle(cornerRadius: RecorderStyle.controlRadius, style: .continuous).fill(RecorderStyle.recording)
                 RoundedRectangle(cornerRadius: 2.5, style: .continuous).fill(.white).frame(width: 11, height: 11)
             }
             .frame(width: 36, height: 36)
@@ -338,8 +332,8 @@ struct RecordingBar: View {
         action: @escaping () -> Void) -> some View {
         RecorderNativeActionButton(accessibilityLabel: appLocalized(accessibilityLabel),
             accessibilityIdentifier: accessibilityIdentifier, isEnabled: isEnabled,
-            width: 36, height: 36, cornerRadius: 18, highlightOpacity: 0.05, action: action) {
-            Image(systemName: icon).font(.system(size: 13, weight: .semibold))
+            width: 36, height: 36, cornerRadius: RecorderStyle.controlRadius, highlightOpacity: 0.05, action: action) {
+            EditorSymbol(icon, size: 13).font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(RecorderStyle.ink)
                 .contentTransition(.symbolEffect(.replace))
                 .frame(width: 36, height: 36)
@@ -430,16 +424,6 @@ enum InspectorTab: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var localizedLabel: String { appLocalized(rawValue) }
 
-    var icon: String {
-        switch self {
-        case .frame: return "photo.on.rectangle.angled"
-        case .opening: return "sparkles.rectangle.stack"
-        case .zoom: return "viewfinder"
-        case .cursor: return "cursorarrow.motionlines"
-        case .camera: return "video"
-        case .audio: return "speaker.wave.2"
-        }
-    }
 }
 
 /// The frame inspector contains several different authoring tasks. Keeping

@@ -1,6 +1,5 @@
 import AppKit
 import CoreText
-import RecorderCore
 import ScreenCaptureKit
 import SwiftUI
 
@@ -92,12 +91,16 @@ final class CaptureWindowSelector {
     private var trackedGeometry: CaptureWindowGeometry?
     private let transition = CaptureSelectionTransition()
     private let geometryLookup: @MainActor (UInt32) -> CaptureWindowGeometry?
+    private let recordingWindowLookup: @MainActor (UInt32, CaptureWindowGeometry) -> CaptureWindowInfo?
 
     init(
         geometryLookup: @escaping @MainActor (UInt32) -> CaptureWindowGeometry?
-            = CaptureWindowGeometryLookup.live(windowID:)
+            = CaptureWindowGeometryLookup.live(windowID:),
+        recordingWindowLookup: @escaping @MainActor (UInt32, CaptureWindowGeometry) -> CaptureWindowInfo?
+            = CaptureWindowSelector.recordingGuideWindow(windowID:geometry:)
     ) {
         self.geometryLookup = geometryLookup
+        self.recordingWindowLookup = recordingWindowLookup
     }
 
     func start(token: CaptureSelectionToken) {
@@ -143,10 +146,12 @@ final class CaptureWindowSelector {
 
     func lockSelectionForRecording(windowID: UInt32) {
         invalidatePendingSelectionClick()
-        guard let geometry = validGeometry(for: windowID),
+        let geometry = validGeometry(for: windowID)
+            ?? trackedGeometry.flatMap { $0.windowID == windowID ? $0 : nil }
+        guard let geometry,
               let selected = windows.first(where: { $0.id == windowID })
                 ?? hoveredWindow.flatMap({ $0.id == windowID ? $0 : nil })
-                ?? recordingGuideWindow(windowID: windowID, geometry: geometry) else {
+                ?? recordingWindowLookup(windowID, geometry) else {
             stop()
             return
         }
@@ -175,23 +180,20 @@ final class CaptureWindowSelector {
         updateOverlays(
             for: selected,
             targetFrameOverride: geometry.frame,
-            orderFront: !createsGuidePanels
+            animatePresentation: createsGuidePanels
         )
-        if createsGuidePanels {
-            // The first visible frame is already a noninteractive recording
-            // guide; the initial selection hint and card never appear.
-            overlayPanels.forEach { transition.present($0) }
-        }
     }
 
     func updateRecordingGeometry(_ geometry: CaptureWindowGeometry?) {
         guard isRecordingHighlight, let selectedWindowID else { return }
-        guard let geometry else {
-            trackedGeometry = nil
-            updateOverlays(for: nil)
-            return
-        }
-        guard geometry.windowID == selectedWindowID,
+        // A missing WindowServer result is not the end of a recording. Keep
+        // the last guide until a visible position for the same window arrives.
+        guard let geometry, geometry.windowID == selectedWindowID,
+              overlayPanels.contains(where: {
+                  CaptureOverlayScreenPolicy.localCutout(
+                      targetFrame: geometry.frame, screenFrame: $0.frame
+                  ) != nil
+              }),
               let selected = selectedWindow ?? hoveredWindow.flatMap({
                   $0.id == selectedWindowID ? $0 : nil
               }) else { return }
@@ -449,7 +451,7 @@ final class CaptureWindowSelector {
         return geometry
     }
 
-    private func recordingGuideWindow(
+    static func recordingGuideWindow(
         windowID: UInt32,
         geometry: CaptureWindowGeometry
     ) -> CaptureWindowInfo? {
@@ -497,10 +499,10 @@ final class CaptureWindowSelector {
     private func updateOverlays(
         for window: CaptureWindowInfo?,
         targetFrameOverride: CGRect? = nil,
-        orderFront: Bool = true
+        animatePresentation: Bool = false
     ) {
         let targetFrame = targetFrameOverride ?? window.map { appKitFrame(for: $0.frame) }
-        let controlPanel = targetFrame.flatMap { target in
+        let targetPanel = targetFrame.flatMap { target in
             CaptureOverlayScreenPolicy.largestIntersectionIndex(
                 targetFrame: target,
                 screenFrames: overlayPanels.map(\.frame)
@@ -508,15 +510,15 @@ final class CaptureWindowSelector {
         }
 
         for panel in overlayPanels {
-            let localCutout = targetFrame.map {
-                $0.offsetBy(dx: -panel.frame.minX, dy: -panel.frame.minY)
-                    .intersection(panel.contentView?.bounds ?? .zero)
-            }
+            let localCutout = CaptureOverlayScreenPolicy.localCutout(
+                targetFrame: targetFrame,
+                screenFrame: panel.frame
+            )
             let showsControls = !isRecordingHighlight
                 && selectedWindowID == window?.id
                 && selectedWindowID != nil
                 && window != nil
-                && panel === controlPanel
+                && panel === targetPanel
             panel.update(
                 cutoutFrame: localCutout,
                 window: window,
@@ -524,7 +526,17 @@ final class CaptureWindowSelector {
                 selectionLocked: selectedWindowID != nil,
                 recordingHighlight: isRecordingHighlight
             )
-            if orderFront { panel.orderFrontRegardless() }
+            if isRecordingHighlight && (panel !== targetPanel || localCutout == nil) {
+                // Retain the panel for moves back to this display, but take
+                // it out of every Space while another display owns the guide.
+                transition.settlePresentation([panel])
+                panel.orderOut(nil)
+            } else if animatePresentation {
+                // New takes reveal only guides with a visible target.
+                transition.present(panel)
+            } else {
+                panel.orderFrontRegardless()
+            }
         }
     }
 
@@ -664,13 +676,13 @@ private final class WindowSelectionOverlayView: NSView {
         layer?.addSublayer(outlineLayer)
         card.wantsLayer = true
         card.layer?.backgroundColor = captureSelectionSurfaceNSColor.cgColor
-        card.layer?.cornerRadius = 30
+        card.layer?.cornerRadius = RecorderStyle.cardRadius
         card.layer?.cornerCurve = .continuous
-        card.layer?.borderColor = RecorderStyle.chromeNSColor.withAlphaComponent(0.12).cgColor
+        card.layer?.borderColor = RecorderStyle.chromeNSColor.withAlphaComponent(0.08).cgColor
         card.layer?.borderWidth = 1
         card.layer?.shadowColor = NSColor.black.cgColor
-        card.layer?.shadowOpacity = 0.38
-        card.layer?.shadowRadius = 30
+        card.layer?.shadowOpacity = 0.22
+        card.layer?.shadowRadius = 24
         card.layer?.shadowOffset = CGSize(width: 0, height: -14)
         addSubview(card)
         card.isHidden = true
@@ -684,7 +696,7 @@ private final class WindowSelectionOverlayView: NSView {
         detailLabel.font = .systemFont(ofSize: 11)
         detailLabel.textColor = captureSelectionInkNSColor.withAlphaComponent(0.56)
         detailLabel.lineBreakMode = .byTruncatingTail
-        checkmark.image = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: appLocalized("已选择"))
+        checkmark.image = EditorSymbolImage.image(.checkCircle, size: 18, description: appLocalized("已选择"))
         checkmark.contentTintColor = captureSelectionAccentNSColor
         separator.wantsLayer = true
         separator.layer?.backgroundColor = captureSelectionInkNSColor.withAlphaComponent(0.08).cgColor
@@ -738,7 +750,7 @@ private final class WindowSelectionOverlayView: NSView {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             card.layer?.backgroundColor = captureSelectionSurfaceNSColor.cgColor
-            card.layer?.borderColor = RecorderStyle.chromeNSColor.withAlphaComponent(0.12).cgColor
+            card.layer?.borderColor = RecorderStyle.chromeNSColor.withAlphaComponent(0.08).cgColor
             card.layer?.shadowOpacity = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? 0.38 : 0.16
             separator.layer?.backgroundColor = captureSelectionInkNSColor.withAlphaComponent(0.08).cgColor
             updateStartAppearance()

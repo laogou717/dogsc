@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import QuartzCore
 import RecorderCore
 
 /// A local NSEvent monitor outlives the SwiftUI value that installed it.
@@ -34,50 +35,65 @@ final class EditorTimelineHoverLocation {
 /// their own hit targets back under the pointer and oscillate the order.
 struct PrimarySegmentReorderDraft: Equatable {
     let segmentID: UUID
+    let segmentIDs: Set<UUID>
     let originalSegments: [ResolvedRecordingSegment]
     let originalIndex: Int
     private(set) var destination: Int
     private(set) var segments: [ResolvedRecordingSegment]
 
-    init?(segmentID: UUID, segments: [ResolvedRecordingSegment]) {
+    init?(segmentID: UUID, selectedIDs: Set<UUID> = [], segments: [ResolvedRecordingSegment]) {
         guard let index = segments.firstIndex(where: { $0.id == segmentID }) else { return nil }
         self.segmentID = segmentID
+        let movingIDs: Set<UUID> = selectedIDs.contains(segmentID) ? selectedIDs.intersection(segments.map(\.id)) : [segmentID]
+        segmentIDs = movingIDs
         originalSegments = segments
         originalIndex = index
-        destination = index
+        destination = segments.prefix { !movingIDs.contains($0.id) }.count
         self.segments = segments
     }
 
     var original: ResolvedRecordingSegment { originalSegments[originalIndex] }
+    var movingSegments: [ResolvedRecordingSegment] { originalSegments.filter { segmentIDs.contains($0.id) } }
     var insertionTime: TimeInterval { segments[destination].outputStart }
 
     mutating func update(translation: TimeInterval) {
-        guard translation.isFinite else { return }
-        let center = original.outputStart + original.outputDuration / 2 + translation
-        let next = originalSegments.reduce(0) { count, segment in
-            count + (segment.id != segmentID
-                && segment.outputStart + segment.outputDuration / 2 < center ? 1 : 0)
-        }
-        guard next != destination else { return }
+        guard translation.isFinite, let leading = movingSegments.first else { return }
+        let center = leading.outputStart + leading.outputDuration / 2 + translation
+        var order = originalSegments.filter { !segmentIDs.contains($0.id) }
+        let next = order.filter { $0.outputStart + $0.outputDuration / 2 < center }.count
         destination = next
-        var order = originalSegments
-        let moved = order.remove(at: originalIndex)
-        order.insert(moved, at: next)
+        order.insert(contentsOf: movingSegments, at: next)
         var start: TimeInterval = 0
         segments = order.map { segment in
             let placed = ResolvedRecordingSegment(id: segment.id,
                 sourceStart: segment.sourceStart, sourceDuration: segment.sourceDuration,
-                playbackRate: segment.playbackRate, outputStart: start)
+                playbackRate: segment.playbackRate, outputStart: start, media: segment.media,
+                sourceID: segment.sourceID, sceneStyle: segment.sceneStyle)
             start += placed.outputDuration
             return placed
         }
     }
 
-    func floatingTranslation(_ translation: CGFloat, laneWidth: CGFloat,
+    func floatingTranslation(for id: UUID, translation: CGFloat, laneWidth: CGFloat,
                              duration: TimeInterval) -> CGFloat {
-        translation + CGFloat((original.outputStart - insertionTime)
-            / max(duration, 0.001)) * laneWidth
+        guard segmentIDs.contains(id), let old = originalSegments.first(where: { $0.id == id }),
+              let placed = segments.first(where: { $0.id == id }) else { return 0 }
+        return translation + CGFloat((old.outputStart - placed.outputStart) / max(duration, 0.001)) * laneWidth
     }
+}
+
+/// A press is classified once using the actual clip rectangle, before any
+/// trimming/ripple/reorder changes its position. A seam click and an edge drag
+/// share this session rather than competing hit-test layers.
+struct PrimarySegmentPointerSession {
+    let id = UUID()
+    let segment: ResolvedRecordingSegment
+    let edge: RecordingSegmentTrimEdge?
+    let modifiers: NSEvent.ModifierFlags
+    let junction: EditorTimelineSegmentJunction?
+    let laneWidth: CGFloat
+    let duration: TimeInterval
+    var isDragging = false
 }
 
 struct PrimarySegmentTrimDraft: Equatable {
@@ -118,7 +134,6 @@ struct EditorTimelineSegmentJunction: Equatable, Identifiable {
     let previousSegmentID: UUID
     let nextSegmentID: UUID
     let outputTime: TimeInterval
-    let removedSourceStart: TimeInterval
     let removedDuration: TimeInterval
 
     /// A junction survives layout/ripple changes as long as its right-hand
@@ -135,7 +150,6 @@ struct EditorTimelineLeadingGap: Equatable, Identifiable {
     let removedDuration: TimeInterval
 
     var id: UUID { nextSegmentID }
-    var outputTime: TimeInterval { 0 }
 }
 
 struct EditorTimelineTrailingGap: Equatable, Identifiable {
@@ -151,10 +165,7 @@ struct EditorTimelineTrailingGap: Equatable, Identifiable {
 /// conversion testable without launching an editor window.
 enum EditorPrimaryTimelinePresentation {
     static func leadingGap(from map: TimelineMap) -> EditorTimelineLeadingGap? {
-        guard let first = map.segments.first,
-              map.segments.allSatisfy({
-                  $0.id == first.id || $0.sourceStart >= first.sourceStart
-              }),
+        guard let first = map.segments.first, first.media == nil,
               first.sourceStart > 1.0 / 120_000.0 else { return nil }
         return EditorTimelineLeadingGap(
             nextSegmentID: first.id,
@@ -163,11 +174,8 @@ enum EditorPrimaryTimelinePresentation {
     }
 
     static func trailingGap(from map: TimelineMap) -> EditorTimelineTrailingGap? {
-        guard let last = map.segments.last,
-              map.segments.allSatisfy({
-                  $0.id == last.id || $0.sourceEnd <= last.sourceEnd
-              }) else { return nil }
-        let removedDuration = map.fullSourceDuration - last.sourceEnd
+        guard let last = map.segments.last, last.media == nil else { return nil }
+        let removedDuration = (map.sourceDurations[last.sourceID] ?? 0) - last.sourceEnd
         guard removedDuration > 1.0 / 120_000.0 else { return nil }
         return EditorTimelineTrailingGap(
             previousSegmentID: last.id,
@@ -179,28 +187,41 @@ enum EditorPrimaryTimelinePresentation {
     static func segmentJunctions(from map: TimelineMap) -> [EditorTimelineSegmentJunction] {
         guard map.segments.count > 1 else { return [] }
         return zip(map.segments, map.segments.dropFirst()).compactMap { previous, next in
+            guard previous.sourceID == next.sourceID else { return nil }
             // A reversed/reordered seam is a real edit boundary but cannot be
             // merged or filled with a forward source interval.
             guard next.sourceStart >= previous.sourceEnd - 1.0 / 120_000.0 else {
                 return nil
             }
+            // A seam beside an inserted video is a plain cut: nothing of the
+            // recording can be restored or merged there.
+            if previous.media != nil || next.media != nil {
+                // Only two pieces of the same inserted video can be rejoined.
+                guard previous.media?.path == next.media?.path,
+                      abs(next.sourceStart - previous.sourceEnd) <= 1.0 / 120_000.0 else { return nil }
+                return EditorTimelineSegmentJunction(
+                    previousSegmentID: previous.id,
+                    nextSegmentID: next.id,
+                    outputTime: previous.outputEnd,
+                    removedDuration: 0
+                )
+            }
             return EditorTimelineSegmentJunction(
                 previousSegmentID: previous.id,
                 nextSegmentID: next.id,
                 outputTime: previous.outputEnd,
-                removedSourceStart: previous.sourceEnd,
                 removedDuration: max(next.sourceStart - previous.sourceEnd, 0)
             )
         }
     }
 
     static func timelineMap(
-        fullSourceDuration: TimeInterval,
+        sourceDurations: [UUID: TimeInterval],
         project: RecorderProject
     ) throws -> TimelineMap {
         try TimelineMap(
             sourceSequence: project.timeline.sourceSequence,
-            fullSourceDuration: fullSourceDuration
+            sourceDurations: sourceDurations
         )
     }
 
@@ -256,7 +277,9 @@ enum EditorPrimaryTimelinePresentation {
                 sourceStart: sourceStart,
                 sourceDuration: max(sourceDuration, 0),
                 playbackRate: playbackRate,
-                outputStart: outputStart
+                outputStart: outputStart,
+                media: segment.media,
+                sourceID: segment.sourceID, sceneStyle: segment.sceneStyle
             )
             outputStart += displayed.outputDuration
             return displayed
@@ -270,22 +293,13 @@ enum EditorPrimaryTimelinePresentation {
         segmentID: UUID,
         edge: RecordingSegmentTrimEdge,
         map: TimelineMap,
-        fullSourceDuration: TimeInterval
+        sourceDurations: [UUID: TimeInterval]
     ) -> PrimarySegmentTrimDraft? {
         guard let segment = map.segments.first(where: { $0.id == segmentID }) else {
             return nil
         }
-        let epsilon = 0.000_001
-        var previousSourceEnd: TimeInterval = 0
-        var nextSourceStart = fullSourceDuration
-        for candidate in map.segments where candidate.id != segmentID {
-            if candidate.sourceEnd <= segment.sourceStart + epsilon {
-                previousSourceEnd = max(previousSourceEnd, candidate.sourceEnd)
-            }
-            if candidate.sourceStart >= segment.sourceEnd - epsilon {
-                nextSourceStart = min(nextSourceStart, candidate.sourceStart)
-            }
-        }
+        let previousSourceEnd: TimeInterval = 0
+        let nextSourceStart = segment.media?.fileDuration ?? sourceDurations[segment.sourceID] ?? 0
         let minimumOutputTime = segment.outputStart
             - max(segment.sourceStart - previousSourceEnd, 0) / segment.playbackRate
         let maximumOutputTime = segment.outputEnd
@@ -413,44 +427,6 @@ enum EditorPrimaryTimelinePresentation {
         }
     }
 
-    /// Resolve a trim directly from the pointer's absolute position in the
-    /// timeline document. Unlike a handle-local translation, this coordinate
-    /// does not move when the segment being trimmed changes its own frame.
-    static func trimOutputTime(
-        for segment: ResolvedRecordingSegment,
-        edge: RecordingSegmentTrimEdge,
-        pointerX: CGFloat,
-        laneWidth: CGFloat,
-        outputDuration: TimeInterval,
-        minimumSegmentDuration: TimeInterval,
-        minimumOutputTime: TimeInterval? = nil,
-        maximumOutputTime: TimeInterval? = nil
-    ) -> TimeInterval {
-        guard laneWidth.isFinite, laneWidth > 0,
-              pointerX.isFinite,
-              outputDuration.isFinite, outputDuration > 0 else {
-            return edge == .left ? segment.outputStart : segment.outputEnd
-        }
-        let pointerTime = TimeInterval(pointerX / laneWidth) * outputDuration
-        let retainedDuration = min(
-            max(minimumSegmentDuration, 0.000_001),
-            segment.outputDuration
-        )
-        switch edge {
-        case .left:
-            let lower = min(minimumOutputTime ?? segment.outputStart, segment.outputStart)
-            return min(
-                max(pointerTime, lower),
-                segment.outputEnd - retainedDuration
-            )
-        case .right:
-            let upper = max(maximumOutputTime ?? segment.outputEnd, segment.outputEnd)
-            return max(
-                min(pointerTime, upper),
-                segment.outputStart + retainedDuration
-            )
-        }
-    }
 
 }
 
@@ -506,22 +482,15 @@ enum EditorTimelineZoomPolicy {
 }
 
 @MainActor
-final class EditorTimelineZoomInputCoalescer {
+final class EditorTimelineZoomInputCoalescer: NSObject {
     typealias Apply = @MainActor (_ targetZoom: Double, _ pointerViewportX: CGFloat?) -> Void
 
     private var pendingTargetZoom: Double?
     private var latestPointerViewportX: CGFloat?
     private var pendingApply: Apply?
-    private var flushTask: Task<Void, Never>?
-
-    static func targetZoom(from currentZoom: Double, deltaY: CGFloat) -> Double {
-        // A wheel notch previously changed scale by only 12%, while trackpad
-        // deltas are usually fractions of one notch. The resulting gesture
-        // needed several long swipes even in the common 1×–8× range.
-        EditorTimelineZoomPolicy.clamped(
-            currentZoom * pow(1.24, Double(deltaY))
-        )
-    }
+    private var displayLink: CADisplayLink?
+    private weak var linkedScreen: NSScreen?
+    private var fallbackIsScheduled = false
 
     func enqueue(
         currentZoom: Double,
@@ -529,8 +498,17 @@ final class EditorTimelineZoomInputCoalescer {
         pointerViewportX: CGFloat?,
         apply: @escaping Apply
     ) {
-        let baseZoom = pendingTargetZoom ?? currentZoom
-        pendingTargetZoom = Self.targetZoom(from: baseZoom, deltaY: deltaY)
+        enqueue(currentZoom: currentZoom, scaleBy: pow(1.24, Double(deltaY)),
+                pointerViewportX: pointerViewportX, apply: apply)
+    }
+
+    func enqueue(
+        currentZoom: Double,
+        scaleBy factor: Double,
+        pointerViewportX: CGFloat?,
+        apply: @escaping Apply
+    ) {
+        pendingTargetZoom = EditorTimelineZoomPolicy.clamped((pendingTargetZoom ?? currentZoom) * factor)
         latestPointerViewportX = pointerViewportX
         pendingApply = apply
         scheduleFlush()
@@ -551,29 +529,44 @@ final class EditorTimelineZoomInputCoalescer {
     }
 
     private func scheduleFlush() {
-        guard flushTask == nil else { return }
-
-        flushTask = Task { @MainActor [weak self] in
-            do {
-                // Editing cadence follows the active display, not the media's
-                // frame rate. A 120 Hz panel must not inherit a 60 Hz UI cap.
-                let screen = NSApp.keyWindow?.screen ?? NSApp.mainWindow?.screen ?? NSScreen.main
-                let rate = max(screen?.maximumFramesPerSecond ?? 60, 1)
-                try await Task.sleep(for: .nanoseconds(Int64(1_000_000_000 / rate)))
-            } catch {
-                return
+        guard !fallbackIsScheduled else { return }
+        guard let screen = NSApp?.keyWindow?.screen ?? NSApp?.mainWindow?.screen ?? NSScreen.main else {
+            fallbackIsScheduled = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.fallbackIsScheduled else { return }
+                self.flush()
             }
-            guard let self, !Task.isCancelled else { return }
-            self.flush()
+            return
         }
+        if let displayLink, linkedScreen === screen {
+            displayLink.isPaused = false
+            return
+        }
+        displayLink?.invalidate()
+        // A timer interval is not a display frame: an immediate wheel update
+        // followed by a sleeping task can both invalidate layout before the
+        // same refresh. Share one common-mode display callback for the burst,
+        // leaving the preview's frame callback time to run between layouts.
+        let link = screen.displayLink(target: self, selector: #selector(displayLinkDidFire(_:)))
+        let rate = Float(max(screen.maximumFramesPerSecond, 1))
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: rate, maximum: rate, preferred: rate)
+        link.add(to: .main, forMode: .common)
+        displayLink = link
+        linkedScreen = screen
+    }
+
+    @objc private func displayLinkDidFire(_ link: CADisplayLink) {
+        flush()
     }
 
     /// Mouse-up must not leave the last fraction of a drag waiting behind the
     /// display gate. Applying it synchronously also keeps the slider thumb and
     /// the final document scale identical when the interaction ends.
     func flush() {
-        flushTask?.cancel()
-        flushTask = nil
+        // Reuse the native link during a continuous gesture; do not allocate
+        // and tear down a display source for every single zoom frame.
+        displayLink?.isPaused = true
+        fallbackIsScheduled = false
         let targetZoom = pendingTargetZoom
         let pointerViewportX = latestPointerViewportX
         let apply = pendingApply
@@ -586,8 +579,10 @@ final class EditorTimelineZoomInputCoalescer {
     }
 
     func cancel() {
-        flushTask?.cancel()
-        flushTask = nil
+        displayLink?.invalidate()
+        displayLink = nil
+        linkedScreen = nil
+        fallbackIsScheduled = false
         pendingTargetZoom = nil
         latestPointerViewportX = nil
         pendingApply = nil
@@ -636,11 +631,31 @@ struct EditorMotionPartnerOrigin: Equatable {
 enum EditorOverlayTimelineKind: Equatable {
     case mosaic
     case sticker
+    case animation
+    case audio
+    case subtitle
+    case video
+
+    /// Tells the overlay lane's clip kinds apart at a glance.
+    var symbol: String {
+        switch self {
+        case .mosaic: "circle.dotted"
+        case .sticker: "photo"
+        case .animation: "sparkles"
+        case .audio: "music.note"
+        case .subtitle: "captions.bubble"
+        case .video: "film"
+        }
+    }
 
     func selection(id: UUID) -> EditorSelection {
         switch self {
         case .mosaic: return .mosaic(id)
         case .sticker: return .sticker(id)
+        case .animation: return .animation(id)
+        case .audio: return .audioClip(id)
+        case .subtitle: return .subtitle(id)
+        case .video: return .videoClip(id)
         }
     }
 
@@ -648,6 +663,10 @@ enum EditorOverlayTimelineKind: Equatable {
         switch self {
         case .mosaic: return "移动打码"
         case .sticker: return "移动贴图"
+        case .animation: return "移动动效"
+        case .audio: return "移动音频"
+        case .subtitle: return "移动字幕"
+        case .video: return "移动视频"
         }
     }
 
@@ -655,8 +674,19 @@ enum EditorOverlayTimelineKind: Equatable {
         switch self {
         case .mosaic: return "调整打码时长"
         case .sticker: return "调整贴图时长"
+        case .animation: return "调整动效时长"
+        case .audio: return "调整音频时长"
+        case .subtitle: return "调整字幕时长"
+        case .video: return "调整视频时长"
         }
     }
+}
+
+struct EditorOverlayPointerPress {
+    let id = UUID()
+    let selection: EditorSelection?
+    let modifiers: NSEvent.ModifierFlags
+    var didDrag = false
 }
 
 struct EditorOverlayTimelineDrag: Equatable {
@@ -664,6 +694,15 @@ struct EditorOverlayTimelineDrag: Equatable {
     let id: UUID
     let mode: EditorMotionTimelineEditMode
     let original: OverlayTiming
+    var sourceStart: TimeInterval = 0
+    var playbackRate: Double = 1
+
+    var minimumLeadingStartTime: TimeInterval {
+        switch kind {
+        case .sticker, .animation, .audio, .video: max(0, original.startTime - sourceStart / max(playbackRate, 0.001))
+        default: 0
+        }
+    }
 }
 
 /// Selection-only timeline policy. Segment identity is derived from the
@@ -703,6 +742,10 @@ enum EditorTimelineDeleteTarget: Equatable {
     case zoom(UUID)
     case mosaic(UUID)
     case sticker(UUID)
+    case animation(UUID)
+    case audioClip(UUID)
+    case subtitle(UUID)
+    case videoClip(UUID)
 
     init?(selection: EditorSelection?) {
         switch selection {
@@ -712,6 +755,10 @@ enum EditorTimelineDeleteTarget: Equatable {
         case let .zoom(id): self = .zoom(id)
         case let .mosaic(id): self = .mosaic(id)
         case let .sticker(id): self = .sticker(id)
+        case let .animation(id): self = .animation(id)
+        case let .audioClip(id): self = .audioClip(id)
+        case let .subtitle(id): self = .subtitle(id)
+        case let .videoClip(id): self = .videoClip(id)
         default: return nil
         }
     }
@@ -726,6 +773,10 @@ enum EditorTimelineSplitTarget: Equatable {
     case cameraMotion(UUID)
     case mosaic(UUID)
     case sticker(UUID)
+    case animation(UUID)
+    case audioClip(UUID)
+    case subtitle(UUID)
+    case videoClip(UUID)
 
     init?(selection: EditorSelection?) {
         switch selection {
@@ -734,6 +785,10 @@ enum EditorTimelineSplitTarget: Equatable {
         case let .cameraMotion(id): self = .cameraMotion(id)
         case let .mosaic(id): self = .mosaic(id)
         case let .sticker(id): self = .sticker(id)
+        case let .animation(id): self = .animation(id)
+        case let .audioClip(id): self = .audioClip(id)
+        case let .subtitle(id): self = .subtitle(id)
+        case let .videoClip(id): self = .videoClip(id)
         default: return nil
         }
     }
@@ -803,6 +858,8 @@ enum EditorTimelineSelectionReveal {
 /// owns no project or playback state; local hit zones still perform the edit.
 enum EditorTimelineGestureIntent: Equatable {
     case scrub
+    case marquee
+    case primaryMove(UUID)
     case primaryTrim(UUID, RecordingSegmentTrimEdge)
     case primaryRetime(UUID)
     case zoomCreate
@@ -819,6 +876,20 @@ enum EditorTimelineGestureIntent: Equatable {
             return true
         default:
             return false
+        }
+    }
+}
+
+enum EditorTimelineRulerPress {
+    case background
+    case playhead(offset: CGFloat)
+
+    init(start: CGPoint, playheadX: CGFloat, visibleRange: ClosedRange<CGFloat>) {
+        if visibleRange.contains(playheadX),
+           NativeTimelinePlayheadPart.knobHitArea(centerX: playheadX).contains(start) {
+            self = .playhead(offset: playheadX - start.x)
+        } else {
+            self = .background
         }
     }
 }

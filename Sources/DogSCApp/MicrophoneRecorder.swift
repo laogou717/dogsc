@@ -37,9 +37,11 @@ final class MicrophoneRecorder: NSObject,
     private var firstRawPresentationTime: CMTime?
     private var lastRawPresentationTime: CMTime?
     private var lastRawDuration: CMTime = .zero
+    private var lastAdjustedPresentationTime: CMTime?
     private var accumulatedRawPauseDuration: CMTime = .zero
     private var expectedResumeRawTime: CMTime?
     private var isAwaitingResumeSample = false
+    private var resumeUsesSharedClock = false
     private var writerHasSamples = false
     private var droppedSamples = 0
     private var receivedSampleBuffers = 0
@@ -295,6 +297,7 @@ final class MicrophoneRecorder: NSObject,
         sessionQueue.async { [self] in
             guard case .recording = activity, !recordingIsPaused else { return }
             recordingIsPaused = true
+            resumeUsesSharedClock = false
             // A deliberate pause is not an audio delivery stall.
             skipsNextDiagnosticSampleInterval = true
             if let lastRawPresentationTime {
@@ -304,11 +307,22 @@ final class MicrophoneRecorder: NSObject,
         }
     }
 
-    func resume() {
+    func resume(at timing: RecordingResumeTiming? = nil) {
         sessionQueue.async { [self] in
             guard case .recording = activity, recordingIsPaused else { return }
             let resumedAt = CMClockGetTime(CMClockGetHostTimeClock()).seconds
-            if let recordedPauseStartedAt {
+            if let timing, let firstRawPresentationTime, let firstRecordedSampleTime {
+                accumulatedRawPauseDuration = SampleBufferTimeRetimer.audioPauseOffset(
+                    timing.accumulatedPauseDuration, format: expectedRecordingFormatDescription
+                )
+                recordedAccumulatedPause = accumulatedRawPauseDuration.seconds
+                expectedResumeRawTime = firstRawPresentationTime + CMTime(
+                    seconds: timing.hostTime - firstRecordedSampleTime.seconds,
+                    preferredTimescale: 1_000_000_000
+                )
+                resumeUsesSharedClock = true
+                self.recordedPauseStartedAt = nil
+            } else if let recordedPauseStartedAt {
                 recordedAccumulatedPause += max(resumedAt - recordedPauseStartedAt, 0)
                 self.recordedPauseStartedAt = nil
             }
@@ -484,13 +498,21 @@ final class MicrophoneRecorder: NSObject,
             skipsNextDiagnosticSampleInterval = false
         }
 
+        var padsResumeGap = false
         if isAwaitingResumeSample, let expectedResumeRawTime {
-            let interruption = rawTime - expectedResumeRawTime
-            if interruption.isNumeric, interruption > .zero {
-                accumulatedRawPauseDuration = accumulatedRawPauseDuration + interruption
+            if resumeUsesSharedClock {
+                guard rawTime >= expectedResumeRawTime else { return }
+                padsResumeGap = true
+            } else {
+                let interruption = rawTime - expectedResumeRawTime
+                if interruption.isNumeric, interruption > .zero {
+                    accumulatedRawPauseDuration = accumulatedRawPauseDuration + interruption
+                }
             }
-            self.expectedResumeRawTime = nil
-            isAwaitingResumeSample = false
+            if !resumeUsesSharedClock {
+                self.expectedResumeRawTime = nil
+                isAwaitingResumeSample = false
+            }
         }
 
         if writer == nil {
@@ -513,19 +535,38 @@ final class MicrophoneRecorder: NSObject,
                 "麦克风编码器未处于写入状态"
             )
         }
+        if padsResumeGap, let lastAdjustedPresentationTime,
+           adjusted.presentationTimeStamp < lastAdjustedPresentationTime + lastRawDuration {
+            return
+        }
         guard writerInput.isReadyForMoreMediaData else {
             droppedSamples += 1
             writerBackpressureDrops += 1
             return
         }
-        guard writerInput.append(adjusted) else {
+        var inputSample = adjusted
+        if padsResumeGap, let lastAdjustedPresentationTime {
+            inputSample = try SampleBufferTimeRetimer.audioResumeSample(
+                matching: adjusted,
+                from: lastAdjustedPresentationTime + lastRawDuration,
+                to: adjusted.presentationTimeStamp
+            ) ?? adjusted
+        }
+        guard writerInput.append(inputSample) else {
             otherSampleDrops += 1
             throw writer.error ?? MicrophoneRecorderError.recordingFailed("麦克风样本写入失败")
+        }
+
+        if padsResumeGap {
+            expectedResumeRawTime = nil
+            isAwaitingResumeSample = false
+            resumeUsesSharedClock = false
         }
 
         writerHasSamples = true
         appendedSampleBuffers += 1
         lastRawPresentationTime = rawTime
+        lastAdjustedPresentationTime = adjusted.presentationTimeStamp
         let duration = sampleBuffer.duration
         lastRawDuration = duration.isNumeric && duration > .zero ? duration : .zero
 
@@ -694,7 +735,9 @@ final class MicrophoneRecorder: NSObject,
         firstRawPresentationTime = nil
         lastRawPresentationTime = nil
         lastRawDuration = .zero
+        lastAdjustedPresentationTime = nil
         accumulatedRawPauseDuration = .zero
+        resumeUsesSharedClock = false
         expectedResumeRawTime = nil
         isAwaitingResumeSample = false
         writerHasSamples = false

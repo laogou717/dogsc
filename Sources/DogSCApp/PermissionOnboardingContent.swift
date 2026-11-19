@@ -3,12 +3,16 @@ import SwiftUI
 
 enum PermissionOnboardingStyle {
     static let size = NSSize(width: 640, height: 460)
-    static let background = RecorderStyle.canvasNSColor
-    static let ink = RecorderStyle.ink
-    static let muted = RecorderStyle.muted
-    static let line = RecorderStyle.chrome.opacity(0.08)
+    // The editor's palette: neutral ground, white card, ink type.
+    static let background = NSColor(EditorTheme.backgroundDeep)
+    static let ink = EditorTheme.primaryText
+    static let muted = EditorTheme.secondaryText
+    static let line = EditorTheme.hairline
+    static let card = EditorTheme.panelRaised
     static let brandInset = CGPoint(x: 36, y: 34)
     static let brandSize: CGFloat = 32
+    static let cardRadius: CGFloat = 12
+    static let buttonRadius: CGFloat = 8
 }
 
 /// The same live permission page sits underneath the introduction from its
@@ -29,13 +33,13 @@ struct RequiredRecordingPermissionView: View {
                     .resizable().interpolation(.high)
                     .frame(width: PermissionOnboardingStyle.brandSize, height: PermissionOnboardingStyle.brandSize)
                 Text("DogSC").font(.appUI(size: 15, weight: .semibold))
-                    .foregroundStyle(RecorderStyle.ink)
+                    .foregroundStyle(PermissionOnboardingStyle.ink)
             }
             .opacity(presentation.isIntroAnimating ? 0 : 1)
 
             VStack(alignment: .leading, spacing: 5) {
                 Text("准备好录制").font(.appUI(size: 26, weight: .semibold))
-                    .foregroundStyle(RecorderStyle.ink)
+                    .foregroundStyle(PermissionOnboardingStyle.ink)
                 Text("完成以下授权，开始录制")
                     .font(.appUI(size: 14)).foregroundStyle(PermissionOnboardingStyle.muted)
             }
@@ -44,26 +48,20 @@ struct RequiredRecordingPermissionView: View {
 
             VStack(spacing: 0) {
                 permissionRow(.screenRecording)
-                    .firstUseTourTarget("permission.screen", in: .permissions, highlight: .rounded(15, corners: .top))
+                    .firstUseTourTarget("permission.screen", in: .permissions, highlight: .rounded(12, corners: .top))
                 Rectangle().fill(PermissionOnboardingStyle.line).frame(height: 0.5).padding(.horizontal, 18)
                 permissionRow(.accessibility)
-                    .firstUseTourTarget("permission.pointer", in: .permissions, highlight: .rounded(15, corners: .bottom))
+                    .firstUseTourTarget("permission.pointer", in: .permissions, highlight: .rounded(12, corners: .bottom))
             }
             .background {
-                RoundedRectangle(cornerRadius: 15)
-                    .fill(RecorderStyle.base)
-                    .shadow(color: RecorderStyle.lift.opacity(0.875), radius: 14, y: 6)
+                RoundedRectangle(cornerRadius: PermissionOnboardingStyle.cardRadius, style: .continuous)
+                    .fill(PermissionOnboardingStyle.card)
+                    .shadow(color: EditorTheme.contactShadow, radius: 1, y: 0.5)
+                    .shadow(color: EditorTheme.ambientShadow, radius: 12, y: 4)
             }
             .overlay {
-                RoundedRectangle(cornerRadius: 15)
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: [RecorderStyle.edgeTop, RecorderStyle.edgeBottom],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ),
-                        lineWidth: 1
-                    )
+                RoundedRectangle(cornerRadius: PermissionOnboardingStyle.cardRadius, style: .continuous)
+                    .strokeBorder(EditorTheme.hairline, lineWidth: 1)
                     .allowsHitTesting(false)
             }
             .padding(.top, 22)
@@ -81,14 +79,14 @@ struct RequiredRecordingPermissionView: View {
                 } label: {
                     HStack(spacing: 8) {
                         Text(isReview ? appLocalized("完成") : appLocalized("进入 DogSC"))
-                        Image(systemName: "arrow.right")
+                        EditorSymbol("arrow.right")
                     }
                     .font(.appUI(size: 13, weight: .semibold))
                     .frame(maxWidth: .infinity).frame(height: 34)
                 }
                 .buttonStyle(PermissionActionButtonStyle(primary: true, focused: isEntryButtonFocused))
                 .focused($isEntryButtonFocused).focusEffectDisabled()
-                .firstUseTourTarget("permission.finish", in: .permissions, highlight: .rounded(10))
+                .firstUseTourTarget("permission.finish", in: .permissions, highlight: .rounded(8))
                 .modifier(introReveal(3))
             }
         }
@@ -152,34 +150,34 @@ struct RequiredRecordingPermissionView: View {
     }
 
     private var automaticCheckNote: some View {
-        Label("返回后自动检查", systemImage: "checkmark.circle")
+        EditorSymbolLabel("返回后自动检查", systemImage: "checkmark.circle")
     }
 
     private var optionalPermissionNote: some View {
-        Label("摄像头和麦克风在启用时再授权", systemImage: "video")
+        EditorSymbolLabel("摄像头和麦克风在启用时再授权", systemImage: "video")
     }
 
     private func permissionRow(_ permission: RequiredRecordingPermissionKind) -> some View {
         let granted = permission.isGranted(in: model)
         return HStack(spacing: 14) {
-            Image(systemName: permission.systemImage)
+            EditorSymbol(permission.systemImage, size: 17)
                 .font(.system(size: 17, weight: .medium))
-                .foregroundStyle(RecorderStyle.ink)
+                .foregroundStyle(PermissionOnboardingStyle.ink)
                 .frame(width: 40, height: 40)
-                .background(RecorderStyle.chrome.opacity(0.07), in: RoundedRectangle(cornerRadius: 11))
+                .background(EditorTheme.controlWell, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             VStack(alignment: .leading, spacing: 5) {
                 Text(permission.title).font(.appUI(size: 14, weight: .semibold))
-                    .foregroundStyle(RecorderStyle.ink)
+                    .foregroundStyle(PermissionOnboardingStyle.ink)
                 Text(permission.purpose).font(.appUI(size: 12))
                     .foregroundStyle(PermissionOnboardingStyle.muted)
             }
             Spacer(minLength: 12)
             if granted {
-                Label("已授权", systemImage: "checkmark.circle.fill")
+                EditorSymbolLabel("已授权", systemImage: "checkmark.circle.fill")
                     .font(.appUI(size: 12, weight: .medium))
-                    .foregroundStyle(RecorderStyle.positiveInk)
+                    .foregroundStyle(EditorTheme.success)
                     .frame(width: 92, height: 34)
-                    .transition(.scale(scale: 0.86).combined(with: .opacity))
+                    .transition(.opacity)
             } else {
                 Button {
                     focusedPermission = nil
@@ -196,7 +194,7 @@ struct RequiredRecordingPermissionView: View {
             }
         }
         .padding(.horizontal, 18).frame(height: 76)
-        .animation(SpringMotion.fluid, value: granted)
+        .animation(SpringMotion.fade, value: granted)
         .accessibilityElement(children: .contain)
     }
 }
@@ -213,8 +211,8 @@ private struct PermissionIntroReveal: ViewModifier {
         content
             .opacity(isShown ? 1 : 0)
             .offset(y: isShown ? 0 : 16)
-            .animation(animates ? .spring(response: 0.62, dampingFraction: 0.86)
-                .delay(Double(order) * 0.07) : nil, value: isShown)
+            .animation(animates ? .timingCurve(0.2, 0, 0, 1, duration: 0.42)
+                .delay(Double(order) * 0.06) : nil, value: isShown)
     }
 }
 
@@ -225,23 +223,19 @@ private struct PermissionActionButtonStyle: ButtonStyle {
     @State private var hovered = false
 
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .foregroundStyle(primary ? RecorderStyle.onPrimary : RecorderStyle.ink)
-            .background(
-                primary ? RecorderStyle.primaryFill.opacity(configuration.isPressed ? 0.82 : (hovered ? 1.0 : 0.94))
-                    : RecorderStyle.chrome.opacity(configuration.isPressed ? 0.16 : (hovered ? 0.14 : 0.08)),
-                in: RoundedRectangle(cornerRadius: 10)
-            )
+        let shape = RoundedRectangle(cornerRadius: PermissionOnboardingStyle.buttonRadius, style: .continuous)
+        return configuration.label
+            .foregroundStyle(primary ? EditorTheme.onAccentFill : EditorTheme.primaryText)
+            .background(primary ? EditorTheme.accent : EditorTheme.controlWell, in: shape)
             .overlay {
-                RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(focused ? RecorderStyle.chrome.opacity(0.6) : (primary ? Color.clear : RecorderStyle.chrome.opacity(0.12)),
-                                  lineWidth: focused ? 1.5 : 0.75)
+                shape.fill(Color.black.opacity(configuration.isPressed ? 0.12 : hovered ? 0.06 : 0))
             }
-            .shadow(color: .black.opacity(configuration.isPressed ? 0 : 0.2), radius: 3, y: 1)
-            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.98 : 1)
-            .contentShape(RoundedRectangle(cornerRadius: 10))
+            .overlay {
+                shape.strokeBorder(EditorTheme.accent.opacity(focused ? 1 : 0), lineWidth: 2)
+            }
+            .contentShape(shape)
             .onHover { hovered = $0 }
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: hovered)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hovered)
             .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
@@ -256,12 +250,11 @@ struct PermissionDragAssistantView: View {
         HStack(spacing: 18) {
             DraggableApplicationIcon(applicationURL: applicationURL, onDragEnded: onApplicationDragEnded)
                 .frame(width: 72, height: 72)
-                .background(RecorderStyle.chrome.opacity(hovered ? 0.14 : 0.07), in: RoundedRectangle(cornerRadius: 15))
-                .shadow(color: RecorderStyle.lift, radius: 6, y: 3)
+                .background(EditorTheme.chrome(hovered ? 0.1 : 0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .onHover { hovered = $0 }
             VStack(alignment: .leading, spacing: 7) {
                 Text("找不到 DogSC？").font(.appUI(size: 15, weight: .semibold))
-                    .foregroundStyle(RecorderStyle.ink)
+                    .foregroundStyle(PermissionOnboardingStyle.ink)
                 Text(String(format: appLocalized("把图标拖入“%@”列表，再打开开关。"), permission.settingsListName))
                     .font(.appUI(size: 13)).foregroundStyle(PermissionOnboardingStyle.muted)
                     .fixedSize(horizontal: false, vertical: true)
@@ -273,12 +266,12 @@ struct PermissionDragAssistantView: View {
         .foregroundStyle(PermissionOnboardingStyle.ink)
         .background {
             RoundedRectangle(cornerRadius: 18)
-                .fill(RecorderStyle.base)
+                .fill(PermissionOnboardingStyle.card)
                 .overlay {
                     RoundedRectangle(cornerRadius: 18)
-                        .strokeBorder(RecorderStyle.chrome.opacity(0.12), lineWidth: 1)
+                        .strokeBorder(EditorTheme.hairline, lineWidth: 1)
                 }
-                .shadow(color: RecorderStyle.lift, radius: 10, y: 4)
+                .shadow(color: EditorTheme.ambientShadow, radius: 12, y: 4)
         }
         .appControlFocusAppearance()
     }

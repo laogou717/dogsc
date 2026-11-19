@@ -27,7 +27,7 @@ struct MotionInspectorScopeHeader: View {
                         .padding(.vertical, 4)
                         .background(
                             EditorTheme.chrome(0.07),
-                            in: Capsule()
+                            in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.mark, style: .continuous)
                         )
                 }
             }
@@ -37,9 +37,9 @@ struct MotionInspectorScopeHeader: View {
                     .font(.appUI(size: 11, weight: .semibold))
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.editorPrimary(minHeight: 32))
+            .buttonStyle(.editorQuiet)
             .appButtonKeyboardFocus(
-                in: Capsule(style: .continuous),
+                in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous),
                 color: EditorTheme.onAccent.opacity(0.65)
             )
             .accessibilityIdentifier("motion.add-at-playhead")
@@ -60,7 +60,6 @@ struct MotionInspectorScopeHeader: View {
 // MARK: - Screen motion
 
 struct ScreenMotionTargetInspector: View {
-    var sourceImage: NSImage? = nil
     @ObservedObject var editorStore: EditorStore
     let clipID: UUID
     let onError: (String) -> Void
@@ -111,7 +110,9 @@ struct ScreenMotionTargetInspector: View {
                         },
                         onEnded: { commitDraft(actionName: "调整屏幕 3D 倾斜") },
                         onCancelled: { editorStore.cancelInteraction() },
-                        onTextPreviewValidityChanged: { updateTextDraftValidity($0, actionName: "调整屏幕 3D 倾斜") }
+                        onTextPreviewValidityChanged: { updateTextDraftValidity($0, actionName: "调整屏幕 3D 倾斜") },
+                        rotationZ: clip.target.rotationZ,
+                        onZChanged: { z in updateDraft { $0.target.rotationZ = z } }
                     )
 
                     EditorDisclosure(
@@ -151,7 +152,7 @@ struct ScreenMotionTargetInspector: View {
                     }
                 }
 
-                EditorFocusEffectInspector(editorStore: editorStore, sourceImage: sourceImage,
+                EditorFocusEffectInspector(editorStore: editorStore,
                     selection: .screenMotion(clipID), onError: onError)
 
                 EditorInspectorSection("动画时间") {
@@ -505,51 +506,29 @@ struct MotionValueSlider: View {
     @State private var isTextEditing = false
     @State private var hasTextPreview = false
 
-    /// A bar reads as an extent from zero. Values that run both ways
-    /// (a rotation) or round a circle (a direction) keep the plain rail.
-    private var usesBar: Bool {
-        if case .degrees = inputFormat { return false }
-        return range.lowerBound >= 0
-    }
+    var body: some View { slimBody }
 
-    var body: some View {
-        if usesBar { barBody } else { slimBody }
-    }
-
-    private var barBody: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(appLocalized(title))
-                .font(.appUI(size: 13))
-                .foregroundStyle(EditorTheme.secondaryText)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
+    private var slimBody: some View {
+        EditorSliderRowLayout {
+            Text(appLocalized(title)).font(.appUI(size: 13)).foregroundStyle(EditorTheme.secondaryText)
+                .lineLimit(1).minimumScaleFactor(0.8)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityHidden(true)
-            EditorBarSlider(
+            EditorInspectorParameterReadout(
                 title: title,
-                value: value,
-                range: range,
-                format: inputFormat,
-                valueTextOverride: valueText,
-                isTextEditing: $isTextEditing,
-                edit: EditorInspectorParameterEditConfiguration(
+                valueText: valueText,
+                isEditing: isSliderEditing || isTextEditing,
+                editConfiguration: EditorInspectorParameterEditConfiguration(
                     draftText: inputFormat.editingText(for: value),
                     onBegin: beginTextEditing,
                     onPreview: previewTextValue,
                     onCommit: commitTextEditing,
                     onCancel: cancelTextEditing
                 ),
-                onBegin: {},
-                onChange: { onChanged($0) },
-                onEnd: { onEditingEnded() }
+                showsTitle: false,
+                isEmbedded: false
             )
-        }
-    }
-
-    private var slimBody: some View {
-        HStack(spacing: 10) {
-            Text(appLocalized(title)).font(.appUI(size: 13)).foregroundStyle(EditorTheme.chrome(0.76))
-                .frame(width: 88, alignment: .leading).lineLimit(2)
-                .accessibilityHidden(true)
+            .frame(width: EditorPropertyRowMetrics.valueWidth, height: EditorPropertyRowMetrics.headHeight, alignment: .trailing)
             EditorSlider(
                 value: Binding(
                     get: { value },
@@ -570,21 +549,6 @@ struct MotionValueSlider: View {
             .disabled(isTextEditing)
             .accessibilityLabel(appLocalized(title))
             .accessibilityValue(valueText)
-            EditorInspectorParameterReadout(
-                title: title,
-                valueText: valueText,
-                isEditing: isSliderEditing || isTextEditing,
-                editConfiguration: EditorInspectorParameterEditConfiguration(
-                    draftText: inputFormat.editingText(for: value),
-                    onBegin: beginTextEditing,
-                    onPreview: previewTextValue,
-                    onCommit: commitTextEditing,
-                    onCancel: cancelTextEditing
-                ),
-                showsTitle: false,
-                isEmbedded: false
-            )
-            .frame(width: 66, height: 32)
         }
     }
 
@@ -706,7 +670,7 @@ private func motionFooter(
             EditorSymbol("trash", size: 14)
         }
         .buttonStyle(.editorDestructiveIcon)
-        .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 7))
+        .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 6))
         .help("删除该动画")
     }
 }
@@ -726,15 +690,12 @@ enum MotionInspectorLogic {
         )
     }
 
+    /// 在播放头新建摄像运动时的起始目标：画面上此刻的姿态。基准取这一刻的
+    /// 逐片段摄像头（和渲染同一个函数），否则落在带独立摄像头的片段上新建，
+    /// 片段一开始就会跳回全片姿态。
     static func cameraTarget(at time: TimeInterval, in project: RecorderProject) -> CameraMotionState {
-        let base = CameraMotionState(
-            layout: .shape(project.camera.shape),
-            position: project.camera.position,
-            size: project.camera.size,
-            roundness: project.camera.roundness,
-            opacity: 1
-        )
         let safeTime = max(time.isFinite ? time : 0, 0)
+        let base = project.cameraMotionBase(atOutputTime: safeTime)
         var latest: CameraMotionClip?
         for clip in project.timeline.cameraMotionClips
         where clip.timing.startTime <= safeTime {
@@ -843,27 +804,29 @@ struct CameraShapeIconPicker: View {
                     EditorSymbol(icon(for: shape), size: 17)
                         .font(.appUI(size: 13))
                         .foregroundStyle(
-                            isSelected ? (palette?.ink ?? EditorTheme.primaryText) : Color.secondary
+                            isSelected ? EditorTheme.primaryText : EditorTheme.secondaryText
                         )
                         .frame(maxWidth: .infinity)
-                        .frame(height: 30)
+                        .frame(height: 28)
                         .background {
                             if isSelected {
-                                EditorRaisedThumb(shape: Capsule(style: .continuous))
+                                RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous)
+                                    .fill(EditorTheme.segmentThumb)
+                                    .shadow(color: .black.opacity(0.12), radius: 1.5, y: 0.5)
                                     .matchedGeometryEffect(id: "camera-shape", in: shapeSelection)
                             }
                         }
                 }
                 .buttonStyle(.editorThumbnail)
-                .appButtonKeyboardFocus(in: Capsule(style: .continuous))
+                .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
                 .help(appLocalized(shape.rawValue))
-                .accessibilityLabel("\(appLocalized("形状"))：\(appLocalized(shape.rawValue))")
+                .accessibilityLabel(String(format: appLocalized("%@：%@"), appLocalized("形状"), appLocalized(shape.rawValue)))
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
             }
         }
-        .padding(3)
-        .background(EditorChoiceStyle.track, in: Capsule(style: .continuous))
-        .animation(SpringMotion.settle, value: selection)
+        .padding(2)
+        .background(EditorTheme.controlWell, in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control + 2, style: .continuous))
+        .animation(SpringMotion.standard, value: selection)
         .accessibilityElement(children: .contain)
     }
 }

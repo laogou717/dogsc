@@ -18,14 +18,9 @@ struct EditorAppearanceToggleButton: View {
             preference = isDark ? .light : .dark
             AppPreferences.applyAppearancePreferenceToOpenWindows()
         } label: {
-            EditorToolbarIconSurface(systemName: isDark ? "moon.stars.fill" : "sun.max.fill")
-                .id(isDark)
-                .transition(reducesMotion ? .opacity : .asymmetric(
-                    insertion: .scale(scale: 0.6).combined(with: .opacity),
-                    removal: .scale(scale: 1.3).combined(with: .opacity)))
-                .animation(SpringMotion.settle ?? .easeOut(duration: 0.18), value: isDark)
+            EditorToolbarIconSurface(systemName: isDark ? "moon" : "sun.max")
         }
-        .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 16))
+        .buttonStyle(EditorToolbarPressButtonStyle())
         .help(actionTitle)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("界面外观")

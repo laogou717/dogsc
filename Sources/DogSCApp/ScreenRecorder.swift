@@ -21,6 +21,9 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
     /// Pointer recording consumes this value to share the video timeline epoch.
     var firstFrameStartedAtHostTime: TimeInterval? { nativeFirstFrameHostTime }
     var onUnexpectedStop: (@MainActor (RecordingRunID, any Error) -> Void)?
+    var onNativeStreamWillPause: (@MainActor (RecordingRunID) -> Void)?
+    var onNativeStreamDidResume: (@MainActor (RecordingRunID, RecordingResumeTiming) -> Void)?
+    var usesNativePauseSessions: Bool { usesNativeRecordingOutput }
     private let surfaceVisibilityGate = AsyncOperationGate()
     private let editorWindowRefresh = CaptureEditorWindowRefresh()
     private let maximumH264CaptureDimensions: CaptureDimensions
@@ -45,6 +48,12 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
     private var nativeFinalOutputURL: URL?
     private var nativeRunToken: ScreenRecorderRunToken?
     private var nativeCaptureCodec: CaptureCodec?
+    private struct NativeCaptureSettings {
+        var filter: SCContentFilter
+        let configuration: SCStreamConfiguration
+    }
+    private var nativeCaptureSettings: NativeCaptureSettings?
+    private var nativePausedMeasurement: FrameRateMeasurement?
     private var nativeSystemAudioOutput: NativeSystemAudioCaptureOutput?
     private var coreAudioSystemAudioTap: AnyObject?
     private var nativeFirstFrameHostTime: TimeInterval?
@@ -176,7 +185,6 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
                     source: configuration.source,
                     codec: configuration.captureCodec,
                     requestedFramesPerSecond: configuration.captureFrameRate.rawValue,
-                    recordsSystemAudio: configuration.recordsSystemAudio,
                     nativeAPIIsAvailable: NativeScreenRecordingBackendPolicy
                         .nativeCodecIsAvailable(configuration.captureCodec)
                 )
@@ -188,7 +196,6 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
             sourceWidth: sourceWidth,
             sourceHeight: sourceHeight,
             codec: configuration.captureCodec,
-            usesNativeWriter: useNativeRecordingOutput,
             legacyH264Maximum: maximumH264CaptureDimensions
         )
         let encodedDimensions = configuration.captureResolutionLimit.applying(to: nativeEncodedDimensions)
@@ -242,8 +249,6 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
         // a separate event track and rendered later, so the editor can replace,
         // resize, smooth or hide the cursor without baking it into the video.
         streamConfiguration.showsCursor = false
-        streamConfiguration.excludesCurrentProcessAudio = true
-
         // Never attach audio to the native recording stream. On this macOS
         // runtime SCRecordingOutput writes bytes but can leave startCapture()
         // suspended forever when same-stream audio is enabled.
@@ -354,10 +359,7 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
             } else {
                 audioFilter = SCContentFilter(
                     display: audioDisplay,
-                    excludingApplications: content.applications.filter {
-                        $0.processID == getpid()
-                    },
-                    exceptingWindows: []
+                    excludingWindows: []
                 )
             }
             let audioConfiguration = SCStreamConfiguration()
@@ -380,7 +382,7 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
             audioConfiguration.capturesAudio = true
             audioConfiguration.sampleRate = 48_000
             audioConfiguration.channelCount = 2
-            audioConfiguration.excludesCurrentProcessAudio = true
+            audioConfiguration.excludesCurrentProcessAudio = false
             let createdAudioStream = SCStream(
                 filter: audioFilter,
                 configuration: audioConfiguration,
@@ -400,6 +402,10 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
         self.nativeSystemAudioOutput = nativeSystemAudioOutput
         self.coreAudioSystemAudioTap = coreAudioSystemAudioTap
         usesNativeRecordingOutput = useNativeRecordingOutput
+        nativeCaptureSettings = useNativeRecordingOutput
+            ? NativeCaptureSettings(filter: filter, configuration: streamConfiguration)
+            : nil
+        nativePausedMeasurement = nil
         self.stream = stream
         self.audioStream = audioStream
         guard runSafety.registerStreams(
@@ -451,6 +457,9 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
         liveMeasurement = nil
         lastStopWarning = nil
         secondaryStreamTerminalError = nil
+        captureSurfaceFilterLogger.notice(
+            "recording filter active: requested=\(configuration.source.rawValue, privacy: .public), style=\(filter.style.rawValue), editorExceptions=\(includedEditorWindowIDs.count)"
+        )
         editorWindowRefresh.start(
             runID: run.runID,
             configuration: configuration,
@@ -470,16 +479,17 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
                     self.liveMeasurement = await captureOutput.currentMeasurement()
                 }
             }
-        } else if #available(macOS 15.0, *),
-                  let monitor = nativeFrameMonitor as? NativeScreenFrameMonitor {
-            measurementTask = Task { [weak self, weak monitor] in
+        } else if #available(macOS 15.0, *) {
+            measurementTask = Task { [weak self] in
                 while !Task.isCancelled {
                     try? await Task.sleep(nanoseconds: 1_000_000_000)
-                    guard !Task.isCancelled, let self, let monitor,
+                    guard !Task.isCancelled, let self,
                           self.isCapturing,
                           self.runSafety.activeRunID == run.runID
                     else { break }
-                    self.liveMeasurement = monitor.measurement()
+                    if let monitor = self.nativeFrameMonitor as? NativeScreenFrameMonitor {
+                        self.liveMeasurement = monitor.measurement()
+                    }
                 }
             }
         }
@@ -492,8 +502,13 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
            let tap = coreAudioSystemAudioTap as? CoreAudioSystemAudioTap {
             try? tap.stop()
         }
-        try? await audioStream?.stopCapture()
-        try? await stream?.stopCapture()
+        for (name, source) in [("rollback-system-audio", audioStream), ("rollback-screen", stream)] {
+            if let source {
+                try? await ScreenCaptureOperation.wait(name, timeoutMessage: appLocalized("系统录制停止确认超时，已继续保存完成写入的文件")) {
+                    source.stopCapture(completionHandler: $0)
+                }
+            }
+        }
         _ = try? await captureOutput?.finish()
         let nativeAudioURL = nativeSystemAudioOutput?.outputURL
         _ = try? await nativeSystemAudioOutput?.finish()
@@ -518,6 +533,8 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
         nativeFinalOutputURL = nil
         nativeRunToken = nil
         nativeCaptureCodec = nil
+        nativeCaptureSettings = nil
+        nativePausedMeasurement = nil
         usesNativeRecordingOutput = false
         isCapturing = false
         isPaused = false
@@ -531,13 +548,20 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
     ) async throws {
         let previous = editorWindowRefresh.configuration(for: runID)
         editorWindowRefresh.updateConfiguration(configuration, for: runID)
-        guard let update = runSafety.makeSurfaceUpdate(for: runID) else {
+        // A native update replaces the stream. Mint its identity after entering
+        // the gate so a queued change cannot target the retired predecessor.
+        let update = usesNativeRecordingOutput ? nil : runSafety.makeSurfaceUpdate(for: runID)
+        guard update != nil || (usesNativeRecordingOutput && isCapturing && runSafety.activeRunID == runID) else {
             throw ScreenRecorderError.runNotActive(runID)
         }
         do {
             try await applySurfaceVisibilityUpdate(runID: runID, requestedUpdate: update)
         } catch {
-            if runSafety.surfaceUpdateDecision(for: update, isCancelled: false) == .apply,
+            let mayRestore = update.map {
+                runSafety.surfaceUpdateDecision(for: $0, isCancelled: false) == .apply
+            } ?? (runSafety.activeRunID == runID && isCapturing)
+            if mayRestore,
+               editorWindowRefresh.configuration(for: runID) == configuration,
                let previous {
                 editorWindowRefresh.updateConfiguration(previous, for: runID)
             }
@@ -551,6 +575,11 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
     ) async throws {
         try Task.checkCancellation()
         try await withSurfaceVisibilityGate {
+            try Task.checkCancellation()
+            if usesNativeRecordingOutput, isCapturing, isPaused, stream == nil {
+                try await refreshPausedNativeSurface(runID: runID)
+                return
+            }
             guard let configuration = editorWindowRefresh.configuration(for: runID),
                   let update = requestedUpdate ?? runSafety.makeSurfaceUpdate(for: runID)
             else { throw ScreenRecorderError.runNotActive(runID) }
@@ -560,6 +589,30 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
                 configuration: configuration
             )
         }
+    }
+
+    private func refreshPausedNativeSurface(runID: RecordingRunID) async throws {
+        guard let configuration = editorWindowRefresh.configuration(for: runID),
+              configuration.source == .display || configuration.source == .area else { return }
+        let content = try await SCShareableContent.excludingDesktopWindows(
+            false, onScreenWindowsOnly: false
+        )
+        try Task.checkCancellation()
+        guard runSafety.activeRunID == runID, isCapturing, isPaused, stream == nil,
+              nativeCaptureSettings != nil,
+              editorWindowRefresh.configuration(for: runID) == configuration else {
+            throw CancellationError()
+        }
+        let display = try preferredDisplay(
+            from: content.displays, requestedDisplayID: configuration.displayID
+        )
+        let surfaceFilter = CaptureSurfaceFilter(
+            content: content, display: display, configuration: configuration
+        )
+        nativeCaptureSettings?.filter = surfaceFilter.filter
+        editorWindowRefresh.didApply(
+            surfaceFilter.editorWindowIDs, configuration: configuration, for: runID
+        )
     }
 
     private func withSurfaceVisibilityGate<T>(
@@ -613,56 +666,35 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
                   let finalURL = nativeFinalOutputURL else {
                 throw ScreenRecorderError.recordingFailed("苹果原生录制状态无效")
             }
-            // SCRecordingOutput does not promise continuity across a filter
-            // update. Close the current file cleanly, update SCK, then start a
-            // new native segment. Finalization concatenates the segments with
-            // AVAssetExportPresetPassthrough, so no frame is re-encoded.
-            let activeSegment = nativeRecordingSegment as? NativeScreenRecordingSegment
-            if activeSegment != nil {
-                (nativeFrameMonitor as? NativeScreenFrameMonitor)?.setPaused(true)
-                await nativeSystemAudioOutput?.setPaused(true)
-            }
-            do {
-                try ensureSurfaceUpdateMayApply(update)
-                if let activeSegment {
-                    try stream.removeRecordingOutput(activeSegment.recordingOutput)
-                    try await activeSegment.waitForFinish(timeout: 15)
-                    nativeCompletedSegmentURLs.append(activeSegment.outputURL)
-                    let duration = activeSegment.recordingOutput.recordedDuration.seconds
-                    if duration.isFinite { nativeCompletedRecordingDuration += max(duration, 0) }
-                    nativeRecordingSegment = nil
-                }
-                try await stream.updateContentFilter(filter)
-                if activeSegment != nil {
-                    try await startNativeContinuationSegment(
-                        on: stream,
-                        token: token,
-                        finalURL: finalURL
-                    )
-                }
-                if activeSegment != nil {
-                    await nativeSystemAudioOutput?.setPaused(false)
-                    (nativeFrameMonitor as? NativeScreenFrameMonitor)?.setPaused(false)
-                }
-            } catch {
-                if activeSegment != nil, nativeRecordingSegment == nil {
-                    do {
-                        try await startNativeContinuationSegment(
-                            on: stream, token: token, finalURL: finalURL
-                        )
-                    } catch {
-                        failNativeRecording(error)
+            // Keep the file output attached until its stream stops. Detaching
+            // it from a running stream briefly creates a sharing-only session.
+            // Resume every track from the replacement's first video frame.
+            try ensureSurfaceUpdateMayApply(update)
+            // An unstructured task finishes this committed transition even
+            // when a newer UI request cancels its caller. Stop still wins via
+            // the run lifecycle; all callers retain the same operation gate.
+            try await Task { @MainActor [self] in
+                do {
+                    try await closeNativeStream(token: token, operation: "replace-screen")
+                    guard runSafety.lifecycle(for: token) == .capturing, isCapturing else {
+                        throw CancellationError()
                     }
+                    nativeCaptureSettings?.filter = filter
+                    let timing = try await rebuildNativeStream(token: token, finalURL: finalURL)
+                    await resumeNativeTracks(token: token, timing: timing)
+                } catch {
+                    failNativeRecording(error)
+                    throw error
                 }
-                if activeSegment != nil {
-                    await nativeSystemAudioOutput?.setPaused(false)
-                    (nativeFrameMonitor as? NativeScreenFrameMonitor)?.setPaused(false)
-                }
-                throw error
-            }
+            }.value
         } else {
-            try await stream.updateContentFilter(filter)
+            try await ScreenCaptureOperation.wait("update-filter", timeoutMessage: appLocalized("系统录制过滤器更新超时")) {
+                stream.updateContentFilter(filter, completionHandler: $0)
+            }
         }
+        captureSurfaceFilterLogger.notice(
+            "filter applied: requested=\(configuration.source.rawValue, privacy: .public), style=\(filter.style.rawValue), display=\(display.displayID), editorExceptions=\(surfaceFilter.editorWindowIDs.count)"
+        )
         editorWindowRefresh.didApply(
             surfaceFilter.editorWindowIDs,
             configuration: configuration,
@@ -706,19 +738,10 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
         guard runSafety.activeRunID == runID, isCapturing, !isPaused else { return }
         if usesNativeRecordingOutput {
             guard #available(macOS 15.0, *),
-                  let stream,
-                  let segment = nativeRecordingSegment
-                    as? NativeScreenRecordingSegment else { return }
+                  let token = nativeRunToken else { return }
             do {
-                (nativeFrameMonitor as? NativeScreenFrameMonitor)?.setPaused(true)
-                await nativeSystemAudioOutput?.setPaused(true)
-                try stream.removeRecordingOutput(segment.recordingOutput)
-                try await segment.waitForFinish(timeout: 15)
-                nativeCompletedSegmentURLs.append(segment.outputURL)
-                let duration = segment.recordingOutput.recordedDuration.seconds
-                if duration.isFinite { nativeCompletedRecordingDuration += max(duration, 0) }
-                nativeRecordingSegment = nil
-                guard runSafety.activeRunID == runID else { return }
+                try await closeNativeStream(token: token, operation: "pause-screen")
+                guard runSafety.lifecycle(for: token) == .capturing, isCapturing else { return }
                 isPaused = true
             } catch {
                 (nativeFrameMonitor as? NativeScreenFrameMonitor)?.setPaused(false)
@@ -735,38 +758,35 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
         isPaused = true
     }
 
-    func resume(runID: RecordingRunID) async {
+    @discardableResult
+    func resume(runID: RecordingRunID) async -> RecordingResumeTiming? {
         await withSurfaceVisibilityGate { await performResume(runID: runID) }
     }
 
-    private func performResume(runID: RecordingRunID) async {
-        guard runSafety.activeRunID == runID, isCapturing, isPaused else { return }
+    private func performResume(runID: RecordingRunID) async -> RecordingResumeTiming? {
+        guard runSafety.activeRunID == runID, isCapturing, isPaused else { return nil }
         if usesNativeRecordingOutput {
             guard #available(macOS 15.0, *),
-                  let stream,
                   let token = nativeRunToken,
-                  let finalURL = nativeFinalOutputURL else { return }
+                  let finalURL = nativeFinalOutputURL else { return nil }
             do {
-                try await startNativeContinuationSegment(
-                    on: stream,
-                    token: token,
-                    finalURL: finalURL
-                )
-                await nativeSystemAudioOutput?.setPaused(false)
-                (nativeFrameMonitor as? NativeScreenFrameMonitor)?.setPaused(false)
-                guard runSafety.activeRunID == runID else { return }
+                let timing = try await rebuildNativeStream(token: token, finalURL: finalURL)
+                await resumeNativeTracks(token: token, timing: timing)
+                guard runSafety.activeRunID == runID, isCapturing else { return nil }
                 isPaused = false
+                return timing
             } catch {
                 lastStopWarning = String(format: appLocalized("继续原生录制失败：%@"), appErrorDescription(error))
                 failNativeRecording(error)
             }
-            return
+            return nil
         }
-        guard let captureOutput else { return }
+        guard let captureOutput else { return nil }
         await captureOutput.setPaused(false)
         await nativeSystemAudioOutput?.setPaused(false)
-        guard runSafety.activeRunID == runID else { return }
+        guard runSafety.activeRunID == runID else { return nil }
         isPaused = false
+        return nil
     }
 
     private func failNativeRecording(_ error: any Error) {
@@ -777,53 +797,123 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
     }
 
     @available(macOS 15.0, *)
-    private func startNativeContinuationSegment(
-        on stream: SCStream,
+    private func appendCompletedNativeSegment(_ segment: NativeScreenRecordingSegment) async throws {
+        // Use the same container duration as the lossless concatenator, not
+        // callback wall time or an estimate from the last delivered frame.
+        let duration = try await AVURLAsset(url: segment.outputURL).load(.duration)
+        guard duration.isNumeric, duration > .zero else { throw ScreenRecorderError.noFrames }
+        nativeCompletedSegmentURLs.append(segment.outputURL)
+        nativeCompletedRecordingDuration += duration.seconds
+    }
+
+    @available(macOS 15.0, *)
+    private func closeNativeStream(token: ScreenRecorderRunToken, operation: String) async throws {
+        guard let stream,
+              let segment = nativeRecordingSegment as? NativeScreenRecordingSegment,
+              runSafety.lifecycle(for: token) == .capturing else {
+            throw ScreenRecorderError.runNotActive(token.runID)
+        }
+        (nativeFrameMonitor as? NativeScreenFrameMonitor)?.setPaused(true)
+        onNativeStreamWillPause?(token.runID)
+        await nativeSystemAudioOutput?.setPaused(true)
+        runSafety.retirePrimaryStream(for: token)
+        try await ScreenCaptureOperation.wait(operation, timeoutMessage: appLocalized("系统录制停止确认超时，已继续保存完成写入的文件")) {
+            stream.stopCapture(completionHandler: $0)
+        }
+        try await segment.waitForFinish(timeout: 15)
+        try await appendCompletedNativeSegment(segment)
+        nativePausedMeasurement = (nativeFrameMonitor as? NativeScreenFrameMonitor)?.measurement()
+        liveMeasurement = nativePausedMeasurement
+        nativeRecordingSegment = nil
+        nativeFrameMonitor = nil
+        self.stream = nil
+    }
+
+    private func resumeNativeTracks(token: ScreenRecorderRunToken, timing: RecordingResumeTiming) async {
+        guard runSafety.lifecycle(for: token) == .capturing, isCapturing else { return }
+        await nativeSystemAudioOutput?.setPaused(false, resumeTiming: timing)
+        guard runSafety.lifecycle(for: token) == .capturing, isCapturing else { return }
+        onNativeStreamDidResume?(token.runID, timing)
+    }
+
+    @available(macOS 15.0, *)
+    private func rebuildNativeStream(
         token: ScreenRecorderRunToken,
         finalURL: URL
-    ) async throws {
+    ) async throws -> RecordingResumeTiming {
+        guard let settings = nativeCaptureSettings,
+              let initialHostTime = nativeFirstFrameHostTime,
+              stream == nil,
+              runSafety.lifecycle(for: token) == .capturing else {
+            throw ScreenRecorderError.runNotActive(token.runID)
+        }
+        let replacement = SCStream(
+            filter: settings.filter, configuration: settings.configuration, delegate: self
+        )
+        let monitor = NativeScreenFrameMonitor(
+            target: requestedFrameRate,
+            previousMeasurement: nativePausedMeasurement,
+            completedDuration: nativeCompletedRecordingDuration
+        )
+        let segment = makeNativeContinuationSegment(token: token, finalURL: finalURL)
+        // The replacement is never started as a raw sharing-only stream.
+        try replacement.addRecordingOutput(segment.recordingOutput)
+        try replacement.addStreamOutput(monitor, type: .screen, sampleHandlerQueue: sampleQueue)
+        guard runSafety.registerStreams(
+            primary: ObjectIdentifier(replacement), secondary: nil, for: token
+        ) else { throw ScreenRecorderError.runNotActive(token.runID) }
+        stream = replacement
+        nativeFrameMonitor = monitor
+        nativeRecordingSegment = segment
+        try await replacement.startCapture()
+        let firstFrame = try await monitor.waitForFirstFrame(timeout: 5)
+        _ = try await segment.waitForStart(timeout: 5)
+        guard runSafety.lifecycle(for: token) == .capturing,
+              let timing = RecordingResumeTiming(
+                videoStartedAtHostTime: initialHostTime,
+                resumedAtHostTime: firstFrame.hostTime,
+                completedVideoDuration: nativeCompletedRecordingDuration
+              ) else { throw ScreenRecorderError.runNotActive(token.runID) }
+        return timing
+    }
+
+    @available(macOS 15.0, *)
+    private func makeNativeContinuationSegment(
+        token: ScreenRecorderRunToken,
+        finalURL: URL
+    ) -> NativeScreenRecordingSegment {
         let segmentURL = finalURL.deletingLastPathComponent().appendingPathComponent(
             ".native-segment-\(UUID().uuidString).mp4"
         )
-        let segment = NativeScreenRecordingSegment(
+        return NativeScreenRecordingSegment(
             outputURL: segmentURL,
             codec: nativeCaptureCodec ?? .h264,
             onFailure: { [weak self] error in
                 let event = CaptureOutputTerminalEvent(
-                    run: token,
-                    stage: .videoAppend,
-                    error: error
+                    run: token, stage: .videoAppend, error: error
                 )
-                Task { @MainActor [weak self] in
-                    self?.handleCaptureOutputTerminal(event)
-                }
+                Task { @MainActor [weak self] in self?.handleCaptureOutputTerminal(event) }
             }
         )
-        do {
-            try stream.addRecordingOutput(segment.recordingOutput)
-            nativeRecordingSegment = segment
-            _ = try await segment.waitForStart(timeout: 5)
-        } catch {
-            try? stream.removeRecordingOutput(segment.recordingOutput)
-            nativeRecordingSegment = nil
-            try? FileManager.default.removeItem(at: segmentURL)
-            throw error
-        }
     }
 
-    func stop(runID: RecordingRunID) async throws -> URL? {
-        guard let stream, let run = runSafety.beginStopping(runID) else {
+    func stop(runID: RecordingRunID, discarding: Bool = false) async throws -> URL? {
+        guard let run = runSafety.beginStopping(runID) else {
             throw ScreenRecorderError.runNotActive(runID)
         }
         isCapturing = false
         isPaused = false
         editorWindowRefresh.stop(for: runID)
         return try await withSurfaceVisibilityGate {
-            try await performStop(stream: stream, run: run)
+            try await performStop(stream: self.stream, run: run, discarding: discarding)
         }
     }
 
-    private func performStop(stream: SCStream, run: ScreenRecorderRunToken) async throws -> URL? {
+    private func performStop(
+        stream: SCStream?,
+        run: ScreenRecorderRunToken,
+        discarding: Bool
+    ) async throws -> URL? {
         let nativeAudioTemporaryURL = nativeSystemAudioOutput?.outputURL
         let expectedNativeSystemAudio = nativeSystemAudioOutput != nil
         let nativeAudioDiagnosticsBeforeStop = await nativeSystemAudioOutput?
@@ -836,40 +926,28 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
         if #available(macOS 15.0, *) {
             (nativeFrameMonitor as? NativeScreenFrameMonitor)?.setPaused(true)
         }
-        // REC-001/REC-004: SCRecordingOutput owns the native MP4 finalization.
-        // Detach it while SCStream is still running, matching the already
-        // reliable pause path. Stopping the stream first can leave an
-        // audio-enabled recording output waiting forever while its file keeps
-        // growing, which also prevents the rest of the recorder from cleaning
-        // up its capture load.
-        var nativeDetachedFinalizationError: (any Error)?
-        if usesNativeRecordingOutput,
-           #available(macOS 15.0, *),
-           let segment = nativeRecordingSegment as? NativeScreenRecordingSegment {
+        var streamStopError: (any Error)?
+        // Close native files with their streams, including filter changes and
+        // pause/resume. Only emergency recovery below may detach a writer.
+        if let stream {
             do {
-                try stream.removeRecordingOutput(segment.recordingOutput)
-                do {
-                    try await segment.waitForFinish(timeout: 15)
-                    nativeCompletedSegmentURLs.append(segment.outputURL)
-                } catch {
-                    nativeDetachedFinalizationError = error
+                try await ScreenCaptureOperation.wait("stop-screen", timeoutMessage: appLocalized("系统录制停止确认超时，已继续保存完成写入的文件")) {
+                    stream.stopCapture(completionHandler: $0)
                 }
-                // The output is no longer attached even if its delegate timed
-                // out, so never wait on the same segment again after stream stop.
-                nativeRecordingSegment = nil
             } catch {
-                // If detach itself fails, leave the segment attached. The
-                // stream stop below is still required for cleanup and the
-                // existing post-stop fallback can observe its delegate result.
-                nativeDetachedFinalizationError = nil
+                streamStopError = error
+                if #available(macOS 15.0, *), let segment = nativeRecordingSegment as? NativeScreenRecordingSegment {
+                    try? stream.removeRecordingOutput(segment.recordingOutput)
+                }
             }
         }
-        var streamStopError: (any Error)?
         var nativeAudioResult: NativeSystemAudioCaptureResult?
         var nativeAudioFinishError: (any Error)?
         if let audioStream {
             do {
-                try await audioStream.stopCapture()
+                try await ScreenCaptureOperation.wait("stop-system-audio", timeoutMessage: appLocalized("系统录制停止确认超时，已继续保存完成写入的文件")) {
+                    audioStream.stopCapture(completionHandler: $0)
+                }
             } catch {
                 streamStopError = error
             }
@@ -891,11 +969,6 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
         }
         lastSystemAudioDiagnostics = nativeAudioResult?.diagnostics
             ?? nativeAudioDiagnosticsBeforeStop
-        do {
-            try await stream.stopCapture()
-        } catch {
-            streamStopError = error
-        }
         measurementTask?.cancel()
         measurementTask = nil
         defer {
@@ -915,6 +988,8 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
             self.nativeFinalOutputURL = nil
             self.nativeRunToken = nil
             self.nativeCaptureCodec = nil
+            self.nativeCaptureSettings = nil
+            self.nativePausedMeasurement = nil
             self.usesNativeRecordingOutput = false
             isCapturing = false
             isPaused = false
@@ -939,26 +1014,27 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
             guard #available(macOS 15.0, *), let finalURL = nativeFinalOutputURL else {
                 throw ScreenRecorderError.recordingFailed("苹果原生录制结果丢失")
             }
-            if let nativeDetachedFinalizationError {
-                throw nativeDetachedFinalizationError
-            }
             if let segment = nativeRecordingSegment {
                 try await segment.waitForFinish(timeout: 15)
                 nativeCompletedSegmentURLs.append(segment.outputURL)
                 nativeRecordingSegment = nil
             }
+            recordingFinalizationLogger.notice("native screen concatenate started: segments=\(self.nativeCompletedSegmentURLs.count, privacy: .public)")
             try await NativeScreenRecordingFinalizer.concatenate(
                 nativeCompletedSegmentURLs,
                 to: finalURL
             )
+            recordingFinalizationLogger.notice("native screen concatenate finished")
             if let nativeAudioResult {
                 if let nativeFirstFrameHostTime {
                     do {
+                        recordingFinalizationLogger.notice("native system audio mux started")
                         try await NativeScreenRecordingFinalizer.muxSystemAudio(
                             nativeAudioResult,
                             videoStartedAtHostTime: nativeFirstFrameHostTime,
                             into: finalURL
                         )
+                        recordingFinalizationLogger.notice("native system audio mux finished")
                     } catch {
                         warnings.append(String(format: appLocalized("系统声音无损封装失败，视频已保留：%@"), appErrorDescription(error)))
                     }
@@ -969,11 +1045,18 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
                     warnings.append(String(format: appLocalized("系统声音写入拥塞，丢弃了 %ld 个音频样本块"), nativeAudioResult.droppedSampleCount))
                 }
             }
-            lastMeasurement = try await NativeScreenRecordingFinalizer.measurement(
-                at: finalURL,
-                target: requestedFrameRate
-            )
-            liveMeasurement = lastMeasurement
+            // A discarded project is moved to Trash and can be restored, so
+            // its assembled video/audio must remain complete. Only the final
+            // PTS statistics are unused by discard/restart callers.
+            if !discarding {
+                recordingFinalizationLogger.notice("native recording measurement started")
+                lastMeasurement = try await NativeScreenRecordingFinalizer.measurement(
+                    at: finalURL,
+                    target: requestedFrameRate
+                )
+                recordingFinalizationLogger.notice("native recording measurement finished")
+                liveMeasurement = lastMeasurement
+            }
             lastStopWarning = warnings.isEmpty ? nil : warnings.joined(separator: appLocalized("；"))
             return finalURL
         }
@@ -1024,8 +1107,12 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
     }
 
     nonisolated func stream(_ stream: SCStream, didStopWithError error: any Error) {
-        let streamIdentity = ObjectIdentifier(stream)
-        Task { @MainActor [weak self] in
+        // Keep the stopped object alive until its callback is checked. Native
+        // resume creates a replacement, so an allocator must not reuse the old
+        // address while its identity-only terminal event is still queued.
+        let stoppedStream = StoppedCaptureStream(stream)
+        Task { @MainActor [weak self, stoppedStream] in
+            let streamIdentity = ObjectIdentifier(stoppedStream.stream)
             guard let self,
                   let run = self.runSafety.tokenForDelegate(
                     streamIdentity: streamIdentity
@@ -1106,6 +1193,12 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
         return resolved
     }
 
+}
+
+private struct StoppedCaptureStream: @unchecked Sendable {
+    let stream: SCStream
+
+    init(_ stream: SCStream) { self.stream = stream }
 }
 
 /// One-shot resumption of the `finish()` continuation, safe to call from the

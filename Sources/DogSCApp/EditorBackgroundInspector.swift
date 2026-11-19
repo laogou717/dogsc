@@ -7,11 +7,10 @@ import SwiftUI
 struct EditorBackgroundInspector: View {
     @ObservedObject var editorStore: EditorStore
     @ObservedObject var systemWallpaperCatalog: SystemWallpaperCatalog
-    let onChooseWallpaper: () -> BackgroundSource?
+    let onChooseWallpaper: () async -> BackgroundSource?
     let onError: (String) -> Void
     var usesCompactLayout = false
 
-    @Environment(\.consolePalette) private var palette
     @State private var selectedBackgroundTab: BackgroundPanelTab = .wallpaper
     @State private var backgroundSwapEdge: Edge = .trailing
     @State private var selectedSystemAssetID: String?
@@ -23,7 +22,8 @@ struct EditorBackgroundInspector: View {
     var body: some View {
             // The frame subnavigation already names this task. In a short
             // browser, spend that repeated heading's space on actual media.
-            EditorInspectorSection("背景素材", showsTitle: !usesCompactLayout) {
+            // The 背景 sub-tab above already names this page; no second caption.
+            EditorInspectorSection("背景素材", showsTitle: false) {
                 // 页签切换只浏览候选；真正选择资源或调整颜色时才写入项目。
                 backgroundSourceNavigation
 
@@ -57,10 +57,10 @@ struct EditorBackgroundInspector: View {
             }
             .onAppear {
                 synchronizeBackgroundNavigation(
-                    with: editorStore.project.canvas.backgroundSource
+                    with: editorStore.sceneEditingProject.canvas.backgroundSource
                 )
             }
-            .onChange(of: editorStore.project.canvas.backgroundSource) { _, source in
+            .onChange(of: editorStore.sceneEditingProject.canvas.backgroundSource) { _, source in
                 synchronizeBackgroundNavigation(with: source)
             }
     }
@@ -113,52 +113,63 @@ struct EditorBackgroundInspector: View {
             .task {
                 await systemWallpaperCatalog.loadIfNeeded()
                 synchronizeSystemWallpaperSelection(
-                    with: editorStore.project.canvas.backgroundSource
+                    with: editorStore.sceneEditingProject.canvas.backgroundSource
                 )
                 await systemWallpaperCatalog.monitorChanges()
             }
             .onChange(of: systemWallpaperCatalog.assets) { _, _ in
                 synchronizeSystemWallpaperSelection(
-                    with: editorStore.project.canvas.backgroundSource
+                    with: editorStore.sceneEditingProject.canvas.backgroundSource
                 )
             }
     }
 
     @ViewBuilder
     var systemWallpaperSection: some View {
-        if !usesCompactLayout {
-            HStack {
-                Text("本机壁纸").font(.appUI(size: 12, weight: .medium)).foregroundStyle(.secondary)
-                Spacer()
-                if systemWallpaperCatalog.isLoading {
-                    ProgressView().controlSize(.mini)
+        HStack(spacing: 6) {
+            Text("本机壁纸").font(EditorTypography.caption).foregroundStyle(EditorTheme.tertiaryText)
+            Spacer()
+            if systemWallpaperCatalog.isLoading {
+                ProgressView().controlSize(.mini)
+            }
+            Button(showsFullWallpaperGrid ? "收起" : "全部") {
+                withAnimation(SpringMotion.standard) { showsFullWallpaperGrid.toggle() }
+            }
+            .buttonStyle(.editorGhost)
+            .help(appLocalized(showsFullWallpaperGrid ? "收起全部壁纸" : "查看全部壁纸"))
+            if !usesCompactLayout {
+                Button {
+                    Task { await systemWallpaperCatalog.refresh() }
+                } label: {
+                    EditorToolbarIconSurface(systemName: "arrow.clockwise")
                 }
-                wallpaperReloadButton
+                .buttonStyle(EditorToolbarPressButtonStyle())
+                .disabled(systemWallpaperCatalog.isLoading)
+                .help("重新读取本机壁纸")
+                .accessibilityLabel("重新读取本机壁纸")
             }
         }
 
         let current = systemWallpaperCatalog.currentDesktopGroup
         let images = Array(systemWallpaperCatalog.imageGroups.prefix(systemImageGroupLimit))
         let groups = (current.map { [$0] } ?? []) + images.filter { $0.id != current?.id }
-        wallpaperAccordion(groups)
-        if let issue = systemWallpaperCatalog.currentDesktopIssue, current == nil {
-            Text(issue).font(.appUI(size: 11)).foregroundStyle(.secondary)
-        }
-        Button(showsFullWallpaperGrid ? "收起全部壁纸" : "查看全部壁纸") {
-            withAnimation(SpringMotion.settle) { showsFullWallpaperGrid.toggle() }
-        }
-        .buttonStyle(.editorGhost)
-        .appButtonKeyboardFocus(in: Capsule(style: .continuous))
         if showsFullWallpaperGrid {
             systemGroupGrid(groups)
-                .transition(.editorSwap(edge: .top))
+                .transition(.opacity)
             if systemWallpaperCatalog.imageGroups.count > systemImageGroupLimit {
                 Button("显示更多壁纸") { systemImageGroupLimit += 16 }
                     .buttonStyle(.editorGhost)
             }
+        } else {
+            wallpaperAccordion(groups)
+                .transition(.opacity)
+        }
+        if let issue = systemWallpaperCatalog.currentDesktopIssue, current == nil {
+            Text(appLocalized(issue)).font(EditorTypography.helper).foregroundStyle(EditorTheme.secondaryText)
         }
         if !systemWallpaperCatalog.videoGroups.isEmpty {
-            Text("动态壁纸").font(.appUI(size: 11)).foregroundStyle(.secondary)
+            Text("动态壁纸").font(EditorTypography.caption).foregroundStyle(EditorTheme.tertiaryText)
+                .padding(.top, 6)
             systemGroupGrid(Array(systemWallpaperCatalog.videoGroups.prefix(systemVideoGroupLimit)))
             if systemWallpaperCatalog.videoGroups.count > systemVideoGroupLimit {
                 Button("显示更多动态壁纸") { systemVideoGroupLimit += 16 }
@@ -187,7 +198,7 @@ struct EditorBackgroundInspector: View {
     }
 
     func systemGroupGrid(_ groups: [SystemWallpaperGroup]) -> some View {
-        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 4), spacing: 14) {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 10) {
             ForEach(groups) { group in systemWallpaperGroupCard(group) }
         }
     }
@@ -202,15 +213,15 @@ struct EditorBackgroundInspector: View {
                 Button { selectSystemAsset(asset, in: group) } label: {
                     Color.clear.aspectRatio(1, contentMode: .fit)
                         .overlay { SystemWallpaperThumbnail(asset: asset) }
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .clipShape(RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
                         .overlay {
-                            RoundedRectangle(cornerRadius: 12)
-                                .strokeBorder(isSelected ? EditorTheme.selectionTint : EditorTheme.chrome(0.08), lineWidth: isSelected ? 2 : 0.75)
+                            RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous)
+                                .strokeBorder(isSelected ? EditorTheme.selectionTint : EditorTheme.chrome(0.08), lineWidth: isSelected ? 2 : 1)
                         }
                         .overlay(alignment: .topTrailing) {
                             if isSelected {
                                 EditorSymbol("checkmark", size: 10.5)
-                                    .font(.appUI(size: 8, weight: .semibold))
+                                    .font(.appUI(size: 10, weight: .semibold))
                                     // The white media badge needs dark ink in both workspace themes.
                                     .foregroundStyle(.black.opacity(0.84))
                                     .frame(width: 17, height: 17).background(.white, in: Circle()).padding(5)
@@ -218,9 +229,9 @@ struct EditorBackgroundInspector: View {
                         }
                         .overlay(alignment: .bottomLeading) {
                             if asset.isVideo {
-                                EditorSymbol("play.fill", size: 10.5).font(.appUI(size: 8))
-                                    .foregroundStyle(.white).padding(5)
-                                    .background(.black.opacity(0.4), in: Circle()).padding(5)
+                                EditorSymbol("play.fill", size: 8)
+                                    .foregroundStyle(.white).frame(width: 16, height: 16)
+                                    .background(.black.opacity(0.45), in: Circle()).padding(4)
                             }
                         }
                 }
@@ -237,7 +248,7 @@ struct EditorBackgroundInspector: View {
                     }) {
                         HStack(spacing: 3) {
                             Text(displayName).lineLimit(1).truncationMode(.middle)
-                            EditorSymbol("chevron.down", size: 10.5).font(.appUI(size: 8))
+                            EditorSymbol("chevron.down", size: 10.5).font(.appUI(size: 10))
                         }.font(.appUI(size: 11)).foregroundStyle(EditorTheme.chrome(0.65))
                             .frame(maxWidth: .infinity).frame(height: 20)
                     }
@@ -277,7 +288,7 @@ struct EditorBackgroundInspector: View {
         selectedSystemVariantByGroup[group.id] = asset.id
         selectedSystemAssetID = asset.id
         selectedBackgroundTab = .wallpaper
-        var canvas = editorStore.project.canvas
+        var canvas = editorStore.sceneEditingProject.canvas
         canvas.backgroundSource = asset.isVideo
             ? .systemVideo(absolutePath: asset.url.path)
             : .systemImage(absolutePath: asset.url.path)
@@ -290,12 +301,14 @@ struct EditorBackgroundInspector: View {
     }
 
     func chooseWallpaper() {
-        guard let source = onChooseWallpaper() else { return }
-        selectedSystemAssetID = nil
-        var canvas = editorStore.project.canvas
-        canvas.backgroundSource = source
-        performEditorCommand {
-            try editorStore.replaceCanvas(with: canvas, actionName: "选择自定义壁纸")
+        Task { @MainActor in
+            guard let source = await onChooseWallpaper() else { return }
+            selectedSystemAssetID = nil
+            var canvas = editorStore.sceneEditingProject.canvas
+            canvas.backgroundSource = source
+            performEditorCommand {
+                try editorStore.replaceCanvas(with: canvas, actionName: "选择自定义壁纸")
+            }
         }
     }
 
@@ -309,7 +322,11 @@ struct EditorBackgroundInspector: View {
             selectedBackgroundTab = .dynamic
         case .projectImage, .projectVideo:
             selectedSystemAssetID = nil
-            selectedBackgroundTab = .image
+            // A background picked from the user's own files has nothing to
+            // show under 自定 but the file already in use, while the reason to
+            // open this page is almost always to pick a different wallpaper.
+            // Land on the browser; 自定 stays one tab away.
+            selectedBackgroundTab = .wallpaper
         case let .systemImage(absolutePath), let .systemVideo(absolutePath):
             selectedBackgroundTab = .wallpaper
             let normalized = URL(fileURLWithPath: absolutePath)
@@ -349,9 +366,9 @@ struct EditorBackgroundInspector: View {
         VStack(alignment: .leading, spacing: 12) {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 80, maximum: 110), spacing: 10)], spacing: 10) {
                 ForEach(BackgroundPatternPreset.allCases) { preset in
-                    let isSelected = editorStore.project.canvas.backgroundSource == .pattern(preset)
+                    let isSelected = editorStore.sceneEditingProject.canvas.backgroundSource == .pattern(preset)
                     Button {
-                        var canvas = editorStore.project.canvas
+                        var canvas = editorStore.sceneEditingProject.canvas
                         canvas.backgroundSource = .pattern(preset)
                         performEditorCommand {
                             try editorStore.replaceCanvas(with: canvas, actionName: "选择纹理网格")
@@ -359,19 +376,19 @@ struct EditorBackgroundInspector: View {
                     } label: {
                         PatternMiniatureView(preset: preset)
                             .aspectRatio(1, contentMode: .fit)
-                            .clipShape(RoundedRectangle(cornerRadius: 9))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
                             .overlay(alignment: .bottomLeading) {
-                                Text(appLocalized(preset.rawValue))
+                                Text(appLocalized(preset.displayName))
                                     .font(.appUI(size: 11, weight: .medium))
                                     .lineLimit(2)
                                     .minimumScaleFactor(0.7)
                                     .foregroundStyle(.white)
                                     .padding(.horizontal, 8).padding(.vertical, 5)
-                                    .background(.black.opacity(0.55), in: Capsule())
+                                    .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.mark, style: .continuous))
                                     .padding(6)
                             }
                             .overlay(
-                                RoundedRectangle(cornerRadius: 9)
+                                RoundedRectangle(cornerRadius: 6)
                                     .stroke(
                                         isSelected ? EditorTheme.selectionTint : EditorTheme.chrome(0.12),
                                         lineWidth: isSelected ? 2 : 1
@@ -379,7 +396,7 @@ struct EditorBackgroundInspector: View {
                             )
                     }
                     .buttonStyle(.editorThumbnail)
-                    .accessibilityLabel(appLocalized(preset.rawValue))
+                    .accessibilityLabel(appLocalized(preset.displayName))
                     .accessibilityAddTraits(isSelected ? .isSelected : [])
                 }
             }
@@ -392,9 +409,9 @@ struct EditorBackgroundInspector: View {
         VStack(alignment: .leading, spacing: 12) {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 80, maximum: 110), spacing: 10)], spacing: 10) {
                 ForEach(DynamicBackgroundPreset.allCases) { preset in
-                    let isSelected = editorStore.project.canvas.backgroundSource == .dynamicFlow(preset)
+                    let isSelected = editorStore.sceneEditingProject.canvas.backgroundSource == .dynamicFlow(preset)
                     Button {
-                        var canvas = editorStore.project.canvas
+                        var canvas = editorStore.sceneEditingProject.canvas
                         canvas.backgroundSource = .dynamicFlow(preset)
                         performEditorCommand {
                             try editorStore.replaceCanvas(with: canvas, actionName: "选择动态背景")
@@ -402,7 +419,7 @@ struct EditorBackgroundInspector: View {
                     } label: {
                         DynamicFlowMiniatureView(preset: preset)
                             .aspectRatio(1, contentMode: .fit)
-                            .clipShape(RoundedRectangle(cornerRadius: 9))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
                             .overlay(alignment: .bottomLeading) {
                                 HStack(spacing: 4) {
                                     Circle()
@@ -414,11 +431,11 @@ struct EditorBackgroundInspector: View {
                                 .foregroundStyle(.white)
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 5)
-                                .background(.black.opacity(0.55), in: Capsule())
+                                .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.mark, style: .continuous))
                                 .padding(6)
                             }
                             .overlay(
-                                RoundedRectangle(cornerRadius: 9)
+                                RoundedRectangle(cornerRadius: 6)
                                     .stroke(
                                         isSelected ? EditorTheme.selectionTint : EditorTheme.chrome(0.12),
                                         lineWidth: isSelected ? 2 : 1
@@ -489,7 +506,7 @@ struct EditorBackgroundInspector: View {
 
 }
 
-private struct PatternMiniatureView: View {
+struct PatternMiniatureView: View {
     let preset: BackgroundPatternPreset
 
     var body: some View {
@@ -565,7 +582,7 @@ private struct PatternMiniatureView: View {
     }
 }
 
-private struct DynamicFlowMiniatureView: View {
+struct DynamicFlowMiniatureView: View {
     let preset: DynamicBackgroundPreset
     @Environment(\.accessibilityReduceMotion) private var reducesMotion
     @Environment(\.editorIsActive) private var isEditorActive

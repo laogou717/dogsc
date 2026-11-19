@@ -38,16 +38,9 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
         )
         return ZStack(alignment: .leading) {
             timelineLaneSurface(
-                tint: motionTrackColor(track),
                 isFocused: focusedTimelineLane == (track == .screen ? .screenMotion : .cameraMotion)
             )
 
-            if clips.isEmpty {
-                timelineEmptyTrackHint(
-                    "单击或拖拽添加",
-                    documentWidth: width
-                )
-            }
 
             ForEach(visibleClipIndices.map { (index: $0, clip: clips[$0]) }, id: \.clip.id) { item in
                 let index = item.index
@@ -76,44 +69,34 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
                 if touchesPrevious {
                     Rectangle()
                         .fill(EditorTheme.panelSurface)
-                        .frame(width: 1.5, height: 24)
+                        .frame(width: 1.5, height: motionClipHeight * 0.66)
                         .offset(x: startX - 0.75)
                         .allowsHitTesting(false)
                 }
 
-                ZStack {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        // One flat wash of the lane's hue, like the zoom lane.
-                        .fill(motionTrackPalette(track).timelineSurface(emphasis))
-                        .overlay {
-                            if clipWidth > 72 {
-                                HStack(spacing: 5) {
-                                    EditorSymbol(track == .screen ? "move.3d" : "video.badge.ellipsis", size: 14)
-                                    Text("过渡 \(index + 1)")
-                                    if clipWidth > 116 {
-                                        Text(timelineTimestamp(clip.timing.duration))
-                                    }
-                                }
-                                .font(.appUI(size: 10, weight: .semibold))
-                                .foregroundStyle(motionTrackInk(track))
-                                .lineLimit(1)
-                                .padding(.horizontal, 9)
+                let hue: EditorTimelineHue = track == .screen ? .motion3D : .cameraMotion
+                ZStack(alignment: .leading) {
+                    if clipWidth > 56 {
+                        HStack(spacing: 6) {
+                            if clipWidth > 120 {
+                                EditorSymbol(track == .screen ? "move.3d" : "video.badge.ellipsis", size: 12)
+                                    .opacity(0.8)
+                            }
+                            Text(String(format: appLocalized(track == .screen ? "3D %lld" : "运镜 %lld"), Int64(index + 1)))
+                            if clipWidth > 150 {
+                                Text(timelineTimestamp(clip.timing.duration))
                             }
                         }
-                        .editorTimelineClipChrome(cornerRadius: 6, emphasis: emphasis, tint: motionTrackPalette(track).stroke)
-
-                    if emphasis.showsHandles {
-                        HStack(spacing: 0) {
-                            motionResizeHandle(leading: true, track: track)
-                            Spacer(minLength: 0)
-                            motionResizeHandle(leading: false, track: track)
-                        }
-                        .padding(.horizontal, 0.5)
-                        .opacity(emphasis.handleOpacity)
-                        .allowsHitTesting(false)
+                        .font(.appUI(size: 12, weight: .medium))
+                        .foregroundStyle(hue.clipInk)
+                        .lineLimit(1)
+                        .padding(.horizontal, 8)
                     }
                 }
-                .frame(width: clipWidth, height: 36)
+                .frame(width: clipWidth, height: motionClipHeight, alignment: .leading)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .editorTimelineHueClip(hue, emphasis: emphasis, width: clipWidth)
+                .frame(width: clipWidth, height: motionClipHeight)
                 .editorClipDragFeedback(motionTrackDrag == .move(clip.id) && motionGestureOrigin?.clip.track == clip.track)
                 .offset(x: startX)
                 .transition(.identity)
@@ -158,21 +141,15 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
                 )
             }
 
-            // 悬浮空白处显示创建起点；需要水平拖动形成区间，单击不会写入动画。
-            if let indicatorX = motionCreateIndicatorX(
-                track: track,
-                clips: clips,
-                width: width,
-                duration: duration
-            ) {
-                EditorSymbol("plus", size: 11.5)
-                    .font(.appUI(size: 10, weight: .bold))
-                    .foregroundStyle(motionTrackPalette(track).ink)
-                    .frame(width: 16, height: 16)
-                    .background(Circle().fill(motionTrackColor(track)))
-                    .offset(x: indicatorX - 8)
-                    .allowsHitTesting(false)
-            }
+            // 悬浮空白处显示创建起点：拖动形成区间，单击添加默认长度片段。
+            EditorTimelineCreateIndicator(
+                hover: laneHover,
+                x: { motionCreateIndicatorX(location: $0.motion[track], track: track, clips: clips,
+                                            width: width, duration: duration) },
+                fill: (track == .screen ? EditorTimelineHue.motion3D : .cameraMotion).solid,
+                ink: .white,
+                size: 18
+            )
 
             if let drag = motionCreateDrag, drag.track == track {
                 let start = min(drag.start, drag.end)
@@ -180,12 +157,12 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
                 let startX = CGFloat(start / max(duration, 0.001)) * width
                 let rangeWidth = max(CGFloat((end - start) / max(duration, 0.001)) * width, 4)
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(motionTrackPalette(track).timelineSurface(.hovered))
+                    .fill((track == .screen ? EditorTimelineHue.motion3D : .cameraMotion).solid.opacity(0.14))
                     .overlay(
                         RoundedRectangle(cornerRadius: 6)
-                            .stroke(motionTrackPalette(track).stroke, style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                            .strokeBorder((track == .screen ? EditorTimelineHue.motion3D : .cameraMotion).solid, style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
                     )
-                    .frame(width: rangeWidth, height: 36)
+                    .frame(width: rangeWidth, height: motionClipHeight)
                     .offset(x: startX)
                     .allowsHitTesting(false)
             }
@@ -198,12 +175,15 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
         .onContinuousHover(coordinateSpace: .local) { phase in
             switch phase {
             case let .active(location):
-                motionTrackHover[track] = location
+                laneHover.motion[track] = location
             case .ended:
-                motionTrackHover[track] = nil
+                laneHover.motion[track] = nil
             }
         }
     }
+
+    /// Motion clips scale with their lane like every other clip.
+    var motionClipHeight: CGFloat { max(motionTimelineHeight - 8 * trackScale, 12) }
 
     private func motionRetainedClipIndices(
         for track: EditorMotionTimelineTrack
@@ -250,8 +230,8 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
 
     func isMotionClipSelected(_ clip: EditorMotionTimelineClip) -> Bool {
         switch clip.track {
-        case .screen: return selectedScreenMotionID == clip.id
-        case .camera: return selectedCameraMotionID == clip.id
+        case .screen: return selectedScreenMotionID == clip.id || multiSelection.contains(.screenMotion(clip.id))
+        case .camera: return selectedCameraMotionID == clip.id || multiSelection.contains(.cameraMotion(clip.id))
         }
     }
 
@@ -501,12 +481,13 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
 
     /// 悬浮在空白处且该处有空隙时，返回"+"指示的 x 位置（画布内容坐标）。
     func motionCreateIndicatorX(
+        location: CGPoint?,
         track: EditorMotionTimelineTrack,
         clips: [EditorMotionTimelineClip],
         width: CGFloat,
         duration: TimeInterval
     ) -> CGFloat? {
-        guard let location = motionTrackHover[track],
+        guard let location,
               motionCreateDrag == nil else { return nil }
         let zone = EditorTimelineMath.motionHitZone(
             x: Double(location.x),
@@ -533,7 +514,7 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
             among: clips,
             timing: { $0.timing },
             duration: duration,
-            returnDuration: editorStore.project.motion.defaultZoomTransitionDuration,
+            returnDuration: editorStore.sceneEditingProject.motion.defaultZoomTransitionDuration,
             itemsAreOrdered: true
         ) != nil else { return nil }
         return location.x
@@ -545,7 +526,7 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
     ) {
         let track = drag.track
         let style = track == .screen
-            ? (editorStore.project.motion.defaultScreenMotion ?? AppPreferences.rememberedScreenMotionCreationStyle)
+            ? (editorStore.sceneEditingProject.motion.defaultScreenMotion ?? AppPreferences.rememberedScreenMotionCreationStyle)
             : nil
         guard let timing = EditorTimelineMath.fitMotionTiming(
             start: drag.start,
@@ -553,9 +534,9 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
             among: track == .screen ? screenMotionTimelineClips : cameraMotionTimelineClips,
             timing: { $0.timing },
             duration: duration,
-            easing: style?.easing ?? editorStore.project.motion.defaultZoomEasing,
-            returnDuration: style?.returnDuration ?? editorStore.project.motion.defaultZoomTransitionDuration,
-            leadInDuration: style?.leadInDuration ?? editorStore.project.motion.defaultZoomTransitionDuration,
+            easing: style?.easing ?? editorStore.sceneEditingProject.motion.defaultZoomEasing,
+            returnDuration: style?.returnDuration ?? editorStore.sceneEditingProject.motion.defaultZoomTransitionDuration,
+            leadInDuration: style?.leadInDuration ?? editorStore.sceneEditingProject.motion.defaultZoomTransitionDuration,
             itemsAreOrdered: true
         ) else { return }
         do {
@@ -571,7 +552,7 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
                 try editorStore.insertScreenMotion(clip, actionName: "添加屏幕 3D")
                 activateTimelineSelection(.screenMotion(clip.id))
             case .camera:
-                let base = editorStore.project.camera
+                let base = editorStore.sceneEditingProject.camera
                 let clip = CameraMotionClip(
                     timing: timing,
                     target: CameraMotionState(
@@ -679,7 +660,7 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
             ? editorStore.previewProject.timeline.screenMotionClips.first(where: { $0.id == clip.id })?.timing
             : editorStore.previewProject.timeline.cameraMotionClips.first(where: { $0.id == clip.id })?.timing
         guard current != timing else { return }
-        editorStore.updateInteraction { project in
+        editorStore.updateTimelineInteraction { project in
             switch clip.track {
             case .screen:
                 guard let index = project.timeline.screenMotionClips.firstIndex(where: {
@@ -720,9 +701,8 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
                 }
                 EditorTimelineAuthoredOrder.normalize(&project.timeline.cameraMotionClips)
             }
-            if let groupID = clip.groupID {
+            if clip.groupID != nil {
                 syncLinkedMotionPartners(
-                    groupID: groupID,
                     sourceClipID: clip.id,
                     partnerOrigins: partnerOrigins,
                     deltaStart: timing.startTime - clip.timing.startTime,
@@ -739,7 +719,6 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
     /// 快照原点计算（与被拖片段一致），不会在已跟随的位置上重复叠加；
     /// 受各自轨道邻接边界约束，与被拖片段同属一次交互，提交后一次撤销。
     func syncLinkedMotionPartners(
-        groupID: UUID,
         sourceClipID: UUID,
         partnerOrigins: [EditorMotionPartnerOrigin],
         deltaStart: TimeInterval,
@@ -889,7 +868,7 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
             guard let pieces = Self.splitMotionTiming(
                 of: clip.timing,
                 at: time,
-                defaultLeadIn: editorStore.project.motion.defaultZoomTransitionDuration
+                defaultLeadIn: editorStore.sceneEditingProject.motion.defaultZoomTransitionDuration
             ) else { return }
             let baked = ScreenMotionTrack(timeline.screenMotionClips).sample(
                 at: pieces.splitTime,
@@ -897,7 +876,7 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
                     position: editorStore.project.canvas.contentPosition,
                     scale: editorStore.project.canvas.contentScale
                 ),
-                motion: editorStore.project.motion
+                motion: editorStore.sceneEditingProject.motion
             )
             let left = ScreenMotionClip(timing: pieces.left, target: baked, groupID: clip.groupID)
             let right = ScreenMotionClip(timing: pieces.right, target: clip.target, groupID: clip.groupID)
@@ -917,10 +896,10 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
             guard let pieces = Self.splitMotionTiming(
                 of: clip.timing,
                 at: time,
-                defaultLeadIn: editorStore.project.motion.defaultZoomTransitionDuration
+                defaultLeadIn: editorStore.sceneEditingProject.motion.defaultZoomTransitionDuration
             ) else { return }
-            let sourceSize = mediaSession.sourceDisplaySize
-            let cameraSize = mediaSession.cameraDisplaySize
+            let sourceSize = mediaSession.primarySourceDisplaySize
+            let cameraSize = mediaSession.sourceID(at: pieces.splitTime).flatMap { mediaSession.cameraDisplaySize(for: $0) }
             let canvasAspect = max(Double(sourceSize.width) / max(Double(sourceSize.height), 1), 0.01)
             let cameraAspect = cameraSize.map {
                 max(Double($0.width) / max(Double($0.height), 1), 0.01)
@@ -928,13 +907,8 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
             let project = editorStore.project
             let baked = CameraMotionTrack(timeline.cameraMotionClips).sample(
                 at: pieces.splitTime,
-                base: CameraMotionState(
-                    layout: .shape(project.camera.shape),
-                    position: project.camera.position,
-                    size: project.camera.size,
-                    roundness: project.camera.roundness,
-                    opacity: project.camera.isHidden ? 0 : 1
-                ),
+                // 和渲染、新建同一个基准：这一刻的逐片段摄像头姿态。
+                base: project.cameraMotionBase(atOutputTime: pieces.splitTime),
                 cameraAspectRatio: cameraAspect,
                 canvasAspectRatio: canvasAspect,
                 motion: project.motion
@@ -1088,7 +1062,9 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
             EditorTimelineAuthoredOrder.normalize(&project.timeline.cameraMotionClips)
         }
 
-        let actionName = "\(edge == .left ? "Q" : "W") 修剪\(track == .screen ? "屏幕" : "摄像头")动画"
+        let actionName = edge == .left
+            ? (track == .screen ? "Q 修剪屏幕动画" : "Q 修剪摄像头动画")
+            : (track == .screen ? "W 修剪屏幕动画" : "W 修剪摄像头动画")
         do {
             try editorStore.replaceProject(with: project, actionName: actionName)
             seekTimeline(to: edge == .left ? newTiming.startTime : newTiming.endTime)

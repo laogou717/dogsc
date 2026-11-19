@@ -7,65 +7,91 @@ struct EditorTimelineLaneLabel: View {
     let symbol: String
     var tint: Color = EditorTheme.chrome(0.48)
     var onHide: (() -> Void)?
-    var horizontalInset: CGFloat = 12
+    var horizontalInset: CGFloat = EditorTimelineLabelMetrics.inset
     /// Icon-only column: the name moves into the tooltip.
     var collapsed = false
+    /// Clips on the lane, shown quietly at the end (mockup `.ct`).
+    var count: Int? = nil
+    /// The main track reads as the primary row.
+    var emphasized = false
     @State private var isHovered = false
 
     var body: some View {
-        HStack(spacing: 9) {
-            // The lane's glyph on a wash of its colour, the same tile the
-            // track panel uses.
-            EditorSymbol(symbol, size: 12)
-                .foregroundStyle(tint)
-                .frame(width: 22, height: 22)
-                .background(tint.opacity(0.18), in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous))
+        // Mockup `.th`: a plain tertiary glyph, the name, and the count. The
+        // lane hue lives on the clips, not the header.
+        HStack(spacing: EditorTimelineLabelMetrics.spacing) {
+            EditorSymbol(symbol, size: EditorTimelineLabelMetrics.icon)
+                .foregroundStyle(emphasized ? EditorTheme.secondaryText : EditorTheme.tertiaryText)
+                .frame(width: EditorTimelineLabelMetrics.icon, height: EditorTimelineLabelMetrics.icon)
                 .accessibilityHidden(true)
             if !collapsed {
                 Text(appLocalized(title))
-                    .font(.appUI(size: 12))
-                    .foregroundStyle(isHovered ? EditorTheme.primaryText : EditorTheme.secondaryText)
+                    .font(.appUI(size: 12.5, weight: emphasized ? .medium : .regular))
+                    .foregroundStyle(emphasized || isHovered ? EditorTheme.primaryText : EditorTheme.secondaryText)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-                    .allowsTightening(true)
+                    .truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .transition(.opacity.combined(with: .offset(x: -6)))
+                if let count, count > 0 {
+                    EditorTimelineLabelCount(count: count)
+                        .opacity(isHovered && onHide != nil ? 0 : 1)
+                }
             }
         }
-        .padding(.horizontal, collapsed ? 15 : horizontalInset)
+        .padding(.leading, collapsed ? EditorTimelineLabelMetrics.collapsedInset : horizontalInset)
+        .padding(.trailing, collapsed ? 0 : horizontalInset)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .clipped()
-        // The hide action floats over the name's end only under the pointer,
+        // The hide action takes the count's place only under the pointer,
         // so it never takes width from the name.
         .overlay(alignment: .trailing) {
             if let onHide, !collapsed {
                 Button(action: onHide) {
-                    EditorSymbol("eye.slash", size: 13.5)
+                    AppLineIcon(kind: .eyeOff, size: 13)
                         .foregroundStyle(EditorTheme.tertiaryText)
-                        .frame(width: 24, height: 24)
-                        .background(EditorTheme.chromeBar.opacity(0.92), in: Circle())
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
                 }
-                .buttonStyle(.editorToolbarPress)
+                .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: EditorInterfaceRadius.control))
                 .opacity(isHovered ? 1 : 0)
-                .padding(.trailing, 6)
+                .padding(.trailing, horizontalInset - 5)
                 .help(String(format: appLocalized("隐藏“%@”轨道；效果仍然生效"), appLocalized(title)))
                 .accessibilityLabel(String(format: appLocalized("隐藏“%@”轨道"), appLocalized(title)))
             }
         }
         .help(collapsed ? appLocalized(title) : "")
-        .onHover { hovering in withAnimation(SpringMotion.hover) { isHovered = hovering } }
+        .onHover { isHovered = $0 }
+    }
+}
+
+/// One geometry for every row in the label column, so icons, chevrons,
+/// names and counts sit on the same verticals whatever the row kind.
+enum EditorTimelineLabelMetrics {
+    static let inset: CGFloat = 12
+    static let icon: CGFloat = 15
+    static let spacing: CGFloat = 8
+    /// Where names start: sub-rows (layer numbers) indent to this column.
+    static var nameColumn: CGFloat { inset + icon + spacing }
+    /// Centres a 15 pt glyph in the 52 pt icon-only column.
+    static let collapsedInset: CGFloat = 18.5
+}
+
+/// The quiet count at the end of a label row.
+struct EditorTimelineLabelCount: View {
+    let count: Int
+
+    var body: some View {
+        Text("\(count)")
+            .font(.appUI(size: 11, design: .monospaced))
+            .foregroundStyle(EditorTheme.tertiaryText)
+            .lineLimit(1)
+            .fixedSize()
+            .contentTransition(.numericText())
     }
 }
 
 extension EditorTimelineView {
     func timelineRowGrid(labelWidth: CGFloat) -> some View {
-        let rowHeights = [timelineRulerHeight, primaryVideoHeight + 12]
-            + (showsCameraSyncTimeline ? [cameraSyncTimelineHeight] : [])
-            + (showsZoomTimeline ? [zoomTimelineHeight] : [])
-            + (showsScreenMotionTimeline ? [motionTimelineHeight] : [])
-            + (showsCameraMotionTimeline ? [motionTimelineHeight] : [])
-            + (showsOverlayTimeline ? [overlayTimelineHeight] : [])
-        _ = rowHeights
         // Row lines are drawn by the rows themselves (timelineRowDivider), so
         // they move with a lane that is being shown or hidden instead of
         // jumping to their final place while the lanes are still animating.
@@ -110,8 +136,7 @@ extension AnyTransition {
     static var timelineLane: AnyTransition {
         guard !RecorderMotion.reduces else { return .opacity }
         return .asymmetric(
-            insertion: .opacity.combined(with: .offset(y: -6))
-                .animation(.easeOut(duration: 0.22).delay(0.12)),
+            insertion: .opacity.animation(.easeOut(duration: 0.16)),
             removal: .opacity.animation(.easeIn(duration: 0.1))
         )
     }

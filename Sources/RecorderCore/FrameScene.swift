@@ -102,9 +102,6 @@ public enum FrameScreenChromeKind: Equatable, Sendable {
         self == .devicePhonePortrait || self == .devicePhoneLandscape
     }
 
-    public var isPortrait: Bool {
-        self == .devicePhonePortrait || self == .deviceTabletPortrait
-    }
 }
 
 /// Fully evaluated vector chrome. Geometry is expressed in the same top-left
@@ -129,7 +126,7 @@ public struct FrameScreenChromeScene: Equatable, Sendable {
         kind: FrameScreenChromeKind,
         outerRect: CompositionRect,
         toolbarRect: CompositionRect,
-        contentRect: CompositionRect,
+        contentRect: CompositionRect? = nil,
         outerCornerRadius: Double,
         contentCornerRadius: Double = 0,
         surfaceColor: HexColor,
@@ -143,7 +140,7 @@ public struct FrameScreenChromeScene: Equatable, Sendable {
         self.kind = kind
         self.outerRect = outerRect
         self.toolbarRect = toolbarRect
-        self.contentRect = contentRect
+        self.contentRect = contentRect ?? outerRect
         self.outerCornerRadius = max(outerCornerRadius, 0)
         self.contentCornerRadius = max(contentCornerRadius, 0)
         self.surfaceColor = surfaceColor
@@ -204,7 +201,6 @@ public struct FrameMosaicScene: Equatable, Sendable {
 
 public struct FrameScreenScene: Equatable, Sendable {
     public var sourceCrop: NormalizedCrop
-    public var fittedRect: CompositionRect
     public var baseRect: CompositionRect
     public var finalRect: CompositionRect
     public var projectedQuad: ProjectedScreenQuad
@@ -217,6 +213,20 @@ public struct FrameScreenScene: Equatable, Sendable {
     public var mosaics: [FrameMosaicScene]
     public var focusEffect: FrameFocusScene?
     public var opacity: Double
+    /// EDT-054: an inserted video fills the screen frame (cover), since its
+    /// aspect differs from the recording the frame is shaped for.
+    public var fillsFrame = false
+    /// The source keeps its own aspect while the surrounding card morphs.
+    public var contentAspectRatio: Double? = nil
+
+    public var sourceContentRect: CompositionRect {
+        guard let aspect = contentAspectRatio, aspect > 0 else { return finalRect }
+        let fitsWidth = (aspect >= finalRect.width / max(finalRect.height, 0.001)) != fillsFrame
+        let width = fitsWidth ? finalRect.width : finalRect.height * aspect
+        let height = fitsWidth ? finalRect.width / aspect : finalRect.height
+        return CompositionRect(x: finalRect.x + (finalRect.width - width) / 2,
+            y: finalRect.y + (finalRect.height - height) / 2, width: width, height: height)
+    }
 
     public var projectionRect: CompositionRect {
         decoration.projectionRect ?? finalRect
@@ -224,7 +234,6 @@ public struct FrameScreenScene: Equatable, Sendable {
 
     public init(
         sourceCrop: NormalizedCrop,
-        fittedRect: CompositionRect,
         baseRect: CompositionRect,
         finalRect: CompositionRect,
         projectedQuad: ProjectedScreenQuad,
@@ -239,7 +248,6 @@ public struct FrameScreenScene: Equatable, Sendable {
         opacity: Double = 1
     ) {
         self.sourceCrop = sourceCrop.clamped()
-        self.fittedRect = fittedRect
         self.baseRect = baseRect
         self.finalRect = finalRect
         self.projectedQuad = projectedQuad
@@ -264,6 +272,7 @@ public struct FrameCameraScene: Equatable, Sendable {
     public var shadow: FrameShadow?
     public var opacity: Double
     public var isMirrored: Bool
+    public var beauty: CameraBeautySettings
 
     public init(
         rect: CompositionRect,
@@ -273,7 +282,8 @@ public struct FrameCameraScene: Equatable, Sendable {
         borderColor: HexColor = .white,
         shadow: FrameShadow?,
         opacity: Double,
-        isMirrored: Bool
+        isMirrored: Bool,
+        beauty: CameraBeautySettings = CameraBeautySettings()
     ) {
         self.rect = rect
         self.contentFill = contentFill
@@ -283,6 +293,7 @@ public struct FrameCameraScene: Equatable, Sendable {
         self.shadow = shadow
         self.opacity = min(max(opacity, 0), 1)
         self.isMirrored = isMirrored
+        self.beauty = beauty
     }
 }
 
@@ -295,8 +306,6 @@ public enum FrameCursorAttachment: Equatable, Sendable {
 public struct FrameCursorScene: Equatable, Sendable {
     public var assetID: CursorAssetID
     public var metrics: CursorAssetMetrics
-    /// Position inside the cropped screen before screen projection.
-    public var normalizedScreenPosition: NormalizedPoint
     /// Canonical 2D layout. It also supplies local size/hotspot metrics when a
     /// backend attaches the cursor to a projected screen texture.
     public var layout: CursorRenderLayout
@@ -307,6 +316,9 @@ public struct FrameCursorScene: Equatable, Sendable {
     public var clickOpacity: Double
     public var clickScale: Double
     public var rotationRadians: Double
+    /// Hotspot-anchored scale of the cursor bitmap only (click effects keep
+    /// their own geometry). 1 means at rest.
+    public var pressScale: Double
     public var shadow: FrameShadow?
     public var attachment: FrameCursorAttachment
 
@@ -317,7 +329,6 @@ public struct FrameCursorScene: Equatable, Sendable {
     public init(
         assetID: CursorAssetID,
         metrics: CursorAssetMetrics,
-        normalizedScreenPosition: NormalizedPoint,
         layout: CursorRenderLayout,
         isClicking: Bool,
         clickPhase: PointerClickPhase? = nil,
@@ -326,12 +337,12 @@ public struct FrameCursorScene: Equatable, Sendable {
         clickOpacity: Double = 0.8,
         clickScale: Double = 1.0,
         rotationRadians: Double = 0,
+        pressScale: Double = 1,
         shadow: FrameShadow?,
         attachment: FrameCursorAttachment = .screen
     ) {
         self.assetID = assetID
         self.metrics = metrics
-        self.normalizedScreenPosition = normalizedScreenPosition
         self.layout = layout
         self.isClicking = isClicking
         self.clickPhase = clickPhase
@@ -340,6 +351,7 @@ public struct FrameCursorScene: Equatable, Sendable {
         self.clickOpacity = min(max(clickOpacity, 0.05), 1.0)
         self.clickScale = min(max(clickScale, 0.4), 3.0)
         self.rotationRadians = rotationRadians.isFinite ? rotationRadians : 0
+        self.pressScale = pressScale.isFinite && pressScale > 0 ? pressScale : 1
         self.shadow = shadow
         self.attachment = attachment
     }
@@ -369,6 +381,7 @@ public struct FrameStickerScene: Equatable, Sendable {
     /// backdrop so two partially visible images cannot expose the recording.
     public var transitionProgress: Double
     public var layerIndex: Int
+    public var sourceTime: TimeInterval = 0
 }
 
 public enum FrameLayerRole: String, Equatable, Sendable {
@@ -378,6 +391,106 @@ public enum FrameLayerRole: String, Equatable, Sendable {
     case spotlight
     case camera
     case stickers
+    case animations
+    case subtitles
+    case videos
+}
+
+/// One overlay video at this frame (EDT-054).
+public struct FrameVideoScene: Equatable, Sendable {
+    public var id: UUID
+    public var sourcePath: String
+    public var sourceTime: TimeInterval
+    public var position: NormalizedPoint
+    public var width: Double
+    public var aspect: Double
+    public var opacity: Double
+    public var layerIndex: Int
+
+    public init(clip: VideoClip, at time: TimeInterval) {
+        id = clip.id
+        sourcePath = clip.sourcePath
+        sourceTime = clip.sourceStart + max(time - clip.timing.startTime, 0) * clip.playbackRate
+        position = clip.position
+        width = clip.width
+        aspect = clip.aspect
+        opacity = clip.opacity
+        layerIndex = clip.layerIndex
+    }
+}
+
+/// The subtitle line visible at this frame, with its style (EDT-054).
+public struct FrameSubtitleScene: Equatable, Sendable {
+    public var cueID: UUID
+    public var text: String
+    public var secondaryText: String?
+    public var style: SubtitleStyle
+    /// Seconds since the cue began and until it ends, for entrances/exits.
+    public var elapsed: TimeInterval
+    public var remaining: TimeInterval
+}
+
+/// One Rive motion graphic at this frame. `localTime` is clip-local and is
+/// quantised to the plan's frame grid by the renderer, never advanced freely.
+public struct FrameAnimationScene: Equatable, Sendable {
+    public var playbackRate: Double
+    public var id: UUID
+    public var sourcePath: String
+    public var artboard: String?
+    public var stateMachine: String?
+    public var localTime: TimeInterval
+    public var position: NormalizedPoint
+    public var width: Double
+    public var opacity: Double
+    public var properties: [String: AnimationPropertyValue]
+    public var layerIndex: Int
+    public var elementEdits: [String: MotionElementEdit]
+
+    public init(clip: AnimationClip, at time: TimeInterval) {
+        id = clip.id
+        sourcePath = clip.sourcePath
+        artboard = clip.artboard
+        stateMachine = clip.stateMachine
+        localTime = max(time - clip.timing.startTime, 0) * clip.playbackRate + max(clip.timeOffset, 0)
+        playbackRate = clip.playbackRate
+        position = clip.position
+        width = clip.width
+        opacity = clip.opacity
+        properties = clip.properties
+        layerIndex = clip.layerIndex
+        elementEdits = clip.elementEdits
+    }
+}
+
+/// EDT-071: an HTML motion on the main track at this frame. Its picture
+/// replaces the screen source, so the screen's framing (full canvas or the
+/// recording's frame style) applies to it like to any inserted video.
+public struct FrameInsertedMotionScene: Equatable, Sendable {
+    public var playbackRate: Double = 1
+    public var sourcePath: String
+    public var localTime: TimeInterval
+    public var properties: [String: AnimationPropertyValue]
+    public var elementEdits: [String: MotionElementEdit]
+
+    public init(sourcePath: String, localTime: TimeInterval, properties: [String: AnimationPropertyValue],
+                elementEdits: [String: MotionElementEdit] = [:], playbackRate: Double = 1) {
+        self.sourcePath = sourcePath
+        self.localTime = localTime
+        self.properties = properties
+        self.elementEdits = elementEdits
+        self.playbackRate = playbackRate
+    }
+}
+
+/// An original still/GIF evaluated on the inserted segment's source clock.
+public struct FrameInsertedImageScene: Equatable, Sendable {
+    public var sourcePath: String
+    public var localTime: TimeInterval
+
+    public init(sourcePath: String, localTime: TimeInterval) {
+        self.sourcePath = sourcePath
+        self.localTime = localTime
+    }
 }
 
 /// Complete immutable interpretation of one project time. A renderer may read
@@ -392,7 +505,12 @@ public struct FrameScene: Equatable, Sendable {
     public var cursor: FrameCursorScene?
     public var stickers: [FrameStickerScene]
     public var stickerBackdrop: FrameStickerBackdropScene
+    public var animations: [FrameAnimationScene]
+    public var subtitle: FrameSubtitleScene?
+    public var videos: [FrameVideoScene]
     public var layerOrder: [FrameLayerRole]
+    public var insertedMotion: FrameInsertedMotionScene?
+    public var insertedImage: FrameInsertedImageScene?
 
     public init(
         time: TimeInterval,
@@ -404,7 +522,12 @@ public struct FrameScene: Equatable, Sendable {
         cursor: FrameCursorScene?,
         stickers: [FrameStickerScene] = [],
         stickerBackdrop: FrameStickerBackdropScene? = nil,
-        layerOrder: [FrameLayerRole]
+        animations: [FrameAnimationScene] = [],
+        subtitle: FrameSubtitleScene? = nil,
+        videos: [FrameVideoScene] = [],
+        layerOrder: [FrameLayerRole],
+        insertedMotion: FrameInsertedMotionScene? = nil,
+        insertedImage: FrameInsertedImageScene? = nil
     ) {
         self.time = time
         self.canvasSize = canvasSize
@@ -415,24 +538,26 @@ public struct FrameScene: Equatable, Sendable {
         self.cursor = cursor
         self.stickers = stickers
         self.stickerBackdrop = stickerBackdrop ?? FrameStickerBackdropScene(stickers: stickers)
+        self.animations = animations
+        self.subtitle = subtitle
+        self.videos = videos
         self.layerOrder = layerOrder
+        self.insertedMotion = insertedMotion
+        self.insertedImage = insertedImage
     }
 }
 
 /// One output-frame request. Preview and export consume one identical scene.
 public struct FrameRenderPlan: Equatable, Sendable {
-    public var presentationTime: TimeInterval
     public var outputDuration: TimeInterval
     public var frameRate: Int
     public var scene: FrameScene
 
     public init(
-        presentationTime: TimeInterval,
         outputDuration: TimeInterval,
         frameRate: Int,
         scene: FrameScene
     ) {
-        self.presentationTime = presentationTime
         self.outputDuration = outputDuration
         self.frameRate = frameRate
         self.scene = scene
@@ -455,6 +580,7 @@ public enum FrameSceneEvaluator {
         cursorMetricsByAssetID: [CursorAssetID: CursorAssetMetrics],
         zoomTrack: ZoomAnimationTrack
     ) -> FrameRenderPlan {
+        let project = project.sceneProject(atOutputTime: presentationTime)
         let time = presentationTime.isFinite
             ? min(max(presentationTime, 0), plan.outputDuration) : 0
         let activeAutomaticClip = zoomTrack.activeClip(at: time).flatMap {
@@ -467,10 +593,15 @@ public enum FrameSceneEvaluator {
             automaticEntry: activeAutomaticClip
         )
         var result = plan
-        result.presentationTime = time
+        if result.scene.insertedImage != nil,
+           let playback = project.timeline.insertedPlayback(atOutputTime: time) {
+            // Native image animation follows the media clock, independently
+            // of the low-rate video stand-in and cached geometry samples.
+            result.scene.insertedImage?.localTime = playback.localTime
+        }
         // Keep the cached video/background phase. Advancing scene.time here
         // would also re-render a full-canvas animated wallpaper at cursor Hz.
-        result.scene.cursor = cursorScene(
+        result.scene.cursor = result.scene.insertedImage != nil ? nil : cursorScene(
             sample: pointer?.cursor,
             project: project,
             metrics: cursorMetrics,
@@ -502,6 +633,8 @@ public enum FrameSceneEvaluator {
         cameraMotionTrack: CameraMotionTrack? = nil,
         stickerTrack: StickerTransitionTrack? = nil,
         cameraTimeline: TimelineMediaPlan? = nil,
+        recordingSourceID: UUID? = nil,
+        geometrySourceAspectRatio: Double? = nil,
         color: FrameColorContract = .sdrDesktop
     ) -> FrameRenderPlan {
         let safeDuration = outputDuration.isFinite ? max(outputDuration, 0) : 0
@@ -528,10 +661,11 @@ public enum FrameSceneEvaluator {
             screenMotionTrack: screenMotionTrack,
             cameraMotionTrack: cameraMotionTrack,
             stickerTrack: stickerTrack,
+            recordingSourceID: recordingSourceID,
+            geometrySourceAspectRatio: geometrySourceAspectRatio,
             color: color
         )
         return FrameRenderPlan(
-            presentationTime: safeTime,
             outputDuration: safeDuration,
             frameRate: max(frameRate, 1),
             scene: current
@@ -553,10 +687,44 @@ public enum FrameSceneEvaluator {
         screenMotionTrack: ScreenMotionTrack? = nil,
         cameraMotionTrack: CameraMotionTrack? = nil,
         stickerTrack: StickerTransitionTrack? = nil,
+        recordingSourceID: UUID? = nil,
+        geometrySourceAspectRatio: Double? = nil,
         color: FrameColorContract = .sdrDesktop
     ) -> FrameScene {
         let width = max(canvasSize.width, 2)
         let height = max(canvasSize.height, 2)
+        let cameraAspect = cameraSourceSize.map { max($0.width, 1) / max($0.height, 1) }
+        // Resolve both sides against the authored global defaults. Applying
+        // the incoming override first would erase an outgoing inherited style.
+        let boundary = project.timeline.recordingSegmentBoundary(atOutputTime: time)
+        let settledCanvas = project.screenCanvas(atOutputTime: time, recordingSourceID: recordingSourceID, boundary: boundary)
+        let settledCamera = project.settledCamera(atOutputTime: time, boundary: boundary)
+        let cameraBase = cameraAspect.flatMap {
+            project.cameraAppearanceTransitionSample(atOutputTime: time, cameraAspectRatio: $0,
+                canvasAspectRatio: width / height, boundary: boundary)
+        }
+        var project = project
+        boundary.segment?.sceneStyle?.apply(to: &project)
+        project.canvas = settledCanvas
+        project.camera = settledCamera
+        let insertedMedia = boundary.segment?.media
+        let sourceAspectRatio = insertedMedia?.sourceAspectRatio ?? sourceAspectRatio
+        let geometrySourceAspectRatio = insertedMedia?.imagePath != nil ? nil : geometrySourceAspectRatio
+        if insertedMedia?.imagePath != nil, insertedMedia?.usesFrameStyle == false {
+            // A flat image still uses the fitted source geometry, padding and
+            // authored transform. Only recording frame chrome is omitted.
+            project.canvas.cornerRadius = 0
+            project.canvas.borderWidth = 0
+            project.canvas.shadowStrength = 0
+            project.canvas.screenFrame = .none
+        }
+        // The opening roster belongs to the recording that starts the output,
+        // and `project.media` is about to become the current frame's source.
+        let openingSourceID = project.openingRecordingSourceID
+        let openingDeclaresCamera = project.openingDeclaresCamera
+        if let recordingSourceID, let source = project.source(recordingSourceID) {
+            project.media = source.media
+        }
         let sampleTime = time.isFinite ? max(time, 0) : 0
         let resolvedZoomTrack = zoomTrack?.bounded(to: outputDuration)
             ?? ZoomAnimationTrack(project.zoomAnimations, outputDuration: outputDuration)
@@ -589,14 +757,11 @@ public enum FrameSceneEvaluator {
             .flatMap { previous in
                 guard previous.origin == .automatic else { return nil }
                 return pointerTrack?.automaticCameraFocus(
-                    at: previous.endTime,
+                    at: max(previous.startTime, previous.endTime.nextDown),
                     clip: previous,
                     motion: project.motion
                 ) ?? previous.focus
             }
-        let cameraAspect = cameraSourceSize.map {
-            max($0.width, 1) / max($0.height, 1)
-        }
         let styleScale = CompositionSceneEvaluator.canonicalStyleScale(
             canvasWidth: width,
             canvasHeight: height
@@ -606,7 +771,7 @@ public enum FrameSceneEvaluator {
             time: sampleTime,
             canvasWidth: width,
             canvasHeight: height,
-            sourceAspectRatio: sourceAspectRatio,
+            sourceAspectRatio: geometrySourceAspectRatio ?? sourceAspectRatio,
             cameraAspectRatio: cameraAspect,
             styleScale: styleScale,
             automaticZoomFocus: automaticCameraPosition,
@@ -614,7 +779,8 @@ public enum FrameSceneEvaluator {
             reanchorAutomaticEntry: reanchorsAtCut,
             zoomTrack: resolvedZoomTrack,
             screenMotionTrack: resolvedScreenTrack,
-            cameraMotionTrack: cameraMotionTrack
+            cameraMotionTrack: cameraMotionTrack,
+            cameraMotionBase: cameraBase
         )
         // The opening roster must remain stable for its whole duration. Using
         // the current frame's active clips made every earlier element change
@@ -622,7 +788,10 @@ public enum FrameSceneEvaluator {
         let hasOpeningSticker = project.timeline.stickerClips.contains {
             $0.timing.startTime <= 0.000_1 && $0.timing.endTime > 0.000_1
         }
-        let hasOpeningCamera = (project.media?.camera != nil || cameraSourceSize != nil)
+        // A camera size measured on another recording's segment says nothing
+        // about the opening, so it only counts for the opening's own source.
+        let hasOpeningCamera = (openingDeclaresCamera
+            || (cameraSourceSize != nil && openingSourceID == (recordingSourceID ?? RecordingSource.primaryID)))
             && !project.camera.isHidden
         let availableOpeningElements = project.openingSequence.participatingElements(
             hasCamera: hasOpeningCamera, hasOpeningSticker: hasOpeningSticker
@@ -709,9 +878,8 @@ public enum FrameSceneEvaluator {
                 )
             )
         }
-        let screen = FrameScreenScene(
+        var screen = FrameScreenScene(
             sourceCrop: project.canvas.crop,
-            fittedRect: screenGeometry.fittedRect,
             baseRect: screenGeometry.baseRect,
             finalRect: screenGeometry.finalRect,
             projectedQuad: projectedQuad,
@@ -729,6 +897,10 @@ public enum FrameSceneEvaluator {
             ),
             opacity: screenOpening.opacity
         )
+        if let geometrySourceAspectRatio, abs(geometrySourceAspectRatio - sourceAspectRatio) > 0.000_001 {
+            let crop = project.canvas.crop.clamped()
+            screen.contentAspectRatio = sourceAspectRatio * crop.width / crop.height
+        }
         let camera = geometry.camera.map { evaluation in
             let opening = openingSample(
                 for: .camera,
@@ -768,7 +940,8 @@ public enum FrameSceneEvaluator {
                     )
                     : nil,
                 opacity: project.camera.isHidden ? 0 : evaluation.opacity * opening.opacity,
-                isMirrored: project.camera.isMirrored
+                isMirrored: project.camera.isMirrored,
+                beauty: project.camera.beauty
             )
         }
         let cursor = cursorScene(
@@ -811,8 +984,71 @@ public enum FrameSceneEvaluator {
         if screen.focusEffect != nil || activeMosaics.contains(where: { $0.style == .spotlight }) {
             order.append(.spotlight)
         }
-        if camera != nil, camera?.opacity ?? 0 > 0 { order.append(.camera) }
+        let videos = project.timeline.videoClips
+            .filter { $0.timing.contains(sampleTime) && $0.opacity > 0 }
+            .sorted { $0.layerIndex == $1.layerIndex ? $0.id.uuidString < $1.id.uuidString : $0.layerIndex < $1.layerIndex }
+            .map { FrameVideoScene(clip: $0, at: sampleTime) }
+        if !videos.isEmpty { order.append(.videos) }
         if !stickers.isEmpty { order.append(.stickers) }
+        let animations = project.timeline.animationClips
+            .filter { $0.timing.contains(sampleTime) && $0.opacity > 0 }
+            .sorted { $0.layerIndex == $1.layerIndex ? $0.id.uuidString < $1.id.uuidString : $0.layerIndex < $1.layerIndex }
+            .map { FrameAnimationScene(clip: $0, at: sampleTime) }
+        if !animations.isEmpty { order.append(.animations) }
+        if camera != nil, camera?.opacity ?? 0 > 0 { order.append(.camera) }
+        let subtitle = project.timeline.subtitleCues
+            .first { $0.timing.contains(sampleTime) && !$0.text.isEmpty }
+            .map {
+                FrameSubtitleScene(
+                    cueID: $0.id,
+                    text: $0.text,
+                    secondaryText: project.timeline.subtitleStyle.showsSecondary ? $0.secondaryText : nil,
+                    style: project.timeline.subtitleStyle,
+                    elapsed: max(sampleTime - $0.timing.startTime, 0),
+                    remaining: max($0.timing.endTime - sampleTime, 0)
+                )
+            }
+        if subtitle != nil { order.append(.subtitles) }
+        // EDT-054: inside a main-track inserted video the recording's camera,
+        // cursor and regions do not apply. An explicitly scoped preset may
+        // supply this occurrence's own crop without borrowing the recording's.
+        let playback = boundary.insertedPlayback(at: sampleTime)
+        let inserted = playback?.media
+        let insertedNow = inserted != nil
+        var presentedScreen = screen
+        if let inserted {
+            presentedScreen.sourceCrop = boundary.segment?.sceneStyle?.canvas.crop ?? .full
+            presentedScreen.mosaics = []
+            presentedScreen.focusEffect = nil
+            presentedScreen.fillsFrame = inserted.imagePath == nil
+            // EDT-067: by default a main-track insert (title card, black)
+            // covers the whole canvas with no frame styling.
+            if !inserted.usesFrameStyle, inserted.imagePath == nil {
+                // Start with the same cover framing as legacy full-canvas
+                // inserts, then transform the actual source rectangle. Scaling
+                // down can reveal the whole image instead of a cropped tile.
+                let aspect = max(sourceAspectRatio * presentedScreen.sourceCrop.width
+                    / max(presentedScreen.sourceCrop.height, 0.001), 0.001)
+                let scale = min(max(project.canvas.contentScale, 0.25), 4)
+                let imageWidth = max(width, height * aspect) * scale
+                let imageHeight = imageWidth / aspect
+                let rect = CompositionRect(
+                    x: (width - imageWidth) * project.canvas.contentPosition.x,
+                    y: (height - imageHeight) * project.canvas.contentPosition.y,
+                    width: imageWidth, height: imageHeight)
+                presentedScreen.baseRect = rect
+                presentedScreen.finalRect = rect
+                presentedScreen.projectedQuad = ProjectedScreenQuad(
+                    topLeft: CompositionPoint(x: rect.x, y: rect.y),
+                    topRight: CompositionPoint(x: rect.x + rect.width, y: rect.y),
+                    bottomRight: CompositionPoint(x: rect.x + rect.width, y: rect.y + rect.height),
+                    bottomLeft: CompositionPoint(x: rect.x, y: rect.y + rect.height))
+                presentedScreen.cornerRadius = 0
+                presentedScreen.borderWidth = 0
+                presentedScreen.shadow = nil
+                presentedScreen.decoration = .none
+            }
+        }
         return FrameScene(
             time: sampleTime,
             canvasSize: CompositionSize(width: width, height: height),
@@ -823,12 +1059,26 @@ public enum FrameSceneEvaluator {
                 patternScale: project.canvas.patternScale,
                 patternOpacity: project.canvas.patternOpacity
             ),
-            screen: screen,
-            camera: camera,
-            cursor: cursor,
+            screen: presentedScreen,
+            camera: insertedNow ? nil : camera,
+            cursor: insertedNow ? nil : cursor,
             stickers: stickers,
             stickerBackdrop: stickerSample.backdrop,
-            layerOrder: order
+            animations: animations,
+            subtitle: subtitle,
+            videos: videos,
+            layerOrder: order,
+            insertedMotion: playback.flatMap { playback in
+                playback.media.motionPath.map {
+                    FrameInsertedMotionScene(sourcePath: $0, localTime: playback.localTime, properties: playback.media.properties,
+                                             elementEdits: playback.media.elementEdits, playbackRate: playback.playbackRate)
+                }
+            },
+            insertedImage: playback.flatMap { playback in
+                playback.media.imagePath.map {
+                    FrameInsertedImageScene(sourcePath: $0, localTime: playback.localTime)
+                }
+            }
         )
     }
 
@@ -870,7 +1120,8 @@ public enum FrameSceneEvaluator {
                 hidesScreen: clip.hidesScreen,
                 hidesCamera: clip.hidesCamera,
                 transitionProgress: visibility,
-                layerIndex: clip.layerIndex
+                layerIndex: clip.layerIndex,
+                sourceTime: clip.sourceStart + max(time - clip.timing.startTime, 0) * clip.playbackRate
             )
         }
         return (stickers, sample.backdrop)
@@ -938,7 +1189,6 @@ public enum FrameSceneEvaluator {
         var rotationX: Double
         var rotationY: Double
         var perspective: Double
-        var remaining: Double
 
         static let identity = OpeningSample(
             opacity: 1,
@@ -946,8 +1196,7 @@ public enum FrameSceneEvaluator {
             offset: CompositionPoint(x: 0, y: 0),
             rotationX: 0,
             rotationY: 0,
-            perspective: 0,
-            remaining: 0
+            perspective: 0
         )
     }
 
@@ -1058,8 +1307,7 @@ public enum FrameSceneEvaluator {
             ),
             rotationX: rotationX,
             rotationY: rotationY,
-            perspective: perspective,
-            remaining: remaining
+            perspective: perspective
         )
     }
 
@@ -1185,19 +1433,33 @@ public enum FrameSceneEvaluator {
         case .windowLight, .windowDark, .none: .window
         }
         let authoredOuterRadius = min(max(
-            outerCornerRadius ?? (kind.isDevice ? min(outerRect.width, outerRect.height) * (kind.isPhone ? 0.11 : 0.065) / max(scale, 0.0001) : style.defaultOuterCornerRadius),
+            outerCornerRadius ?? style.defaultOuterCornerRadius,
             0
         ), 160)
+        let authoredContentRadius = min(max(
+            contentCornerRadius ?? style.defaultContentCornerRadius,
+            0
+        ), 160)
+        let resolvedOuterRadius: Double
+        let resolvedContentRadius: Double
+        if kind.isDevice {
+            let contentShortEdge = min(geometry.finalRect.width, geometry.finalRect.height)
+            let bezel = min(topInset, leftInset)
+            let nativeContentRadius = contentShortEdge * (kind.isPhone ? 0.145 : 0.034)
+            let contentFactor = authoredContentRadius / max(style.defaultContentCornerRadius, 1)
+            let outerFactor = authoredOuterRadius / max(style.defaultOuterCornerRadius, 1)
+            resolvedContentRadius = nativeContentRadius * contentFactor
+            resolvedOuterRadius = (nativeContentRadius + bezel) * outerFactor
+        } else {
+            resolvedContentRadius = authoredContentRadius * scale
+            resolvedOuterRadius = authoredOuterRadius * scale
+        }
         let outerCornerRadius = min(
-            authoredOuterRadius * scale,
+            resolvedOuterRadius,
             min(outerRect.width, outerRect.height) / 2
         )
-        let authoredContentRadius = min(max(
-            contentCornerRadius ?? (kind.isDevice ? max(outerCornerRadius - min(topInset, leftInset), 0) / max(scale, 0.0001) : style.defaultContentCornerRadius),
-            0
-        ), 160)
         let contentCornerRadius = min(
-            authoredContentRadius * scale,
+            resolvedContentRadius,
             min(geometry.finalRect.width, geometry.finalRect.height) / 2
         )
         return .chrome(
@@ -1209,20 +1471,20 @@ public enum FrameSceneEvaluator {
                 outerCornerRadius: outerCornerRadius,
                 contentCornerRadius: contentCornerRadius,
                 surfaceColor: isDark
-                    ? HexColor(rgb24: 0x22_23_27)
-                    : HexColor(rgb24: 0xEC_ED_F0),
+                    ? HexColor(rgb24: 0x1E_1E_21)
+                    : HexColor(rgb24: 0xEE_EE_F0),
                 toolbarColor: isDark
-                    ? HexColor(rgb24: 0x31_32_38)
-                    : HexColor(rgb24: 0xF4_F4_F6),
+                    ? HexColor(rgb24: 0x2C_2C_30)
+                    : HexColor(rgb24: 0xF7_F7_F8),
                 separatorColor: isDark
-                    ? HexColor(rgb24: 0x4B_4D_55)
-                    : HexColor(rgb24: 0xC9_CA_CE),
+                    ? HexColor(rgb24: 0x16_16_18)
+                    : HexColor(rgb24: 0xDD_DD_E1),
                 fieldColor: isDark
-                    ? HexColor(rgb24: 0x1B_1C_20)
-                    : HexColor(rgb24: 0xFF_FF_FF),
+                    ? HexColor(rgb24: 0x3B_3B_40)
+                    : HexColor(rgb24: 0xE8_E8_EC),
                 glyphColor: isDark
-                    ? HexColor(rgb24: 0xA9_AB_B3)
-                    : HexColor(rgb24: 0x7A_7C_84),
+                    ? HexColor(rgb24: 0xA4_A4_AB)
+                    : HexColor(rgb24: 0x6E_6E_76),
                 title: title,
                 browserAddress: browserAddress
             )
@@ -1248,9 +1510,10 @@ public enum FrameSceneEvaluator {
             y: (sample.location.y - crop.y) / crop.height
         )
         guard (0...1).contains(local.x), (0...1).contains(local.y) else { return nil }
+        let content = screen.sourceContentRect
         let point = CompositionPoint(
-            x: screen.finalRect.x + local.x * screen.finalRect.width,
-            y: screen.finalRect.y + local.y * screen.finalRect.height
+            x: content.x + local.x * content.width,
+            y: content.y + local.y * content.height
         )
         guard let layout = CursorRenderGeometry.layout(
             pointer: point,
@@ -1261,7 +1524,6 @@ public enum FrameSceneEvaluator {
         return FrameCursorScene(
             assetID: assetID,
             metrics: metrics,
-            normalizedScreenPosition: local,
             layout: layout,
             isClicking: sample.isClicking,
             clickPhase: sample.clickPhase,
@@ -1270,6 +1532,7 @@ public enum FrameSceneEvaluator {
             clickOpacity: project.cursorStyle.clickOpacity,
             clickScale: project.cursorStyle.clickScale,
             rotationRadians: sample.rotationRadians,
+            pressScale: sample.pressScale,
             shadow: FrameShadow(
                 opacity: 0.42,
                 radius: max(layout.clickEffectHeight * 1.5 / 44, 0.5),

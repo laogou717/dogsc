@@ -17,7 +17,7 @@ struct RecorderSetupSurface: View {
     var body: some View {
         HStack(spacing: 0) {
             wheel
-                .firstUseTourTarget("recorder.source", in: .recorder, highlight: .rounded(20))
+                .firstUseTourTarget("recorder.source", in: .recorder, highlight: .rounded(RecorderStyle.controlRadius))
 
             HStack(spacing: 0) {
                 RecorderPopoverButton(id: "microphone", title: "麦克风", width: 44, height: 44) {
@@ -34,11 +34,11 @@ struct RecorderSetupSurface: View {
             .padding(.leading, 6)
 
             RecorderPopoverButton(id: "destination", title: "保存与录制配置", width: 44, height: 44, panelWidth: 300) {
-                Image(systemName: "ellipsis").font(.system(size: 15, weight: .semibold))
+                EditorSymbol("ellipsis", size: 15).font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(RecorderStyle.muted)
                     .frame(width: 44, height: 44)
             } panel: { RecorderSavePopover(model: model) }
-            .firstUseTourTarget("recorder.save", in: .recorder, highlight: .rounded(22))
+            .firstUseTourTarget("recorder.save", in: .recorder, highlight: .rounded(RecorderStyle.controlRadius))
 
             recordButton.padding(.leading, 4)
             RecorderDragGrip()
@@ -62,13 +62,11 @@ struct RecorderSetupSurface: View {
             .transition(.asymmetric(
                 insertion: .move(edge: rollsForward ? .bottom : .top).combined(with: .opacity),
                 removal: .move(edge: rollsForward ? .top : .bottom).combined(with: .opacity)))
-            Image(systemName: "chevron.up.chevron.down").font(.system(size: 8, weight: .bold))
-                .foregroundStyle(RecorderStyle.faint)
         }
-        .padding(.leading, 14).padding(.trailing, 11)
+        .padding(.horizontal, 12)
         .frame(height: 40)
-        .background(RecorderStyle.well, in: Capsule())
-        .clipShape(Capsule())
+        .background(RecorderStyle.well, in: RoundedRectangle(cornerRadius: RecorderStyle.controlRadius, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: RecorderStyle.controlRadius, style: .continuous))
         .overlay {
             RecorderModeWheelInput(label: appLocalized(Self.label(for: mode))) { step in roll(step) }
         }
@@ -78,12 +76,13 @@ struct RecorderSetupSurface: View {
     private var recordButton: some View {
         RecorderNativeActionButton(accessibilityLabel: appLocalized("开始录制"),
             accessibilityIdentifier: RecorderCaptureSourceAccessibilityID.value(for: mode), isEnabled: true,
-            width: 44, height: 44, cornerRadius: 22, highlightOpacity: 0, action: {
+            width: 44, height: 44, cornerRadius: RecorderStyle.controlRadius, highlightOpacity: 0, action: {
                 RecorderPopoverPresenter.shared.dismiss()
                 model.selectCaptureSource(mode)
             }) {
             ZStack {
-                Circle().fill(RecorderStyle.recording).frame(width: 36, height: 36)
+                RoundedRectangle(cornerRadius: RecorderStyle.controlRadius, style: .continuous)
+                    .fill(RecorderStyle.recording).frame(width: 38, height: 38)
                 Circle().fill(.white).frame(width: 12, height: 12)
             }
             .frame(width: 44, height: 44)
@@ -111,40 +110,21 @@ struct RecorderSetupSurface: View {
 
 /// The app's own pictograms for the four things it can record, drawn on one
 /// grid with one stroke so they read as a family.
+/// The capture source as one of the app's icons (EDT-078).
 struct RecorderModeGlyph: View {
     let mode: CaptureSource
     var size: CGFloat = 18
     var body: some View {
-        RecorderModeShape(mode: mode)
-            .stroke(style: StrokeStyle(lineWidth: size / 11, lineCap: .round, lineJoin: .round))
-            .frame(width: size, height: size)
-            .accessibilityHidden(true)
+        AppLineIcon(kind: Self.kind(mode), size: size)
     }
-}
 
-private struct RecorderModeShape: Shape {
-    let mode: CaptureSource
-    func path(in rect: CGRect) -> Path {
-        let u = rect.width / 18
-        func r(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat) -> CGRect {
-            CGRect(x: rect.minX + x * u, y: rect.minY + y * u, width: w * u, height: h * u)
-        }
-        func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: rect.minX + x * u, y: rect.minY + y * u) }
-        var path = Path()
+    static func kind(_ mode: CaptureSource) -> AppLineIcon.Kind {
         switch mode {
-        case .display:
-            path.addRoundedRect(in: r(1.5, 2.5, 15, 10), cornerSize: CGSize(width: 2.4 * u, height: 2.4 * u), style: .continuous)
-            path.move(to: p(6, 15.6)); path.addLine(to: p(12, 15.6))
-        case .window:
-            path.addRoundedRect(in: r(1.5, 3, 15, 12), cornerSize: CGSize(width: 2.6 * u, height: 2.6 * u), style: .continuous)
-            path.move(to: p(4.6, 6.2)); path.addLine(to: p(7.4, 6.2))
-        case .area:
-            path.addPath(CaptureViewfinder(inset: 2 * u, arm: 4.4 * u, radius: 2.4 * u).path(in: rect))
-        case .device:
-            path.addRoundedRect(in: r(5, 1.5, 8, 15), cornerSize: CGSize(width: 2.4 * u, height: 2.4 * u), style: .continuous)
-            path.move(to: p(8, 13.6)); path.addLine(to: p(10, 13.6))
+        case .display: .display
+        case .window: .window
+        case .area: .spotlight
+        case .device: .portrait
         }
-        return path
     }
 }
 
@@ -211,7 +191,7 @@ struct RecorderInputGlyph: View {
     var size: CGFloat = 16
 
     var body: some View {
-        Image(systemName: enabled ? on : off)
+        EditorSymbol(enabled ? on : off, size: size)
             .font(.system(size: size, weight: .medium))
             .foregroundStyle(enabled ? RecorderStyle.ink : RecorderStyle.faint)
             .contentTransition(.symbolEffect(.replace))

@@ -71,20 +71,22 @@ struct RecorderInputPopover: View {
                         }
                     }
                     .overlay(alignment: .bottomTrailing) {
-                        // The two things done to the picture sit on the picture.
                         HStack(spacing: 6) {
                             previewButton("arrow.left.and.right", title: "镜像画面", active: model.recordingCameraMirrored) {
                                 model.recordingCameraMirrored.toggle()
-                            }
-                            previewButton("wand.and.stars", title: "系统视频效果…", active: false) {
-                                RecorderPopoverPresenter.shared.dismiss()
-                                CaptureDeviceCatalog.showSystemVideoEffects()
                             }
                         }
                         .padding(8)
                     }
                     .padding(.horizontal, 10).padding(.top, 6)
                     .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(appLocalized("美颜")).font(.appUI(size: 12, weight: .semibold))
+                        .foregroundStyle(RecorderStyle.muted)
+                    beautySlider("磨皮", value: $model.recordingCameraBeauty.smoothing)
+                    beautySlider("美白", value: $model.recordingCameraBeauty.whitening)
+                }
+                .padding(.horizontal, 10).padding(.vertical, 10)
                 Button {
                     withAnimation(RecorderMotion.settle) { expandedResolution.toggle() }
                 } label: {
@@ -93,14 +95,14 @@ struct RecorderInputPopover: View {
                             .font(.system(size: 12, weight: .medium, design: .rounded)).monospacedDigit()
                             .foregroundStyle(RecorderStyle.muted)
                         Spacer()
-                        Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold))
+                        EditorSymbol("chevron.down", size: 9).font(.system(size: 9, weight: .bold))
                             .foregroundStyle(RecorderStyle.faint)
                             .rotationEffect(.degrees(expandedResolution ? 180 : 0))
                     }
                     .padding(.horizontal, 10).frame(height: 34)
                     .contentShape(RoundedRectangle(cornerRadius: 10))
                 }
-                .buttonStyle(RecorderPlainPressButtonStyle(cornerRadius: 10))
+                .buttonStyle(RecorderPlainPressButtonStyle())
                 .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 10))
                 .accessibilityLabel(appLocalized("采集分辨率"))
                 if expandedResolution {
@@ -118,16 +120,30 @@ struct RecorderInputPopover: View {
 
     private func previewButton(_ symbol: String, title: String, active: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: symbol).font(.system(size: 11, weight: .semibold))
+            EditorSymbol(symbol, size: 11).font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(active ? RecorderStyle.onPrimary : RecorderStyle.mediaInk)
                 .frame(width: 28, height: 28)
                 .background(active ? RecorderStyle.primaryFill.opacity(0.95) : RecorderStyle.mediaOverlay, in: Circle())
                 .contentShape(Circle())
         }
-        .buttonStyle(RecorderPlainPressButtonStyle(cornerRadius: 14))
+        .buttonStyle(RecorderPlainPressButtonStyle())
         .appButtonKeyboardFocus(in: Circle(), color: RecorderStyle.chrome.opacity(0.7))
         .help(appLocalized(title)).accessibilityLabel(appLocalized(title))
         .animation(RecorderMotion.quick, value: active)
+    }
+
+    private func beautySlider(_ title: String, value: Binding<Double>) -> some View {
+        HStack(spacing: 10) {
+            Text(appLocalized(title)).font(.appUI(size: 12)).lineLimit(1)
+                .frame(width: 64, alignment: .leading)
+            Slider(value: value, in: 0...1)
+                .tint(RecorderStyle.chrome)
+                .accessibilityLabel(appLocalized(title))
+                .accessibilityValue("\(Int((value.wrappedValue * 100).rounded()))%")
+            Text("\(Int((value.wrappedValue * 100).rounded()))%")
+                .font(.system(size: 11, design: .rounded)).monospacedDigit()
+                .foregroundStyle(RecorderStyle.muted).frame(width: 34, alignment: .trailing)
+        }
     }
 
     private var systemAudio: some View {
@@ -196,6 +212,9 @@ struct RecorderLevelWave: View {
 /// encoded, old projects, the memo, and the way out. Controls explain
 /// themselves; there are no captions.
 struct RecorderSavePopover: View {
+    private static var expand: Animation? {
+        RecorderMotion.reduces ? nil : .timingCurve(0.2, 0, 0, 1, duration: 0.24)
+    }
     @ObservedObject var model: AppModel
     @ObservedObject private var memo = RecorderMemoController.shared
     @State private var expandedQuality = false
@@ -204,11 +223,11 @@ struct RecorderSavePopover: View {
         RecorderPopoverSurface(width: 300) {
             VStack(alignment: .leading, spacing: 4) {
                 RecorderSaveActionRow(title: model.recordingDestinationName, symbol: "folder.fill") { [model] in
-                    RecorderPopoverPresenter.shared.dismissAndPerform { model.chooseProjectsFolder() }
+                    model.chooseProjectsFolder()
                 }
                 TextField("自动命名", text: $model.recordingTitleDraft)
                     .textFieldStyle(.plain).padding(.horizontal, 12).frame(height: 34)
-                    .background(RecorderStyle.well, in: Capsule())
+                    .background(RecorderStyle.well, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .padding(.horizontal, 6).padding(.vertical, 4)
                     .accessibilityLabel(appLocalized("文件名"))
                 if model.configuration.source != .device {
@@ -222,38 +241,39 @@ struct RecorderSavePopover: View {
                                     .frame(maxWidth: .infinity).frame(height: 30)
                                     .background {
                                         if selected {
-                                            Capsule().fill(RecorderStyle.selection)
+                                            RoundedRectangle(cornerRadius: 6, style: .continuous).fill(RecorderStyle.base)
+                                                .shadow(color: .black.opacity(0.1), radius: 1, y: 0.5)
                                                 .matchedGeometryEffect(id: "codec", in: codecSelection)
                                         }
                                     }
-                                    .contentShape(Capsule())
+                                    .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                             }
-                            .buttonStyle(RecorderPlainPressButtonStyle(cornerRadius: 15))
-                            .appButtonKeyboardFocus(in: Capsule())
+                            .buttonStyle(RecorderPlainPressButtonStyle())
+                            .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                             .accessibilityValue(selected ? appLocalized("已选择") : "")
                         }
                     }
                     .padding(2)
-                    .background(RecorderStyle.silver, in: Capsule())
+                    .background(RecorderStyle.well, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .padding(.horizontal, 6).padding(.vertical, 4)
                     .animation(RecorderMotion.quick, value: model.configuration.captureCodec)
 
                     Button {
-                        withAnimation(RecorderMotion.settle) { expandedQuality.toggle() }
+                        withAnimation(Self.expand) { expandedQuality.toggle() }
                     } label: {
                         HStack(spacing: 10) {
-                            Image(systemName: "sparkles.tv").font(.system(size: 13, weight: .medium)).frame(width: 18)
+                            EditorSymbol("sparkles.tv", size: 13).font(.system(size: 13, weight: .medium)).frame(width: 18)
                                 .foregroundStyle(RecorderStyle.muted)
                             Text(appLocalized(model.configuration.captureResolutionLimit.rawValue))
                             Spacer()
-                            Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold))
+                            EditorSymbol("chevron.down", size: 9).font(.system(size: 9, weight: .bold))
                                 .foregroundStyle(RecorderStyle.faint)
                                 .rotationEffect(.degrees(expandedQuality ? 180 : 0))
                         }
                         .font(.appUI(size: 13)).padding(.horizontal, 8).frame(height: 36)
                         .contentShape(RoundedRectangle(cornerRadius: 10))
                     }
-                    .buttonStyle(RecorderPlainPressButtonStyle(cornerRadius: 10))
+                    .buttonStyle(RecorderPlainPressButtonStyle())
                     .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 10))
                     .accessibilityLabel(appLocalized("画质"))
                     if expandedQuality {
@@ -261,18 +281,24 @@ struct RecorderSavePopover: View {
                             ForEach(CaptureResolutionLimit.allCases) { limit in
                                 RecorderChoiceRow(title: limit.rawValue, selected: model.configuration.captureResolutionLimit == limit, isAlternative: true) {
                                     model.captureSetup.setResolutionLimit(limit)
-                                    withAnimation(RecorderMotion.settle) { expandedQuality = false }
+                                    withAnimation(Self.expand) { expandedQuality = false }
                                 }
                             }
                         }
                         .padding(.leading, 20)
-                        .transition(.opacity.combined(with: .move(edge: .top)))
+                        // Rows fade in place while the rows below make room;
+                        // nothing slides over the label above (EDT-065).
+                        .transition(.asymmetric(
+                            insertion: .opacity.animation(.easeOut(duration: 0.16).delay(0.08)),
+                            removal: .opacity.animation(.easeOut(duration: 0.08))))
                     }
                     RecorderSaveToggleRow(title: "隐藏桌面文件", symbol: "menubar.dock.rectangle", isOn: Binding(get: { model.configuration.hidesDesktopFiles }, set: { model.setHidesDesktopFiles($0) }))
                     RecorderSaveToggleRow(title: "隐藏 Dock", symbol: "dock.rectangle", isOn: Binding(get: { model.configuration.hidesDock }, set: { model.setHidesDock($0) }))
                 }
                 rule
-                projectAction("打开项目…", symbol: "tray.full") { model.openProjectPicker() }
+                RecorderSaveActionRow(title: "打开项目…", symbol: "tray.full", showsChevron: false) { [model] in
+                    model.openProjectPicker()
+                }
                 if !model.recentProjects.isEmpty {
                     projectAction("继续上次项目", symbol: "clock.arrow.circlepath") { model.openMostRecentProject() }
                 }

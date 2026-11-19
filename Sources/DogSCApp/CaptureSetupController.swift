@@ -212,7 +212,6 @@ final class CaptureSetupController: ObservableObject {
     @Published private(set) var availableScreenDevices: [CaptureDeviceInfo]
     @Published private(set) var isRefreshingWindows = false
     @Published private(set) var readiness: CaptureReadiness
-    @Published private(set) var automaticallyCreatesZooms = true
 
     var onStartRequested: (() -> Void)?
     var onError: ((String?) -> Void)?
@@ -225,6 +224,7 @@ final class CaptureSetupController: ObservableObject {
     var target: CaptureSelectionTarget? { selection.state.target }
     var selectionToken: CaptureSelectionToken? { selection.state.session?.token }
     var canStartRecording: Bool { selection.state.canStartRecording }
+    var isPresentingSelection: Bool { presentationSource != nil }
 
     private let presenter: any CaptureSetupSelectorPresenting
     private let providers: CaptureSetupProviders
@@ -442,8 +442,7 @@ final class CaptureSetupController: ObservableObject {
         return try RecordingPlan(
             target: target,
             configuration: configuration,
-            pointerCaptureFrame: pointerCaptureFrame,
-            automaticallyCreatesZooms: automaticallyCreatesZooms
+            pointerCaptureFrame: pointerCaptureFrame
         )
     }
 
@@ -684,7 +683,7 @@ final class CaptureSetupController: ObservableObject {
                 if !providers.hasScreenRecordingPermission() {
                     onError?("需要屏幕录制权限才能读取窗口列表。授权后请重新启动应用。")
                 } else {
-                    onError?("读取窗口列表失败：\(error.localizedDescription)")
+                    onError?(String(format: appLocalized("读取窗口列表失败：%@"), error.localizedDescription))
                 }
             }
             if windowsRefreshToken == token {

@@ -26,12 +26,12 @@ public extension ScreenFrameStyle {
     var defaults: ScreenFrameDefaults {
         switch self {
         case .none: .init(outerRadius: 24, contentRadius: 24, shadowStrength: 0.28)
-        case .windowLight: .init(toolbarScale: 0.90, outerRadius: 18, contentRadius: 0, shadowStrength: 0.22)
-        case .windowDark: .init(toolbarScale: 0.90, outerRadius: 18, contentRadius: 0, shadowStrength: 0.30)
+        case .windowLight: .init(toolbarScale: 0.96, outerRadius: 22, contentRadius: 0, shadowStrength: 0.24)
+        case .windowDark: .init(toolbarScale: 0.96, outerRadius: 22, contentRadius: 0, shadowStrength: 0.32)
         case .browserLight: .init(toolbarScale: 1.08, outerRadius: 22, contentRadius: 0, shadowStrength: 0.22)
         case .browserDark: .init(toolbarScale: 1.08, outerRadius: 22, contentRadius: 0, shadowStrength: 0.30)
         case .devicePhone, .devicePhonePortrait, .devicePhoneLandscape:
-            .init(frameScale: 0.90, outerRadius: 64, contentRadius: 40, shadowStrength: 0.24)
+            .init(outerRadius: 64, contentRadius: 40, shadowStrength: 0.24)
         case .deviceTablet, .deviceTabletPortrait, .deviceTabletLandscape:
             .init(outerRadius: 48, contentRadius: 24, shadowStrength: 0.24)
         }

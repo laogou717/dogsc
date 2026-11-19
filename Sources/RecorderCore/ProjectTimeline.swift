@@ -1,6 +1,80 @@
 import Foundation
 
-/// One retained portion of the original recording.
+/// EDT-054: an outside video placed on the main track. Its segment's
+/// `sourceStart/sourceDuration` are seconds in this file, not the recording.
+/// Images retain their original file; a tiny video supplies AVFoundation's
+/// timeline clock while the compositor draws the still or animated image.
+public struct InsertedMedia: Codable, Equatable, Sendable {
+    /// Project-relative when inside the package, otherwise absolute.
+    public var path: String
+    public var fileDuration: TimeInterval
+    public var name: String
+    /// EDT-067: false (default) fills the whole canvas, like a title card or
+    /// black; true shows it inside the recording's frame — background,
+    /// padding, corners and shadow — like the recording itself.
+    public var usesFrameStyle: Bool
+    public var screenAppearance: ScreenCardAppearance?
+    public var sourceAspectRatio: Double?
+    /// EDT-071: an HTML motion played live on the main track. `path` is then
+    /// only a black stand-in that gives the span a video track; the picture
+    /// is drawn from this page (with `properties`) in preview and export, so
+    /// its text and colours stay editable.
+    public var motionPath: String?
+    public var imagePath: String?
+    public var properties: [String: AnimationPropertyValue]
+    /// The clip's own soundtrack (an HTML motion's sound effects).
+    public var soundPath: String?
+    /// Per-element edits of the HTML motion (EDT-073).
+    public var elementEdits: [String: MotionElementEdit] = [:]
+    public var overlayOrigin: TransferableVisualClip? = nil
+    public var transferSound: VisualClipSound? = nil
+
+    /// Whether this main-track insert carries its own soundtrack (an embedded
+    /// motion sound, transferred overlay sound, or imported video file). Silent
+    /// HTML motion stand-in videos and still images have no embedded audio.
+    public var hasEmbeddedAudio: Bool {
+        guard imagePath == nil else { return false }
+        if transferSound != nil || soundPath != nil { return true }
+        return motionPath == nil
+    }
+
+    public init(path: String, fileDuration: TimeInterval, name: String, usesFrameStyle: Bool = false,
+                motionPath: String? = nil, properties: [String: AnimationPropertyValue] = [:], soundPath: String? = nil,
+                screenAppearance: ScreenCardAppearance? = ScreenCardAppearance(), sourceAspectRatio: Double? = nil,
+                imagePath: String? = nil) {
+        self.path = path
+        self.fileDuration = fileDuration
+        self.name = name
+        self.usesFrameStyle = usesFrameStyle
+        self.screenAppearance = screenAppearance
+        self.sourceAspectRatio = sourceAspectRatio.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+        self.motionPath = motionPath
+        self.imagePath = imagePath
+        self.properties = properties
+        self.soundPath = soundPath
+    }
+
+    private enum CodingKeys: String, CodingKey { case path, fileDuration, name, usesFrameStyle, motionPath, imagePath, properties, soundPath, elementEdits, screenAppearance, sourceAspectRatio, overlayOrigin, transferSound }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        path = try c.decode(String.self, forKey: .path)
+        fileDuration = try c.decode(TimeInterval.self, forKey: .fileDuration)
+        name = try c.decode(String.self, forKey: .name)
+        usesFrameStyle = try c.decodeIfPresent(Bool.self, forKey: .usesFrameStyle) ?? false
+        screenAppearance = try c.decodeIfPresent(ScreenCardAppearance.self, forKey: .screenAppearance)
+        sourceAspectRatio = try c.decodeIfPresent(Double.self, forKey: .sourceAspectRatio).flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+        motionPath = try c.decodeIfPresent(String.self, forKey: .motionPath)
+        imagePath = try c.decodeIfPresent(String.self, forKey: .imagePath)
+        properties = try c.decodeIfPresent([String: AnimationPropertyValue].self, forKey: .properties) ?? [:]
+        soundPath = try c.decodeIfPresent(String.self, forKey: .soundPath)
+        elementEdits = try c.decodeIfPresent([String: MotionElementEdit].self, forKey: .elementEdits) ?? [:]
+        overlayOrigin = try c.decodeIfPresent(TransferableVisualClip.self, forKey: .overlayOrigin)
+        transferSound = try c.decodeIfPresent(VisualClipSound.self, forKey: .transferSound)
+    }
+}
+
+/// One retained portion of the original recording, or an inserted video.
 ///
 /// Segment order is output order. The lightweight editor deliberately does not
 /// persist a second `outputStart`: it is derived by accumulating durations, so
@@ -18,18 +92,42 @@ public struct RecordingSegment: Codable, Equatable, Identifiable, Sendable {
     /// Source seconds consumed by one output second. The editor exposes
     /// 1×...100× fast-forward; animation tracks remain on the output clock.
     public var playbackRate: Double
+    /// Set when this segment plays an inserted video instead of the recording.
+    public var media: InsertedMedia?
+    /// nil retains the legacy primary recording. Ignored for inserted media.
+    public var sourceID: UUID?
+    public var sceneStyle: SegmentSceneStyle?
+    /// This occurrence's own crop. nil — the default — follows the recording
+    /// source, so one re-crop still reframes the whole recording. A value
+    /// detaches this clip alone, which is how the same recording can drop a
+    /// sidebar before a cut and keep it after. Ignored for inserted media,
+    /// and deliberately not part of `sceneStyle`: restyling a clip must not
+    /// reframe it, and dropping the style must not restore the old crop.
+    public var crop: NormalizedCrop?
+
+    public var resolvedSourceID: UUID {
+        media == nil ? (sourceID ?? RecordingSource.primaryID) : RecordingSource.primaryID
+    }
 
     public init(
         id: UUID = UUID(),
         sourceStart: TimeInterval,
         sourceDuration: TimeInterval,
-        playbackRate: Double = 1
+        playbackRate: Double = 1,
+        media: InsertedMedia? = nil,
+        sourceID: UUID? = nil,
+        sceneStyle: SegmentSceneStyle? = nil,
+        crop: NormalizedCrop? = nil
     ) {
         self.id = id
         self.sourceStart = sourceStart
         self.sourceDuration = sourceDuration
         self.playbackRate = playbackRate.isFinite && playbackRate > 0
             ? playbackRate : 1
+        self.media = media
+        self.sourceID = sourceID
+        self.sceneStyle = sceneStyle
+        self.crop = crop?.clamped()
     }
 
     public var sourceEnd: TimeInterval {
@@ -41,7 +139,7 @@ public struct RecordingSegment: Codable, Equatable, Identifiable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, sourceStart, sourceDuration, playbackRate
+        case id, sourceStart, sourceDuration, playbackRate, media, sourceID, sceneStyle, crop
     }
 
     public init(from decoder: any Decoder) throws {
@@ -50,7 +148,13 @@ public struct RecordingSegment: Codable, Equatable, Identifiable, Sendable {
             id: try container.decode(UUID.self, forKey: .id),
             sourceStart: try container.decode(TimeInterval.self, forKey: .sourceStart),
             sourceDuration: try container.decode(TimeInterval.self, forKey: .sourceDuration),
-            playbackRate: try container.decodeIfPresent(Double.self, forKey: .playbackRate) ?? 1
+            playbackRate: try container.decodeIfPresent(Double.self, forKey: .playbackRate) ?? 1,
+            media: try container.decodeIfPresent(InsertedMedia.self, forKey: .media),
+            sourceID: try container.decodeIfPresent(UUID.self, forKey: .sourceID),
+            sceneStyle: try container.decodeIfPresent(SegmentSceneStyle.self, forKey: .sceneStyle),
+            // Absent in every project saved before per-occurrence crops, which
+            // is exactly the "follows the recording" default.
+            crop: try container.decodeIfPresent(NormalizedCrop.self, forKey: .crop)
         )
     }
 }
@@ -249,6 +353,13 @@ public struct ProjectTimeline: Codable, Equatable, Sendable {
     public var cameraMotionClips: [CameraMotionClip]
     public var mosaicClips: [MosaicClip]
     public var stickerClips: [StickerClip]
+    public var animationClips: [AnimationClip]
+    public var audioClips: [AudioClip]
+    public var videoClips: [VideoClip]
+    public var subtitleCues: [SubtitleCue]
+    public var subtitleStyle: SubtitleStyle
+    /// Project media bin (EDT-054); files are referenced, not copied.
+    public var mediaAssets: [MediaAsset]
 
     public init(
         sourceSequence: SourceSequence = .fullRecording,
@@ -257,7 +368,13 @@ public struct ProjectTimeline: Codable, Equatable, Sendable {
         screenMotionClips: [ScreenMotionClip] = [],
         cameraMotionClips: [CameraMotionClip] = [],
         mosaicClips: [MosaicClip] = [],
-        stickerClips: [StickerClip] = []
+        stickerClips: [StickerClip] = [],
+        animationClips: [AnimationClip] = [],
+        audioClips: [AudioClip] = [],
+        videoClips: [VideoClip] = [],
+        subtitleCues: [SubtitleCue] = [],
+        subtitleStyle: SubtitleStyle = SubtitleStyle(),
+        mediaAssets: [MediaAsset] = []
     ) {
         self.sourceSequence = sourceSequence
         self.primarySegmentAudioOverrides = primarySegmentAudioOverrides
@@ -266,6 +383,12 @@ public struct ProjectTimeline: Codable, Equatable, Sendable {
         self.cameraMotionClips = cameraMotionClips
         self.mosaicClips = mosaicClips
         self.stickerClips = stickerClips
+        self.animationClips = animationClips
+        self.audioClips = audioClips
+        self.videoClips = videoClips
+        self.subtitleCues = subtitleCues
+        self.subtitleStyle = subtitleStyle
+        self.mediaAssets = mediaAssets
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -276,6 +399,12 @@ public struct ProjectTimeline: Codable, Equatable, Sendable {
         case cameraMotionClips
         case mosaicClips
         case stickerClips
+        case animationClips
+        case audioClips
+        case videoClips
+        case subtitleCues
+        case subtitleStyle
+        case mediaAssets
     }
 
     public init(from decoder: any Decoder) throws {
@@ -308,5 +437,44 @@ public struct ProjectTimeline: Codable, Equatable, Sendable {
             [StickerClip].self,
             forKey: .stickerClips
         ) ?? []
+        animationClips = try container.decodeIfPresent(
+            [AnimationClip].self,
+            forKey: .animationClips
+        ) ?? []
+        audioClips = try container.decodeIfPresent([AudioClip].self, forKey: .audioClips) ?? []
+        videoClips = try container.decodeIfPresent([VideoClip].self, forKey: .videoClips) ?? []
+        subtitleCues = try container.decodeIfPresent([SubtitleCue].self, forKey: .subtitleCues) ?? []
+        subtitleStyle = try container.decodeIfPresent(SubtitleStyle.self, forKey: .subtitleStyle) ?? SubtitleStyle()
+        mediaAssets = try container.decodeIfPresent([MediaAsset].self, forKey: .mediaAssets) ?? []
+    }
+}
+
+public extension ProjectTimeline {
+    /// Whether an inserted video plays at this output time (EDT-054).
+    func containsInsertedMedia(atOutputTime time: TimeInterval) -> Bool {
+        insertedMedia(atOutputTime: time) != nil
+    }
+
+    /// The inserted video playing at this output time, if any.
+    func insertedMedia(atOutputTime time: TimeInterval) -> InsertedMedia? {
+        insertedPlayback(atOutputTime: time)?.media
+    }
+
+    /// The inserted clip at this output time and the time inside its file.
+    func insertedPlayback(atOutputTime time: TimeInterval) -> (media: InsertedMedia, localTime: TimeInterval, playbackRate: Double)? {
+        recordingSegmentBoundary(atOutputTime: time).insertedPlayback(at: time)
+    }
+
+    /// Sound-effect audio clips placed on the audio lanes that overlap a
+    /// main-track segment (for example, an AI-generated `sound.create` effect
+    /// paired with a `html.create(placement: "main")` title card).
+    func associatedEffectAudioClips(overlappingStart start: TimeInterval, end: TimeInterval) -> [AudioClip] {
+        guard start.isFinite, end.isFinite, end > start else { return [] }
+        let maxShortDuration = max((end - start) * 3, 15)
+        return audioClips.filter { clip in
+            let overlap = min(clip.timing.endTime, end) - max(clip.timing.startTime, start)
+            guard overlap > 0.02 else { return false }
+            return clip.kind == .effect || clip.timing.duration <= maxShortDuration
+        }
     }
 }

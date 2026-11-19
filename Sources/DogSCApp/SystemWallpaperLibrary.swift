@@ -12,12 +12,10 @@ struct SystemWallpaperAsset: Identifiable, Equatable, Sendable {
     }
 
     let id: String
-    let name: String
     let url: URL
     let kind: Kind
     let familyName: String
     let variantName: String
-    let variantColorRGB: UInt32?
 
     var isVideo: Bool {
         kind == .screenSaverVideo
@@ -61,24 +59,6 @@ enum SystemWallpaperLibrary {
 
     static func isVideoURL(_ url: URL) -> Bool {
         videoExtensions.contains(url.pathExtension.lowercased())
-    }
-
-    /// Apple-managed wallpaper and screensaver files remain local references.
-    /// A user-selected image elsewhere on disk can still be copied into the
-    /// project, but system artwork must not silently become a redistributed
-    /// project asset merely because it is the current desktop.
-    static func isAppleManagedMediaURL(_ url: URL) -> Bool {
-        let path = url.standardizedFileURL.resolvingSymlinksInPath().path
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let roots = [
-            "/System/Library/Desktop Pictures/",
-            "/System/Library/Screen Savers/",
-            "/System/Library/ExtensionKit/Extensions/",
-            "/Library/Application Support/com.apple.idleassetsd/",
-            "\(home)/Library/Application Support/com.apple.idleassetsd/",
-            "\(home)/Library/Application Support/com.apple.wallpaper/",
-        ]
-        return roots.contains { path.hasPrefix($0) }
     }
 
     /// NSWorkspace can return a `.madesktop` descriptor for an Apple dynamic
@@ -215,12 +195,10 @@ enum SystemWallpaperLibrary {
             )
             results.append(SystemWallpaperAsset(
                 id: "\(kind.rawValue):\(normalized.path)",
-                name: label,
                 url: normalized,
                 kind: kind,
                 familyName: familyName ?? descriptor.family,
-                variantName: variantName ?? descriptor.variant,
-                variantColorRGB: variantColorRGB(for: variantName ?? descriptor.variant)
+                variantName: variantName ?? descriptor.variant
             ))
         }
 
@@ -610,22 +588,6 @@ enum SystemWallpaperLibrary {
         return order.firstIndex(where: { normalized.contains($0) }) ?? order.count
     }
 
-    private nonisolated static func variantColorRGB(for variant: String) -> UInt32? {
-        let value = variant.lowercased()
-        if value.contains("天蓝") { return 0x68_B7_EB }
-        if value.contains("蓝") { return 0x4E_78_E8 }
-        if value.contains("粉") { return 0xEA_81_AD }
-        if value.contains("紫") { return 0x8B_6D_D5 }
-        if value.contains("黄") || value.contains("金") { return 0xE5_BD_54 }
-        if value.contains("橙") { return 0xE9_8C_55 }
-        if value.contains("红") { return 0xD8_59_56 }
-        if value.contains("绿") { return 0x65_AA_78 }
-        if value.contains("银") || value.contains("浅色") { return 0xD7_D9_DA }
-        if value.contains("灰") { return 0x70_73_78 }
-        if value.contains("深色") || value.contains("黑") { return 0x2D_30_36 }
-        return nil
-    }
-
     private nonisolated static func scanChangeTokenOnWorker() -> String {
         let fileManager = FileManager.default
         let home = fileManager.homeDirectoryForCurrentUser
@@ -657,6 +619,8 @@ enum SystemWallpaperLibrary {
 
 @MainActor
 final class SystemWallpaperCatalog: ObservableObject {
+    static let shared = SystemWallpaperCatalog()
+
     @Published private(set) var assets: [SystemWallpaperAsset] = []
     @Published private(set) var isLoading = false
     @Published private(set) var currentDesktopIssue: String?
@@ -695,9 +659,11 @@ final class SystemWallpaperCatalog: ObservableObject {
             isLoading = false
             return
         }
-        assets = result.assets
+        if assets != result.assets { assets = result.assets }
         didLoad = true
-        currentDesktopIssue = result.currentDesktopIssue
+        if currentDesktopIssue != result.currentDesktopIssue {
+            currentDesktopIssue = result.currentDesktopIssue
+        }
         lastChangeToken = result.changeToken
         isLoading = false
     }
@@ -876,7 +842,7 @@ struct SystemWallpaperThumbnail: View {
             } else {
                 ZStack {
                     Color(white: 0.10)
-                    Image(systemName: asset.isVideo ? "film.fill" : "photo.fill")
+                    EditorSymbol(asset.isVideo ? "film.fill" : "photo.fill")
                         .foregroundStyle(.secondary)
                 }
             }

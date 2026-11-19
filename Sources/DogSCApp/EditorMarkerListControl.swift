@@ -18,11 +18,11 @@ struct EditorMarkerListControl: View {
             .foregroundStyle(EditorTheme.chrome(0.68))
             .padding(.horizontal, 8).frame(height: 30)
             .background(presenter.isPresented ? EditorTheme.selectionWash : .clear,
-                        in: RoundedRectangle(cornerRadius: 8))
-            .contentShape(RoundedRectangle(cornerRadius: 8))
+                        in: RoundedRectangle(cornerRadius: 6))
+            .contentShape(RoundedRectangle(cornerRadius: 6))
         }
         .buttonStyle(.plain)
-        .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 8))
+        .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 6))
         .background(EditorMarkerCardAnchor(presenter: presenter, colorScheme: colorScheme,
                                           content: { maxHeight in AnyView(card(maxHeight: maxHeight)) })
             .allowsHitTesting(false).accessibilityHidden(true))
@@ -34,7 +34,7 @@ struct EditorMarkerListControl: View {
     private func card(maxHeight: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 9) {
-                Text("录制标记").font(.appUI(size: 14, weight: .semibold))
+                Text("录制标记").font(.appUI(size: 13, weight: .semibold))
                 Text("\(markers.count)").font(.appUI(size: 11, design: .monospaced))
                     .foregroundStyle(EditorTheme.chrome(0.42))
                 Spacer(minLength: 4)
@@ -62,7 +62,7 @@ struct EditorMarkerListControl: View {
                             EditorMarkerListRow(item: item, select: {
                                 presenter.dismiss(restoreFocus: true)
                                 seek(item)
-                            }, remove: { remove(item.id) })
+                            }, remove: { remove(item.marker.id) })
                         }
                     }
                     .padding(.horizontal, 7)
@@ -78,8 +78,8 @@ struct EditorMarkerListControl: View {
         }
         .foregroundStyle(EditorTheme.chrome(0.86))
         .background(EditorTheme.cardElevated)
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: 16).strokeBorder(EditorTheme.chrome(0.09), lineWidth: 1) }
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: 10).strokeBorder(EditorTheme.chrome(0.09), lineWidth: 1) }
     }
 }
 
@@ -100,7 +100,7 @@ private struct EditorMarkerListRow: View {
                     Text(item.timestamp)
                         .font(.appUI(size: 11, weight: .medium, design: .monospaced))
                         .padding(.horizontal, 7).padding(.vertical, 4)
-                        .background(EditorTheme.chrome(0.035), in: RoundedRectangle(cornerRadius: 5))
+                        .background(EditorTheme.chrome(0.035), in: RoundedRectangle(cornerRadius: 4))
                     EditorSymbol("chevron.right", size: 11.5).font(.appUI(size: 10, weight: .medium))
                         .foregroundStyle(EditorTheme.chrome(0.38))
                 }
@@ -108,7 +108,7 @@ private struct EditorMarkerListRow: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 8))
+            .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 6))
             .accessibilityLabel(item.label + " · " + item.timestamp)
             Button(action: remove) {
                 EditorSymbol("trash", size: 13).font(.appUI(size: 10))
@@ -121,7 +121,7 @@ private struct EditorMarkerListRow: View {
             .accessibilityLabel(appLocalized("删除录制标记") + " · " + item.label)
             .padding(.trailing, 5)
         }
-        .background(EditorTheme.chrome(hovered ? EditorStateWash.hover : 0), in: RoundedRectangle(cornerRadius: 8))
+        .background(EditorTheme.chrome(hovered ? EditorStateWash.hover : 0), in: RoundedRectangle(cornerRadius: 6))
         .onHover { hovered = $0 }
     }
 }

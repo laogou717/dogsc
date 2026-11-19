@@ -95,47 +95,16 @@ extension AppModel {
         await persistCompletedRecording(resumingLiveInputs: true)
     }
 
-    /// X, Escape, and the window-close command all use this one decision.
-    /// Merely dismissing the card never implicitly discards its project.
+    /// Escape and the window-close command keep the take: closing the
+    /// completion card is saving it. Deleting is its own, undoable action.
     func requestCloseCompletedRecording(relativeTo owner: NSWindow? = nil) async {
-        _ = await resolveCompletedRecordingClose(relativeTo: owner, terminating: false)
+        _ = await saveCompletedRecording()
     }
 
-    /// Called by the application delegate's terminate-later path. A failed
-    /// save/trash operation returns false and keeps this same completion card.
+    /// Quitting with a take still on the completion card keeps it.
     func confirmCompletedRecordingForTermination(relativeTo owner: NSWindow? = nil) async -> Bool {
-        await resolveCompletedRecordingClose(relativeTo: owner, terminating: true)
-    }
-
-    private func resolveCompletedRecordingClose(relativeTo owner: NSWindow?, terminating: Bool) async -> Bool {
-        guard phase == .recordingComplete,
-              !isResolvingCompletedRecording,
-              !AppDialogPresenter.isPresenting,
-              let sessionURL = currentSession?.packageURL else { return false }
-        let decisionOwner = owner ?? NSApp.keyWindow ?? NSApp.mainWindow
-        defer { (decisionOwner as? any RecordingDecisionHosting)?.finishRecordingDecision() }
-        let response = await AppDialogPresenter.response(to: AppDialog(
-            title: "保留这次录制吗？",
-            message: "保存项目以便稍后编辑，或将这次录制移到废纸篓。",
-            symbol: "record.circle", itemTitle: project.title,
-            layout: .recordingDecision,
-            actions: [
-                .init(id: "cancel", title: "取消", role: .cancel),
-                .init(id: "delete", title: "移到废纸篓", role: .destructive),
-                .init(id: "save", title: "保存项目", role: .primary)
-            ]
-        ), relativeTo: decisionOwner)
-        guard phase == .recordingComplete,
-              currentSession?.packageURL == sessionURL,
-              !isResolvingCompletedRecording else { return false }
-        switch response.actionID {
-        case "save":
-            return await persistCompletedRecording(resumingLiveInputs: !terminating)
-        case "delete":
-            return await discardCompletedRecording(resumingLiveInputs: !terminating)
-        default:
-            return false
-        }
+        guard phase == .recordingComplete else { return true }
+        return await persistCompletedRecording(resumingLiveInputs: false)
     }
 
     func requestCloseProject() {
@@ -210,8 +179,11 @@ extension AppModel {
                   self.currentSession?.packageURL == sessionURL else { return }
             switch response.actionID {
             case "save":
-                guard let destination = self.chooseProjectSaveDestination() else { return }
-                self.saveCurrentProject(to: destination, closeAfterSave: true)
+                Task { @MainActor [weak self] in
+                    guard let self, let destination = await self.chooseProjectSaveDestination(),
+                          self.phase == .editor, self.currentSession?.packageURL == sessionURL else { return }
+                    self.saveCurrentProject(to: destination, closeAfterSave: true)
+                }
             case "delete": self.deleteCurrentProjectAndClose()
             default: break
             }
@@ -249,17 +221,6 @@ extension AppModel {
             return
         }
         saveCurrentProject(to: destination, closeAfterSave: true)
-    }
-
-    func saveCurrentProject() {
-        if phase == .recordingComplete {
-            Task { @MainActor [weak self] in
-                await self?.saveCompletedRecording()
-            }
-            return
-        }
-        guard let destination = chooseProjectSaveDestination() else { return }
-        saveCurrentProject(to: destination, closeAfterSave: false)
     }
 
     /// Title submission is an explicit save gesture. Bypass the autosave
@@ -339,20 +300,22 @@ extension AppModel {
         }
     }
 
-    func chooseWallpaperAsset() -> BackgroundSource? {
+    func chooseWallpaperAsset() async -> BackgroundSource? {
         guard let currentSession else {
             errorMessage = "请先完成一次真实录制，再把壁纸保存进项目。"
             return nil
         }
-        let panel = NSOpenPanel()
-        panel.title = appLocalized("选择画布背景")
-        panel.prompt = appLocalized("使用这个背景")
-        panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = false
-        panel.allowedContentTypes = [
-            .png, .jpeg, .heic, .tiff, .movie, .mpeg4Movie, .quickTimeMovie,
-        ]
-        guard panel.runModal() == .OK, let sourceURL = panel.url else { return nil }
+        let urls = await AppFilePanel.open { panel in
+            panel.title = appLocalized("选择画布背景")
+            panel.prompt = appLocalized("使用这个背景")
+            panel.allowsMultipleSelection = false
+            panel.canChooseDirectories = false
+            panel.allowedContentTypes = [
+                .png, .jpeg, .heic, .tiff, .movie, .mpeg4Movie, .quickTimeMovie,
+            ]
+        }
+        guard let sourceURL = urls?.first,
+              self.currentSession?.packageURL == currentSession.packageURL else { return nil }
 
         do {
             return try importBackgroundAsset(from: sourceURL, session: currentSession)
@@ -362,39 +325,26 @@ extension AppModel {
         }
     }
 
-    func chooseOverlayImageAsset() -> (relativePath: String, url: URL)? {
+    func chooseOverlayImageAsset() async -> (relativePath: String, url: URL)? {
         guard let currentSession else {
             errorMessage = "请先打开一个可编辑项目。"
             return nil
         }
-        let panel = NSOpenPanel()
-        panel.title = appLocalized("选择贴图")
-        panel.prompt = appLocalized("添加")
-        panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = false
-        panel.allowedContentTypes = [.png, .jpeg, .heic, .tiff]
-        guard panel.runModal() == .OK, let sourceURL = panel.url else { return nil }
+        let urls = await AppFilePanel.open { panel in
+            panel.title = appLocalized("选择贴图")
+            panel.prompt = appLocalized("添加")
+            panel.allowsMultipleSelection = false
+            panel.canChooseDirectories = false
+            panel.allowedContentTypes = [.png, .jpeg, .heic, .tiff]
+        }
+        guard let sourceURL = urls?.first,
+              self.currentSession?.packageURL == currentSession.packageURL else { return nil }
+
         do {
             return try ProjectStore.importOverlayImage(
                 from: sourceURL,
                 session: currentSession
             )
-        } catch {
-            errorMessage = appErrorDescription(error)
-            return nil
-        }
-    }
-
-    func importOverlayImageAsset(from sourceURL: URL) -> String? {
-        guard let currentSession else {
-            errorMessage = "请先打开一个可编辑项目。"
-            return nil
-        }
-        do {
-            return try ProjectStore.importOverlayImage(
-                from: sourceURL,
-                session: currentSession
-            ).relativePath
         } catch {
             errorMessage = appErrorDescription(error)
             return nil
@@ -434,38 +384,6 @@ extension AppModel {
         }
     }
 
-    /// 用户自己的桌面图片复制进项目以保证可移植；Apple 管理的系统
-    /// 壁纸与屏保只保留本机引用，不把系统素材静默复制成项目资产。
-    func importCurrentDesktopWallpaper() -> BackgroundSource? {
-        guard let currentSession else {
-            errorMessage = "请先完成一次真实录制，再把壁纸保存进项目。"
-            return nil
-        }
-        guard let screen = NSScreen.screens.first,
-              let desktopURL = NSWorkspace.shared.desktopImageURL(for: screen),
-              let sourceURL = SystemWallpaperLibrary.resolvedMediaURL(
-                  forDesktopImageURL: desktopURL
-              ) else {
-            errorMessage = "无法读取当前桌面壁纸。"
-            return nil
-        }
-        guard FileManager.default.isReadableFile(atPath: sourceURL.path) else {
-            errorMessage = "当前桌面资源不可读取。"
-            return nil
-        }
-        if SystemWallpaperLibrary.isAppleManagedMediaURL(sourceURL) {
-            return SystemWallpaperLibrary.isVideoURL(sourceURL)
-                ? .systemVideo(absolutePath: sourceURL.path)
-                : .systemImage(absolutePath: sourceURL.path)
-        }
-        do {
-            return try importBackgroundAsset(from: sourceURL, session: currentSession)
-        } catch {
-            errorMessage = appErrorDescription(error)
-            return nil
-        }
-    }
-
     private func importBackgroundAsset(
         from sourceURL: URL,
         session: RecordingSession
@@ -488,21 +406,43 @@ extension AppModel {
         guard phase == .editor,
               !isMediaExchangeRunning,
               let screen = recordingURL else { return }
-        let panel = NSOpenPanel()
-        panel.title = appLocalized("选择源文件导出文件夹")
-        panel.prompt = appLocalized("导出到这里")
-        panel.directoryURL = AppPreferences.exportDirectoryURL
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.canCreateDirectories = true
-        panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        let sessionID = editorSessionID
+        AppFilePanel.open(configure: { panel in
+            panel.title = appLocalized("选择源文件导出文件夹")
+            panel.prompt = appLocalized("导出到这里")
+            panel.directoryURL = AppPreferences.exportDirectoryURL
+            panel.canChooseFiles = false
+            panel.canChooseDirectories = true
+            panel.canCreateDirectories = true
+            panel.allowsMultipleSelection = false
+        }) { [weak self] urls in
+            guard let self, let destination = urls?.first,
+                  self.editorSessionID == sessionID else { return }
+            self.exportCurrentProjectSourceMedia(into: destination, screen: screen)
+        }
+    }
 
-        let sources = ProjectSourceMediaFiles(
-            screen: screen,
-            camera: cameraRecordingURL,
-            microphone: microphoneRecordingURL
-        )
+    private func exportCurrentProjectSourceMedia(into destination: URL, screen: URL) {
+
+        guard let session = currentSession else { return }
+        let sources = ProjectSourceMediaFiles(screen: screen, camera: cameraRecordingURL,
+            microphone: microphoneRecordingURL,
+            pointer: project.media?.pointerEvents.flatMap { ProjectStore.resolveMediaPath($0.relativePath, session: session) })
+        let additional: [(name: String, files: ProjectSourceMediaFiles)]
+        do {
+            additional = try project.additionalSources.map { source in
+                func url(_ reference: ProjectMediaReference?) throws -> URL? {
+                    guard let reference else { return nil }
+                    guard let url = ProjectStore.resolveMediaPath(reference.relativePath, session: session) else {
+                        throw RecordingImportError.missingFile(reference.relativePath)
+                    }
+                    return url
+                }
+                guard let screen = try url(source.media.screen) else { throw RecordingImportError.missingRecording }
+                return try (source.name, ProjectSourceMediaFiles(screen: screen, camera: url(source.media.camera),
+                    microphone: url(source.media.microphone), pointer: url(source.media.pointerEvents)))
+            }
+        } catch { errorMessage = appErrorDescription(error); return }
         let title = project.title
         isMediaExchangeRunning = true
         Task { @MainActor [weak self] in
@@ -513,6 +453,7 @@ extension AppModel {
                     try ProjectMediaExchange.exportSources(
                         sources,
                         projectTitle: title,
+                        additionalRecordings: additional,
                         into: destination
                     )
                 }.value
@@ -526,18 +467,25 @@ extension AppModel {
     /// SRC-003: replace only the camera source with a file conformed/aligned in
     /// an external editor. Screen, microphone, cuts and effects remain exactly
     /// where they are; the new camera declares its own time zero.
-    func importCameraReplacement() {
+    func importCameraReplacement(sourceID: UUID) {
+        Task { @MainActor [weak self] in
+            await self?.chooseCameraReplacement(sourceID: sourceID)
+        }
+    }
+
+    private func chooseCameraReplacement(sourceID: UUID) async {
         guard phase == .editor,
               !isMediaExchangeRunning,
               !exporter.isExporting,
               let session = currentSession,
-              project.media?.camera != nil else { return }
-        guard let camera = chooseAlignedMediaFile(
+              project.source(sourceID)?.media.camera != nil else { return }
+        let expectedSessionID = editorSessionID
+        guard let camera = await chooseAlignedMediaFile(
             title: "选择替换用摄像头文件",
             prompt: "替换摄像头",
             contentType: .movie,
-            initialURL: cameraRecordingURL
-        ) else { return }
+            initialURL: project.source(sourceID)?.media.camera.flatMap { ProjectStore.resolveMediaPath($0.relativePath, session: session) }
+        ), editorSessionID == expectedSessionID else { return }
 
         let sessionPath = session.packageURL.standardizedFileURL.path
         let sessionURL = editorSessionID
@@ -555,7 +503,7 @@ extension AppModel {
                 }.value
                 guard editorSessionID == sessionURL,
                       currentSession?.packageURL.standardizedFileURL.path == sessionPath,
-                      var media = project.media else {
+                      var media = project.source(sourceID)?.media else {
                     await ProjectPackageDisposal.removeIfPresent(imported.folderURL)
                     return
                 }
@@ -564,9 +512,12 @@ extension AppModel {
                     relativePath: imported.cameraRelativePath
                 )
                 var replacement = project
-                replacement.media = media
+                replacement.setMedia(media, for: sourceID)
+                if let index = replacement.additionalSources.firstIndex(where: { $0.id == sourceID }) {
+                    replacement.additionalSources[index].cameraContentCrop = nil
+                }
                 project = replacement
-                cameraRecordingURL = imported.cameraURL
+                if sourceID == RecordingSource.primaryID { cameraRecordingURL = imported.cameraURL }
                 editorContextRevision &+= 1
                 _ = try await workspace.flush(replacement)
             } catch {
@@ -580,35 +531,38 @@ extension AppModel {
         prompt: String,
         contentType: UTType,
         initialURL: URL?
-    ) -> URL? {
-        let panel = NSOpenPanel()
-        panel.title = appLocalized(title)
-        panel.prompt = appLocalized(prompt)
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [contentType]
-        panel.directoryURL = initialURL?.deletingLastPathComponent()
-        return panel.runModal() == .OK ? panel.url : nil
+    ) async -> URL? {
+        await AppFilePanel.open { panel in
+            panel.title = appLocalized(title)
+            panel.prompt = appLocalized(prompt)
+            panel.allowedContentTypes = [contentType]
+            panel.directoryURL = initialURL?.deletingLastPathComponent()
+        }?.first
     }
 
     /// Lets the user choose where saved projects land (另存为/保存后的项目包).
     func chooseProjectsFolder() {
-        let panel = NSOpenPanel()
-        panel.title = appLocalized("选择项目保存位置")
-        panel.prompt = appLocalized("选择")
-        panel.message = appLocalized("后续录制的项目会自动保存到所选文件夹。")
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        if let customPath = UserDefaults.standard.string(
-            forKey: ProjectStore.projectsFolderDefaultsKey
-        ) {
-            panel.directoryURL = URL(fileURLWithPath: customPath, isDirectory: true)
-        } else {
-            panel.directoryURL = ProjectStore.savedProjectsFolder
+        AppFilePanel.open(configure: { panel in
+            panel.title = appLocalized("选择项目保存位置")
+            panel.prompt = appLocalized("选择")
+            panel.message = appLocalized("后续录制的项目会自动保存到所选文件夹。")
+            panel.canChooseDirectories = true
+            panel.canChooseFiles = false
+            panel.canCreateDirectories = true
+            if let customPath = UserDefaults.standard.string(
+                forKey: ProjectStore.projectsFolderDefaultsKey
+            ) {
+                panel.directoryURL = URL(fileURLWithPath: customPath, isDirectory: true)
+            } else {
+                panel.directoryURL = ProjectStore.savedProjectsFolder
+            }
+        }) { [weak self] urls in
+            guard let self, let url = urls?.first else { return }
+            self.applyProjectsFolder(url)
         }
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+    }
+
+    private func applyProjectsFolder(_ url: URL) {
         do {
             try ProjectStore.setSavedProjectsFolder(url)
             recordingDestinationName = ProjectStore.savedProjectsFolder.lastPathComponent
@@ -619,25 +573,18 @@ extension AppModel {
     }
 
     func openProjectPicker() {
-        let panel = NSOpenPanel()
-        panel.title = String(format: appLocalized("打开 %@ 项目"), AppIdentity.displayName)
-        panel.prompt = appLocalized("打开")
-        panel.message = appLocalized("选择要继续编辑的项目")
-        panel.directoryURL = ProjectStore.savedProjectsFolder
-        panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = false
-        panel.canChooseFiles = true
-        if let projectContentType = UTType("cn.laogou.dogsc-project") {
-            panel.allowedContentTypes = [projectContentType]
+        AppFilePanel.open(configure: { panel in
+            panel.title = String(format: appLocalized("打开 %@ 项目"), AppIdentity.displayName)
+            panel.prompt = appLocalized("打开")
+            panel.message = appLocalized("选择要继续编辑的项目")
+            panel.directoryURL = ProjectStore.savedProjectsFolder
+            EditorImportFileTypes.configure(panel, extensions: ["dogscproject", "silkyproject"])
+        }) { [weak self] urls in
+            guard let self, let selectedURL = urls?.first else { return }
+            let packageURL = selectedURL.lastPathComponent == "project.json"
+                ? selectedURL.deletingLastPathComponent() : selectedURL
+            self.requestOpenProject(at: packageURL)
         }
-        guard panel.runModal() == .OK, let selectedURL = panel.url else { return }
-        let packageExtensions = ["dogscproject", "silkyproject"]
-        let packageURL = packageExtensions.contains(selectedURL.pathExtension.lowercased())
-            ? selectedURL
-            : (selectedURL.lastPathComponent == "project.json"
-                ? selectedURL.deletingLastPathComponent()
-                : selectedURL)
-        requestOpenProject(at: packageURL)
     }
 
     func openMostRecentProject() {
@@ -691,10 +638,6 @@ extension AppModel {
         case .preparing, .recording, .finishing:
             errorMessage = "录制准备、录制或写入期间不能打开其他项目。请先结束当前操作。"
         }
-    }
-
-    func openProject(at packageURL: URL) {
-        requestOpenProject(at: packageURL)
     }
 
     func updateSessionPackageURL(to newURL: URL) {
@@ -759,6 +702,11 @@ extension AppModel {
             guard !Task.isCancelled else { return }
             suspendLiveInputIndicators()
             captureSetup.reset()
+            let openStarted = ContinuousClock.now
+            func milestone(_ name: String) {
+                let elapsed = ContinuousClock.now - openStarted
+                performanceLog.notice("open \(name, privacy: .public): \(Int(elapsed.components.seconds * 1000 + elapsed.components.attoseconds / 1_000_000_000_000_000), privacy: .public)ms")
+            }
             let loader = Task.detached(priority: .userInitiated) {
                 try ProjectOpenSnapshot.load(at: packageURL)
             }
@@ -768,8 +716,15 @@ extension AppModel {
                 } onCancel: {
                     loader.cancel()
                 }
+                milestone("snapshot loaded")
                 try Task.checkCancellation()
+                let recorderSettleTime = WindowCoordinator.recorderTransitionSettleTime
+                if recorderSettleTime > 0 {
+                    try await Task.sleep(for: .seconds(recorderSettleTime))
+                    milestone("settle wait \(recorderSettleTime)s")
+                }
                 try applyProjectOpenSnapshot(loaded)
+                milestone("project applied")
                 recorderTransitionStage = .idle
             } catch is CancellationError {
                 return
@@ -807,7 +762,7 @@ extension AppModel {
         pointerEvents = loaded.pointerEvents
         errorMessage = loaded.warnings.isEmpty
             ? nil
-            : "项目已打开，但\(loaded.warnings.joined(separator: " "))"
+            : String(format: appLocalized("项目已打开，但%@"), loaded.warnings.joined(separator: " "))
         exporter.resetResultForNewEditorSession()
         editorSessionID = UUID()
         phase = .editor

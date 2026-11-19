@@ -9,7 +9,6 @@ struct EditorWallpaperAccordion: View {
     let title: (SystemWallpaperGroup) -> String
     let onSelect: (SystemWallpaperGroup) -> Void
 
-    @Environment(\.consolePalette) private var palette
     @State private var hoveredID: String?
 
     private let spacing: CGFloat = 4
@@ -25,8 +24,8 @@ struct EditorWallpaperAccordion: View {
                     slice(group, width: available * CGFloat(weights[index] / totalWeight))
                 }
             }
-            .animation(RecorderMotion.reduces ? nil : .spring(response: 0.55, dampingFraction: 0.82), value: hoveredID)
-            .animation(RecorderMotion.reduces ? nil : .spring(response: 0.55, dampingFraction: 0.82), value: selectedGroupID)
+            .animation(RecorderMotion.reduces ? nil : SpringMotion.standard, value: hoveredID)
+            .animation(RecorderMotion.reduces ? nil : SpringMotion.standard, value: selectedGroupID)
             .onHover { inside in
                 if !inside { hoveredID = nil }
             }
@@ -46,7 +45,7 @@ struct EditorWallpaperAccordion: View {
         if let asset = asset(group) {
             let isSelected = selectedGroupID == group.id
             let isOpen = hoveredID == group.id || (hoveredID == nil && isSelected)
-            let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+            let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
             Button { onSelect(group) } label: {
                 Color.clear
                     .overlay { SystemWallpaperThumbnail(asset: asset) }
@@ -67,7 +66,7 @@ struct EditorWallpaperAccordion: View {
                     }
                     .overlay {
                         shape.strokeBorder(
-                            isSelected ? EditorTheme.platinumAccent : EditorTheme.chrome(0.08),
+                            isSelected ? EditorTheme.selectionTint : EditorTheme.chrome(0.08),
                             lineWidth: isSelected ? 2 : 0.75
                         )
                     }

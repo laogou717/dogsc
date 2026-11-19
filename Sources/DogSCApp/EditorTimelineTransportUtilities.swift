@@ -11,31 +11,71 @@ extension EditorTimelineView {
             + (showsCameraSyncTimeline ? cameraSyncTimelineHeight : 0)
             + (showsScreenMotionTimeline ? motionTimelineHeight : 0)
             + (showsCameraMotionTimeline ? motionTimelineHeight : 0)
-            + (showsOverlayTimeline ? overlayTimelineHeight : 0)
+            + postLanesHeight
     }
 
-    var cameraSyncTimelineHeight: CGFloat { 62 }
-    var motionTimelineHeight: CGFloat { layout.value(regular: 44, compact: 40) }
-    var zoomTimelineHeight: CGFloat { layout.value(regular: 44, compact: 40) }
-    var zoomBarHeight: CGFloat { layout.value(regular: 30, compact: 28) }
+    // EDT-062: track heights scale with the panel. Shrinking the timeline
+    // makes every track thinner (all stay visible); enlarging makes them
+    // taller. The ruler and controls keep their size.
+    var trackScale: CGFloat {
+        let natural = naturalTracksHeight
+        return Self.resolvedTrackScale(natural: natural, viewport: timelineViewportHeight, ruler: timelineRulerHeight)
+    }
+
+    static func resolvedTrackScale(natural: CGFloat, viewport: CGFloat, ruler: CGFloat) -> CGFloat {
+        let available = viewport - ruler
+        guard natural > 0, available > 0 else { return 1 }
+        return min(max(available / natural, 0.5), 2)
+    }
+
+    /// Height of all tracks at scale 1.
+    var naturalTracksHeight: CGFloat {
+        // Lane rows only change when the overlay clips do (cached), so the
+        // cheap identity of the clip cache plus visibility is a sound key.
+        _ = overlayTimelineClips
+        let key = EditorTimelineDerivedPresentationCache.NaturalHeightKey(
+            tracks: visibleTracks.rawValue, hidden: hiddenPostLanesRaw + "#" + laneGroupLayoutKey + "#drop:\(timelineMediaDragActive)",
+            cameraSync: showsCameraSyncTimeline, primary: basePrimaryVideoHeight,
+            motion: baseMotionHeight, overlays: derivedPresentationCache.overlayGeneration
+        )
+        return derivedPresentationCache.naturalTracksHeight(key: key) {
+            basePrimaryVideoHeight + 12
+                + (showsZoomTimeline ? baseMotionHeight : 0)
+                + (showsCameraSyncTimeline ? 62 : 0)
+                + (showsScreenMotionTimeline ? baseMotionHeight : 0)
+                + (showsCameraMotionTimeline ? baseMotionHeight : 0)
+                + (upperLanes + lowerLanes).reduce(0) { $0 + baseLaneHeight($1) }
+        }
+    }
+
+    var baseMotionHeight: CGFloat { 32 }
+    var basePrimaryVideoHeight: CGFloat { layout.value(regular: 52, compact: 44) }
+
+    var cameraSyncTimelineHeight: CGFloat { 62 * trackScale }
+    var motionTimelineHeight: CGFloat { baseMotionHeight * trackScale }
+    var zoomTimelineHeight: CGFloat { baseMotionHeight * trackScale }
+    var zoomBarHeight: CGFloat { layout.value(regular: 24, compact: 22) * trackScale }
     var overlayTimelineHeight: CGFloat {
         max(CGFloat(max(overlayTimelineRows.count, 1) * 34 + 16), motionTimelineHeight)
     }
-    var timelineRulerHeight: CGFloat { layout.value(regular: 32, compact: 28) }
+    var timelineRulerHeight: CGFloat { layout.value(regular: 28, compact: 26) }
     var timelineControlsHeight: CGFloat { layout.value(regular: 44, compact: 40) }
     var timelineOverviewHeight: CGFloat { layout.value(regular: 20, compact: 16) }
     var timelineDividerHeight: CGFloat { 1 }
     var timelineLabelWidth: CGFloat {
-        timelineLabelsCollapsed ? 52 : layout.value(regular: 156, compact: 128)
+        timelineLabelsCollapsed ? 52 : layout.value(regular: 140, compact: 124)
     }
+    /// What the tracks need at their natural size (never the scaled size,
+    /// which depends on the panel and would feed back into it).
     var preferredPanelHeight: CGFloat {
-        timelineCanvasHeight + timelineControlsHeight + timelineOverviewHeight + timelineDividerHeight
+        timelineRulerHeight + naturalTracksHeight
+            + timelineControlsHeight + timelineOverviewHeight + timelineDividerHeight
     }
     // Compact windows use one row geometry for drawing, labels and hit testing.
     var primaryTimelineHeight: CGFloat { primaryVideoHeight + 12 }
     var waveformContentHeight: CGFloat { primaryVideoHeight }
     // Display mode changes the contents, never the workspace geometry.
-    var primaryVideoHeight: CGFloat { layout.value(regular: 64, compact: 52) }
+    var primaryVideoHeight: CGFloat { min(basePrimaryVideoHeight * trackScale, 76) }
     var timelineViewportHeight: CGFloat {
         max(panelHeight - timelineControlsHeight - timelineOverviewHeight - timelineDividerHeight, 80)
     }
@@ -49,7 +89,8 @@ extension EditorTimelineView {
     }
 
     var timelineFrameDuration: TimeInterval {
-        let frameRate = max(editorStore.project.capture.captureFrameRate.rawValue, 1)
+        let sourceID = mediaSession.sourceID(at: playbackController.latestOutputTime)
+        let frameRate = max(editorStore.project.captureFrameRate(for: sourceID).rawValue, 1)
         return 1 / Double(frameRate)
     }
 
@@ -118,9 +159,12 @@ extension EditorTimelineView {
     }
 
     func cancelActiveTimelineGesture() {
+        finishTimelineMarquee()
         if gestureOwnership.activeIntent?.seeksDuringDrag == true {
             playbackController.endScrubbing()
         }
+        rulerPress = nil
+        primaryPointerSession = nil
         gestureOwnership.cancel()
         timelineSnap.reset()
         endPrimarySegmentDrag()
@@ -133,7 +177,14 @@ extension EditorTimelineView {
         motionGestureOrigin = nil
         motionTrackDrag = nil
         motionCreateDrag = nil
+        overlayPointerPress = nil
+        overlayGroupOriginals = [:]
         overlayTimelineDrag = nil
+        overlayDragTarget = nil
+        overlayDragOffsetY = 0
+        overlayDragOriginY = nil
+        mainTrackDropX = nil
+        mediaDropLane = nil
         overlayCreateRange = nil
         overlayCreateStart = nil
         // Recovery is allowed to retire its own draft only. A delayed mouse-up

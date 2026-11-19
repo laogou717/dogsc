@@ -31,21 +31,32 @@ final class EditorMenuBridge: NSObject, NSMenuItemValidation {
     /// The current editor generation's undo manager, attached by EditorView
     /// for exactly as long as that editor is alive.
     private weak var editorUndoManager: UndoManager?
+    private weak var editorStore: EditorStore?
     private(set) var isEditorActive = false
 
     /// EditorView subscribes and presents its export sheet; the menu must not
     /// reach into SwiftUI state directly.
+    var currentRecordingSourceID: () -> UUID? = { nil }
+    let importRecordingRequest = PassthroughSubject<Void, Never>()
     let exportRequest = PassthroughSubject<Void, Never>()
     /// The project toolbar only contains project-scoped actions. The system
     /// Display menu routes this reference panel into the live editor sheet.
     let shortcutCheatsheetRequest = PassthroughSubject<Void, Never>()
+    /// Fold the side panels for more canvas; ⌥⌘I imports a recording project.
+    let toggleLibraryRequest = PassthroughSubject<Void, Never>()
+    let toggleInspectorRequest = PassthroughSubject<Void, Never>()
+    /// Opens the library on the remembered page (e.g. from a subtitle).
+    let revealLibraryRequest = PassthroughSubject<Void, Never>()
+    /// ⌘K: the one-line AI prompt over the canvas.
+    let quickPromptRequest = PassthroughSubject<Void, Never>()
     /// AppKit cannot close the editor window while a SwiftUI sheet is still
     /// attached. Route Quit through the live editor once so it can dismiss
     /// transient panels before the normal save/termination path continues.
     let quitRequest = PassthroughSubject<Void, Never>()
 
-    func attachEditor(undoManager: UndoManager?) {
+    func attachEditor(undoManager: UndoManager?, store: EditorStore? = nil) {
         editorUndoManager = undoManager
+        if let store { editorStore = store }
         isEditorActive = true
         setEditorMenuItemsVisible(true)
     }
@@ -53,6 +64,7 @@ final class EditorMenuBridge: NSObject, NSMenuItemValidation {
     func detachEditor(undoManager: UndoManager?) {
         guard editorUndoManager === undoManager else { return }
         editorUndoManager = nil
+        editorStore = nil
         isEditorActive = false
         setEditorMenuItemsVisible(false)
     }
@@ -86,6 +98,16 @@ final class EditorMenuBridge: NSObject, NSMenuItemValidation {
                 $0.action == #selector(exportFromMenu(_:))
             })?.title = appLocalized("导出成片…")
         }
+        if let fileMenu = mainMenu.items.first(where: { $0.identifier == fileMenuIdentifier })?.submenu {
+            let action = #selector(importRecordingFromMenu(_:))
+            if let existing = fileMenu.items.first(where: { $0.action == action }) {
+                existing.title = appLocalized("导入录屏项目…")
+            } else {
+                let item = makeItem(title: "导入录屏项目…", action: action, keyEquivalent: "i")
+                item.keyEquivalentModifierMask = [.command, .option]
+                fileMenu.insertItem(item, at: min(1, fileMenu.items.count))
+            }
+        }
         installEditItems(in: mainMenu)
         localizeStandardMenuItems(in: mainMenu)
         removeUnavailableHelpMenu(from: mainMenu)
@@ -108,6 +130,9 @@ final class EditorMenuBridge: NSObject, NSMenuItemValidation {
         })?.submenu {
             fileMenu.items.first(where: {
                 $0.action == #selector(exportFromMenu(_:))
+            })?.isHidden = !isVisible
+            fileMenu.items.first(where: {
+                $0.action == #selector(importRecordingFromMenu(_:))
             })?.isHidden = !isVisible
             for identifier in [
                 projectMediaSeparatorIdentifier,
@@ -298,35 +323,50 @@ final class EditorMenuBridge: NSObject, NSMenuItemValidation {
         WindowCoordinator.openProjectFromMenu()
     }
 
+    @objc private func importRecordingFromMenu(_ sender: NSMenuItem) { importRecordingRequest.send() }
+
     @objc private func exportFromMenu(_ sender: NSMenuItem) {
         exportRequest.send()
     }
 
+    private var activeEditableTextUndoManager: UndoManager? {
+        guard let textView = NSApplication.shared.keyWindow?.firstResponder as? NSTextView,
+              textView.isEditable,
+              let textUndoManager = textView.undoManager,
+              textUndoManager !== editorUndoManager else {
+            return nil
+        }
+        return textUndoManager
+    }
+
     @objc private func undoFromMenu(_ sender: NSMenuItem) {
-        if let textView = NSApplication.shared.keyWindow?.firstResponder as? NSTextView,
-           textView.isEditable {
-            textView.undoManager?.undo()
+        if let textUndo = activeEditableTextUndoManager, textUndo.canUndo {
+            textUndo.undo()
             return
         }
+        editorStore?.prepareForUserUndoOrRedo()
         editorUndoManager?.undo()
     }
 
     @objc private func redoFromMenu(_ sender: NSMenuItem) {
-        if let textView = NSApplication.shared.keyWindow?.firstResponder as? NSTextView,
-           textView.isEditable {
-            textView.undoManager?.redo()
+        if let textUndo = activeEditableTextUndoManager, textUndo.canRedo {
+            textUndo.redo()
             return
         }
+        editorStore?.prepareForUserUndoOrRedo()
         editorUndoManager?.redo()
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
         case #selector(undoFromMenu(_:)):
-            if let textView = NSApplication.shared.keyWindow?.firstResponder as? NSTextView,
-               textView.isEditable {
+            if let textUndo = activeEditableTextUndoManager, textUndo.canUndo {
                 menuItem.title = appLocalized("撤销")
-                return textView.undoManager?.canUndo ?? false
+                return true
+            }
+            if let pendingName = editorStore?.pendingAgentUndoActionName, !pendingName.isEmpty {
+                menuItem.title = String(format: appLocalized("撤销“%@”"), appLocalized(pendingName))
+                return true
             }
             if let name = editorUndoManager?.undoActionName, !name.isEmpty {
                 menuItem.title = String(format: appLocalized("撤销“%@”"), appLocalized(name))
@@ -335,10 +375,9 @@ final class EditorMenuBridge: NSObject, NSMenuItemValidation {
             }
             return editorUndoManager?.canUndo ?? false
         case #selector(redoFromMenu(_:)):
-            if let textView = NSApplication.shared.keyWindow?.firstResponder as? NSTextView,
-               textView.isEditable {
+            if let textUndo = activeEditableTextUndoManager, textUndo.canRedo {
                 menuItem.title = appLocalized("重做")
-                return textView.undoManager?.canRedo ?? false
+                return true
             }
             if let name = editorUndoManager?.redoActionName, !name.isEmpty {
                 menuItem.title = String(format: appLocalized("重做“%@”"), appLocalized(name))
@@ -346,7 +385,7 @@ final class EditorMenuBridge: NSObject, NSMenuItemValidation {
                 menuItem.title = appLocalized("重做")
             }
             return editorUndoManager?.canRedo ?? false
-        case #selector(exportFromMenu(_:)):
+        case #selector(exportFromMenu(_:)), #selector(importRecordingFromMenu(_:)):
             return isEditorActive
         case #selector(openProjectFromMenu(_:)):
             return true

@@ -12,6 +12,7 @@ public enum ProjectTimelineTrack: String, Equatable, Sendable {
     case cameraMotion
     case mosaic
     case sticker
+    case animation
 }
 
 public enum ProjectTimelineEditingError: Error, Equatable, Sendable {
@@ -26,6 +27,8 @@ public enum ProjectTimelineEditingError: Error, Equatable, Sendable {
     case noRestorableLeadingSourceGap(UUID)
     case noRestorableTrailingSourceGap(UUID)
     case cannotMergeDeletedGap(previous: UUID, next: UUID)
+    case cannotMergeDifferentSources(previous: UUID, next: UUID)
+    case cannotMergeDifferentSceneStyles
     case cannotMergeDifferentPlaybackRates(previous: UUID, next: UUID)
     case cannotMergeDifferentAudioOverrides(previous: UUID, next: UUID)
     case invalidPrimarySegmentAudioOverrides(UUID)
@@ -40,7 +43,7 @@ extension ProjectTimelineEditingError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .invalidSourceSequence:
-            return "主录屏片段必须有效、不重复使用源素材且至少保留一段。"
+            return "主录屏片段必须有效且至少保留一段。"
         case .segmentNotFound:
             return "找不到要编辑的主片段。"
         case .splitOutsideSegment:
@@ -61,6 +64,10 @@ extension ProjectTimelineEditingError: LocalizedError {
             return "结尾没有可还原的源素材。"
         case .cannotMergeDeletedGap:
             return "该剪切点包含已删除素材，应先还原而不是直接合并。"
+        case .cannotMergeDifferentSceneStyles:
+            return "这两个片段的场景外观不同，不能合并。"
+        case .cannotMergeDifferentSources:
+            return "不同录制的片段无法合并。"
         case .cannotMergeDifferentPlaybackRates:
             return "相邻片段速度不同，无法直接合并。"
         case .cannotMergeDifferentAudioOverrides:
@@ -90,14 +97,14 @@ private extension ProjectTimelineTrack {
         case .cameraMotion: "摄像运动"
         case .mosaic: "打码"
         case .sticker: "贴图"
+        case .animation: "动效"
         }
     }
 }
 
 /// Pure edit decisions for the lightweight primary-recording timeline.
 ///
-/// Source ranges remain unique and play at normal speed, while their array
-/// order is the authored output order. Splitting preserves duration; trims,
+/// Source intervals can be reused independently; array order is output order. Splitting preserves duration; trims,
 /// removal and reordering transform every time-varying track with the edit.
 public enum ProjectTimelineEditing {
     static let epsilon = 1.0 / 120_000.0
@@ -109,38 +116,7 @@ public enum ProjectTimelineEditing {
         timeline.primarySegmentAudioOverrides[segmentID] ?? PrimarySegmentAudioOverrides()
     }
 
-    public static func settingPrimarySegmentAudioOverrides(
-        in timeline: ProjectTimeline,
-        segmentID: UUID,
-        overrides: PrimarySegmentAudioOverrides
-    ) throws -> ProjectTimeline {
-        guard primarySegmentIDs(in: timeline.sourceSequence).contains(segmentID) else {
-            throw ProjectTimelineEditingError.segmentNotFound(segmentID)
-        }
-        var result = timeline
-        if overrides.isEmpty {
-            result.primarySegmentAudioOverrides.removeValue(forKey: segmentID)
-        } else {
-            result.primarySegmentAudioOverrides[segmentID] = overrides
-        }
-        try validate(result)
-        return result
-    }
 
-    public static func materialized(
-        _ timeline: ProjectTimeline,
-        fullSourceDuration: TimeInterval
-    ) throws -> ProjectTimeline {
-        try validate(timeline, fullSourceDuration: fullSourceDuration)
-        let map = try TimelineMap(
-            sourceSequence: timeline.sourceSequence,
-            fullSourceDuration: fullSourceDuration
-        )
-        var result = timeline
-        result.sourceSequence = map.materializedSourceSequence()
-        try validate(result)
-        return result
-    }
 
     /// Repairs projects that were saved by the old ripple implementation with
     /// a consumed (`progressOffset == 1`) zero-length return at a real source
@@ -157,6 +133,8 @@ public enum ProjectTimelineEditing {
         for index in segments.indices {
             output += segments[index].outputDuration
             guard segments.indices.contains(index + 1),
+                  segments[index].media == nil, segments[index + 1].media == nil,
+                  segments[index].resolvedSourceID == segments[index + 1].resolvedSourceID,
                   segments[index + 1].sourceStart
                     - (segments[index].sourceStart + segments[index].sourceDuration)
                     > epsilon else { continue }
@@ -245,12 +223,12 @@ public enum ProjectTimelineEditing {
         in timeline: ProjectTimeline,
         atOutputTime outputTime: TimeInterval,
         newRightSegmentID: UUID,
-        fullSourceDuration: TimeInterval
+        sourceDurations: [UUID: TimeInterval]
     ) throws -> ProjectTimeline {
-        try validate(timeline, fullSourceDuration: fullSourceDuration)
+        try validate(timeline, sourceDurations: sourceDurations)
         let map = try TimelineMap(
             sourceSequence: timeline.sourceSequence,
-            fullSourceDuration: fullSourceDuration
+            sourceDurations: sourceDurations
         )
         guard outputTime.isFinite,
               let resolved = map.segment(atOutputTime: outputTime),
@@ -274,7 +252,11 @@ public enum ProjectTimelineEditing {
                 id: newRightSegmentID,
                 sourceStart: resolved.sourceStart + splitSourceOffset,
                 sourceDuration: resolved.sourceDuration - splitSourceOffset,
-                playbackRate: resolved.playbackRate
+                playbackRate: resolved.playbackRate,
+                media: resolved.media,
+                sourceID: resolved.sourceID,
+                sceneStyle: resolved.sceneStyle,
+                crop: resolved.crop
             ),
             at: index + 1
         )
@@ -284,7 +266,7 @@ public enum ProjectTimelineEditing {
         if let overrides = timeline.primarySegmentAudioOverrides[resolved.id] {
             result.primarySegmentAudioOverrides[newRightSegmentID] = overrides
         }
-        try validate(result, fullSourceDuration: fullSourceDuration)
+        try validate(result, sourceDurations: sourceDurations)
         return result
     }
 
@@ -293,13 +275,13 @@ public enum ProjectTimelineEditing {
         segmentID: UUID,
         edge: RecordingSegmentTrimEdge,
         toOutputTime outputTime: TimeInterval,
-        fullSourceDuration: TimeInterval,
+        sourceDurations: [UUID: TimeInterval],
         defaultTransitionDuration: TimeInterval = 0.7
     ) throws -> ProjectTimeline {
-        try validate(timeline, fullSourceDuration: fullSourceDuration)
+        try validate(timeline, sourceDurations: sourceDurations)
         let map = try TimelineMap(
             sourceSequence: timeline.sourceSequence,
-            fullSourceDuration: fullSourceDuration
+            sourceDurations: sourceDurations
         )
         guard let resolved = map.segments.first(where: { $0.id == segmentID }) else {
             throw ProjectTimelineEditingError.segmentNotFound(segmentID)
@@ -320,13 +302,7 @@ public enum ProjectTimelineEditing {
                 return timeline
             }
             if outputTime < resolved.outputStart - epsilon {
-                let previousSourceEnd = segments.enumerated()
-                    .filter {
-                        $0.offset != index
-                            && $0.element.sourceEnd <= resolved.sourceStart + epsilon
-                    }
-                    .map { $0.element.sourceEnd }
-                    .max() ?? 0
+                let previousSourceEnd: TimeInterval = 0
                 let available = max(resolved.sourceStart - previousSourceEnd, 0)
                 let outputAmount = resolved.outputStart - outputTime
                 let sourceAmount = outputAmount * resolved.playbackRate
@@ -352,10 +328,16 @@ public enum ProjectTimelineEditing {
                 result.stickerClips = timeline.stickerClips.map {
                     inserting($0, at: resolved.outputStart, duration: outputAmount)
                 }
+                result.animationClips = timeline.animationClips.map {
+                    inserting($0, at: resolved.outputStart, duration: outputAmount)
+                }
+                result.audioClips = timeline.audioClips.map { insertingTimed($0, at: resolved.outputStart, duration: outputAmount) }
+                result.videoClips = timeline.videoClips.map { insertingTimed($0, at: resolved.outputStart, duration: outputAmount) }
+                result.subtitleCues = timeline.subtitleCues.map { insertingTimed($0, at: resolved.outputStart, duration: outputAmount) }
                 sortZoom(&result.zoomClips)
                 sortScreenMotion(&result.screenMotionClips)
                 sortCameraMotion(&result.cameraMotionClips)
-                try validate(result, fullSourceDuration: fullSourceDuration)
+                try validate(result, sourceDurations: sourceDurations)
                 return result
             }
             guard outputTime > resolved.outputStart + epsilon,
@@ -372,14 +354,8 @@ public enum ProjectTimelineEditing {
                 return timeline
             }
             if outputTime > resolved.outputEnd + epsilon {
-                let availableDuration = fullSourceDuration
-                let nextSourceStart = segments.enumerated()
-                    .filter {
-                        $0.offset != index
-                            && $0.element.sourceStart >= resolved.sourceEnd - epsilon
-                    }
-                    .map { $0.element.sourceStart }
-                    .min() ?? availableDuration
+                let availableDuration = resolved.media?.fileDuration ?? sourceDurations[resolved.sourceID] ?? 0
+                let nextSourceStart = availableDuration
                 let available = max(nextSourceStart - resolved.sourceEnd, 0)
                 let outputAmount = outputTime - resolved.outputEnd
                 let sourceAmount = outputAmount * resolved.playbackRate
@@ -404,10 +380,16 @@ public enum ProjectTimelineEditing {
                 result.stickerClips = timeline.stickerClips.map {
                     inserting($0, at: resolved.outputEnd, duration: outputAmount)
                 }
+                result.animationClips = timeline.animationClips.map {
+                    inserting($0, at: resolved.outputEnd, duration: outputAmount)
+                }
+                result.audioClips = timeline.audioClips.map { insertingTimed($0, at: resolved.outputEnd, duration: outputAmount) }
+                result.videoClips = timeline.videoClips.map { insertingTimed($0, at: resolved.outputEnd, duration: outputAmount) }
+                result.subtitleCues = timeline.subtitleCues.map { insertingTimed($0, at: resolved.outputEnd, duration: outputAmount) }
                 sortZoom(&result.zoomClips)
                 sortScreenMotion(&result.screenMotionClips)
                 sortCameraMotion(&result.cameraMotionClips)
-                try validate(result, fullSourceDuration: fullSourceDuration)
+                try validate(result, sourceDurations: sourceDurations)
                 return result
             }
             guard outputTime > resolved.outputStart + epsilon,
@@ -424,7 +406,7 @@ public enum ProjectTimelineEditing {
             replacingSourceSequenceWith: .edited(segments),
             deleting: deletion,
             deletesOutputTail: deletion.end >= map.outputDuration - epsilon,
-            fullSourceDuration: fullSourceDuration,
+            sourceDurations: sourceDurations,
             defaultTransitionDuration: defaultTransitionDuration
         )
     }
@@ -432,13 +414,13 @@ public enum ProjectTimelineEditing {
     public static func removePrimarySegment(
         from timeline: ProjectTimeline,
         segmentID: UUID,
-        fullSourceDuration: TimeInterval,
+        sourceDurations: [UUID: TimeInterval],
         defaultTransitionDuration: TimeInterval = 0.7
     ) throws -> ProjectTimeline {
-        try validate(timeline, fullSourceDuration: fullSourceDuration)
+        try validate(timeline, sourceDurations: sourceDurations)
         let map = try TimelineMap(
             sourceSequence: timeline.sourceSequence,
-            fullSourceDuration: fullSourceDuration
+            sourceDurations: sourceDurations
         )
         guard let removed = map.segments.first(where: { $0.id == segmentID }) else {
             throw ProjectTimelineEditingError.segmentNotFound(segmentID)
@@ -454,7 +436,7 @@ public enum ProjectTimelineEditing {
             replacingSourceSequenceWith: .edited(retained),
             deleting: OutputDeletion(start: removed.outputStart, end: removed.outputEnd),
             deletesOutputTail: removed.outputEnd >= map.outputDuration - epsilon,
-            fullSourceDuration: fullSourceDuration,
+            sourceDurations: sourceDurations,
             defaultTransitionDuration: defaultTransitionDuration
         )
     }
@@ -466,25 +448,36 @@ public enum ProjectTimelineEditing {
         in timeline: ProjectTimeline,
         segmentID: UUID,
         toIndex requestedIndex: Int,
-        fullSourceDuration: TimeInterval
+        sourceDurations: [UUID: TimeInterval]
     ) throws -> ProjectTimeline {
-        try validate(timeline, fullSourceDuration: fullSourceDuration)
-        let oldMap = try TimelineMap(
-            sourceSequence: timeline.sourceSequence,
-            fullSourceDuration: fullSourceDuration
-        )
-        guard let oldIndex = oldMap.segments.firstIndex(where: { $0.id == segmentID }) else {
-            throw ProjectTimelineEditingError.segmentNotFound(segmentID)
-        }
-        let finalIndex = min(max(requestedIndex, 0), oldMap.segments.count - 1)
-        guard finalIndex != oldIndex else { return timeline }
+        try movePrimarySegments(in: timeline, segmentIDs: [segmentID], toIndex: requestedIndex,
+                                sourceDurations: sourceDurations)
+    }
 
-        var segments = oldMap.segments.map(Self.authoredSegment)
-        let moved = segments.remove(at: oldIndex)
-        segments.insert(moved, at: finalIndex)
+    /// Moves a selection as one block, retaining its timeline order. The index
+    /// is in the sequence after removing all selected segments. Remap effects
+    /// once so a multi-clip move is one atomic edit, including undo.
+    public static func movePrimarySegments(
+        in timeline: ProjectTimeline,
+        segmentIDs: Set<UUID>,
+        toIndex requestedIndex: Int,
+        sourceDurations: [UUID: TimeInterval]
+    ) throws -> ProjectTimeline {
+        try validate(timeline, sourceDurations: sourceDurations)
+        let oldMap = try TimelineMap(sourceSequence: timeline.sourceSequence, sourceDurations: sourceDurations)
+        guard !segmentIDs.isEmpty else { return timeline }
+        let existingIDs = Set(oldMap.segments.map(\.id))
+        if let missing = segmentIDs.subtracting(existingIDs).first {
+            throw ProjectTimelineEditingError.segmentNotFound(missing)
+        }
+        let selected = oldMap.segments.filter { segmentIDs.contains($0.id) }.map(Self.authoredSegment)
+        var segments = oldMap.segments.filter { !segmentIDs.contains($0.id) }.map(Self.authoredSegment)
+        let finalIndex = min(max(requestedIndex, 0), segments.count)
+        segments.insert(contentsOf: selected, at: finalIndex)
+        guard segments.map(\.id) != oldMap.segments.map(\.id) else { return timeline }
         let newMap = try TimelineMap(
             sourceSequence: .edited(segments),
-            fullSourceDuration: fullSourceDuration
+            sourceDurations: sourceDurations
         )
         let newStarts = Dictionary(uniqueKeysWithValues: newMap.segments.map {
             ($0.id, $0.outputStart)
@@ -522,7 +515,16 @@ public enum ProjectTimelineEditing {
             newStarts: newStarts,
             outputDuration: newMap.outputDuration
         )
-        try validate(result, fullSourceDuration: fullSourceDuration)
+        result.animationClips = remappedAnimationClips(
+            timeline.animationClips,
+            oldMap: oldMap,
+            newStarts: newStarts,
+            outputDuration: newMap.outputDuration
+        )
+        result.audioClips = remappedTimed(timeline.audioClips, oldMap: oldMap, newStarts: newStarts, outputDuration: newMap.outputDuration)
+        result.videoClips = remappedTimed(timeline.videoClips, oldMap: oldMap, newStarts: newStarts, outputDuration: newMap.outputDuration)
+        result.subtitleCues = remappedTimed(timeline.subtitleCues, oldMap: oldMap, newStarts: newStarts, outputDuration: newMap.outputDuration)
+        try validate(result, sourceDurations: sourceDurations)
         return result
     }
 
@@ -535,12 +537,12 @@ public enum ProjectTimelineEditing {
         previousSegmentID: UUID,
         nextSegmentID: UUID,
         restoredSegmentID: UUID,
-        fullSourceDuration: TimeInterval
+        sourceDurations: [UUID: TimeInterval]
     ) throws -> ProjectTimeline {
-        try validate(timeline, fullSourceDuration: fullSourceDuration)
+        try validate(timeline, sourceDurations: sourceDurations)
         let map = try TimelineMap(
             sourceSequence: timeline.sourceSequence,
-            fullSourceDuration: fullSourceDuration
+            sourceDurations: sourceDurations
         )
         guard !map.segments.contains(where: { $0.id == restoredSegmentID }) else {
             throw ProjectTimelineEditingError.duplicateSegmentID(restoredSegmentID)
@@ -558,7 +560,7 @@ public enum ProjectTimelineEditing {
         let previous = map.segments[previousIndex]
         let next = map.segments[previousIndex + 1]
         let restoredDuration = next.sourceStart - previous.sourceEnd
-        guard restoredDuration > epsilon else {
+        guard previous.media == nil, next.media == nil, previous.sourceID == next.sourceID, restoredDuration > epsilon else {
             throw ProjectTimelineEditingError.noRestorableSourceGap(
                 previous: previousSegmentID,
                 next: nextSegmentID
@@ -570,7 +572,10 @@ public enum ProjectTimelineEditing {
             RecordingSegment(
                 id: restoredSegmentID,
                 sourceStart: previous.sourceEnd,
-                sourceDuration: restoredDuration
+                sourceDuration: restoredDuration,
+                sourceID: previous.sourceID,
+                sceneStyle: previous.sceneStyle,
+                crop: previous.crop
             ),
             at: previousIndex + 1
         )
@@ -594,10 +599,16 @@ public enum ProjectTimelineEditing {
         result.stickerClips = timeline.stickerClips.map {
             inserting($0, at: insertionTime, duration: restoredDuration)
         }
+        result.animationClips = timeline.animationClips.map {
+            inserting($0, at: insertionTime, duration: restoredDuration)
+        }
+        result.audioClips = timeline.audioClips.map { insertingTimed($0, at: insertionTime, duration: restoredDuration) }
+        result.videoClips = timeline.videoClips.map { insertingTimed($0, at: insertionTime, duration: restoredDuration) }
+        result.subtitleCues = timeline.subtitleCues.map { insertingTimed($0, at: insertionTime, duration: restoredDuration) }
         sortZoom(&result.zoomClips)
         sortScreenMotion(&result.screenMotionClips)
         sortCameraMotion(&result.cameraMotionClips)
-        try validate(result, fullSourceDuration: fullSourceDuration)
+        try validate(result, sourceDurations: sourceDurations)
         return result
     }
 
@@ -607,14 +618,14 @@ public enum ProjectTimelineEditing {
     public static func restorePrimaryLeadingGap(
         in timeline: ProjectTimeline,
         restoredSegmentID: UUID,
-        fullSourceDuration: TimeInterval
+        sourceDurations: [UUID: TimeInterval]
     ) throws -> ProjectTimeline {
-        try validate(timeline, fullSourceDuration: fullSourceDuration)
+        try validate(timeline, sourceDurations: sourceDurations)
         let map = try TimelineMap(
             sourceSequence: timeline.sourceSequence,
-            fullSourceDuration: fullSourceDuration
+            sourceDurations: sourceDurations
         )
-        guard let first = map.segments.first,
+        guard let first = map.segments.first, first.media == nil,
               first.sourceStart > epsilon else {
             throw ProjectTimelineEditingError.noRestorableLeadingSourceGap(
                 map.segments.first?.id ?? restoredSegmentID
@@ -629,7 +640,10 @@ public enum ProjectTimelineEditing {
             RecordingSegment(
                 id: restoredSegmentID,
                 sourceStart: 0,
-                sourceDuration: restoredDuration
+                sourceDuration: restoredDuration,
+                sourceID: first.sourceID,
+                sceneStyle: first.sceneStyle,
+                crop: first.crop
             ),
             at: 0
         )
@@ -652,10 +666,16 @@ public enum ProjectTimelineEditing {
         result.stickerClips = timeline.stickerClips.map {
             inserting($0, at: 0, duration: restoredDuration)
         }
+        result.animationClips = timeline.animationClips.map {
+            inserting($0, at: 0, duration: restoredDuration)
+        }
+        result.audioClips = timeline.audioClips.map { insertingTimed($0, at: 0, duration: restoredDuration) }
+        result.videoClips = timeline.videoClips.map { insertingTimed($0, at: 0, duration: restoredDuration) }
+        result.subtitleCues = timeline.subtitleCues.map { insertingTimed($0, at: 0, duration: restoredDuration) }
         sortZoom(&result.zoomClips)
         sortScreenMotion(&result.screenMotionClips)
         sortCameraMotion(&result.cameraMotionClips)
-        try validate(result, fullSourceDuration: fullSourceDuration)
+        try validate(result, sourceDurations: sourceDurations)
         return result
     }
 
@@ -666,20 +686,20 @@ public enum ProjectTimelineEditing {
     public static func restorePrimaryTrailingGap(
         in timeline: ProjectTimeline,
         restoredSegmentID: UUID,
-        fullSourceDuration: TimeInterval
+        sourceDurations: [UUID: TimeInterval]
     ) throws -> ProjectTimeline {
-        try validate(timeline, fullSourceDuration: fullSourceDuration)
+        try validate(timeline, sourceDurations: sourceDurations)
         let map = try TimelineMap(
             sourceSequence: timeline.sourceSequence,
-            fullSourceDuration: fullSourceDuration
+            sourceDurations: sourceDurations
         )
         guard let last = map.segments.last else {
             throw ProjectTimelineEditingError.noRestorableTrailingSourceGap(
                 restoredSegmentID
             )
         }
-        let sourceAvailableDuration = fullSourceDuration
-        guard sourceAvailableDuration - last.sourceEnd > epsilon else {
+        let sourceAvailableDuration = sourceDurations[last.sourceID] ?? 0
+        guard last.media == nil, sourceAvailableDuration - last.sourceEnd > epsilon else {
             throw ProjectTimelineEditingError.noRestorableTrailingSourceGap(
                 map.segments.last?.id ?? restoredSegmentID
             )
@@ -692,14 +712,17 @@ public enum ProjectTimelineEditing {
             RecordingSegment(
                 id: restoredSegmentID,
                 sourceStart: last.sourceEnd,
-                sourceDuration: sourceAvailableDuration - last.sourceEnd
+                sourceDuration: sourceAvailableDuration - last.sourceEnd,
+                sourceID: last.sourceID,
+                sceneStyle: last.sceneStyle,
+                crop: last.crop
             )
         )
         var result = timeline
         result.sourceSequence = .edited(segments)
         result.primarySegmentAudioOverrides[restoredSegmentID] =
             timeline.primarySegmentAudioOverrides[last.id]
-        try validate(result, fullSourceDuration: fullSourceDuration)
+        try validate(result, sourceDurations: sourceDurations)
         return result
     }
 
@@ -710,12 +733,12 @@ public enum ProjectTimelineEditing {
         in timeline: ProjectTimeline,
         previousSegmentID: UUID,
         nextSegmentID: UUID,
-        fullSourceDuration: TimeInterval
+        sourceDurations: [UUID: TimeInterval]
     ) throws -> ProjectTimeline {
-        try validate(timeline, fullSourceDuration: fullSourceDuration)
+        try validate(timeline, sourceDurations: sourceDurations)
         let map = try TimelineMap(
             sourceSequence: timeline.sourceSequence,
-            fullSourceDuration: fullSourceDuration
+            sourceDurations: sourceDurations
         )
         guard let previousIndex = map.segments.firstIndex(where: {
             $0.id == previousSegmentID
@@ -729,7 +752,11 @@ public enum ProjectTimelineEditing {
         }
         let previous = map.segments[previousIndex]
         let next = map.segments[previousIndex + 1]
-        guard abs(next.sourceStart - previous.sourceEnd) <= epsilon else {
+        guard previous.sourceID == next.sourceID else {
+            throw ProjectTimelineEditingError.cannotMergeDifferentSources(previous: previousSegmentID, next: nextSegmentID)
+        }
+        guard previous.media?.path == next.media?.path,
+              abs(next.sourceStart - previous.sourceEnd) <= epsilon else {
             throw ProjectTimelineEditingError.cannotMergeDeletedGap(
                 previous: previousSegmentID,
                 next: nextSegmentID
@@ -740,6 +767,9 @@ public enum ProjectTimelineEditing {
                 previous: previousSegmentID,
                 next: nextSegmentID
             )
+        }
+        guard previous.sceneStyle == next.sceneStyle else {
+            throw ProjectTimelineEditingError.cannotMergeDifferentSceneStyles
         }
         guard primarySegmentAudioOverrides(
             in: timeline,
@@ -760,7 +790,100 @@ public enum ProjectTimelineEditing {
         var result = timeline
         result.sourceSequence = .edited(segments)
         result.primarySegmentAudioOverrides.removeValue(forKey: nextSegmentID)
-        try validate(result, fullSourceDuration: fullSourceDuration)
+        try validate(result, sourceDurations: sourceDurations)
+        return result
+    }
+
+    /// EDT-054: inserts an outside video into the main track at an output
+    /// time. A segment under that time is split; everything from there on —
+    /// recording, effects, overlays, audio and subtitles — moves later by the
+    /// inserted length, so the programme grows.
+    /// `sourceStart` is the in point inside the file: a drop that carries in
+    /// and out marks places that span, not the head of the file.
+    public static func insertMediaSegment(
+        in timeline: ProjectTimeline,
+        media: InsertedMedia,
+        atOutputTime requestedTime: TimeInterval,
+        duration requestedDuration: TimeInterval,
+        newSegmentID: UUID,
+        sourceDurations: [UUID: TimeInterval],
+        sourceStart requestedSourceStart: TimeInterval = 0
+    ) throws -> ProjectTimeline {
+        let sourceStart = min(max(requestedSourceStart, 0), max(media.fileDuration - 0.1, 0))
+        let duration = min(max(requestedDuration, 0.1), max(media.fileDuration - sourceStart, 0.1))
+        return try insertPrimarySegments(in: timeline,
+            segments: [RecordingSegment(id: newSegmentID, sourceStart: sourceStart, sourceDuration: duration, media: media)],
+            atOutputTime: requestedTime, sourceDurations: sourceDurations, splitEffectsAtInsertion: false)
+    }
+
+    /// Inserts authored recording/media segments without losing source ranges,
+    /// playback rates or per-segment appearance. Existing tracks ripple once.
+    public static func insertPrimarySegments(
+        in original: ProjectTimeline,
+        segments inserted: [RecordingSegment],
+        audioOverrides: [UUID: PrimarySegmentAudioOverrides] = [:],
+        atOutputTime requestedTime: TimeInterval,
+        sourceDurations: [UUID: TimeInterval],
+        splitEffectsAtInsertion: Bool = true
+    ) throws -> ProjectTimeline {
+        let map = try TimelineMap(sourceSequence: original.sourceSequence, sourceDurations: sourceDurations)
+        let requestedTime = RecordingProjectImport.insertionTime(requestedTime, map: map)
+        let timeline = splitEffectsAtInsertion ? RecordingProjectImport.splitEdits(original, at: requestedTime) : original
+        try validate(timeline, sourceDurations: sourceDurations)
+        let duration = inserted.reduce(0) { $0 + $1.outputDuration }
+        guard !inserted.isEmpty, duration.isFinite, duration > 0 else {
+            throw ProjectTimelineEditingError.invalidSourceSequence
+        }
+        var segments = map.segments.map(Self.authoredSegment)
+        var overrides = timeline.primarySegmentAudioOverrides
+        // Snap to the nearest boundary when within a frame, otherwise split.
+        var insertIndex = segments.count
+        var insertionTime = map.outputDuration
+        if let resolved = map.segment(atOutputTime: min(max(requestedTime, 0), map.outputDuration)) {
+            let index = segments.firstIndex { $0.id == resolved.id } ?? segments.count
+            if requestedTime - resolved.outputStart < 1.0 / 60 {
+                insertIndex = index
+                insertionTime = resolved.outputStart
+            } else if resolved.outputEnd - requestedTime < 1.0 / 60 {
+                insertIndex = index + 1
+                insertionTime = resolved.outputEnd
+            } else {
+                let sourceOffset = (requestedTime - resolved.outputStart) * resolved.playbackRate
+                segments[index].sourceDuration = sourceOffset
+                let rightID = UUID()
+                segments.insert(RecordingSegment(
+                    id: rightID,
+                    sourceStart: resolved.sourceStart + sourceOffset,
+                    sourceDuration: resolved.sourceDuration - sourceOffset,
+                    playbackRate: resolved.playbackRate,
+                    media: resolved.media,
+                    sourceID: resolved.sourceID,
+                sceneStyle: resolved.sceneStyle,
+                crop: resolved.crop
+                ), at: index + 1)
+                overrides[rightID] = overrides[resolved.id]
+                insertIndex = index + 1
+                insertionTime = requestedTime
+            }
+        }
+        segments.insert(contentsOf: inserted, at: insertIndex)
+        for segment in inserted { overrides[segment.id] = audioOverrides[segment.id] }
+        var result = timeline
+        result.primarySegmentAudioOverrides = overrides
+        result.sourceSequence = .edited(segments)
+        result.zoomClips = timeline.zoomClips.map { inserting($0, at: insertionTime, duration: duration) }
+        result.screenMotionClips = timeline.screenMotionClips.map { inserting($0, at: insertionTime, duration: duration) }
+        result.cameraMotionClips = timeline.cameraMotionClips.map { inserting($0, at: insertionTime, duration: duration) }
+        result.mosaicClips = timeline.mosaicClips.map { inserting($0, at: insertionTime, duration: duration) }
+        result.stickerClips = timeline.stickerClips.map { inserting($0, at: insertionTime, duration: duration) }
+        result.animationClips = timeline.animationClips.map { inserting($0, at: insertionTime, duration: duration) }
+        result.audioClips = timeline.audioClips.map { insertingTimed($0, at: insertionTime, duration: duration) }
+        result.videoClips = timeline.videoClips.map { insertingTimed($0, at: insertionTime, duration: duration) }
+        result.subtitleCues = timeline.subtitleCues.map { insertingTimed($0, at: insertionTime, duration: duration) }
+        sortZoom(&result.zoomClips)
+        sortScreenMotion(&result.screenMotionClips)
+        sortCameraMotion(&result.cameraMotionClips)
+        try validate(result, sourceDurations: sourceDurations)
         return result
     }
 
@@ -920,16 +1043,32 @@ public enum ProjectTimelineEditing {
         try validateCameraMotionClips(timeline.cameraMotionClips)
         try validateMosaicClips(timeline.mosaicClips)
         try validateStickerClips(timeline.stickerClips)
+        try validateAnimationClips(timeline.animationClips)
     }
 
     public static func validate(
         _ timeline: ProjectTimeline,
-        fullSourceDuration: TimeInterval
+        sourceDurations: [UUID: TimeInterval]
     ) throws {
         _ = try TimelineMap(
             sourceSequence: timeline.sourceSequence,
-            fullSourceDuration: fullSourceDuration
+            sourceDurations: sourceDurations
         )
         try validate(timeline)
+    }
+}
+
+extension ProjectTimelineEditing {
+    static func validateAnimationClips(_ clips: [AnimationClip]) throws {
+        for clip in clips {
+            guard clip.timing.startTime.isFinite, clip.timing.startTime >= 0,
+                  clip.timing.duration.isFinite, clip.timing.duration > 0,
+                  clip.width.isFinite, clip.width > 0,
+                  clip.opacity.isFinite, (0...1).contains(clip.opacity),
+                  clip.playbackRate.isFinite, clip.playbackRate > 0,
+                  !clip.sourcePath.isEmpty else {
+                throw ProjectTimelineEditingError.invalidClip(track: .animation, id: clip.id)
+            }
+        }
     }
 }

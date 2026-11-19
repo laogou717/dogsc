@@ -118,11 +118,16 @@ struct ResolvedCursorAsset: Identifiable, @unchecked Sendable {
             / source.pdfArtworkRect.width
         let ky = targetHeight * source.bitmapArtworkRect.height
             / source.pdfArtworkRect.height
+        // Artwork boxes are measured in bitmap rows (top-down), while this
+        // AppKit context draws bottom-up. Align the top edges in top-down
+        // space and convert once; mixing the two shifted the hand cursors'
+        // fingertip hotspot by 2–3% of their height at large sizes.
+        let topDownMinY = source.bitmapArtworkRect.minY * targetHeight
+            - source.pdfArtworkRect.minY * ky
         let drawRect = CGRect(
             x: source.bitmapArtworkRect.minX * targetWidth
                 - source.pdfArtworkRect.minX * kx,
-            y: source.bitmapArtworkRect.minY * targetHeight
-                - source.pdfArtworkRect.minY * ky,
+            y: targetHeight - topDownMinY - ky,
             width: kx,
             height: ky
         )
@@ -421,9 +426,7 @@ enum CursorAssetLibrary {
             vectorSource: image.flatMap {
                 vectorSource(
                     directory: vectorDirectory,
-                    bitmap: $0,
-                    pagePointSize: CursorAssetSize(width: width, height: height)
-                )
+                    bitmap: $0)
             }
         )
     }
@@ -444,9 +447,7 @@ enum CursorAssetLibrary {
     /// hotspot grid identical to the system bitmap at every size.
     private static func vectorSource(
         directory: String?,
-        bitmap: NSImage,
-        pagePointSize: CursorAssetSize
-    ) -> CursorVectorSource? {
+        bitmap: NSImage) -> CursorVectorSource? {
         guard let directory,
               let base = systemCursorVectorBase,
               let pdfImage = NSImage(

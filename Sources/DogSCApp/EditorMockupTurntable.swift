@@ -10,7 +10,6 @@ struct EditorMockupTurntable: View {
     let screenImage: NSImage?
     let onSelect: (ScreenFrameStyle) -> Void
 
-    @Environment(\.consolePalette) private var palette
     @State private var rotation: Double = 0
     @State private var dragStart: Double?
     @State private var hasPlacedInitial = false
@@ -60,7 +59,7 @@ struct EditorMockupTurntable: View {
                             removal: .offset(y: -12).combined(with: .opacity)
                         ))
                 }
-                .font(.appUI(size: 14.5, weight: .semibold))
+                .font(.appUI(size: 13, weight: .semibold))
                 .foregroundStyle(EditorTheme.primaryText)
                 .frame(height: 20)
                 .clipped()
@@ -92,7 +91,7 @@ struct EditorMockupTurntable: View {
     }
 
     private var settleSpring: Animation? {
-        RecorderMotion.reduces ? nil : .spring(response: 0.62, dampingFraction: 0.74)
+        SpringMotion.emphasis
     }
 
     private func wrapped(_ value: Double) -> Double {
@@ -158,7 +157,7 @@ struct EditorMockupTurntable: View {
                 .background(EditorTheme.chrome(0.07), in: Circle())
                 .contentShape(Circle())
         }
-        .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 15, cornerStyle: .circular))
+        .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: 10, cornerStyle: .circular))
         .appKeyboardFocus(in: Circle())
         .accessibilityLabel(appLocalized(systemName.hasSuffix("left") ? "上一个样机" : "下一个样机"))
     }

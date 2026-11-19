@@ -36,9 +36,6 @@ private struct PlaybackRateTimeTransform {
         return result
     }
 
-    func map(_ time: TimeInterval) -> TimeInterval {
-        mapAnchor(time)
-    }
 }
 
 public extension ProjectTimelineEditing {
@@ -50,12 +47,12 @@ public extension ProjectTimelineEditing {
         _ requestedRate: Double,
         for segmentID: UUID,
         in timeline: ProjectTimeline,
-        fullSourceDuration: TimeInterval
+        sourceDurations: [UUID: TimeInterval]
     ) throws -> ProjectTimeline {
-        try validate(timeline, fullSourceDuration: fullSourceDuration)
+        try validate(timeline, sourceDurations: sourceDurations)
         let oldMap = try TimelineMap(
             sourceSequence: timeline.sourceSequence,
-            fullSourceDuration: fullSourceDuration
+            sourceDurations: sourceDurations
         )
         guard let resolved = oldMap.segments.first(where: { $0.id == segmentID }) else {
             throw ProjectTimelineEditingError.segmentNotFound(segmentID)
@@ -123,6 +120,26 @@ public extension ProjectTimelineEditing {
             )
             return edited
         }
+        result.animationClips = timeline.animationClips.map { clip in
+            var edited = clip
+            edited.timing = transform.map(clip.timing)
+            return edited
+        }
+        result.audioClips = timeline.audioClips.map { clip in
+            var edited = clip
+            edited.timing = transform.map(clip.timing)
+            return edited
+        }
+        result.videoClips = timeline.videoClips.map { clip in
+            var edited = clip
+            edited.timing = transform.map(clip.timing)
+            return edited
+        }
+        result.subtitleCues = timeline.subtitleCues.map { cue in
+            var edited = cue
+            edited.timing = transform.map(cue.timing)
+            return edited
+        }
         sortZoom(&result.zoomClips)
         sortScreenMotion(&result.screenMotionClips)
         sortCameraMotion(&result.cameraMotionClips)
@@ -135,7 +152,7 @@ public extension ProjectTimelineEditing {
             if lhs.layerIndex != rhs.layerIndex { return lhs.layerIndex < rhs.layerIndex }
             return lhs.id.uuidString < rhs.id.uuidString
         }
-        try validate(result, fullSourceDuration: fullSourceDuration)
+        try validate(result, sourceDurations: sourceDurations)
         return result
     }
 }

@@ -38,39 +38,19 @@ struct EditorSlider: View {
                 // title and readout above; the thumb travels inside it.
                 ZStack(alignment: .leading) {
                     Capsule().fill(EditorTheme.sliderRail).frame(height: 3)
-                    Capsule().fill(palette?.stroke ?? EditorTheme.sliderInk)
+                    Capsule().fill(EditorTheme.sliderInk)
                         .frame(width: max(center, 3), height: 3)
                     Circle().fill(EditorTheme.sliderThumb)
-                        .overlay { Circle().strokeBorder(EditorTheme.chrome(isFocused ? 0.4 : 0.1), lineWidth: 0.5) }
-                        .shadow(color: .black.opacity(0.22), radius: 1.5, y: 1)
+                        .overlay { Circle().strokeBorder(EditorTheme.chrome(isFocused || engaged ? 0.28 : 0.12), lineWidth: 0.5) }
+                        .shadow(color: .black.opacity(0.18), radius: 1.5, y: 1)
                         .frame(width: 14, height: 14)
-                        .scaleEffect(RecorderMotion.reduces ? 1 : isDragging ? 1.22 : engaged ? 1.1 : 1)
+                        .scaleEffect(isDragging ? 1.12 : 1)
                         .offset(x: center - 7)
                 }
-                .frame(height: 32)
-                .animation(SpringMotion.snappy, value: isDragging)
-                .animation(SpringMotion.hover, value: engaged)
+                .frame(height: 28)
+                .animation(SpringMotion.micro, value: engaged)
                 .contentShape(Rectangle())
                 .onHover { isHovered = $0 }
-                .overlay(alignment: .topLeading) {
-                    if showsFloatingValue && isDragging {
-                        Text(formatValue?(value) ?? String(format: "%.0f", value))
-                            .font(.appUI(size: 11, weight: .semibold)).monospacedDigit()
-                            .foregroundStyle(EditorTheme.onAccent)
-                            .padding(.horizontal, 8).padding(.vertical, 4)
-                            .background(EditorTheme.platinumAccent, in: Capsule(style: .continuous))
-                            .shadow(color: EditorTheme.softShadow, radius: 6, y: 3)
-                            .fixedSize()
-                            .frame(width: 64)
-                            .offset(x: min(max(center - 32, -4), max(width - 60, 0)), y: -26)
-                            .transition(.asymmetric(
-                                insertion: .scale(scale: 0.7, anchor: .bottom).combined(with: .opacity),
-                                removal: .opacity
-                            ))
-                            .allowsHitTesting(false)
-                    }
-                }
-                .animation(SpringMotion.lift, value: isDragging)
                 .gesture(DragGesture(minimumDistance: 0)
                     .onChanged { drag in
                         guard isEnabled else { return }
@@ -89,7 +69,7 @@ struct EditorSlider: View {
                         guard isDragging else { return }
                         isDragging = false; dragStartValue = nil; onEditingChanged(false)
                     })
-            }.frame(height: 32)
+            }.frame(height: 28)
         }
         .opacity(isEnabled ? 1 : 0.4)
         .background {
@@ -202,14 +182,13 @@ struct EditorInspectorParameterReadout: View {
 
     private func valueLabel(isActive: Bool, showsValue: Bool = true) -> some View {
         Text(valueText)
-            .font(.appUI(size: 13, weight: .medium)).monospacedDigit()
+            .font(.appUI(size: 12.5, design: .monospaced))
             .lineLimit(1)
             .minimumScaleFactor(0.8)
             .foregroundStyle(EditorTheme.primaryText.opacity(isEnabled ? 1 : 0.4))
             .opacity(showsValue ? 1 : 0)
-            .contentTransition(.numericText())
             .padding(.horizontal, 7)
-            .frame(minWidth: 44, minHeight: 24, maxHeight: 24, alignment: centered ? .center : .trailing)
+            .frame(minWidth: 44, minHeight: 26, maxHeight: 26, alignment: centered ? .center : .trailing)
             .background(valueBackground(isActive: isActive))
     }
 
@@ -284,8 +263,10 @@ struct EditorInspectorParameterReadout: View {
     /// The value is plain text at rest; a soft well appears only while it is
     /// hovered, dragged or typed into, telling the user it is editable.
     private func valueBackground(isActive: Bool) -> some View {
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
-            .fill(EditorTheme.chrome(isEmbedded ? 0 : isTextEditing ? 0.08 : isActive ? 0.055 : 0))
+        // EDT-079: the number sits in a filled box, a little darker when
+        // hovered, dragged or typed into.
+        RoundedRectangle(cornerRadius: 7, style: .continuous)
+            .fill(EditorTheme.chrome(isEmbedded ? 0 : isTextEditing ? 0.10 : isActive ? 0.08 : 0.045))
     }
 
     private func beginTextEditing(_ configuration: EditorInspectorParameterEditConfiguration) {
@@ -353,33 +334,34 @@ struct EditorPairedParameterReadouts: View {
     @State private var hasPreview = false
 
     var body: some View {
-        let layout = vertical ? AnyLayout(VStackLayout(alignment: .trailing, spacing: 14)) : AnyLayout(HStackLayout(spacing: 10))
-        // Side by side, the pair hangs from the pad's two edges.
+        let layout = vertical ? AnyLayout(VStackLayout(alignment: .trailing, spacing: 6)) : AnyLayout(HStackLayout(spacing: 6))
+        // EDT-079: two filled boxes; drag sideways on one to change it,
+        // double-click to type.
         return layout {
-            readout(first, slot: .first)
-                .frame(maxWidth: vertical ? nil : .infinity, alignment: .leading)
-            readout(second, slot: .second)
-                .frame(maxWidth: vertical ? nil : .infinity, alignment: .trailing)
+            field(first, slot: .first)
+            field(second, slot: .second)
         }
     }
 
-    private func readout(
-        _ parameter: EditorPairedParameterValue,
-        slot: Slot
-    ) -> some View {
-        EditorInspectorParameterReadout(
+    private func field(_ parameter: EditorPairedParameterValue, slot: Slot) -> some View {
+        EditorScrubField(
             title: parameter.title,
-            valueText: parameter.displayText,
             accessibilityTitle: parameter.accessibilityTitle,
-            isEditing: activeSlot == slot,
-            editConfiguration: EditorInspectorParameterEditConfiguration(
-                draftText: parameter.inputFormat.editingText(for: parameter.value),
-                onBegin: { begin(slot) },
-                onPreview: { preview($0, slot: slot) },
-                onCommit: { finish(slot, commits: true) },
-                onCancel: { finish(slot, commits: false) }
-            ),
-            compact: true
+            displayText: parameter.displayText,
+            editingText: parameter.inputFormat.editingText(for: parameter.value),
+            value: parameter.value,
+            range: parameter.range,
+            isActive: activeSlot == slot,
+            onBegin: { begin(slot) },
+            onScrub: { value in
+                hasPreview = true
+                switch slot {
+                case .first: onChanged(value, second.value)
+                case .second: onChanged(first.value, value)
+                }
+            },
+            onPreviewText: { preview($0, slot: slot) },
+            onFinish: { finish(slot, commits: $0) }
         )
     }
 
@@ -418,6 +400,112 @@ struct EditorPairedParameterReadouts: View {
     }
 }
 
+/// One number box: a grey label, the value on the right. Dragging sideways
+/// scrubs (a full range per 300 pt, ⇧ for fine steps); double-click types.
+struct EditorScrubField: View {
+    let title: String
+    let accessibilityTitle: String
+    let displayText: String
+    let editingText: String
+    let value: Double
+    let range: ClosedRange<Double>
+    let isActive: Bool
+    let onBegin: () -> Void
+    let onScrub: (Double) -> Void
+    let onPreviewText: (String) -> Bool
+    let onFinish: (Bool) -> Void
+
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var hovered = false
+    @State private var cursorPushed = false
+    @State private var dragStart: Double?
+    @State private var typing = false
+    @State private var draft = ""
+    @State private var draftValid = true
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Text(appLocalized(title))
+                .font(.appUI(size: 12, design: .monospaced))
+                .foregroundStyle(EditorTheme.tertiaryText)
+            Spacer(minLength: 2)
+            if typing {
+                TextField("", text: $draft)
+                    .textFieldStyle(.plain)
+                    .tint(nil)
+                    .multilineTextAlignment(.trailing)
+                    .font(.appUI(size: 12, design: .monospaced))
+                    .foregroundStyle(draftValid ? EditorTheme.primaryText : RecorderStyle.destructiveInk)
+                    .focused($focused)
+                    .onChange(of: draft) { _, text in draftValid = onPreviewText(text) }
+                    .onSubmit { endTyping(commit: draftValid) }
+                    .onExitCommand { endTyping(commit: false) }
+                    .onChange(of: focused) { _, isFocused in if !isFocused, typing { endTyping(commit: draftValid) } }
+                    .accessibilityLabel(String(format: appLocalized("输入%@"), appLocalized(accessibilityTitle)))
+            } else {
+                Text(displayText)
+                    .font(.appUI(size: 12, design: .monospaced))
+                    .foregroundStyle(EditorTheme.secondaryText)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+        }
+        .padding(.horizontal, 9)
+        .frame(maxWidth: .infinity)
+        .frame(height: EditorPropertyRowMetrics.height)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(EditorTheme.chrome(isActive || typing ? 0.10 : hovered ? 0.08 : 0.045))
+        )
+        .contentShape(Rectangle())
+        .onHover { inside in
+            hovered = inside
+            if inside, !typing, !cursorPushed { NSCursor.resizeLeftRight.push(); cursorPushed = true }
+            else if !inside, cursorPushed { NSCursor.pop(); cursorPushed = false }
+        }
+        .gesture(
+            DragGesture(minimumDistance: 2)
+                .onChanged { gesture in
+                    guard !typing, isEnabled else { return }
+                    if dragStart == nil { dragStart = value; onBegin() }
+                    let fine = NSEvent.modifierFlags.contains(.shift) ? 0.1 : 1
+                    let span = range.upperBound - range.lowerBound
+                    let next = (dragStart ?? value) + Double(gesture.translation.width) / 300 * span * fine
+                    onScrub(min(max(next, range.lowerBound), range.upperBound))
+                }
+                .onEnded { _ in
+                    guard dragStart != nil else { return }
+                    dragStart = nil
+                    onFinish(true)
+                }
+        )
+        .simultaneousGesture(TapGesture(count: 2).onEnded { beginTyping() })
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(appLocalized(accessibilityTitle))
+        .accessibilityValue(displayText)
+        .accessibilityAction(named: Text(appLocalized("输入"))) { beginTyping() }
+        .opacity(isEnabled ? 1 : 0.45)
+    }
+
+    private func beginTyping() {
+        guard isEnabled, !typing else { return }
+        if cursorPushed { NSCursor.pop(); cursorPushed = false }
+        draft = editingText
+        draftValid = true
+        typing = true
+        onBegin()
+        DispatchQueue.main.async { focused = true }
+    }
+
+    private func endTyping(commit: Bool) {
+        guard typing else { return }
+        typing = false
+        focused = false
+        onFinish(commit)
+    }
+}
+
 // MARK: - Toggle
 
 /// 编辑器与设置共享语义：绿色表示开启，白色滑块跟随状态。
@@ -430,7 +518,7 @@ struct EditorToggle: View {
     var body: some View {
         if let title {
             Button {
-                withAnimation(SpringMotion.snappy) {
+                withAnimation(SpringMotion.standard) {
                     isOn.toggle()
                 }
             } label: {
@@ -438,6 +526,7 @@ struct EditorToggle: View {
                     .font(.appUI(size: 13))
                     .foregroundStyle(EditorTheme.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
+                    .frame(minHeight: EditorPropertyRowMetrics.height)
             }
             .buttonStyle(EditorToggleButtonStyle(isOn: isOn, showsTitle: true, isFocused: hasFocus))
             .focused($hasFocus)
@@ -446,7 +535,7 @@ struct EditorToggle: View {
             .accessibilityAddTraits(.isToggle)
         } else {
             Button {
-                withAnimation(SpringMotion.snappy) {
+                withAnimation(SpringMotion.standard) {
                     isOn.toggle()
                 }
             } label: {
@@ -472,8 +561,8 @@ private struct EditorToggleButtonStyle: ButtonStyle {
     }
 
     private struct Surface: View {
+        @Environment(\.recordingDesignControls) private var recordingColors
         @Environment(\.isEnabled) private var isEnabled
-        @Environment(\.consolePalette) private var palette
         @State private var isHovered = false
         let configuration: Configuration
         let isOn: Bool
@@ -497,11 +586,12 @@ private struct EditorToggleButtonStyle: ButtonStyle {
         }
 
         private var toggleIndicator: some View {
-            let activeFill = EditorTheme.platinumAccent
-            let knobFill = isOn ? EditorTheme.onAccent : Color.white
+            // EDT-079: 30 × 18, ink when on, a 14 knob.
+            let activeFill = recordingColors ? RecordingDesign.ink : EditorTheme.primaryText
+            let knobFill = Color.white
             return ZStack(alignment: isOn ? .trailing : .leading) {
                 Capsule(style: .continuous)
-                    .fill(isOn ? activeFill : EditorTheme.chrome(showsHover ? 0.16 : 0.11))
+                    .fill(isOn ? activeFill : (recordingColors ? RecordingDesign.fill2 : EditorTheme.chrome(showsHover ? 0.16 : 0.11)))
                     .overlay {
                         Capsule(style: .continuous)
                             .strokeBorder(isOn ? Color.black.opacity(0.08) : EditorTheme.chrome(0.06), lineWidth: 0.5)
@@ -513,14 +603,13 @@ private struct EditorToggleButtonStyle: ButtonStyle {
                         Capsule(style: .continuous)
                             .strokeBorder(Color.black.opacity(0.06), lineWidth: 0.5)
                     }
-                    .shadow(color: .black.opacity(0.10), radius: 0.5, y: 0.5)
-                    .shadow(color: .black.opacity(0.16), radius: 2.5, y: 1.5)
-                    .frame(width: isPressed && !RecorderMotion.reduces ? 22 : 18, height: 18)
+                    .shadow(color: .black.opacity(0.14), radius: 1, y: 0.5)
+                    .frame(width: 14, height: 14)
                     .padding(2)
             }
-            .frame(width: 38, height: 22)
+            .frame(width: 30, height: 18)
             .appKeyboardFocus(in: Capsule(), color: EditorTheme.chrome(0.40), isFocused: isFocused)
-            .animation(SpringMotion.settle, value: isOn)
+            .animation(SpringMotion.standard, value: isOn)
             .animation(SpringMotion.hover, value: showsHover)
             .animation(SpringMotion.snappy, value: isPressed)
         }
@@ -619,16 +708,16 @@ struct EditorNumericStepControl: View {
         .frame(height: 36)
         .background(
             EditorTheme.chrome(isHovered && isEnabled ? 0.060 : 0.035),
-            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
         )
         .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .stroke(
                     EditorTheme.chrome(isHovered && isEnabled ? 0.12 : 0.065),
                     lineWidth: 0.75
                 )
         }
-        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         .opacity(isEnabled ? 1 : 0.55)
         .onHover { hovering in
             withAnimation(SpringMotion.snappy) {
@@ -739,11 +828,10 @@ private struct EditorStepButtonStyle: ButtonStyle {
                             : configuration.isPressed ? 0.14
                             : isHovered ? 0.09 : 0.045
                     ),
-                    in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    in: RoundedRectangle(cornerRadius: 6, style: .continuous)
                 )
-                .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                .scaleEffect(configuration.isPressed && isEnabled && !RecorderMotion.reduces ? 0.90 : 1)
+                .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                 .onHover { hovering in
                     withAnimation(SpringMotion.hover) {
                         isHovered = hovering
@@ -770,7 +858,7 @@ struct EditorQuietButtonStyle: ButtonStyle {
 
         var body: some View {
             configuration.label
-                .font(.appUI(size: 13, weight: .medium))
+                .font(.appUI(size: 12, weight: .medium))
                 .foregroundStyle(
                     isEnabled
                         ? EditorTheme.primaryText
@@ -779,11 +867,11 @@ struct EditorQuietButtonStyle: ButtonStyle {
                 .padding(.horizontal, 10)
                 .frame(minHeight: EditorInterfaceHeight.compact)
                 .background(
-                    Capsule(style: .continuous)
+                    RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous)
                         // Inside a tile the button is cut out of it in the
                         // panel tone; the state wash sits on top.
                         .fill(insideTile ? EditorTheme.panelSurface : .clear)
-                        .overlay(Capsule(style: .continuous).fill(
+                        .overlay(RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous).fill(
                             EditorTheme.chrome(
                                 !isEnabled ? 0.02
                                     : configuration.isPressed ? EditorStateWash.pressed
@@ -791,17 +879,16 @@ struct EditorQuietButtonStyle: ButtonStyle {
                             )
                         ))
                         .overlay {
-                            Capsule(style: .continuous)
+                            RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous)
                                 .strokeBorder(EditorTheme.chrome(isHovered && isEnabled ? 0.09 : 0.05), lineWidth: 0.5)
                         }
                 )
-                .contentShape(Capsule(style: .continuous))
-                .appKeyboardFocus(in: Capsule(style: .continuous))
-                .scaleEffect(configuration.isPressed && isEnabled && !RecorderMotion.reduces ? 0.96 : 1.0)
+                .contentShape(RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
+                .appKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
                 .opacity(isEnabled ? 1 : 0.46)
                 .onHover { isHovered = $0 }
                 .animation(SpringMotion.hover, value: isHovered)
-                .animation(SpringMotion.lift, value: configuration.isPressed)
+
         }
     }
 }
@@ -814,7 +901,7 @@ struct EditorPrimaryButtonStyle: ButtonStyle {
         Body(configuration: configuration, minHeight: minHeight)
     }
 
-    /// 主按钮统一使用石墨黑（EditorTheme.platinumAccent），不变成整条亮色块。
+    /// 主按钮使用唯一强调色（EditorTheme.accent）。
     struct Body: View {
         @Environment(\.isEnabled) private var isEnabled
         @State private var isHovered = false
@@ -822,29 +909,27 @@ struct EditorPrimaryButtonStyle: ButtonStyle {
         let minHeight: CGFloat
 
         var body: some View {
-            let fill = EditorTheme.platinumAccent
-            let ink = EditorTheme.onAccent
+            let fill = EditorTheme.accent
+            let ink = EditorTheme.onAccentFill
             configuration.label
                 .font(.appUI(size: 12, weight: .semibold))
                 .foregroundStyle(ink)
                 .padding(.horizontal, 13)
                 .frame(minHeight: minHeight)
-                .background(Capsule(style: .continuous).fill(fill))
+                .background(RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous).fill(fill))
                 .overlay(
-                    Capsule(style: .continuous)
-                        .fill(EditorTheme.onAccent.opacity(
+                    RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous)
+                        .fill(Color.black.opacity(
                             !isEnabled ? 0 : configuration.isPressed ? 0.18 : isHovered ? 0.12 : 0
                         ))
                         .allowsHitTesting(false)
                 )
-                .shadow(color: fill.opacity(isHovered && isEnabled ? 0.35 : 0), radius: 6, y: 2)
-                .contentShape(Capsule(style: .continuous))
-                .appKeyboardFocus(in: Capsule(style: .continuous), color: ink.opacity(0.65))
-                .scaleEffect(configuration.isPressed && isEnabled && !RecorderMotion.reduces ? 0.96 : 1.0)
+                .contentShape(RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
+                .appKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous), color: ink.opacity(0.65))
                 .opacity(isEnabled ? 1 : 0.4)
                 .onHover { isHovered = $0 }
                 .animation(SpringMotion.hover, value: isHovered)
-                .animation(SpringMotion.snappy, value: configuration.isPressed)
+
         }
     }
 }
@@ -862,14 +947,14 @@ struct EditorGhostButtonStyle: ButtonStyle {
 
         var body: some View {
             configuration.label
-                .font(.appUI(size: 11, weight: .medium))
+                .font(.appUI(size: 12, weight: .medium))
                 .foregroundStyle(
-                    isEnabled ? Color.primary.opacity(isHovered ? 1.0 : 0.82) : Color.secondary
+                    isEnabled ? EditorTheme.primaryText.opacity(isHovered ? 1.0 : 0.82) : EditorTheme.tertiaryText
                 )
                 .padding(.horizontal, 10)
                 .frame(minHeight: EditorInterfaceHeight.compact)
                 .background(
-                    Capsule(style: .continuous)
+                    RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous)
                         .fill(
                             EditorTheme.chrome(
                                 configuration.isPressed ? 0.10
@@ -877,22 +962,21 @@ struct EditorGhostButtonStyle: ButtonStyle {
                             )
                         )
                 )
-                .contentShape(Capsule(style: .continuous))
-                .appKeyboardFocus(in: Capsule(style: .continuous))
-                .scaleEffect(configuration.isPressed && isEnabled && !RecorderMotion.reduces ? 0.97 : 1.0)
+                .contentShape(RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
+                .appKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
                 .opacity(isEnabled ? 1 : 0.44)
                 .onHover { isHovered = $0 }
                 .animation(SpringMotion.hover, value: isHovered)
-                .animation(SpringMotion.lift, value: configuration.isPressed)
+
         }
     }
 }
 
 /// Shared hover and press feedback; the overlay never intercepts clicks.
-/// The default radius clamps to a capsule: every free-standing button in the
-/// editor is a capsule. Rows and cards pass their own radius explicitly.
+/// Every free-standing button in the editor is a 6 pt rounded rectangle;
+/// rows and cards pass their own radius explicitly.
 struct EditorToolbarPressButtonStyle: ButtonStyle {
-    var cornerRadius: CGFloat = 999
+    var cornerRadius: CGFloat = EditorInterfaceRadius.control
     var cornerStyle: RoundedCornerStyle = .continuous
     var showsHover: Bool = true
     func makeBody(configuration: Configuration) -> Body {
@@ -914,17 +998,11 @@ struct EditorToolbarPressButtonStyle: ButtonStyle {
                 .overlay {
                     RoundedRectangle(cornerRadius: cornerRadius, style: cornerStyle)
                         .fill(EditorTheme.chrome(isEnabled ? (configuration.isPressed ? EditorStateWash.pressed : lit ? EditorStateWash.hover : 0) : 0))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: cornerRadius, style: cornerStyle)
-                                .strokeBorder(EditorTheme.chrome(lit || (isEnabled && configuration.isPressed) ? 0.06 : 0), lineWidth: 0.5)
-                        }
                         .allowsHitTesting(false)
                 }
-                .scaleEffect(configuration.isPressed && isEnabled && !RecorderMotion.reduces ? 0.97 : 1)
                 .opacity(isEnabled ? 1 : 0.48)
                 .onHover { hovered = $0 }
-                .animation(SpringMotion.hover, value: hovered)
-                .animation(SpringMotion.lift, value: configuration.isPressed)
+                .animation(SpringMotion.micro, value: hovered)
         }
     }
 }
@@ -965,69 +1043,6 @@ struct EditorDismissIconButtonStyle: ButtonStyle {
                 )
                 .contentShape(Circle())
                 .appKeyboardFocus(in: Circle())
-                .scaleEffect(
-                    !isEnabled || RecorderMotion.reduces ? 1
-                        : configuration.isPressed ? 0.88
-                        : 1
-                )
-                .onHover { hovering in
-                    withAnimation(SpringMotion.hover) {
-                        isHovered = hovering
-                    }
-                }
-                .animation(SpringMotion.snappy, value: configuration.isPressed)
-        }
-    }
-}
-
-/// Warning actions remain compact in editor chrome but must read as real
-/// controls instead of coloured status text. This is intentionally not the
-/// destructive style: activating it reveals recovery detail and changes no data.
-struct EditorWarningButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> Body {
-        Body(configuration: configuration)
-    }
-
-    struct Body: View {
-        @Environment(\.isEnabled) private var isEnabled
-        @State private var isHovered = false
-        let configuration: Configuration
-
-        var body: some View {
-            configuration.label
-                .font(.appUI(size: 11, weight: .semibold))
-                .foregroundStyle(
-                    EditorTheme.amberAccent.opacity(
-                        !isEnabled ? 0.38 : isHovered ? 1 : 0.88
-                    )
-                )
-                .padding(.horizontal, 8)
-                .frame(minHeight: 28)
-                .background {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(
-                            EditorTheme.amberAccent.opacity(
-                                configuration.isPressed ? 0.18
-                                    : isHovered && isEnabled ? 0.11 : 0.055
-                            )
-                        )
-                }
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(
-                            EditorTheme.amberAccent.opacity(
-                                isHovered && isEnabled ? 0.34 : 0.16
-                            ),
-                            lineWidth: 0.75
-                        )
-                }
-                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .scaleEffect(
-                    !isEnabled ? 1
-                        : configuration.isPressed ? 0.95
-                        : isHovered ? 1.02 : 1
-                )
                 .onHover { hovering in
                     withAnimation(SpringMotion.hover) {
                         isHovered = hovering
@@ -1053,17 +1068,6 @@ struct EditorInlineActionButtonStyle: ButtonStyle {
 
         var body: some View {
             configuration.label
-                .brightness(isHovered && isEnabled ? 0.08 : 0)
-                .shadow(
-                    color: EditorTheme.softShadow.opacity(isHovered && isEnabled ? 1 : 0),
-                    radius: 4,
-                    y: 2
-                )
-                .scaleEffect(
-                    !isEnabled ? 1
-                        : configuration.isPressed ? 0.88
-                        : isHovered ? 1.08 : 1
-                )
                 .onHover { hovering in
                     withAnimation(SpringMotion.hover) {
                         isHovered = hovering
@@ -1088,31 +1092,34 @@ struct EditorDestructiveButtonStyle: ButtonStyle {
         let configuration: Configuration
 
         var body: some View {
-            // Same capsule as every other secondary action, tinted red. It is
-            // a full-width target at the foot of a page, never bare red text.
-            configuration.label
+            // EDT-079: red text at the foot of a page; a faint red ground
+            // appears only under the pointer.
+            HStack(spacing: 6) {
+                AppLineIcon(kind: .trash, size: 15)
+                configuration.label.lineLimit(1).fixedSize()
+            }
                 .font(.appUI(size: 13, weight: .medium))
                 .foregroundStyle(
                     RecorderStyle.destructiveInk.opacity(!isEnabled ? 0.4 : 1)
                 )
-                .padding(.horizontal, 12)
-                .frame(maxWidth: .infinity, minHeight: EditorInterfaceHeight.compact)
+                .padding(.horizontal, 11)
+                .frame(minHeight: 30)
                 .background(
-                    Capsule(style: .continuous)
+                    RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous)
                         .fill(
                             RecorderStyle.recording.opacity(
-                                !isEnabled ? 0.03
-                                    : configuration.isPressed ? 0.18
-                                    : isHovered ? 0.12 : 0.07
+                                !isEnabled ? 0
+                                    : configuration.isPressed ? 0.16
+                                    : isHovered ? 0.10 : 0
                             )
                         )
                 )
-                .contentShape(Capsule(style: .continuous))
-                .appKeyboardFocus(in: Capsule(style: .continuous))
-                .scaleEffect(configuration.isPressed && isEnabled && !RecorderMotion.reduces ? 0.97 : 1)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .contentShape(RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
+                .appKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
                 .onHover { isHovered = $0 }
                 .animation(SpringMotion.hover, value: isHovered)
-                .animation(SpringMotion.lift, value: configuration.isPressed)
+
         }
     }
 }
@@ -1153,7 +1160,6 @@ struct EditorDestructiveIconButtonStyle: ButtonStyle {
                 )
                 .contentShape(Circle())
                 .appKeyboardFocus(in: Circle())
-                .scaleEffect(configuration.isPressed && isEnabled && !RecorderMotion.reduces ? 0.93 : 1)
                 .onHover { hovering in
                     withAnimation(SpringMotion.hover) {
                         isHovered = hovering
@@ -1178,19 +1184,8 @@ struct EditorThumbnailButtonStyle: ButtonStyle {
 
         var body: some View {
             configuration.label
-                .scaleEffect(
-                    !isEnabled ? 1
-                        : configuration.isPressed ? 0.975
-                        : 1
-                )
-                .brightness(isHovered && isEnabled ? 0.025 : 0)
-                .shadow(
-                    color: EditorTheme.softShadow.opacity(isHovered && isEnabled ? 0.5 : 0),
-                    radius: isHovered && isEnabled ? 8 : 2,
-                    y: isHovered && isEnabled ? 4 : 1
-                )
-                .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-                .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .appKeyboardFocus(in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                 .opacity(isEnabled ? 1 : 0.44)
                 .onHover { hovering in
                     withAnimation(SpringMotion.hover) {
@@ -1216,16 +1211,6 @@ struct EditorSwatchButtonStyle: ButtonStyle {
 
         var body: some View {
             configuration.label
-                .scaleEffect(
-                    !isEnabled ? 1
-                        : configuration.isPressed ? 0.90
-                        : isHovered ? 1.12 : 1
-                )
-                .shadow(
-                    color: Color.black.opacity(isHovered && isEnabled ? 0.09 : 0),
-                    radius: 4,
-                    y: 2
-                )
                 .contentShape(Rectangle())
                 .opacity(isEnabled ? 1 : 0.44)
                 .onHover { hovering in
@@ -1243,7 +1228,6 @@ extension ButtonStyle where Self == EditorQuietButtonStyle {
 }
 
 extension ButtonStyle where Self == EditorPrimaryButtonStyle {
-    static var editorPrimary: EditorPrimaryButtonStyle { EditorPrimaryButtonStyle() }
     static func editorPrimary(minHeight: CGFloat) -> EditorPrimaryButtonStyle {
         EditorPrimaryButtonStyle(minHeight: minHeight)
     }
@@ -1266,12 +1250,6 @@ extension ButtonStyle where Self == EditorDismissIconButtonStyle {
 
     static func editorDismissIcon(size: CGFloat) -> EditorDismissIconButtonStyle {
         EditorDismissIconButtonStyle(size: size)
-    }
-}
-
-extension ButtonStyle where Self == EditorWarningButtonStyle {
-    static var editorWarning: EditorWarningButtonStyle {
-        EditorWarningButtonStyle()
     }
 }
 
@@ -1312,27 +1290,27 @@ struct EditorCameraLayoutPresetButton: View {
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 6) {
-                EditorSymbol(icon, size: 19.5)
-                    .font(.appUI(size: 15, weight: .medium))
+            // An action, not a choice: it looks like every other secondary
+            // button, with its picture on the left.
+            HStack(spacing: 6) {
+                EditorSymbol(icon, size: 13)
                 Text(appLocalized(title))
-                    .font(.appUI(size: 11, weight: .medium))
+                    .font(.appUI(size: 12, weight: .medium))
+                    .lineLimit(1)
             }
-            .foregroundStyle(EditorTheme.primaryText.opacity(isHovered ? 1 : 0.8))
+            .foregroundStyle(EditorTheme.primaryText)
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 12)
-            // Resting tiles sit flat on the island; hover lifts one into the
-            // same paper-and-shadow slab as a selected segment.
+            .frame(height: 28)
             .background {
-                RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous)
-                    .fill(EditorTheme.chrome(isHovered ? 0.075 : 0.04))
+                RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous)
+                    .fill(EditorTheme.chrome(isHovered ? EditorStateWash.hover + 0.02 : 0.05))
             }
-            .contentShape(RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
         }
-        .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: EditorInterfaceRadius.group, showsHover: false))
-        .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.group, style: .continuous))
+        .buttonStyle(EditorToolbarPressButtonStyle(showsHover: false))
+        .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous))
         .onHover { isHovered = $0 }
-        .animation(SpringMotion.hover, value: isHovered)
+        .animation(SpringMotion.micro, value: isHovered)
     }
 }
 
@@ -1378,89 +1356,65 @@ struct EditorDisclosure<Content: View>: View {
         let isExpanded = expansion.wrappedValue
         VStack(alignment: .leading, spacing: 0) {
             Button {
-                withAnimation(SpringMotion.settle) {
+                withAnimation(SpringMotion.standard) {
                     expansion.wrappedValue.toggle()
                 }
             } label: {
                 HStack(spacing: 8) {
                     if let icon {
-                        EditorSymbol(icon, size: 15.5)
-                            .font(.appUI(size: 12, weight: .semibold))
-                            .foregroundStyle(
-                                iconTint ?? EditorTheme.chrome(0.65)
-                            )
-                            .frame(width: 26, height: 26)
-                            .background(
-                                (iconTint ?? EditorTheme.platinumAccent).opacity(
-                                    isExpanded ? 0.10 : 0.06
-                                ),
-                                in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.compact, style: .continuous)
-                            )
+                        EditorSymbol(icon, size: 14)
+                            .foregroundStyle(iconTint ?? EditorTheme.secondaryText)
+                            .frame(width: 18, height: 18)
                     }
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(appLocalized(title))
-                            .font(EditorTypography.controlLabel)
-                            .foregroundStyle(
-                                Color.primary.opacity(isExpanded ? 0.96 : 0.82)
-                            )
-                            .lineLimit(2)
-                            .fixedSize(horizontal: false, vertical: true)
-                        if let detail {
-                            Text(appLocalized(detail))
-                                .font(EditorTypography.caption).monospacedDigit()
-                                .foregroundStyle(EditorTheme.secondaryText)
-                                .lineLimit(2)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .contentTransition(.numericText())
-                        }
+                    Text(appLocalized(title))
+                        .font(.appUI(size: 14, weight: .medium))
+                        .foregroundStyle(EditorTheme.primaryText)
+                        .lineLimit(1)
+                    Spacer(minLength: 8)
+                    if let detail {
+                        Text(appLocalized(detail))
+                            .font(.appUI(size: 13).monospacedDigit())
+                            .foregroundStyle(EditorTheme.secondaryText)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
                     }
-                    Spacer(minLength: 4)
                     AppLineIcon(kind: .chevron, size: 12)
-                        .foregroundStyle(
-                            EditorTheme.chrome(isExpanded ? 0.86 : 0.46)
-                        )
-                        .frame(width: 24, height: 24)
+                        .foregroundStyle(EditorTheme.tertiaryText)
+                        .frame(width: 20, height: 20)
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                        .animation(SpringMotion.settle, value: isExpanded)
                 }
-                .padding(.horizontal, insideTile ? 0 : 12)
+                .padding(.horizontal, 10)
                 .padding(.vertical, 6)
-                .frame(minHeight: detail == nil ? 32 : 44)
+                .frame(minHeight: 44)
                 .background(
-                    // The header row touches the card's edges, so its hover
-                    // wash uses the card's own radius instead of a smaller one.
-                    RoundedRectangle(cornerRadius: insideTile ? EditorInterfaceRadius.control : EditorInterfaceRadius.tile, style: .continuous)
-                        .fill(EditorTheme.chrome(!isEnabled ? 0 : isHovered ? 0.04 : 0))
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(EditorTheme.chrome(!isEnabled ? 0 : isHovered ? 0.05 : 0))
                 )
-                .contentShape(RoundedRectangle(cornerRadius: EditorInterfaceRadius.tile, style: .continuous))
+                .contentShape(Rectangle())
             }
-            .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: EditorInterfaceRadius.tile, showsHover: false))
+            .buttonStyle(.plain)
+            .padding(.horizontal, -10)
             .onHover { isHovered = $0 }
-            .animation(SpringMotion.hover, value: isHovered)
+            .animation(SpringMotion.micro, value: isHovered)
             .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: EditorInterfaceRadius.card, style: .continuous))
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(appLocalized(title))
             .accessibilityValue(
                 [detail.map(appLocalized), appLocalized(isExpanded ? "已展开" : "已折叠")]
                     .compactMap { $0 }
-                    .joined(separator: "，")
+                    .joined(separator: appLocalized("，"))
             )
             .accessibilityAddTraits(.isButton)
             .accessibilityHint(accessibilityHint.map(appLocalized) ?? "")
 
             if isExpanded {
-                content
-                    .padding(.horizontal, insideTile ? 0 : 12)
-                    .padding(.top, 2)
-                    .padding(.bottom, insideTile ? 4 : 12)
-                    .transition(.editorSwap(edge: .top))
+                VStack(alignment: .leading, spacing: 12) { content }
+                    .padding(.top, 4)
+                    .padding(.bottom, 8)
+                    .transition(.opacity)
             }
         }
-        .background {
-            RoundedRectangle(cornerRadius: EditorInterfaceRadius.tile, style: .continuous)
-                .fill(EditorTheme.cardFill.opacity(insideTile ? 0 : 1))
-        }
         .environment(\.editorInsideTile, true)
-        .animation(SpringMotion.settle, value: isExpanded)
+        .animation(SpringMotion.standard, value: isExpanded)
     }
 }

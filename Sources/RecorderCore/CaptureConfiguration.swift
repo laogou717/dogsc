@@ -10,7 +10,6 @@ public enum OutputFrameRate: Int, CaseIterable, Codable, Identifiable, Sendable 
 
     public var id: Int { rawValue }
     public var label: String { "\(rawValue) FPS" }
-    public var frameDuration: TimeInterval { 1.0 / Double(rawValue) }
     /// REC-002/EXP-002: capture preserves the timestamps of every frame that
     /// ScreenCaptureKit actually delivers. These are CFR output choices only;
     /// they must never be reused as a callback-side capture limiter.
@@ -141,13 +140,6 @@ public enum CaptureCodec: String, Codable, CaseIterable, Identifiable, Sendable 
         self == .proRes422
     }
 
-    public var recordingLabel: String {
-        switch self {
-        case .hevc: "HEVC（H.265，原生分辨率）"
-        case .h264: "H.264（兼容模式，最高 4K）"
-        case .proRes422: "ProRes 422（原生分辨率）"
-        }
-    }
 }
 
 public enum CaptureResolutionLimit: String, CaseIterable, Codable, Identifiable, Sendable {
@@ -449,33 +441,9 @@ public struct FrameRateMeasurement: Equatable, Sendable {
         self.intervalDiagnostics = intervalDiagnostics
     }
 
-    /// Frames per second actually delivered by ScreenCaptureKit, idle frames
-    /// included. This is the pipeline's real ceiling — it cannot exceed the
-    /// display refresh rate.
-    public var sckDeliveryFramesPerSecond: Double {
-        guard elapsed > 0, receivedFrames + idleFrames > 1 else { return 0 }
-        return Double(receivedFrames + idleFrames) / elapsed
-    }
-
-    /// Whether the captured content is mostly stationary (idle frames
-    /// dominate), in which case a low delivered rate is expected.
-    public var isMostlyIdle: Bool {
-        idleFrames > receivedFrames
-    }
-
     public var actualFramesPerSecond: Double {
         guard elapsed > 0, deliveredFrames > 1 else { return 0 }
         return Double(deliveredFrames - 1) / elapsed
-    }
-
-    public var deliveryRatio: Double {
-        guard target.rawValue > 0 else { return 0 }
-        return actualFramesPerSecond / Double(target.rawValue)
-    }
-
-    public var averageFrameInterval: TimeInterval {
-        guard receivedFrames > 1, elapsed > 0 else { return 0 }
-        return elapsed / Double(receivedFrames - 1)
     }
 
     public var estimatedDroppedFrames: Int {
@@ -484,9 +452,4 @@ public struct FrameRateMeasurement: Equatable, Sendable {
         return max(timelineMissing, writerDroppedFrames)
     }
 
-    public var droppedFrameRatio: Double {
-        let expected = deliveredFrames + estimatedDroppedFrames
-        guard expected > 0 else { return 0 }
-        return Double(estimatedDroppedFrames) / Double(expected)
-    }
 }

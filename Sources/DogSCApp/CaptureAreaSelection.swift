@@ -427,7 +427,7 @@ private final class CaptureAreaSelectionView: NSView {
             CATransaction.setDisableActions(true)
             for card in [controlCard, escapeHintCard] {
                 card.layer?.backgroundColor = captureSelectionSurfaceNSColor.cgColor
-                card.layer?.borderColor = captureSelectionInkNSColor.withAlphaComponent(0.12).cgColor
+                card.layer?.borderColor = captureSelectionInkNSColor.withAlphaComponent(0.08).cgColor
                 card.layer?.shadowOpacity = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? 0.36 : 0.16
             }
             sizeWell.layer?.backgroundColor = RecorderStyle.chromeNSColor.withAlphaComponent(0.09).cgColor
@@ -448,12 +448,12 @@ private final class CaptureAreaSelectionView: NSView {
         [controlCard, escapeHintCard].forEach { card in
             card.appearance = nil
             card.wantsLayer = true
-            card.layer?.cornerRadius = 18
+            card.layer?.cornerRadius = RecorderStyle.cardRadius
             card.layer?.backgroundColor = captureSelectionSurfaceNSColor.cgColor
             card.layer?.borderWidth = 1
-            card.layer?.borderColor = captureSelectionInkNSColor.withAlphaComponent(0.12).cgColor
+            card.layer?.borderColor = captureSelectionInkNSColor.withAlphaComponent(0.08).cgColor
             card.layer?.shadowColor = NSColor.black.cgColor
-            card.layer?.shadowOpacity = 0.36
+            card.layer?.shadowOpacity = 0.22
             card.layer?.shadowRadius = 26
             card.layer?.shadowOffset = CGSize(width: 0, height: -12)
             addSubview(card)
@@ -651,14 +651,14 @@ private final class CaptureAreaSelectionView: NSView {
         // Typing a size and pressing Return applies it; no button is needed.
         applySizeButton.isHidden = true
         sizeWell.frame = CGRect(x: 262 * scale, y: 14 * scale, width: 172 * scale, height: 32 * scale)
-        sizeWell.layer?.cornerRadius = 16 * scale
+        sizeWell.layer?.cornerRadius = 8 * scale
         widthField.frame = CGRect(x: 270 * scale, y: 14 * scale, width: 60 * scale, height: 28 * scale)
         dimensionLinkButton.frame = CGRect(x: 334 * scale, y: 16 * scale, width: 28 * scale, height: 28 * scale)
         heightField.frame = CGRect(x: 366 * scale, y: 14 * scale, width: 60 * scale, height: 28 * scale)
         cancelButton.frame = CGRect(x: 444 * scale, y: 8 * scale, width: 62 * scale, height: 44 * scale)
         confirmButton.frame = CGRect(x: 510 * scale, y: 8 * scale, width: 124 * scale, height: 44 * scale)
 
-        controlCard.layer?.cornerRadius = 30 * scale
+        controlCard.layer?.cornerRadius = RecorderStyle.cardRadius * scale
         controlCard.layer?.cornerCurve = .continuous
         controlCard.layer?.borderWidth = scale
         controlCard.layer?.shadowRadius = 22 * scale
@@ -754,7 +754,7 @@ private final class CaptureAreaSelectionView: NSView {
             escapeHintCard.isHidden = hintFrame.intersects(controlCard.frame)
         }
         escapeHintCard.frame = hintFrame
-        escapeHintCard.layer?.cornerRadius = hintHeight / 2
+        escapeHintCard.layer?.cornerRadius = 10 * scale
         escapeHintCard.layer?.cornerCurve = .continuous
         escapeHintContent.frame = escapeHintCard.bounds
         escapeHintContent.interfaceScale = scale

@@ -99,9 +99,7 @@ struct EditorZoomEnvelope: View {
         .frame(height: height)
         .animation(SpringMotion.hover, value: hoveredNode)
         .onAppear {
-            guard reveals, !RecorderMotion.reduces else { return }
-            wipe = 0
-            withAnimation(.timingCurve(0.3, 0.8, 0.3, 1, duration: 1.1).delay(0.45)) { wipe = 1 }
+            wipe = 1
         }
         .onDisappear {
             if activeNode != nil {

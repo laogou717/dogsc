@@ -7,20 +7,14 @@ import Foundation
 /// integer tick grid instead of accumulated floating-point frame durations.
 public struct OutputFrameSchedule: Equatable, Sendable {
     public struct Frame: Equatable, Sendable {
-        public let index: Int
         public let presentationTimeValue: Int64
         public let presentationTimescale: Int32
 
-        public var presentationTimeSeconds: TimeInterval {
-            TimeInterval(presentationTimeValue) / TimeInterval(presentationTimescale)
-        }
 
         fileprivate init(
-            index: Int,
             presentationTimeValue: Int64,
             presentationTimescale: Int32
         ) {
-            self.index = index
             self.presentationTimeValue = presentationTimeValue
             self.presentationTimescale = presentationTimescale
         }
@@ -35,7 +29,6 @@ public struct OutputFrameSchedule: Equatable, Sendable {
     public static let presentationTimescale: Int32 = 90_000
 
     public let duration: TimeInterval
-    public let frameRate: OutputFrameRate
     public let frameCount: Int
     public let ticksPerFrame: Int64
 
@@ -80,7 +73,6 @@ public struct OutputFrameSchedule: Equatable, Sendable {
         }
 
         self.duration = duration
-        self.frameRate = frameRate
         self.frameCount = frameCount
         self.ticksPerFrame = ticksPerFrame
     }
@@ -88,7 +80,6 @@ public struct OutputFrameSchedule: Equatable, Sendable {
     public func frame(at index: Int) -> Frame? {
         guard index >= 0, index < frameCount else { return nil }
         return Frame(
-            index: index,
             presentationTimeValue: Int64(index) * ticksPerFrame,
             presentationTimescale: Self.presentationTimescale
         )
