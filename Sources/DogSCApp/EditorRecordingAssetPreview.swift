@@ -22,7 +22,7 @@ enum EditorRecordingAssetPreview {
         let tracks = try await TimelinePreviewCompositionLoader.loadRecording(
             screenURL: url(source.media.screen), cameraURL: url(source.media.camera),
             microphoneURL: url(source.media.microphone), manifest: source.media,
-            pointerEvents: [], cameraContentCrop: source.cameraContentCrop)
+            pointerEvents: [], cameraContentCrop: source.cameraContentCrop, needsCamera: source.capture.source != .cameraOnly)
         try Task.checkCancellation()
         func range(_ track: LoadedTimelineTrack?) -> MediaTimeRange? {
             track.flatMap { MediaTimeRange(start: $0.timeRange.start.seconds, duration: $0.timeRange.duration.seconds) }

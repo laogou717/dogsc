@@ -6,6 +6,7 @@ struct EditorActionMenu<Label: View>: View {
     let title: String
     let items: [RecorderMenuItem]
     var showsHover = true
+    var arrowEdge: Edge = .bottom
     @ViewBuilder let label: () -> Label
     @State private var isPresented = false
 
@@ -17,7 +18,7 @@ struct EditorActionMenu<Label: View>: View {
             .help(appLocalized(title))
             .accessibilityLabel(appLocalized(title))
             .editorPopoverKeyboardEntry { isPresented = true }
-            .editorPopover(isPresented: $isPresented, arrowEdge: .bottom) {
+            .editorPopover(isPresented: $isPresented, arrowEdge: arrowEdge) {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(Array(items.enumerated()), id: \.offset) { _, item in

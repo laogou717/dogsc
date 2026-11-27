@@ -251,7 +251,7 @@ struct AppSettingsView: View {
             SettingsRow("项目保存在", detail: "新录制自动存到这里") {
                 SettingsPathControl(url: projectsFolder, action: chooseProjectsFolder)
             }
-            SettingsRow("素材库", detail: "AI 生成的动效、图片、音频", last: true) {
+            SettingsRow("素材库", detail: "跨项目使用的收藏素材", last: true) {
                 SettingsPathControl(url: libraryFolder, action: chooseLibraryFolder)
             }
         }

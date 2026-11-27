@@ -111,9 +111,8 @@ extension CanvasPreview {
     }
 
     @ViewBuilder
-    func frontOverlaySelectionTargets(
-        scene: FrameScene,
-        canvasSize: CGSize) -> some View {
+    func frontOverlaySelectionTargets<CameraInset: View>(
+        scene: FrameScene, canvasSize: CGSize, @ViewBuilder cameraInset: () -> CameraInset) -> some View {
         ZStack(alignment: .topLeading) {
             ForEach(scene.stickers, id: \.id) { sticker in
                 let width = canvasSize.width * sticker.width * sticker.scale
@@ -134,9 +133,9 @@ extension CanvasPreview {
                 // lower sticker selected from the timeline/inspector becomes
                 // impossible to move, resize or rotate wherever it overlaps a
                 // higher layer.
-                let interactionZIndex = selected
+                let interactionZIndex = selected && scene.videos.isEmpty
                     ? 10_000.0
-                    : Double(sticker.layerIndex)
+                    : Double(sticker.layerIndex) * 4 + 1
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(chrome.fillColor)
                     .contentShape(Rectangle())
@@ -212,6 +211,7 @@ extension CanvasPreview {
                 }
             }
 
+            cameraInset()
             videoSelectionTargets(scene: scene, canvasSize: canvasSize)
             animationSelectionTargets(scene: scene, canvasSize: canvasSize)
             subtitleSelectionTarget(scene: scene, canvasSize: canvasSize)
@@ -230,14 +230,14 @@ extension CanvasPreview {
             let selection = EditorSelection.videoClip(video.id)
             let selected = editorStore.selection == selection
             let chrome = canvasObjectChrome(for: selection)
-            let zIndex = selected ? 20_000.0 : 4_000.0 + Double(video.layerIndex)
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
+            let zIndex = Double(video.layerIndex) * 4
+            let mask = ContinuousCornerShape(radius: min(width, height) * video.maskRadiusFraction)
+            mask
                 .fill(chrome.fillColor)
-                .contentShape(Rectangle())
+                .contentShape(mask)
                 .overlay {
                     if chrome.showsOutline {
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .stroke(chrome.strokeColor, lineWidth: chrome.lineWidth)
+                        mask.stroke(chrome.strokeColor, lineWidth: chrome.lineWidth)
                     }
                 }
                 .frame(width: width, height: height)
@@ -257,7 +257,7 @@ extension CanvasPreview {
                     EditorCanvasHandle(active: overlayResizeSelection == selection)
                         .highPriorityGesture(videoResizeGesture(id: video.id, center: center))
                         .position(point)
-                        .zIndex(zIndex + 1)
+                        .zIndex(zIndex + 0.1)
                 }
             }
         }
@@ -338,7 +338,7 @@ extension CanvasPreview {
                 .onHover { updateCanvasHover(selection, hovering: $0) }
                 .accessibilityLabel("字幕")
                 .position(x: rect.midX, y: rect.midY)
-                .zIndex(editorStore.selection == selection ? 20_000 : 6_000)
+                .zIndex(Double.greatestFiniteMagnitude)
         }
     }
 
@@ -355,7 +355,7 @@ extension CanvasPreview {
             let selection = EditorSelection.animation(animation.id)
             let selected = editorStore.selection == selection
             let chrome = canvasObjectChrome(for: selection)
-            let zIndex = selected ? 20_000.0 : 5_000.0 + Double(animation.layerIndex)
+            let zIndex = selected && scene.videos.isEmpty && !animation.hostsCamera ? 20_000.0 : Double(animation.layerIndex) * 4 + 2
             RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .fill(chrome.fillColor)
                 .contentShape(Rectangle())
@@ -379,30 +379,30 @@ extension CanvasPreview {
                 .accessibilityAction { editorStore.selection = selection }
                 .position(center)
                 .zIndex(zIndex)
-            if selected {
-                ForEach(OverlayResizeCorner.allCases) { corner in
-                    let point = stickerHandlePoint(
-                        corner, center: center,
-                        size: CGSize(width: width, height: height), rotation: 0
-                    )
-                    EditorCanvasHandle(
-                        active: overlayResizeSelection == selection
-                    )
-                    .highPriorityGesture(animationResizeGesture(
-                        id: animation.id, center: center, handle: point, canvasSize: canvasSize
-                    ))
-                    .position(point)
-                    .zIndex(zIndex + 1)
-                }
+        }
+    }
+
+    func animationHandles(_ animation: FrameAnimationScene, canvasSize: CGSize) -> some View {
+        let center = CGPoint(x: canvasSize.width * animation.position.x, y: canvasSize.height * animation.position.y)
+        let size = CGSize(width: canvasSize.width * animation.width, height: canvasSize.height * animation.width)
+        return ZStack(alignment: .topLeading) {
+            ForEach(OverlayResizeCorner.allCases) { corner in
+                let point = stickerHandlePoint(corner, center: center, size: size, rotation: 0)
+                EditorCanvasHandle(active: overlayResizeSelection == .animation(animation.id))
+                    .highPriorityGesture(animationResizeGesture(id: animation.id, center: center))
+                    .position(x: min(max(point.x, 7), max(canvasSize.width - 7, 7)),
+                              y: min(max(point.y, 7), max(canvasSize.height - 7, 7)))
             }
         }
+        .frame(width: canvasSize.width, height: canvasSize.height)
+        .coordinateSpace(name: "editor.canvas.animation-handles")
     }
 
     /// Corner drag scales around the centre; width follows the pointer's
     /// distance from the centre relative to the handle's starting distance.
-    func animationResizeGesture(id: UUID, center: CGPoint, handle: CGPoint, canvasSize: CGSize) -> some Gesture {
+    func animationResizeGesture(id: UUID, center: CGPoint) -> some Gesture {
         let selection = EditorSelection.animation(id)
-        return DragGesture(minimumDistance: 1, coordinateSpace: .named(Self.stickerTargetCoordinateSpace))
+        return DragGesture(minimumDistance: 1, coordinateSpace: .named("editor.canvas.animation-handles"))
             .onChanged { value in
                 EditorDragFrameCoalescer.shared.submit {
                     if overlayResizeSelection != selection {
@@ -1159,5 +1159,21 @@ struct EditorCanvasRotationDot: View {
             .contentShape(Rectangle())
             .onHover { hovered = $0 }
             .editorCursor(.openHand)
+    }
+}
+
+extension FrameScene {
+    /// Keep the camera hit surface at its composited depth, including an inset
+    /// between its host video and graphics on higher tracks.
+    var cameraHitLayer: Double {
+        if let id = camera?.insetVideoID ?? camera?.coveringVideoID, let host = videos.first(where: { $0.id == id }) {
+            return Double(host.layerIndex) * 4 + (cameraBeforeVisualOverlays ? -0.5 : 0.5)
+        }
+        if let host = animations.last(where: \.hostsCamera) {
+            // The template has a transparent camera aperture. Inside that
+            // silhouette the camera must receive the click even for an underlay.
+            return Double(host.layerIndex) * 4 + 2.25
+        }
+        return cameraBeforeVisualOverlays ? -Double.greatestFiniteMagnitude : Double.greatestFiniteMagnitude / 2
     }
 }

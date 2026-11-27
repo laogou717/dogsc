@@ -68,6 +68,7 @@ struct PreviewEngineInput: @unchecked Sendable {
     var liveDrag: MotionElementEditor.LiveDrag?
     var assetRootURL: URL? = nil
     var motionStarts: [PreviewMotionStart] = []
+    var isPointerPreview = false
 }
 
 struct PreviewDisplayFrame: @unchecked Sendable {

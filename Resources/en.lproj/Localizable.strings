@@ -707,7 +707,7 @@
 "停止当前录制并重新开始？" = "Start a new recording?";
 "将这次录制移到废纸篓？" = "Move this recording to the Trash?";
 "当前录制将移到废纸篓，随后使用相同设置重新开始。" = "The current recording will move to the Trash, then a new recording will start with the same settings.";
-"当前录制和相关素材将移到废纸篓，随后返回录制条。" = "This recording and its media will move to the Trash, then you will return to the recording bar.";
+"当前录制和相关素材将移到废纸篓，随后返回录制准备。" = "This recording and its media will move to the Trash, then you will return to recording setup.";
 "操作未完成" = "Could Not Complete";
 "无法更新录制画面" = "Could Not Update Recording";
 "录制、剪辑，让画面自然出彩。" = "Record, edit, and bring your screen to life.";
@@ -2182,7 +2182,6 @@
 "搜索素材" = "Search media";
 "没有找到相关素材" = "No matching media";
 "点素材上的星标收藏，所有项目都能在这里找到它" = "Star an item to keep it here for every project";
-"AI 生成的动效、图片和音乐会保存在这里" = "Motion graphics, images and music made by AI are kept here";
 "素材库还是空的" = "The library is empty";
 "取消收藏" = "Remove from Favorites";
 "收藏，所有项目都能在素材库里找到它" = "Favorite — find it in the library from any project";
@@ -2382,6 +2381,8 @@
 "定位" = "Show";
 "把播放头移到这里" = "Move the playhead here";
 "正在思考" = "Thinking";
+"等待 Antigravity 返回下一步" = "Waiting for Antigravity’s next response";
+"Antigravity 长时间没有返回新进展，本轮已结束。可以在这段对话里继续。" = "This turn ended after Antigravity stopped reporting progress. You can continue in this conversation.";
 "%lld 行" = "%lld lines";
 "移除附件" = "Remove Attachment";
 "思考强度" = "Thinking";
@@ -2564,7 +2565,7 @@
 "有权限未开启" = "Some permissions are off";
 "语言、外观和文件放在哪里" = "Language, appearance and where files go";
 "新录制自动存到这里" = "New recordings are saved here";
-"AI 生成的动效、图片、音频" = "AI-generated motion, images and audio";
+"跨项目使用的收藏素材" = "Favorite assets shared across projects";
 "编辑器的默认行为和导出位置" = "Editor defaults and export location";
 "拖动时吸附到播放头和片段边缘" = "Snap to the playhead and clip edges while dragging";
 "默认分辨率" = "Default Resolution";
@@ -3109,7 +3110,7 @@
 
 "帮我剪辑这个项目，去掉口误、重说和多余的停顿。重复录制的内容保留完整、正确的一遍，让表达连贯、节奏紧凑、衔接自然。" = "Edit this project to remove verbal mistakes, retakes, and unnecessary pauses. For repeated takes, keep a complete, correct version, with coherent speech, tight pacing, and natural transitions.";
 
-"帮我剪辑这个项目。结合语义、原始字词时间和波形，去掉口误、重说、语气词及多余停顿，重复录制保留完整正确的一遍。让表达连贯、节奏紧凑，普通讲话切口以发声前后约 1–2 帧余量为目标，必要停顿由你判断。检查剪后的衔接，修正残留空白或被截断的发音。" = "Edit this project using meaning, original word timings, and waveform evidence. Remove verbal mistakes, retakes, fillers, and excess pauses; retain complete, correct takes. Keep speech coherent and tightly paced. Aim for roughly 1–2 frames around speech edges in ordinary dialogue, judging necessary pauses from context. Check the resulting joins and correct excess air or clipped speech.";
+"帮我智能剪辑这个项目。" = "Smart edit this project.";
 
 "应用已更新，请先保存项目并重新打开，再选择文件或文件夹。" = "The app has been updated. Save your project and reopen DogSC before choosing files or folders.";
 
@@ -3258,3 +3259,69 @@
 "正在打断…" = "Interrupting…";
 "系统录制过滤器更新超时" = "The system capture filter update timed out";
 "系统录制停止确认超时，已继续保存完成写入的文件" = "The system capture stop confirmation timed out; saving the completed recording files";
+"全屏摄像头" = "Full-Screen Camera";
+"矩形" = "Rectangle";
+"圆角矩形" = "Rounded Rectangle";
+"蒙版" = "Mask";
+"调整视频蒙版" = "Adjust Video Mask";
+
+"摄像头录制" = "Camera Recording";
+"选择摄像头" = "Choose Camera";
+"单独录制摄像头…" = "Record Camera Only…";
+"镜像" = "Mirror";
+"摄像头录制已保存，但%@轨道未成功写入。" = "The camera recording was saved, but the %@ track could not be written.";
+"摄像头设置" = "Camera Settings";
+
+"提词器" = "Teleprompter";
+"编辑稿件" = "Edit Script";
+"上一行" = "Previous Line";
+"下一行" = "Next Line";
+"从光标处读" = "Read from Cursor";
+"显示行数" = "Visible lines";
+"提词设置" = "Teleprompter Settings";
+"偏离稿件时提示" = "Hint when off script";
+"未对上稿，可从附近一句接着读" = "Off script. Resume from a nearby line.";
+"本机暂不支持此稿件语言的跟读，可手动翻行" = "On-device speech is unavailable for this language. Use the arrows.";
+"语音识别未授权，可手动翻行" = "Speech access is off. Use the arrows to advance.";
+"跟读暂不可用，可手动翻行" = "Speech following is unavailable. Use the arrows to advance.";
+
+"打开包装模板文件夹" = "Open Motion Templates Folder";
+"打开共享素材文件夹" = "Open Shared Media Folder";
+"恢复模板布局与时长" = "Restore Template Layout and Duration";
+"叠加视频" = "Video overlay";
+"取景缩放" = "Framing zoom";
+"跟随原片" = "Original";
+"录屏铺满口播画面时，将摄像头切为画中画" = "Switch the full-screen presenter to picture in picture when the overlay fills the canvas";
+"在这段视频上显示摄像头小窗" = "Show the camera as an inset over this video";
+"沿用主轨道的摄像头布局" = "Use the camera layout from the main track";
+"调整摄像头布局" = "Adjust camera layout";
+"仅视频全屏" = "Full-screen video only";
+"在这段视频期间隐藏摄像头" = "Hide the camera for this video clip";
+"铺满画布" = "Fill canvas";
+"缩为小窗" = "Make inset";
+"画布位置" = "Canvas position";
+"框内位置" = "Crop position";
+"水平取景" = "Horizontal framing";
+"垂直取景" = "Vertical framing";
+"叠放顺序" = "Layer order";
+"摄像头在上" = "Camera in front";
+"视频在上" = "Video in front";
+"调整叠放顺序" = "Change layer order";
+
+"缩放对象" = "Zoom Target";
+
+"主画面" = "Main Track";
+
+"此处没有可缩放的叠加视频" = "No video overlay to zoom here";
+
+"无法读取叠加视频「%@」的画面（成片 %.3f 秒）。" = "Could not read a frame of video overlay “%@” at %.3f seconds in the export.";
+
+"分离音频" = "Detach Audio";
+
+"重新关联到原视频" = "Reattach to Original Video";
+
+"视频原声" = "Video Audio";
+
+"声音已分离到音频轨" = "Audio is on the audio track";
+"已将 %ld 段叠加视频的末端对齐到源视频最后的画面。" = "Trimmed %ld video overlays to the end of their source footage.";
+"已略过 %ld 段取材起点超出源视频的空片段。" = "Skipped %ld empty video overlays whose in points are past the end of their footage.";

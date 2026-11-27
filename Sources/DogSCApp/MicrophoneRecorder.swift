@@ -19,6 +19,7 @@ final class MicrophoneRecorder: NSObject,
 
     // sessionQueue-confined state
     private var activity: CaptureActivity = .idle
+    private var speechTap: (id: UUID, sink: AsyncStream<MicrophoneSpeechSample>.Continuation)?
     private var startContinuation: (UUID, CheckedContinuation<Void, any Error>)?
     private var stopContinuations: [UUID: CheckedContinuation<Void, any Error>] = [:]
     private var recordingStartedAtStorage: Date?
@@ -188,6 +189,22 @@ final class MicrophoneRecorder: NSObject,
         normalizedInputLevelState.withLock { $0 }
     }
 
+    /// A slow recognizer may miss a buffer, but must never hold up the track writer.
+    func speechSamples() -> AsyncStream<MicrophoneSpeechSample> {
+        let id = UUID()
+        let (stream, sink) = AsyncStream<MicrophoneSpeechSample>.makeStream(bufferingPolicy: .bufferingNewest(8))
+        sink.onTermination = { [weak self] _ in
+            self?.sessionQueue.async { [weak self] in
+                if self?.speechTap?.id == id { self?.speechTap = nil }
+            }
+        }
+        sessionQueue.async { [self] in
+            speechTap?.sink.finish()
+            speechTap = (id, sink)
+        }
+        return stream
+    }
+
     nonisolated func captureOutput(
         _ output: AVCaptureOutput,
         didOutput sampleBuffer: CMSampleBuffer,
@@ -198,6 +215,9 @@ final class MicrophoneRecorder: NSObject,
             ?? Self.inputLevel(from: connection.audioChannels)
             ?? 0
         normalizedInputLevelState.withLock { $0 = inputLevel }
+        if let speechTap, !recordingIsPaused {
+            speechTap.sink.yield(MicrophoneSpeechSample(buffer: sampleBuffer))
+        }
         guard activity.recordingRequestID != nil else { return }
         do {
             try appendRecordingSampleLocked(sampleBuffer)
@@ -588,28 +608,42 @@ final class MicrophoneRecorder: NSObject,
         }
     }
 
+    static func aacSettings(for source: AVAudioFormat) -> [String: Any] {
+        var settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: source.sampleRate,
+            AVNumberOfChannelsKey: source.channelCount,
+        ]
+        if source.channelCount > 2, let layout = source.settings[AVChannelLayoutKey] {
+            settings[AVChannelLayoutKey] = layout
+        }
+        // Bluetooth voice input can have a much lower AAC ceiling than a
+        // built-in mic. Query once for the actual format at recording start.
+        if let target = AVAudioFormat(settings: settings),
+           let rates = AVAudioConverter(from: source, to: target)?.applicableEncodeBitRates {
+            let preferred = source.channelCount > 1 ? 192_000 : 128_000
+            let supported = rates.map(\.intValue).filter { $0 > 0 }
+            if let rate = supported.filter({ $0 <= preferred }).max() ?? supported.min() {
+                settings[AVEncoderBitRateKey] = rate
+            }
+        }
+        return settings
+    }
+
     private func createWriterLocked(from sampleBuffer: CMSampleBuffer) throws {
         dispatchPrecondition(condition: .onQueue(sessionQueue))
         guard let outputURL = recordingOutputURL,
-              let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer),
-              let basicDescription = CMAudioFormatDescriptionGetStreamBasicDescription(
-                formatDescription
-              )?.pointee else {
+              let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer) else {
             throw MicrophoneRecorderError.recordingFailed("无法读取麦克风音频格式")
         }
-        let sampleRate = basicDescription.mSampleRate.isFinite
-            && basicDescription.mSampleRate > 0
-            ? basicDescription.mSampleRate : 48_000
-        let channels = max(Int(basicDescription.mChannelsPerFrame), 1)
+        let source = AVAudioFormat(cmAudioFormatDescription: formatDescription)
+        guard source.sampleRate.isFinite, source.sampleRate > 0, source.channelCount > 0 else {
+            throw MicrophoneRecorderError.recordingFailed("无法读取麦克风音频格式")
+        }
         let assetWriter = try AVAssetWriter(outputURL: outputURL, fileType: .m4a)
         let input = AVAssetWriterInput(
             mediaType: .audio,
-            outputSettings: [
-                AVFormatIDKey: kAudioFormatMPEG4AAC,
-                AVSampleRateKey: sampleRate,
-                AVNumberOfChannelsKey: channels,
-                AVEncoderBitRateKey: channels > 1 ? 192_000 : 128_000,
-            ],
+            outputSettings: Self.aacSettings(for: source),
             sourceFormatHint: formatDescription
         )
         input.expectsMediaDataInRealTime = true
@@ -626,7 +660,7 @@ final class MicrophoneRecorder: NSObject,
         writer = assetWriter
         writerInput = input
         Self.logger.notice(
-            "microphone writer started sampleRate=\(sampleRate, privacy: .public) channels=\(channels, privacy: .public)"
+            "microphone writer started sampleRate=\(source.sampleRate, privacy: .public) channels=\(source.channelCount, privacy: .public)"
         )
     }
 

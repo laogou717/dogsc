@@ -225,6 +225,7 @@ final class VideoExporter: ObservableObject {
         guard project.media != nil else {
             throw VideoExporterError.missingAssetReference(.screenRecording)
         }
+        if request.outputKind == .video { try await OverlayVideoSource.validateExport(request) }
         let requiredMedia = RequiredProjectMedia(project: project)
         let wallpaperURL = request.assets.wallpaper?.url
         var frozenSources = request.assets.additionalSources
@@ -335,7 +336,7 @@ final class VideoExporter: ObservableObject {
         let insertedVideo = await TimelineCompositionBuilder.loadInsertedVideo(for: mediaPlan.primary)
         let compositionBundle = try TimelineCompositionBuilder.build(
             plan: mediaPlan, sources: sourceTracks,
-            audioClips: project.timeline.programAudioClips,
+            audioClips: project.timeline.programAudioClips(audio: project.audio),
             speech: project.timeline.subtitleCues.map(\.timing), insertedVideo: insertedVideo)
         let finalOutputURL = request.outputURL
         // Write to a sibling temporary file and promote it atomically only

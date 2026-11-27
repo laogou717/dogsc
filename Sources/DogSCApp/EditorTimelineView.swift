@@ -697,6 +697,7 @@ struct EditorTimelineView: View {
     let isLayoutTransitioning: Bool
     @Binding var visibleTracks: EditorTimelineTrackVisibility
     @Binding var selectedPrimarySegmentIDs: Set<UUID>
+    let clipClipboard: EditorClipClipboard
     let onError: (String) -> Void
 
     @Environment(\.undoManager) var undoManager
@@ -784,6 +785,7 @@ struct EditorTimelineView: View {
     /// EDT-055: clips selected together (besides primary segments, which keep
     /// their own set). The inspector follows `editorStore.selection`.
     @State var multiSelection: Set<EditorSelection> = []
+    @State var effectPressSelection: (items: Set<EditorSelection>, primary: Set<UUID>)?
     @State var marqueeModel = TimelineMarqueeModel()
     @State var rulerPress: EditorTimelineRulerPress?
     /// Start timings of the other selected clips while a group is dragged.
@@ -815,6 +817,7 @@ struct EditorTimelineView: View {
         layout: EditorWorkspaceLayout = EditorWorkspaceLayout(size: CGSize(width: 1510, height: 980)),
         visibleTracks: Binding<EditorTimelineTrackVisibility>,
         selectedPrimarySegmentIDs: Binding<Set<UUID>>,
+        clipClipboard: EditorClipClipboard = .shared,
         onError: @escaping (String) -> Void,
         isLayoutTransitioning: Bool = false,
         onPreferredHeightChange: @escaping (CGFloat, Bool) -> Void = { _, _ in }
@@ -834,6 +837,7 @@ struct EditorTimelineView: View {
         self.onPreferredHeightChange = onPreferredHeightChange
         _visibleTracks = visibleTracks
         _selectedPrimarySegmentIDs = selectedPrimarySegmentIDs
+        self.clipClipboard = clipClipboard
         self.onError = onError
         _timelineZoom = State(
             initialValue: AppPreferences.timelineZoom(for: editorStore.project)
@@ -939,6 +943,7 @@ struct EditorTimelineView: View {
             return
         }
         multiSelection = []
+        selectedPrimarySegmentIDs = []
         editorStore.selection = selection
         guard let revealTime = EditorTimelineSelectionReveal.time(
             for: selection,

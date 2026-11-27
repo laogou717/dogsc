@@ -9,14 +9,18 @@ actor VideoOverlayDecoder {
     static let shared = VideoOverlayDecoder()
 
     private final class Reader {
+        let path: String
         let reader: AVAssetReader
         let output: AVAssetReaderTrackOutput
         let transform: CGAffineTransform
+        let trackRange: CMTimeRange
         var current: (time: Double, image: CIImage)?
         var next: CMSampleBuffer?
-        init(reader: AVAssetReader, output: AVAssetReaderTrackOutput, transform: CGAffineTransform) {
+        init(path: String, reader: AVAssetReader, output: AVAssetReaderTrackOutput, transform: CGAffineTransform, trackRange: CMTimeRange) {
+            self.path = path
             self.reader = reader
             self.output = output
+            self.trackRange = trackRange
             self.transform = transform
         }
     }
@@ -24,7 +28,9 @@ actor VideoOverlayDecoder {
     private var readers: [UUID: Reader] = [:]
 
     func frame(clip id: UUID, path: String, at time: Double) async -> CIImage? {
-        if let reader = readers[id], let current = reader.current,
+        guard time.isFinite, time >= 0 else { return nil }
+        if let reader = readers[id], reader.path == path, time >= reader.trackRange.duration.seconds { return nil }
+        if let reader = readers[id], reader.path == path, let current = reader.current,
            time >= current.time - 0.001, time - current.time < 1.5 {
             return advance(reader, to: time)
         }
@@ -41,8 +47,10 @@ actor VideoOverlayDecoder {
         while true {
             let sample = reader.next ?? reader.output.copyNextSampleBuffer()
             reader.next = nil
-            guard let sample else { return reader.current?.image }
-            let pts = sample.presentationTimeStamp.seconds
+            guard let sample else {
+                return reader.reader.status == .completed ? reader.current?.image : nil
+            }
+            let pts = (sample.presentationTimeStamp - reader.trackRange.start).seconds
             if pts > time + 0.0005, reader.current != nil {
                 reader.next = sample
                 return reader.current?.image
@@ -58,6 +66,7 @@ actor VideoOverlayDecoder {
     private func makeReader(path: String, from time: Double) async -> Reader? {
         let asset = AVURLAsset(url: ProjectFiles.url(path))
         guard let track = try? await asset.loadTracks(withMediaType: .video).first,
+              let range = try? await track.load(.timeRange), time < range.duration.seconds,
               let transform = try? await track.load(.preferredTransform),
               let reader = try? AVAssetReader(asset: asset) else { return nil }
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
@@ -67,10 +76,10 @@ actor VideoOverlayDecoder {
         output.alwaysCopiesSampleData = false
         guard reader.canAdd(output) else { return nil }
         reader.add(output)
-        let start = max(time - 0.5, 0)
-        reader.timeRange = CMTimeRange(start: CMTime(seconds: start, preferredTimescale: 600), duration: .positiveInfinity)
+        let start = range.start + CMTime(seconds: max(time - 0.5, 0), preferredTimescale: 60_000)
+        reader.timeRange = CMTimeRange(start: start, end: range.end)
         guard reader.startReading() else { return nil }
-        return Reader(reader: reader, output: output, transform: transform)
+        return Reader(path: path, reader: reader, output: output, transform: transform, trackRange: range)
     }
 }
 

@@ -197,7 +197,8 @@ final class SharedRenderedPreviewNSView: NSView {
             pausedScreen: pausedScreen, pausedCamera: pausedCamera, wallpaper: wallpaper,
             wallpaperVideo: wallpaperVideoURL, sceneWallpapers: wallpapers, defaultWallpaperKey: defaultWallpaperKey,
             stickers: stickers, suppressCamera: suppressCameraContent, suppressScreen: suppressScreenContent,
-            liveDrag: MotionElementEditor.liveDrag, assetRootURL: assetRootURL?.standardizedFileURL, motionStarts: motionStarts)
+            liveDrag: MotionElementEditor.liveDrag, assetRootURL: assetRootURL?.standardizedFileURL, motionStarts: motionStarts,
+            isPointerPreview: playbackController?.scrubIsActive == true || playbackController?.hoverPreviewTime != nil)
         if let input { engine.configure(input) }
     }
     private func convert(_ image: NSImage?) -> CIImage? {

@@ -19,11 +19,12 @@ struct RecorderInputPopover: View {
         Binding(get: { isOn }, set: { value in
             switch kind {
             case .microphone: model.setDefaultMicrophoneRecordingEnabled(value)
-            case .camera: model.selectCamera(value ? model.availableCameras.first : nil)
+            case .camera: model.selectCamera(value ? model.preferredStudioCamera : nil)
             case .systemAudio: model.setDefaultSystemAudioRecordingEnabled(value)
             }
         })
     }
+    @State private var expandedDevices = false
     @State private var expandedResolution = false
 
     var body: some View {
@@ -59,90 +60,58 @@ struct RecorderInputPopover: View {
     }
 
     private var camera: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            deviceList(model.availableCameras, selectedID: model.configuration.cameraDeviceID, action: model.selectCamera)
-            if model.configuration.recordsCamera {
-                RecorderCameraPreview(sink: model.configurationCameraFrameSink, mirrored: model.recordingCameraMirrored)
-                    .frame(height: 152).clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    .overlay {
-                        if model.cameraRuntimeFormat == nil {
-                            ProgressView().controlSize(.small).frame(maxWidth: .infinity, maxHeight: .infinity)
-                                .background(RecorderStyle.silver, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                        }
-                    }
-                    .overlay(alignment: .bottomTrailing) {
-                        HStack(spacing: 6) {
-                            previewButton("arrow.left.and.right", title: "镜像画面", active: model.recordingCameraMirrored) {
-                                model.recordingCameraMirrored.toggle()
-                            }
-                        }
-                        .padding(8)
-                    }
-                    .padding(.horizontal, 10).padding(.top, 6)
-                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(appLocalized("美颜")).font(.appUI(size: 12, weight: .semibold))
-                        .foregroundStyle(RecorderStyle.muted)
-                    beautySlider("磨皮", value: $model.recordingCameraBeauty.smoothing)
-                    beautySlider("美白", value: $model.recordingCameraBeauty.whitening)
+        VStack(alignment: .leading, spacing: 5) {
+            Divider()
+            Button {
+                expandedDevices.toggle()
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: isOn ? "checkmark" : "video")
+                        .foregroundStyle(isOn ? RecorderStyle.positiveInk : RecorderStyle.muted)
+                    Text(model.configuration.cameraDeviceName ?? appLocalized("选择摄像头"))
+                        .lineLimit(1).truncationMode(.middle)
+                    Spacer()
+                    Image(systemName: expandedDevices ? "chevron.up" : "chevron.down")
+                        .font(.caption).foregroundStyle(RecorderStyle.muted)
                 }
-                .padding(.horizontal, 10).padding(.vertical, 10)
-                Button {
-                    withAnimation(RecorderMotion.settle) { expandedResolution.toggle() }
-                } label: {
-                    HStack {
-                        Text(model.cameraRuntimeFormat?.label ?? appLocalized("采集分辨率"))
-                            .font(.system(size: 12, weight: .medium, design: .rounded)).monospacedDigit()
-                            .foregroundStyle(RecorderStyle.muted)
-                        Spacer()
-                        EditorSymbol("chevron.down", size: 9).font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(RecorderStyle.faint)
-                            .rotationEffect(.degrees(expandedResolution ? 180 : 0))
-                    }
-                    .padding(.horizontal, 10).frame(height: 34)
-                    .contentShape(RoundedRectangle(cornerRadius: 10))
-                }
-                .buttonStyle(RecorderPlainPressButtonStyle())
-                .appButtonKeyboardFocus(in: RoundedRectangle(cornerRadius: 10))
-                .accessibilityLabel(appLocalized("采集分辨率"))
-                if expandedResolution {
-                    VStack(spacing: 2) {
-                        RecorderChoiceRow(title: "自动", selected: model.configuration.cameraCaptureResolution == nil, isAlternative: true) { model.selectCameraCaptureResolution(nil) }
-                        ForEach(model.availableCameraResolutions) { size in
-                            RecorderChoiceRow(title: size.label, selected: model.configuration.cameraCaptureResolution == size, isAlternative: true) { model.selectCameraCaptureResolution(size) }
-                        }
-                    }
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+                .font(.appUI(size: 13, weight: .medium))
+                .padding(.horizontal, 8).frame(height: 32).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if expandedDevices {
+                deviceList(model.availableCameras, selectedID: model.configuration.cameraDeviceID) { device in
+                    model.selectCamera(device)
+                    expandedDevices = false
                 }
             }
-        }
-    }
-
-    private func previewButton(_ symbol: String, title: String, active: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            EditorSymbol(symbol, size: 11).font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(active ? RecorderStyle.onPrimary : RecorderStyle.mediaInk)
-                .frame(width: 28, height: 28)
-                .background(active ? RecorderStyle.primaryFill.opacity(0.95) : RecorderStyle.mediaOverlay, in: Circle())
-                .contentShape(Circle())
-        }
-        .buttonStyle(RecorderPlainPressButtonStyle())
-        .appButtonKeyboardFocus(in: Circle(), color: RecorderStyle.chrome.opacity(0.7))
-        .help(appLocalized(title)).accessibilityLabel(appLocalized(title))
-        .animation(RecorderMotion.quick, value: active)
-    }
-
-    private func beautySlider(_ title: String, value: Binding<Double>) -> some View {
-        HStack(spacing: 10) {
-            Text(appLocalized(title)).font(.appUI(size: 12)).lineLimit(1)
-                .frame(width: 64, alignment: .leading)
-            Slider(value: value, in: 0...1)
-                .tint(RecorderStyle.chrome)
-                .accessibilityLabel(appLocalized(title))
-                .accessibilityValue("\(Int((value.wrappedValue * 100).rounded()))%")
-            Text("\(Int((value.wrappedValue * 100).rounded()))%")
-                .font(.system(size: 11, design: .rounded)).monospacedDigit()
-                .foregroundStyle(RecorderStyle.muted).frame(width: 34, alignment: .trailing)
+            if isOn {
+                ZStack(alignment: .bottomTrailing) {
+                    RecorderCameraPreview(sink: model.configurationCameraFrameSink, mirrored: model.recordingCameraMirrored)
+                    if model.cameraRuntimeFormat == nil {
+                        ProgressView().controlSize(.small).frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                    Button { expandedResolution.toggle() } label: {
+                        HStack(spacing: 4) {
+                            Text(model.cameraRuntimeFormat?.resolution.aspectRatioLabel ?? appLocalized("自动"))
+                            Image(systemName: "chevron.down").font(.system(size: 8))
+                        }
+                        .font(.system(size: 11, weight: .medium)).foregroundStyle(.white)
+                        .padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 4))
+                    }
+                    .buttonStyle(.plain).help(appLocalized("采集分辨率")).padding(6)
+                }
+                .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                .clipShape(RoundedRectangle(cornerRadius: 9)).padding(.horizontal, 8)
+                if expandedResolution { CameraResolutionChoices(model: model) }
+                RecorderSaveToggleRow(title: "镜像", symbol: "flip.horizontal",
+                                      isOn: $model.recordingCameraMirrored)
+                CameraBeautyControls(model: model)
+            }
+            Divider()
+            RecorderSaveActionRow(title: "单独录制摄像头…", symbol: "video") {
+                RecorderPopoverPresenter.shared.dismissAndPerform { model.openCameraStudio() }
+            }
         }
     }
 
@@ -216,6 +185,7 @@ struct RecorderSavePopover: View {
         RecorderMotion.reduces ? nil : .timingCurve(0.2, 0, 0, 1, duration: 0.24)
     }
     @ObservedObject var model: AppModel
+    let mode: RecorderSourceMode
     @ObservedObject private var memo = RecorderMemoController.shared
     @State private var expandedQuality = false
     @Namespace private var codecSelection
@@ -230,7 +200,7 @@ struct RecorderSavePopover: View {
                     .background(RecorderStyle.well, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .padding(.horizontal, 6).padding(.vertical, 4)
                     .accessibilityLabel(appLocalized("文件名"))
-                if model.configuration.source != .device {
+                if mode != .device {
                     HStack(spacing: 0) {
                         ForEach(CaptureCodec.allCases) { codec in
                             let selected = model.configuration.captureCodec == codec
@@ -350,7 +320,7 @@ final class RecorderCameraPreviewView: NSView {
         super.init(frame: .zero)
         wantsLayer = true
         layer?.backgroundColor = RecorderStyle.chromeNSColor.withAlphaComponent(0.06).cgColor
-        displayLayer.videoGravity = .resizeAspectFill
+        displayLayer.videoGravity = .resizeAspect
         layer?.addSublayer(displayLayer)
         sink.attach(displayLayer.sampleBufferRenderer)
     }

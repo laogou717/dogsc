@@ -15,6 +15,9 @@ extension AppModel {
         if project.capture.source == .device {
             return deviceRecorder.recordedSourceTime(atHostTime: hostTime)
         }
+        if project.capture.source == .cameraOnly {
+            return cameraRecorder.recordedSourceTime(atHostTime: hostTime)
+        }
         return recorder.recordedSourceTime(atHostTime: hostTime)
     }
 

@@ -1087,14 +1087,15 @@ final class EditorPlaybackController: ObservableObject {
     var stationaryRenderTick: EditorPlaybackRenderTick? {
         guard let generation = endpoints?.generation ?? preparedMedia?.generation else { return nil }
         let time = EditorPlaybackClockPolicy.clampedTime(scrubIsActive ? (scrubPreviewTime ?? outputTime) : outputTime, duration: duration)
+        let frame = preparedMedia?.composition.frameMetadata(at: time)
         return EditorPlaybackRenderTick(
             mediaGeneration: generation,
             discontinuityID: discontinuityID,
             outputTime: time,
             itemTime: CMTime(seconds: time, preferredTimescale: 60_000),
-            cameraIsAvailable: cameraIsAvailable(at: time) || (endpoints == nil && pausedCameraImage != nil),
+            cameraIsAvailable: frame?.usesPrimaryFrameForCamera == true || cameraIsAvailable(at: time) || (endpoints == nil && pausedCameraImage != nil),
             isPlaying: false,
-            sourceFrame: preparedMedia?.composition.frameMetadata(at: time)
+            sourceFrame: frame
         )
     }
 

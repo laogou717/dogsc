@@ -4,9 +4,36 @@ import RecorderCore
 /// Native object edits use the same Codable data and validators as the
 /// inspector. A partial patch preserves every field it does not name.
 enum AgentTimelineAccess {
+    static let legacyVideoCameraFields: Set<String> = [
+        "cameraInsetMirrored", "cameraInsetShape", "cameraInsetSize", "cameraInsetPosition", "legacyAutoCoverage"
+    ]
+
     struct AccessError: LocalizedError {
         let message: String
         var errorDescription: String? { message }
+    }
+
+    /// Optional creation arguments use the same persisted field names as inspect/update.
+    struct VideoPlacementAppearance: Decodable {
+        let maskShape: VideoMaskShape?
+        let maskCornerRadius: Double?
+        let cameraMode: VideoCameraMode?
+
+        init(parameters: [String: Any]) throws {
+            self = try JSONDecoder().decode(Self.self, from: JSONSerialization.data(withJSONObject: parameters))
+            if let maskCornerRadius, !VideoClip.maskRadiusRange.contains(maskCornerRadius) {
+                throw AccessError(message: "maskCornerRadius must be in 0...0.5 of the video's shorter edge.")
+            }
+            if let cameraMode, cameraMode != .pictureInPicture && cameraMode != .videoInFront {
+                throw AccessError(message: "Use cameraMode videoInFront or pictureInPicture.")
+            }
+        }
+
+        func apply(to clip: inout VideoClip) {
+            if let maskShape { clip.maskShape = maskShape }
+            if let maskCornerRadius { clip.maskCornerRadius = maskCornerRadius }
+            if let cameraMode { clip.cameraMode = cameraMode }
+        }
     }
 
     static func revision(_ project: RecorderProject) throws -> String {
@@ -19,12 +46,81 @@ enum AgentTimelineAccess {
         try JSONSerialization.jsonObject(with: JSONEncoder().encode(value)) as? [String: Any] ?? [:]
     }
 
+    /// Prefer the originating template across copies and immutable revisions.
+    /// Custom artwork without provenance is counted by its actual source file.
+    static func motionUsage(_ motions: [[String: Any]], entries: [AssetLibrary.Entry]) -> [[String: Any]] {
+        var components: [String: String] = [:]
+        for entry in entries where entry.kind == .animation {
+            guard let origin = entry.origin, MotionTemplateLibrary.contains(URL(fileURLWithPath: origin)) else { continue }
+            let component = URL(fileURLWithPath: origin).standardizedFileURL.pathComponents
+                .dropFirst(MotionTemplateLibrary.folder.standardizedFileURL.pathComponents.count).joined(separator: "/")
+            for path in (entry.revisionPaths ?? []) + [entry.path] { components[path] = component }
+        }
+        var starts: [String: [Double]] = [:]
+        for motion in motions {
+            guard let path = motion["path"] as? String, let start = motion["start"] as? Double else { continue }
+            starts[components[path] ?? path, default: []].append(start)
+        }
+        return starts.keys.sorted().map { source in
+            let times = starts[source, default: []].sorted()
+            return ["source": source, "count": times.count, "starts": times] as [String: Any]
+        }
+    }
+
+    /// Output-time footage, independent of the speech cache. A camera-only
+    /// recording also uses its movie as the primary timing track.
+    static func footage(project: RecorderProject, durations: [UUID: Double],
+                        from: Double = 0, to: Double = .infinity) -> [String: Any] {
+        let timeline = project.timeline
+        let sources = project.sources.map { source -> [String: Any] in
+            ["id": source.id.uuidString, "name": source.name, "captureMode": source.capture.source.rawValue,
+             "screenRecording": source.capture.source != .cameraOnly,
+             "camera": source.media.camera != nil || source.capture.source == .cameraOnly,
+             "microphone": source.media.microphone != nil]
+        }
+        let map = try? TimelineMap(sourceSequence: timeline.sourceSequence, sourceDurations: durations)
+        var main: [[String: Any]] = []
+        for segment in map?.segments ?? [] where segment.outputEnd > from && segment.outputStart < to {
+            let end = min(to, segment.outputEnd)
+            let sourceID = segment.sourceID.uuidString
+            if !segment.isInserted, main.last?["sourceId"] as? String == sourceID {
+                main[main.count - 1]["end"] = end
+                continue
+            }
+            var row: [String: Any] = ["start": max(from, segment.outputStart), "end": end]
+            if let media = segment.media {
+                if media.motionPath != nil { row["kind"] = "animation" }
+                else if media.imagePath != nil { row["kind"] = "image" }
+                else { row["kind"] = "insertedVideo" }
+                row["name"] = media.name
+            } else {
+                row["kind"] = "recording"
+                row["sourceId"] = sourceID
+            }
+            main.append(row)
+        }
+        var overlays: [[String: Any]] = []
+        func overlay(_ timing: OverlayTiming, _ kind: String, _ id: UUID, _ opacity: Double) {
+            let start = max(timing.startTime, from)
+            let end = min(timing.endTime, to, map?.outputDuration ?? to)
+            guard opacity > 0, start < end else { return }
+            overlays.append(["kind": kind, "id": id.uuidString, "start": start, "end": end])
+        }
+        for clip in timeline.videoClips { overlay(clip.timing, "video", clip.id, clip.opacity) }
+        for clip in timeline.stickerClips { overlay(clip.timing, "image", clip.id, clip.opacity) }
+        for clip in timeline.animationClips { overlay(clip.timing, "animation", clip.id, clip.opacity) }
+        return ["recordingSources": sources, "timelineAvailable": map != nil,
+                "mainTrack": main, "overlays": overlays]
+    }
+
     static func inspect(project: RecorderProject, durations: [UUID: Double], ids: Set<UUID>?) throws -> [String: Any] {
         let t = project.timeline
         var rows: [[String: Any]] = []
         func append<T: Encodable & Identifiable>(_ clips: [T], kind: String) throws where T.ID == UUID {
             for clip in clips where ids == nil || ids!.contains(clip.id) {
-                rows.append(["id": clip.id.uuidString, "kind": kind, "value": try object(clip)])
+                var value = try object(clip)
+                if kind == "video" { value = value.filter { !legacyVideoCameraFields.contains($0.key) } }
+                rows.append(["id": clip.id.uuidString, "kind": kind, "value": value])
             }
         }
         try append(t.zoomClips, kind: "zoom")
@@ -59,7 +155,8 @@ enum AgentTimelineAccess {
         return ["revision": try revision(project), "objects": rows]
     }
 
-    static func updated(project: RecorderProject, changes: [[String: Any]], durations: [UUID: Double]) throws -> ProjectTimeline {
+    static func updated(project: RecorderProject, changes: [[String: Any]], durations: [UUID: Double],
+                        videoFileEnds: [String: Double] = [:]) throws -> ProjectTimeline {
         guard !changes.isEmpty else { throw AccessError(message: "changes [{id,patch}] is required.") }
         var t = project.timeline
         var visualTimingChanged = false
@@ -92,13 +189,37 @@ enum AgentTimelineAccess {
                 explicitVisualLayer = explicitVisualLayer || patch["layerIndex"] != nil
                 continue
             }
-            if try update(&t.animationClips, id: id, patch: patch) {
+            if let index = t.animationClips.firstIndex(where: { $0.id == id }) {
+                t.animationClips[index] = try patched(t.animationClips[index], patch: motionProperties(in: patch))
                 visualTimingChanged = visualTimingChanged || patch["timing"] != nil
                 explicitVisualLayer = explicitVisualLayer || patch["layerIndex"] != nil
                 continue
             }
-            if try update(&t.videoClips, id: id, patch: patch) {
-                visualTimingChanged = visualTimingChanged || patch["timing"] != nil
+            if !legacyVideoCameraFields.isDisjoint(with: patch.keys), t.videoClips.contains(where: { $0.id == id }) {
+                throw AccessError(message: "Edit camera appearance on the recording or its segment. Video clips only set cameraMode for stacking order.")
+            }
+            if let index = t.videoClips.firstIndex(where: { $0.id == id }) {
+                let original = t.videoClips[index]
+                guard patch["sourceFileEnd"] == nil else { throw AccessError(message: "sourceFileEnd is read-only.") }
+                var updated = try patched(original, patch: patch)
+                if let end = videoFileEnds[updated.sourcePath] {
+                    updated.sourceFileEnd = end
+                } else if updated.sourcePath != original.sourcePath {
+                    throw VideoSourceError.unreadable(name: updated.sourcePath)
+                }
+                let timing = patch["timing"] as? [String: Any]
+                if patch["playbackRate"] != nil, timing?["duration"] == nil {
+                    let rate = updated.playbackRate
+                    updated.playbackRate = original.playbackRate
+                    try updated.setPlaybackRate(rate)
+                }
+                try updated.validateSourceRange()
+                if updated.timing.endTime > original.timing.endTime,
+                   updated.timing.endTime > (try TimelineMap(sourceSequence: t.sourceSequence, sourceDurations: durations)).outputDuration + 0.000_001 {
+                    throw VideoSourceError.insufficientTimeline
+                }
+                t.videoClips[index] = updated
+                visualTimingChanged = visualTimingChanged || updated.timing != original.timing
                 explicitVisualLayer = explicitVisualLayer || patch["layerIndex"] != nil
                 continue
             }
@@ -118,12 +239,13 @@ enum AgentTimelineAccess {
                     crop: $0.crop)
             }
             if let value = patch["audio"] {
-                if value is NSNull { t.primarySegmentAudioOverrides[id] = nil }
+                if value is NSNull { t.resetSegmentAudioMix(id) }
                 else if let change = value as? [String: Any] {
                     t.primarySegmentAudioOverrides[id] = try patched(t.primarySegmentAudioOverrides[id] ?? .init(), patch: change)
                 } else { throw AccessError(message: "audio must be an object or null.") }
             }
             var segmentPatch = patch
+            if let media = patch["media"] as? [String: Any] { segmentPatch["media"] = try motionProperties(in: media) }
             segmentPatch["audio"] = nil
             segmentPatch["source"] = nil
             if !segmentPatch.isEmpty { segments[index] = try patched(segments[index], patch: segmentPatch) }
@@ -191,12 +313,30 @@ enum AgentTimelineAccess {
         return result
     }
 
+    private static func motionProperties(in patch: [String: Any]) throws -> [String: Any] {
+        guard let fields = patch["properties"] as? [String: Any] else { return patch }
+        var normalized = patch
+        normalized["properties"] = try fields.mapValues { raw -> Any in
+            let value: AnimationPropertyValue
+            if let text = raw as? String {
+                if text.hasPrefix("#"), let color = HexColor(text) { value = .color(color) }
+                else { value = .string(text) }
+            } else if let number = raw as? NSNumber {
+                value = CFGetTypeID(number) == CFBooleanGetTypeID() ? .boolean(number.boolValue) : .number(number.doubleValue)
+            } else { return raw }
+            return try object(value)
+        }
+        return normalized
+    }
+
     private static func patched<T: Codable>(_ value: T, patch: [String: Any]) throws -> T {
         let before = try object(value)
-        func merge(_ base: Any?, _ change: Any) -> Any {
+        func merge(_ base: Any?, _ change: Any, key field: String? = nil) -> Any {
             guard let change = change as? [String: Any] else { return change }
             var result = base as? [String: Any] ?? [:]
-            for (key, child) in change { result[key] = merge(result[key], child) }
+            for (key, child) in change {
+                result[key] = field == "properties" ? child : merge(result[key], child, key: key)
+            }
             return result
         }
         let data = try JSONSerialization.data(withJSONObject: merge(before, patch))

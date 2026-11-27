@@ -264,8 +264,15 @@ public struct FrameScreenScene: Equatable, Sendable {
 }
 
 public struct FrameCameraScene: Equatable, Sendable {
+    /// The video immediately beneath this camera inset in paint order.
+    public var insetVideoID: UUID?
+    /// A normally foreground camera sits just below this video, still above
+    /// graphics on lower tracks. A fullscreen talking head stays on the base.
+    public var coveringVideoID: UUID?
     public var rect: CompositionRect
     public var contentFill: CameraContentFillLayout?
+    public var sourceFocus = NormalizedPoint(x: 0.5, y: 0.5)
+    public var contentScale: Double = 1
     public var cornerRadius: Double
     public var borderWidth: Double
     public var borderColor: HexColor
@@ -273,6 +280,7 @@ public struct FrameCameraScene: Equatable, Sendable {
     public var opacity: Double
     public var isMirrored: Bool
     public var beauty: CameraBeautySettings
+    public var usesCircularCorners: Bool
 
     public init(
         rect: CompositionRect,
@@ -283,10 +291,14 @@ public struct FrameCameraScene: Equatable, Sendable {
         shadow: FrameShadow?,
         opacity: Double,
         isMirrored: Bool,
-        beauty: CameraBeautySettings = CameraBeautySettings()
+        beauty: CameraBeautySettings = CameraBeautySettings(),
+        usesCircularCorners: Bool = false,
+        sourceFocus: NormalizedPoint = NormalizedPoint(x: 0.5, y: 0.5), contentScale: Double = 1
     ) {
         self.rect = rect
         self.contentFill = contentFill
+        self.sourceFocus = sourceFocus
+        self.contentScale = contentScale
         self.cornerRadius = max(cornerRadius, 0)
         self.borderWidth = max(borderWidth, 0)
         self.borderColor = borderColor
@@ -294,6 +306,7 @@ public struct FrameCameraScene: Equatable, Sendable {
         self.opacity = min(max(opacity, 0), 1)
         self.isMirrored = isMirrored
         self.beauty = beauty
+        self.usesCircularCorners = usesCircularCorners
     }
 }
 
@@ -398,6 +411,18 @@ public enum FrameLayerRole: String, Equatable, Sendable {
 
 /// One overlay video at this frame (EDT-054).
 public struct FrameVideoScene: Equatable, Sendable {
+    public var maskShape: VideoMaskShape
+    public var maskCornerRadius: Double
+    public var maskRadiusFraction: Double {
+        switch maskShape {
+        case .rectangle: 0
+        case .rounded: maskCornerRadius
+        case .circle: 0.5
+        }
+    }
+
+    public var contentPosition: NormalizedPoint
+    public var contentScale: Double
     public var id: UUID
     public var sourcePath: String
     public var sourceTime: TimeInterval
@@ -410,12 +435,57 @@ public struct FrameVideoScene: Equatable, Sendable {
     public init(clip: VideoClip, at time: TimeInterval) {
         id = clip.id
         sourcePath = clip.sourcePath
-        sourceTime = clip.sourceStart + max(time - clip.timing.startTime, 0) * clip.playbackRate
+        let mapped = clip.sourceStart + max(time - clip.timing.startTime, 0) * clip.playbackRate
+        // A valid half-open tail can round onto the exclusive source boundary.
+        if let end = clip.sourceFileEnd, mapped >= end, mapped <= end + VideoClip.sourceTimeTolerance {
+            sourceTime = end.nextDown
+        } else {
+            sourceTime = mapped
+        }
         position = clip.position
         width = clip.width
-        aspect = clip.aspect
+        maskShape = clip.maskShape
+        maskCornerRadius = clip.maskCornerRadius
+        contentPosition = clip.contentPosition
+        contentScale = clip.contentScale
+        aspect = clip.maskAspect
         opacity = clip.opacity
         layerIndex = clip.layerIndex
+    }
+
+    /// A translucent video or the empty corners outside a mask can still
+    /// show the camera. Only a fully covered camera bounds counts as a cut.
+    func covers(_ rect: CompositionRect, on canvas: CompositionSize) -> Bool {
+        guard opacity >= 1 else { return false }
+        let w = width * canvas.width, h = w * aspect
+        let x = position.x * canvas.width, y = position.y * canvas.height
+        let radius = maskRadiusFraction * min(w, h)
+        let dx = abs(rect.midX - x) + rect.width / 2 - w / 2
+        let dy = abs(rect.midY - y) + rect.height / 2 - h / 2
+        guard dx <= 0.000001, dy <= 0.000001 else { return false }
+        return hypot(max(0, dx + radius), max(0, dy + radius)) <= radius + 0.000001
+    }
+
+    mutating func applyZoom(_ sample: ZoomSample, sourceAspect: Double, canvasAspect: Double) {
+        guard sample.scale > 1 || sample.framingProgress > 0 else { return }
+        // The focus picker shows the original media. Map that point through the user's
+        // existing crop before animating the whole card, including its rounded mask.
+        guard let fill = CameraContentFill.layout(sourceWidth: 1, sourceHeight: sourceAspect,
+            target: .init(x: 0, y: 0, width: 1, height: aspect), focus: contentPosition,
+            contentScale: contentScale, overscan: 1) else { return }
+        let visible = fill.visibleSource
+        let crop = NormalizedCrop(x: visible.x, y: visible.y / sourceAspect,
+                                  width: visible.width, height: visible.height / sourceAspect)
+        let height = width * aspect * canvasAspect
+        guard width > 0, height > 0 else { return }
+        let canvas = CompositionRect(x: 0.5 - position.x / width, y: 0.5 - position.y / height,
+                                     width: 1 / width, height: 1 / height)
+        let coversCanvas = canvas.x >= -0.000001 && canvas.y >= -0.000001
+            && canvas.x + canvas.width <= 1.000001 && canvas.y + canvas.height <= 1.000001
+        let transform = ZoomViewportTransform.make(from: sample, crop: crop, covering: coversCanvas ? canvas : nil)
+        position.x += transform.translation.x * width
+        position.y += transform.translation.y * height
+        width *= transform.scale
     }
 }
 
@@ -445,6 +515,14 @@ public struct FrameAnimationScene: Equatable, Sendable {
     public var properties: [String: AnimationPropertyValue]
     public var layerIndex: Int
     public var elementEdits: [String: MotionElementEdit]
+    public var hostsCamera = false
+    /// The fixed hole and its presentation position in canvas coordinates.
+    /// Both exclude the native underlay's antialiasing bleed.
+    public struct MovingMatte: Equatable, Sendable {
+        public var aperture, presented: CompositionRect
+        public var cornerRadius, reveal: Double
+    }
+    public var movingMatte: MovingMatte?
 
     public init(clip: AnimationClip, at time: TimeInterval) {
         id = clip.id
@@ -509,6 +587,9 @@ public struct FrameScene: Equatable, Sendable {
     public var subtitle: FrameSubtitleScene?
     public var videos: [FrameVideoScene]
     public var layerOrder: [FrameLayerRole]
+    public var cameraBeforeVisualOverlays: Bool {
+        layerOrder.prefix { $0 != .animations && $0 != .videos && $0 != .stickers }.contains(.camera)
+    }
     public var insertedMotion: FrameInsertedMotionScene?
     public var insertedImage: FrameInsertedImageScene?
 
@@ -583,7 +664,7 @@ public enum FrameSceneEvaluator {
         let project = project.sceneProject(atOutputTime: presentationTime)
         let time = presentationTime.isFinite
             ? min(max(presentationTime, 0), plan.outputDuration) : 0
-        let activeAutomaticClip = zoomTrack.activeClip(at: time).flatMap {
+        let activeAutomaticClip = zoomTrack.forTarget(.recording).activeClip(at: time).flatMap {
             $0.origin == .automatic ? $0 : nil
         }
         let pointer = pointerTrack?.evaluation(
@@ -635,25 +716,21 @@ public enum FrameSceneEvaluator {
         cameraTimeline: TimelineMediaPlan? = nil,
         recordingSourceID: UUID? = nil,
         geometrySourceAspectRatio: Double? = nil,
+        layoutAspectRatio: Double? = nil,
         color: FrameColorContract = .sdrDesktop
     ) -> FrameRenderPlan {
         let safeDuration = outputDuration.isFinite ? max(outputDuration, 0) : 0
         let safeTime = presentationTime.isFinite
             ? min(max(presentationTime, 0), safeDuration)
             : 0
-        // The timeline plan owns cut-boundary membership. Rechecking the
-        // selected slice with strict Double comparisons here can contradict
-        // that decision by a few ulps: the plan has already advanced to the
-        // next camera slice, while `safeTime >= slice.outputStart` is false.
-        // That disagreement hides the camera for exactly one exported frame.
-        let cameraIsAvailable = cameraTimeline?.contains(outputTime: safeTime) ?? true
         let current = scene(
             project: project,
             time: safeTime,
             outputDuration: safeDuration,
+            frameRate: frameRate,
             canvasSize: canvasSize,
             sourceAspectRatio: sourceAspectRatio,
-            cameraSourceSize: cameraIsAvailable ? cameraSourceSize : nil,
+            cameraSourceSize: cameraSourceSize,
             pointerTrack: pointerTrack,
             cursorMetrics: cursorMetrics,
             cursorMetricsByAssetID: cursorMetricsByAssetID,
@@ -661,8 +738,10 @@ public enum FrameSceneEvaluator {
             screenMotionTrack: screenMotionTrack,
             cameraMotionTrack: cameraMotionTrack,
             stickerTrack: stickerTrack,
+            cameraTimeline: cameraTimeline,
             recordingSourceID: recordingSourceID,
             geometrySourceAspectRatio: geometrySourceAspectRatio,
+            layoutAspectRatio: layoutAspectRatio,
             color: color
         )
         return FrameRenderPlan(
@@ -676,6 +755,7 @@ public enum FrameSceneEvaluator {
         project: RecorderProject,
         time: TimeInterval,
         outputDuration: TimeInterval? = nil,
+        frameRate: Int? = nil,
         canvasSize: CompositionSize,
         sourceAspectRatio: Double,
         cameraSourceSize: CompositionSize? = nil,
@@ -687,22 +767,28 @@ public enum FrameSceneEvaluator {
         screenMotionTrack: ScreenMotionTrack? = nil,
         cameraMotionTrack: CameraMotionTrack? = nil,
         stickerTrack: StickerTransitionTrack? = nil,
+        cameraTimeline: TimelineMediaPlan? = nil,
         recordingSourceID: UUID? = nil,
         geometrySourceAspectRatio: Double? = nil,
+        layoutAspectRatio: Double? = nil,
         color: FrameColorContract = .sdrDesktop
     ) -> FrameScene {
         let width = max(canvasSize.width, 2)
         let height = max(canvasSize.height, 2)
+        // Let the media plan decide membership at fractional recording cuts,
+        // including when sampling the camera on either side of a transition.
+        let cameraSourceSize = cameraTimeline?.contains(outputTime: time) == false ? nil : cameraSourceSize
         let cameraAspect = cameraSourceSize.map { max($0.width, 1) / max($0.height, 1) }
         // Resolve both sides against the authored global defaults. Applying
         // the incoming override first would erase an outgoing inherited style.
         let boundary = project.timeline.recordingSegmentBoundary(atOutputTime: time)
         let settledCanvas = project.screenCanvas(atOutputTime: time, recordingSourceID: recordingSourceID, boundary: boundary)
-        let settledCamera = project.settledCamera(atOutputTime: time, boundary: boundary)
+        let settledCamera = project.settledCamera(atOutputTime: time, boundary: boundary, cameraTimeline: cameraTimeline)
         let cameraBase = cameraAspect.flatMap {
             project.cameraAppearanceTransitionSample(atOutputTime: time, cameraAspectRatio: $0,
-                canvasAspectRatio: width / height, boundary: boundary)
+                canvasAspectRatio: width / height, boundary: boundary, cameraTimeline: cameraTimeline)
         }
+        let sourceProject = project
         var project = project
         boundary.segment?.sceneStyle?.apply(to: &project)
         project.canvas = settledCanvas
@@ -722,12 +808,17 @@ public enum FrameSceneEvaluator {
         // and `project.media` is about to become the current frame's source.
         let openingSourceID = project.openingRecordingSourceID
         let openingDeclaresCamera = project.openingDeclaresCamera
-        if let recordingSourceID, let source = project.source(recordingSourceID) {
+        let activeSource = (recordingSourceID ?? boundary.segment?.resolvedSourceID).flatMap { project.source($0) }
+        if let source = activeSource {
             project.media = source.media
         }
         let sampleTime = time.isFinite ? max(time, 0) : 0
-        let resolvedZoomTrack = zoomTrack?.bounded(to: outputDuration)
+        let allZooms = zoomTrack?.bounded(to: outputDuration)
             ?? ZoomAnimationTrack(project.zoomAnimations, outputDuration: outputDuration)
+        let resolvedZoomTrack = allZooms.forTarget(.recording)
+        let resolvedStickerTrack = stickerTrack ?? StickerTransitionTrack(project.timeline.stickerClips)
+        let suppressesFirstStickerEntry = project.openingSequence.isEnabled
+            && project.openingSequence.includedElements.contains(.stickers)
         let resolvedScreenTrack = screenMotionTrack ?? ScreenMotionTrack(project.timeline.screenMotionClips)
         let activeZoomClip = resolvedZoomTrack.activeClip(at: sampleTime)
         let activeAutomaticClip = activeZoomClip.flatMap {
@@ -772,6 +863,7 @@ public enum FrameSceneEvaluator {
             canvasWidth: width,
             canvasHeight: height,
             sourceAspectRatio: geometrySourceAspectRatio ?? sourceAspectRatio,
+            layoutAspectRatio: layoutAspectRatio,
             cameraAspectRatio: cameraAspect,
             styleScale: styleScale,
             automaticZoomFocus: automaticCameraPosition,
@@ -901,7 +993,128 @@ public enum FrameSceneEvaluator {
             let crop = project.canvas.crop.clamped()
             screen.contentAspectRatio = sourceAspectRatio * crop.width / crop.height
         }
-        let camera = geometry.camera.map { evaluation in
+        let rate = max(1, frameRate ?? project.exportSettings.frameRate.rawValue)
+        let hostTime = cameraAspect == nil ? sampleTime : sourceProject.cameraHostSampleTime(
+            at: sampleTime, boundary: boundary, frameRate: rate, cameraTimeline: cameraTimeline)
+        func animationTime(_ clip: AnimationClip) -> TimeInterval {
+            clip.cameraSlot?.isValid == true ? hostTime : sampleTime
+        }
+        let activeAnimations = project.timeline.animationClips
+            .filter { $0.opacity > 0 && $0.timing.contains(animationTime($0)) }
+            .sorted(by: MotionCameraSlot.layerOrder)
+        var animations = activeAnimations.map { FrameAnimationScene(clip: $0, at: animationTime($0)) }
+        let cameraOnly = insertedMedia == nil && (activeSource?.capture.source ?? project.capture.source) == .cameraOnly
+        let cameraIsFullscreen = geometry.camera.map {
+            abs($0.rect.x) < 0.001 && abs($0.rect.y) < 0.001
+                && abs($0.rect.width - width) < 0.001 && abs($0.rect.height - height) < 0.001
+        } ?? false
+        func controlsCamera(_ clip: VideoClip) -> Bool {
+            clip.opacity > 0 && (clip.cameraMode == .hidden || clip.requestsCameraInset(
+                cameraOnlyFullscreen: cameraOnly && cameraIsFullscreen, canvasAspect: width / height))
+        }
+        func videoTime(_ clip: VideoClip) -> TimeInterval {
+            hostTime != sampleTime && controlsCamera(clip) ? hostTime : sampleTime
+        }
+        let activeVideos = project.timeline.videoClips
+            .filter { project.timeline.presentsVideo($0, at: videoTime($0)) }
+            .sorted(by: VideoClip.layerOrder)
+        let host = MotionCameraSlot.Host.visible(video: activeVideos.last(where: controlsCamera),
+            motion: activeAnimations.last { $0.cameraSlot?.isValid == true })
+        let cameraHost: AnimationClip?
+        let insetVideo: VideoClip?
+        switch host {
+        case let .motion(clip): cameraHost = clip; insetVideo = nil
+        case let .video(clip): cameraHost = nil; insetVideo = clip.cameraMode == .hidden ? nil : clip
+        case nil: cameraHost = nil; insetVideo = nil
+        }
+        let nativeCameraIsBackground = cameraOnly && cameraIsFullscreen
+        let coveringVideo = host == nil && !nativeCameraIsBackground
+            ? activeVideos.first { $0.cameraMode == .videoInFront } : nil
+        let camera = geometry.camera.map { native in
+            let base = MotionCameraSlot.Placement(rect: native.rect, radius: native.cornerRadius,
+                contentPosition: settledCamera.contentPosition, contentScale: settledCamera.contentScale,
+                borderWidth: native.borderWidth)
+            let placement: MotionCameraSlot.Placement
+            if let host, !host.hidesCamera, let cameraAspect {
+                let videos = project.timeline.videoClips.filter(controlsCamera).sorted(by: VideoClip.layerOrder)
+                let slots = project.timeline.animationClips.filter { $0.cameraSlot?.isValid == true && $0.opacity > 0 }
+                    .sorted(by: MotionCameraSlot.layerOrder)
+                func cameraVisible(at edge: Double, owner: MotionCameraSlot.Host?, target: MotionCameraSlot.Placement) -> Bool {
+                    guard edge >= 0, edge < (outputDuration ?? .infinity) else { return false }
+                    let cut = sourceProject.timeline.recordingSegmentBoundary(atOutputTime: edge)
+                    if case .edited = sourceProject.timeline.sourceSequence, cut.segment == nil { return false }
+                    guard sourceProject.hasVisibleCamera(in: cut.segment, at: edge, cameraTimeline: cameraTimeline)
+                    else { return false }
+                    let edgeMotion = cut.segment?.sceneStyle?.motion ?? sourceProject.motion
+                    if !project.timeline.cameraMotionClips.isEmpty {
+                        let track = cameraMotionTrack ?? CameraMotionTrack(project.timeline.cameraMotionClips)
+                        let style = cut.segment?.sceneStyle?.camera ?? sourceProject.camera
+                        let sample = track.sample(at: edge, base: CameraMotionState(base: style),
+                            cameraAspectRatio: cameraAspect, canvasAspectRatio: width / height, motion: edgeMotion)
+                        if sample.opacity <= 0 { return false }
+                    }
+                    if !project.timeline.stickerClips.isEmpty,
+                       resolvedStickerTrack.sample(at: edge, suppressesInitialEntry: suppressesFirstStickerEntry)
+                            .backdrop.cameraSuppression >= 0.999 { return false }
+                    let ordered = project.timeline.videoClips.filter { project.timeline.presentsVideo($0, at: edge) }
+                        .sorted(by: VideoClip.layerOrder)
+                    let inFront: ArraySlice<VideoClip>
+                    switch owner {
+                    case let .motion(clip):
+                        inFront = ordered.drop { $0.layerIndex <= clip.layerIndex }
+                    case let .video(clip):
+                        inFront = ordered.drop { !VideoClip.layerOrder(clip, $0) }
+                    case nil:
+                        let id = cut.segment?.resolvedSourceID ?? RecordingSource.primaryID
+                        let source = sourceProject.source(id)?.capture.source ?? sourceProject.capture.source
+                        if source == .cameraOnly && target.rect.width >= width && target.rect.height >= height {
+                            inFront = ordered[...]
+                        } else {
+                            inFront = ordered.drop { $0.cameraMode != .videoInFront }
+                        }
+                    }
+                    return !inFront.contains { clip in
+                        var frame = FrameVideoScene(clip: clip, at: edge)
+                        if clip.id == ordered.last?.id {
+                            frame.applyZoom(allZooms.forTarget(.overlayVideo).sample(at: edge, motion: edgeMotion),
+                                            sourceAspect: clip.aspect, canvasAspect: width / height)
+                        }
+                        return frame.covers(target.rect, on: canvasSize)
+                    }
+                }
+                placement = MotionCameraSlot.placement(at: hostTime, frameRate: rate, host: host, videos: videos, slots: slots,
+                    videoStart: project.timeline.videoPresentationStart, native: base, cameraVisible: cameraVisible) { owner in
+                    var pose = base
+                    switch owner {
+                    case let .motion(clip):
+                        guard let slot = clip.cameraSlot else { return base }
+                        pose.rect = slot.rect(in: .init(width: width, height: height), clip: clip)
+                        pose.radius = slot.radius * min(pose.rect.width, pose.rect.height)
+                        pose.contentPosition = slot.contentPosition ?? base.contentPosition
+                        pose.contentScale = slot.contentScale ?? base.contentScale
+                    case .video:
+                        // During a base fullscreen-to-shape cut the native rect
+                        // still includes a fullscreen blend. Keep the inset shaped
+                        // on both sides of that cut.
+                        guard settledCamera.isFullscreen || cameraBase != nil else { return base }
+                        var state = CameraMotionState(base: settledCamera)
+                        state.layout = .shape(settledCamera.shape)
+                        let track = cameraMotionTrack ?? CameraMotionTrack(project.timeline.cameraMotionClips)
+                        let insetBase = sourceProject.cameraAppearanceTransitionSample(atOutputTime: sampleTime,
+                            cameraAspectRatio: cameraAspect, canvasAspectRatio: width / height, boundary: boundary, cameraTimeline: cameraTimeline, asInset: true)
+                        let sample = track.sample(at: sampleTime, base: state, cameraAspectRatio: cameraAspect,
+                            canvasAspectRatio: width / height, motion: project.motion, baseSample: insetBase)
+                        let target = CompositionSceneEvaluator.evaluateCamera(style: settledCamera, motion: sample,
+                            screenZoomScale: geometry.screen.zoom.scale, canvasWidth: width, canvasHeight: height, styleScale: styleScale)
+                        pose.rect = target.rect
+                        pose.radius = target.cornerRadius
+                        pose.borderWidth = target.borderWidth
+                    }
+                    return pose
+                }
+            } else {
+                placement = base
+            }
             let opening = openingSample(
                 for: .camera,
                 sequence: project.openingSequence,
@@ -910,28 +1123,30 @@ public enum FrameSceneEvaluator {
                 canvasWidth: width,
                 canvasHeight: height
             )
-            let openingCameraRect = openingRect(evaluation.rect, sample: opening)
-            return FrameCameraScene(
+            let openingCameraRect = openingRect(placement.rect, sample: opening)
+            if let cameraHost, let slot = cameraHost.cameraSlot,
+               let index = animations.lastIndex(where: { $0.id == cameraHost.id }) {
+                animations[index].hostsCamera = true
+                if placement.cameraReveal > 0 {
+                    animations[index].movingMatte = .init(
+                        aperture: slot.rect(in: .init(width: width, height: height), clip: cameraHost),
+                        presented: openingCameraRect,
+                        cornerRadius: placement.radius * opening.scale,
+                        reveal: placement.cameraReveal)
+                }
+            }
+            let visualFocus = placement.contentPosition
+            let mirrored = settledCamera.isMirrored
+            let sourceFocus = NormalizedPoint(x: mirrored ? 1 - visualFocus.x : visualFocus.x,
+                                              y: visualFocus.y)
+            var frame = FrameCameraScene(
                 rect: openingCameraRect,
                 contentFill: cameraSourceSize.flatMap {
-                    let visualFocus = project.camera.contentPosition
-                    return CameraContentFill.layout(
-                        sourceWidth: $0.width,
-                        sourceHeight: $0.height,
-                        target: openingCameraRect,
-                        // Mirroring happens after crop. Interpret the editor's
-                        // horizontal control in the final visual direction.
-                        focus: NormalizedPoint(
-                            x: project.camera.isMirrored
-                                ? 1 - visualFocus.x
-                                : visualFocus.x,
-                            y: visualFocus.y
-                        ),
-                        contentScale: project.camera.contentScale
-                    )
+                    CameraContentFill.layout(sourceWidth: $0.width, sourceHeight: $0.height,
+                                             target: openingCameraRect, focus: sourceFocus, contentScale: placement.contentScale)
                 },
-                cornerRadius: evaluation.cornerRadius * opening.scale,
-                borderWidth: evaluation.borderWidth * opening.scale,
+                cornerRadius: placement.radius * opening.scale,
+                borderWidth: placement.borderWidth * opening.scale,
                 shadow: project.camera.shadowStrength > 0
                     ? FrameShadow(
                         opacity: project.camera.shadowStrength,
@@ -939,10 +1154,15 @@ public enum FrameSceneEvaluator {
                         offset: CompositionPoint(x: 0, y: 8 * styleScale)
                     )
                     : nil,
-                opacity: project.camera.isHidden ? 0 : evaluation.opacity * opening.opacity,
-                isMirrored: project.camera.isMirrored,
-                beauty: project.camera.beauty
+                opacity: project.camera.isHidden || host?.hidesCamera == true ? 0 : native.opacity * opening.opacity,
+                isMirrored: mirrored,
+                beauty: project.camera.beauty,
+                usesCircularCorners: cameraHost?.cameraSlot?.aboveGraphics == false,
+                sourceFocus: sourceFocus, contentScale: placement.contentScale
             )
+            frame.insetVideoID = insetVideo?.id
+            frame.coveringVideoID = coveringVideo?.id
+            return frame
         }
         let cursor = cursorScene(
             sample: pointer.cursor,
@@ -953,10 +1173,7 @@ public enum FrameSceneEvaluator {
             canvasSize: CompositionSize(width: width, height: height)
         )
         let stickerSample = stickerScenes(
-            stickerTrack ?? StickerTransitionTrack(project.timeline.stickerClips),
-            at: sampleTime,
-            suppressesInitialEntry: project.openingSequence.isEnabled
-                && project.openingSequence.includedElements.contains(.stickers)
+            resolvedStickerTrack, at: sampleTime, suppressesInitialEntry: suppressesFirstStickerEntry
         )
         var stickers = stickerSample.stickers
         let stickerOpening = openingSample(
@@ -977,25 +1194,25 @@ public enum FrameSceneEvaluator {
             result.opacity *= stickerOpening.opacity
             return result
         }
-        var order: [FrameLayerRole] = [.background, .screen]
+        let cameraBehindOverlays = cameraHost?.cameraSlot.map { !$0.aboveGraphics }
+            ?? (coveringVideo != nil || (insetVideo == nil && nativeCameraIsBackground))
+        var order: [FrameLayerRole] = cameraOnly ? [.background] : [.background, .screen]
+        if cameraBehindOverlays, let camera, camera.opacity > 0 { order.append(.camera) }
         if cursor != nil { order.append(.cursor) }
         // Spotlight is one dimming effect above the complete base picture,
         // not separate treatments for the wallpaper and screen texture.
         if screen.focusEffect != nil || activeMosaics.contains(where: { $0.style == .spotlight }) {
             order.append(.spotlight)
         }
-        let videos = project.timeline.videoClips
-            .filter { $0.timing.contains(sampleTime) && $0.opacity > 0 }
-            .sorted { $0.layerIndex == $1.layerIndex ? $0.id.uuidString < $1.id.uuidString : $0.layerIndex < $1.layerIndex }
-            .map { FrameVideoScene(clip: $0, at: sampleTime) }
+        var videos = activeVideos.map { FrameVideoScene(clip: $0, at: videoTime($0)) }
+        if let top = activeVideos.last {
+            let zoom = allZooms.forTarget(.overlayVideo).sample(at: sampleTime, motion: project.motion)
+            videos[videos.count - 1].applyZoom(zoom, sourceAspect: top.aspect, canvasAspect: width / height)
+        }
         if !videos.isEmpty { order.append(.videos) }
         if !stickers.isEmpty { order.append(.stickers) }
-        let animations = project.timeline.animationClips
-            .filter { $0.timing.contains(sampleTime) && $0.opacity > 0 }
-            .sorted { $0.layerIndex == $1.layerIndex ? $0.id.uuidString < $1.id.uuidString : $0.layerIndex < $1.layerIndex }
-            .map { FrameAnimationScene(clip: $0, at: sampleTime) }
         if !animations.isEmpty { order.append(.animations) }
-        if camera != nil, camera?.opacity ?? 0 > 0 { order.append(.camera) }
+        if !cameraBehindOverlays, let camera, camera.opacity > 0 { order.append(.camera) }
         let subtitle = project.timeline.subtitleCues
             .first { $0.timing.contains(sampleTime) && !$0.text.isEmpty }
             .map {
@@ -1016,6 +1233,7 @@ public enum FrameSceneEvaluator {
         let inserted = playback?.media
         let insertedNow = inserted != nil
         var presentedScreen = screen
+        if cameraOnly { presentedScreen.opacity = 0 }
         if let inserted {
             presentedScreen.sourceCrop = boundary.segment?.sceneStyle?.canvas.crop ?? .full
             presentedScreen.mosaics = []

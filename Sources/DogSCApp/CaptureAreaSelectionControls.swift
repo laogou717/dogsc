@@ -2,6 +2,25 @@ import AppKit
 import CoreText
 import QuartzCore
 
+/// Resolve dynamic colors after AppKit has installed the card's backing layer
+/// and inherited the selection window's appearance, including the first draw.
+final class AreaSelectionCardView: NSView {
+    override var wantsUpdateLayer: Bool { true }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+
+    override func updateLayer() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = captureSelectionSurfaceNSColor.cgColor
+            layer?.borderColor = captureSelectionInkNSColor.withAlphaComponent(0.08).cgColor
+            layer?.shadowOpacity = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? 0.36 : 0.16
+        }
+    }
+}
+
 /// One selection pill travels between ratios, just like the recorder's
 /// continuous surface. The native buttons keep their own hover and focus.
 final class AreaPresetSelectionView: NSView {

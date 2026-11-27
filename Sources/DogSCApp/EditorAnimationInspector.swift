@@ -35,7 +35,12 @@ struct EditorAnimationInspector: View {
                         actionName: "移动动效",
                         onError: { editorStore.reportError?($0) }
                     )
-                    clipSlider("大小", \.width, 0.05...1.5)
+                    clipSlider("大小", \.width, 0.05...2)
+                    if HTMLMotion.isHTMLMotion(clip.sourcePath) {
+                        Button(appLocalized("恢复模板布局与时长")) { restoreTemplate(clip) }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(EditorTheme.secondaryText)
+                    }
                 }
                 EditorInspectorSection("外观") {
                     clipSlider("不透明度", \.opacity, 0...1)
@@ -65,6 +70,26 @@ struct EditorAnimationInspector: View {
                     Text("删除动效").frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.editorDestructive)
+            }
+        }
+    }
+
+    private func restoreTemplate(_ clip: AnimationClip) {
+        let path = ProjectFiles.resolve(clip.sourcePath)
+        guard FileManager.default.fileExists(atPath: path) else { return }
+        let slot = HTMLMotion.cameraSlot(at: path)
+        let duration = HTMLMotion.declaredDuration(path: path)
+        let available = (try? TimelineMap(sourceSequence: editorStore.project.timeline.sourceSequence,
+            sourceDurations: editorStore.recordingDurations()))?.outputDuration
+        commitTimelineEdit(editorStore, action: "恢复模板布局与时长") { timeline in
+            guard let i = timeline.animationClips.firstIndex(where: { $0.id == clip.id }) else { return }
+            timeline.animationClips[i].width = 1
+            timeline.animationClips[i].position = .init(x: 0.5, y: 0.5)
+            timeline.animationClips[i].cameraSlot = slot
+            if let duration, let available, available > clip.timing.startTime {
+                timeline.animationClips[i].timeOffset = 0
+                timeline.animationClips[i].timing.duration = min(duration / clip.playbackRate, available - clip.timing.startTime)
+                timeline.organizeVisualLayers()
             }
         }
     }

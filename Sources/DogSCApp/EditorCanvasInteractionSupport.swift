@@ -276,7 +276,7 @@ extension CanvasPreview {
 
     var previewAspectRatio: CGFloat {
         isCropping ? sourceAspectRatio
-            : EditorWorkspaceGeometry.aspectRatio(canvas: project.canvas, sourceSize: sourcePixelSize)
+            : EditorWorkspaceGeometry.aspectRatio(canvas: project.canvas, sourceSize: mediaSession.primarySourceDisplaySize)
     }
 
     func fittedCanvasSize(in available: CGSize) -> CGSize {

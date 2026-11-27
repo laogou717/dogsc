@@ -343,6 +343,7 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
                 motionTrackDrag = nil
                 motionCreateDrag = nil
                 motionGestureOrigin = nil
+                defer { effectPressSelection = nil }
                 switch drag {
                 case .create:
                     guard gestureOwnership.activeIntent == .motionCreate(track),
@@ -367,7 +368,7 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
                     if abs(value.translation.width) < 3 {
                         editorStore.cancelInteraction()
                         if let origin {
-                            activateTimelineSelection(
+                            finishEffectClick(
                                 track == .screen
                                     ? .screenMotion(origin.clip.id)
                                     : .cameraMotion(origin.clip.id)
@@ -381,7 +382,12 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
                     let mode: EditorMotionTimelineEditMode = leading ? .leading : .trailing
                     let intent = EditorTimelineGestureIntent.motion(track, id, mode)
                     guard gestureOwnership.activeIntent == intent else { return }
-                    commitMotionGesture(origin: origin)
+                    if effectPressSelection != nil, abs(value.translation.width) < 3 {
+                        editorStore.cancelInteraction()
+                        finishEffectClick(track == .screen ? .screenMotion(id) : .cameraMotion(id))
+                    } else {
+                        commitMotionGesture(origin: origin)
+                    }
                     endTimelineGesture(intent)
                 case nil:
                     break
@@ -399,6 +405,7 @@ var screenMotionTimelineClips: [EditorMotionTimelineClip] {
         // zoom lane. Clearing only gestureOwnership can leave an abandoned
         // EditorStore preview transaction swallowing this new drag.
         cancelActiveTimelineGesture()
+        captureEffectPressSelection()
         let clips = track == .screen ? screenMotionTimelineClips : cameraMotionTimelineClips
         let zone = EditorTimelineMath.motionHitZone(
             x: Double(point.x),

@@ -24,6 +24,25 @@ enum HTMLMotion {
         return lower.hasSuffix(".dmhtml") || lower.hasSuffix(".html")
     }
 
+    /// Keep a placement's soundtrack portable alongside its HTML asset.
+    static func placementSound(at path: String, override: URL?) throws -> VisualClipSound? {
+        if let override {
+            let portable = ProjectFiles.portable(override.path)
+            if !portable.hasPrefix("/") { return VisualClipSound(path: portable) }
+            guard let package = ProjectFiles.package else { throw CocoaError(.fileNoSuchFile) }
+            let folder = package.appendingPathComponent("Inserted", isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let copy = folder.appendingPathComponent("sound-" + UUID().uuidString).appendingPathExtension(override.pathExtension)
+            try FileManager.default.copyItem(at: override, to: copy)
+            return VisualClipSound(path: ProjectFiles.portable(copy.path))
+        }
+        guard isHTMLMotion(path),
+              let html = try? String(contentsOf: ProjectFiles.url(path), encoding: .utf8),
+              let score = try MotionSoundScore.read(in: html) else { return nil }
+        guard let package = ProjectFiles.package else { throw CocoaError(.fileNoSuchFile) }
+        return try VisualClipSound(path: ProjectFiles.portable(score.file(in: package).path), volume: MotionSoundScore.defaultVolume)
+    }
+
     /// Fields the page declares, in declaration order where possible.
     /// Read once per file version: every frame and every inspector redraw
     /// asks, and reading the page from disk each time cost playback frames.
@@ -78,11 +97,31 @@ enum HTMLMotion {
 
     /// Duration declared as `<meta name="dogsc-duration" content="3">`.
     static func declaredDuration(path: String) -> Double? {
-        guard let html = try? String(contentsOfFile: path, encoding: .utf8),
-              let tag = html.range(of: "name=\"dogsc-duration\""),
+        guard let html = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
+        return declaredDuration(in: html)
+    }
+
+    static func declaredDuration(in html: String) -> Double? {
+        guard let tag = html.range(of: "name=\"dogsc-duration\""),
               let content = html[tag.upperBound...].range(of: "content=\""),
               let end = html[content.upperBound...].range(of: "\"") else { return nil }
-        return Double(html[content.upperBound..<end.lowerBound])
+        guard let seconds = Double(html[content.upperBound..<end.lowerBound]), seconds.isFinite, seconds > 0 else { return nil }
+        return seconds
+    }
+
+    static func cameraSlot(in html: String) -> MotionCameraSlot? {
+        guard let tag = html.range(of: "id=\"dogsc-camera-slot\""),
+              let open = html[tag.upperBound...].firstIndex(of: ">"),
+              let close = html[open...].range(of: "</script>"),
+              let slot = try? JSONDecoder().decode(MotionCameraSlot.self,
+                  from: Data(html[html.index(after: open)..<close.lowerBound].utf8)),
+              slot.isValid else { return nil }
+        return slot
+    }
+
+    static func cameraSlot(at path: String) -> MotionCameraSlot? {
+        guard isHTMLMotion(path), let html = try? String(contentsOfFile: ProjectFiles.resolve(path), encoding: .utf8) else { return nil }
+        return cameraSlot(in: html)
     }
 
     /// EDT-071: the pixel size a main-track motion is drawn at — the screen
@@ -283,11 +322,15 @@ final class HTMLMotionRenderer: NSObject, WKNavigationDelegate {
         guard let ci = await Task.detached(priority: .userInitiated, operation: {
             pixels.image()
         }).value, !Task.isCancelled else { return nil }
-        let scale = min(pixelSize.width / ci.extent.width, pixelSize.height / ci.extent.height)
-        guard abs(scale - 1) > 0.001 else { return ci }
-        let scaled = ci.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-        let dx = (pixelSize.width - scaled.extent.width) / 2, dy = (pixelSize.height - scaled.extent.height) / 2
-        return scaled.transformed(by: CGAffineTransform(translationX: dx, y: dy))
+        // WebKit rounds the viewport and snapshot to whole pixels independently.
+        // Map that raster to the requested rectangle, including its last row.
+        let target = CGRect(origin: .zero, size: pixelSize)
+        guard ci.extent != target else { return ci }
+        guard ci.extent.width > 0, ci.extent.height > 0 else { return nil }
+        return ci.clampedToExtent()
+            .transformed(by: CGAffineTransform(translationX: -ci.extent.minX, y: -ci.extent.minY))
+            .transformed(by: CGAffineTransform(scaleX: target.width / ci.extent.width, y: target.height / ci.extent.height))
+            .cropped(to: target)
     }
 
 
@@ -355,7 +398,7 @@ final class HTMLMotionRenderer: NSObject, WKNavigationDelegate {
             if let stroke = edit.strokeColor { entry["strokeColor"] = stroke }
             if edit.rotation != 0 { entry["rotation"] = edit.rotation }
             if edit.opacity != 1 { entry["opacity"] = edit.opacity }
-            if let image = edit.image, let data = try? Data(contentsOf: URL(fileURLWithPath: image)) {
+            if let image = edit.image, let data = try? Data(contentsOf: ProjectFiles.url(image)) {
                 // Inlined: the page is loaded from a string and has no file access.
                 let type = UTType(filenameExtension: URL(fileURLWithPath: image).pathExtension)?.preferredMIMEType ?? "image/png"
                 entry["image"] = "data:\(type);base64," + data.base64EncodedString()
@@ -578,6 +621,8 @@ final class HTMLMotionRenderer: NSObject, WKNavigationDelegate {
         }
         if let previous = pages.removeValue(forKey: path) { retire(previous) }
         let config = WKWebViewConfiguration()
+        config.userContentController.addUserScript(WKUserScript(source: "window.__dogscTimelineControlled = true;",
+            injectionTime: .atDocumentStart, forMainFrameOnly: true))
         config.suppressesIncrementalRendering = true
         let web = WKWebView(frame: CGRect(origin: .zero, size: viewport), configuration: config)
         web.setValue(false, forKey: "drawsBackground")
@@ -647,52 +692,10 @@ final class HTMLMotionRenderer: NSObject, WKNavigationDelegate {
             }
         }
         let json = (try? JSONSerialization.data(withJSONObject: pairs)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
-        return """
-            const p = \(json);
-            // A field wins over the page's own declaration wherever the page
-            // put it (:root, body, a wrapper): one !important rule for all.
-            let fieldStyle = document.getElementById('dogsc-fields');
-            if (!fieldStyle) { fieldStyle = document.createElement('style'); fieldStyle.id = 'dogsc-fields'; document.head.appendChild(fieldStyle); }
-            const decls = Object.entries(p).map(([k, v]) => '--' + CSS.escape(k) + ':' + String(v).replace(/[;{}<>]/g, '') + ' !important').join(';');
-            fieldStyle.textContent = '*, *::before, *::after, :root {' + decls + '}';
-            for (const [k, v] of Object.entries(p)) {
-              document.documentElement.style.setProperty('--' + k, v);
-              document.querySelectorAll('[data-param="' + k + '"]').forEach(e => { e.textContent = v; e.removeAttribute('data-split-done'); });
-            }
-            // data-split="chars|words": DogSC wraps each letter (or word) in a
-            // span with --i (its index) and --n (the count), after every text
-            // change, so per-letter CSS keeps working when the user edits it.
-            // WebKit clips an animating unit's blur and shadow to the unit's
-            // own box (visible as hard tiles mid-animation); a padding that a
-            // negative margin cancels gives them room without moving a glyph.
-            if (!document.getElementById('dogsc-split-style')) {
-              const style = document.createElement('style');
-              style.id = 'dogsc-split-style';
-              style.textContent = '.dogsc-unit{padding:.4em;margin:-.4em}';
-              document.head.prepend(style);
-            }
-            document.querySelectorAll('[data-split]').forEach(e => {
-              if (e.hasAttribute('data-split-done')) return;
-              const text = e.textContent;
-              const parts = e.dataset.split === 'words' ? text.split(/(\\s+)/) : [...text];
-              e.textContent = '';
-              let i = 0;
-              const units = parts.filter(t => t.trim() !== '').length;
-              for (const part of parts) {
-                if (part.trim() === '') { e.appendChild(document.createTextNode(part)); continue; }
-                const span = document.createElement('span');
-                span.textContent = part;
-                span.className = 'dogsc-unit';
-                span.style.setProperty('--i', i++);
-                span.style.setProperty('--n', units);
-                e.appendChild(span);
-              }
-              e.setAttribute('data-split-done', '');
-            });
-            if (window.dogsc && typeof window.dogsc.params === 'function') { window.dogsc.params(p); }
-            return 1;
-            """
+        return "const p = \(json);\n" + HTMLMotionPage.applyPropertiesScript
     }
+
+
 }
 
 /// A field a motion file declares (DogSC HTML Motion `dogsc-params`).

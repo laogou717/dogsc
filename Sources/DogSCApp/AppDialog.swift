@@ -442,6 +442,17 @@ private final class AppDialogPanel: NSPanel {
 }
 
 extension View {
+    func appDialog(_ pending: Binding<AppDialog?>) -> some View {
+        background {
+            if let dialog = pending.wrappedValue {
+                AppDialogAnchor(isPresented: Binding(
+                    get: { pending.wrappedValue != nil },
+                    set: { if !$0 { pending.wrappedValue = nil } }
+                ), makeDialog: { dialog }).frame(width: 0, height: 0)
+            }
+        }
+    }
+
     func appDialog(isPresented: Binding<Bool>, makeDialog: @escaping @MainActor () -> AppDialog) -> some View {
         background(AppDialogAnchor(isPresented: isPresented, makeDialog: makeDialog).frame(width: 0, height: 0))
     }

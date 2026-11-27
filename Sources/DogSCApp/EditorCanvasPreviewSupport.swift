@@ -3,7 +3,6 @@ import AVKit
 import RecorderCore
 
 struct CanvasPreviewLayout {
-    let scene: CompositionSceneEvaluation
     /// Point-space scene used only by SwiftUI hit targets and overlays.
     let frameScene: FrameScene
     /// Backing-pixel scene paired with `renderPlan`; visual project pixels are
@@ -34,6 +33,7 @@ struct CanvasPlaybackEvaluationContext: Equatable, Sendable {
     var primaryPlan: TimelineMediaPlan? = nil
     var recordingGeometry: [UUID: EditorRecordingGeometry] = [:]
     var aspectTransitions: RecordingAspectTransitions? = nil
+    var layoutAspectRatio: Double? = nil
 
     func refreshingCursor(
         in cached: SharedPreviewPlaybackFrame,
@@ -43,8 +43,17 @@ struct CanvasPlaybackEvaluationContext: Equatable, Sendable {
         // camera-availability boundary relative to the exact media clock.
         let current = primaryPlan?.slice(atOutputTime: presentationTime)
         let previous = primaryPlan?.slice(atOutputTime: cached.renderPlan.scene.time)
+        let sampledTime = cached.renderPlan.scene.time
         if current?.segmentID != previous?.segmentID
-            || cameraPlan?.contains(outputTime: presentationTime) != cameraPlan?.contains(outputTime: cached.renderPlan.scene.time) {
+            || cameraPlan?.contains(outputTime: presentationTime) != cameraPlan?.contains(outputTime: sampledTime)
+            || project.timeline.videoClips.contains(where: {
+                project.timeline.presentsVideo($0, at: presentationTime) != project.timeline.presentsVideo($0, at: sampledTime)
+            })
+            || project.timeline.animationClips.contains(where: {
+                $0.opacity > 0 && $0.timing.contains(presentationTime) != $0.timing.contains(sampledTime)
+            }) {
+            // Prewarm requests also use this provider. Rounding a clip start
+            // backwards would prepare the outgoing scene and miss its backing.
             return frame(at: presentationTime)
         }
         let plan = FrameSceneEvaluator.refreshingCursor(
@@ -93,7 +102,8 @@ struct CanvasPlaybackEvaluationContext: Equatable, Sendable {
             stickerTrack: stickerTrack,
             cameraTimeline: cameraPlan,
             recordingSourceID: sourceID,
-            geometrySourceAspectRatio: aspectTransitions?.sourceAspectRatio(atOutputTime: time, sourceID: sourceID)
+            geometrySourceAspectRatio: aspectTransitions?.sourceAspectRatio(atOutputTime: time, sourceID: sourceID),
+            layoutAspectRatio: layoutAspectRatio
         )
         // Reuse the already-evaluated presentation scene instead of running
         // the complete pointer/zoom/projection evaluator a second time.

@@ -252,7 +252,6 @@ struct EditorLibraryRail: View {
 /// and can be auditioned), click to select, Delete to remove.
 struct EditorMediaLibrary: View, Equatable {
     enum Scope: String { case project, library }
-    enum LibraryFilter: String { case favorites, generated, all }
 
     /// Not observed: the bin redraws only when its own assets change (see
     /// `==`), never on every frame of a timeline or canvas drag.
@@ -274,7 +273,6 @@ struct EditorMediaLibrary: View, Equatable {
     }
     @AppStorage("editor.mediaLibrary.filter") private var filterRaw = ""
     @AppStorage("editor.mediaLibrary.scope") private var scopeRaw = Scope.project.rawValue
-    @AppStorage("editor.mediaLibrary.libraryFilter") private var libraryFilterRaw = LibraryFilter.favorites.rawValue
     @AppStorage("editor.mediaLibrary.list") private var showsList = false
     @AppStorage("editor.mediaLibrary.tileWidth") private var tileWidth = 120.0
     /// Measured width of the grid, so the tiles can shrink with the panel.
@@ -302,7 +300,6 @@ struct EditorMediaLibrary: View, Equatable {
 
     private var filter: MediaAssetKind? { MediaAssetKind(rawValue: filterRaw) }
     private var scope: Scope { Scope(rawValue: scopeRaw) ?? .project }
-    private var libraryFilter: LibraryFilter { LibraryFilter(rawValue: libraryFilterRaw) ?? .favorites }
     private var allAssets: [MediaAsset] { projectAssets }
 
     /// Library entries shown with the same tiles as project assets.
@@ -313,18 +310,17 @@ struct EditorMediaLibrary: View, Equatable {
 
     private var assets: [MediaAsset] {
         presentationCache.assets(project: projectAssets, library: library.entries,
-            scope: scope.rawValue, filter: filterRaw, libraryFilter: libraryFilter.rawValue, query: query)
+            scope: scope.rawValue, filter: filterRaw, query: query)
     }
 
     static let extensions = ["mov", "mp4", "m4v", "png", "jpg", "jpeg", "heic", "gif", "webp", "tiff",
-                             "mp3", "m4a", "wav", "aiff", "aif", "aac", "caf", "flac", "dmhtml", "dogscproject"]
+                             "mp3", "m4a", "wav", "aiff", "aif", "aac", "caf", "flac", "html", "dmhtml", "dogscproject"]
 
     var body: some View {
         ScrollViewReader { proxy in
         VStack(alignment: .leading, spacing: 10) {
             scopeBar
             Group {
-            if scope == .library { libraryFilters }
             mediaTypeFilters
             if scope == .project, allAssets.isEmpty && recordingSources.isEmpty {
                 emptyImport
@@ -413,7 +409,6 @@ struct EditorMediaLibrary: View, Equatable {
             if scope == .library, filterRaw == "recording" { filterRaw = "" }
         }
         .onChange(of: filterRaw) { _, _ in clearMediaSelection() }
-        .onChange(of: libraryFilterRaw) { _, _ in clearMediaSelection() }
         .onChange(of: query) { _, _ in clearMediaSelection() }
         }
     }
@@ -571,7 +566,7 @@ struct EditorMediaLibrary: View, Equatable {
     private var scopeBar: some View {
         HStack(spacing: 2) {
             scopeButton(.project, "本项目", count: allAssets.count)
-            scopeButton(.library, "素材库", count: library.entries.count)
+            scopeButton(.library, "素材库", count: library.entries.count(where: \.favorite))
         }
         .padding(2)
         .background(RoundedRectangle(cornerRadius: EditorInterfaceRadius.control + 2, style: .continuous).fill(EditorTheme.controlWell))
@@ -603,41 +598,18 @@ struct EditorMediaLibrary: View, Equatable {
         .buttonStyle(.plain)
     }
 
-    private var libraryFilters: some View {
-        HStack(spacing: 2) {
-            libraryChip(.favorites, "收藏", symbol: "star")
-            libraryChip(.generated, "AI 生成", symbol: "sparkles")
-            libraryChip(.all, "全部", symbol: nil)
-            Spacer(minLength: 0)
-            Button { NSWorkspace.shared.activateFileViewerSelecting([library.folder]) } label: {
-                AppLineIcon(kind: .folder, size: 13).frame(width: 24, height: 24)
-            }
-            .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: EditorInterfaceRadius.control))
-            .foregroundStyle(EditorTheme.secondaryText)
-            .help(appLocalized("在访达中打开素材库文件夹"))
-        }
-    }
-
-    private func libraryChip(_ value: LibraryFilter, _ title: String, symbol: String?) -> some View {
-        let selected = libraryFilter == value
-        return Button { libraryFilterRaw = value.rawValue } label: {
-            HStack(spacing: 3) {
-                if let symbol { EditorSymbol(selected ? symbol + ".fill" : symbol, size: 9).font(.system(size: 9, weight: .semibold)) }
-                Text(appLocalized(title)).font(.appUI(size: 12, weight: selected ? .semibold : .regular))
-            }
-            .foregroundStyle(selected ? EditorTheme.primaryText : EditorTheme.secondaryText)
-            .padding(.horizontal, 6)
-            .frame(height: 24)
-            .background(RoundedRectangle(cornerRadius: EditorInterfaceRadius.control, style: .continuous).fill(selected ? EditorTheme.selectionWash : .clear))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
     private var searchField: some View {
         HStack(spacing: 6) {
             AppLineIcon(kind: .search, size: 12).foregroundStyle(EditorTheme.tertiaryText)
             TextField(appLocalized("搜索素材"), text: $query).textFieldStyle(.plain).font(.appUI(size: 13))
+            if scope == .library {
+                Button { NSWorkspace.shared.activateFileViewerSelecting([library.folder]) } label: {
+                    AppLineIcon(kind: .folder, size: 13).frame(width: 24, height: 24)
+                }
+                .buttonStyle(EditorToolbarPressButtonStyle(cornerRadius: EditorInterfaceRadius.control))
+                .foregroundStyle(EditorTheme.secondaryText)
+                .help(appLocalized("在访达中打开素材库文件夹"))
+            }
             if !query.isEmpty {
                 Button { query = "" } label: {
                     EditorSymbol("xmark.circle.fill", size: 10).font(.system(size: 10)).foregroundStyle(EditorTheme.secondaryText)
@@ -654,11 +626,7 @@ struct EditorMediaLibrary: View, Equatable {
         let message: String = if !query.trimmingCharacters(in: .whitespaces).isEmpty {
             "没有找到相关素材"
         } else if scope == .library {
-            switch libraryFilter {
-            case .favorites: "点素材上的星标收藏，所有项目都能在这里找到它"
-            case .generated: "AI 生成的动效、图片和音乐会保存在这里"
-            case .all: "素材库还是空的"
-            }
+            "点素材上的星标收藏，所有项目都能在这里找到它"
         } else {
             "这一类还没有素材"
         }
@@ -712,7 +680,7 @@ struct EditorMediaLibrary: View, Equatable {
         scope == .library ? library.entries.first { $0.id == asset.id } : nil
     }
 
-    /// Adds a library item to this project's bin (by reference) and places
+    /// Copies a library item into this project's bin and places
     /// it. Placing is a timeline edit, so the monitor goes back to the
     /// programme to show what just landed there — unless the viewer is
     /// pulling marked spans out of the file in the monitor, where the marks
@@ -1001,17 +969,35 @@ struct EditorMediaLibrary: View, Equatable {
         }) { urls in
             guard let url = urls?.first else { return }
             let old = asset.path, new = ProjectFiles.portable(url.path)
-            EditorMediaPresence.shared.invalidate(absolutePath(asset))
-            commitTimelineEdit(editorStore, action: "重新关联素材") { timeline in
-                if let i = timeline.mediaAssets.firstIndex(where: { $0.id == asset.id }) { timeline.mediaAssets[i].path = new }
-                for i in timeline.animationClips.indices where timeline.animationClips[i].sourcePath == old {
-                    timeline.animationClips[i].sourcePath = new
+            Task { @MainActor in
+                let package = ProjectFiles.package
+                let fileEnd: Double?
+                do {
+                    fileEnd = asset.kind == .video ? try await OverlayVideoSource.end(of: url) : nil
+                } catch {
+                    editorStore.reportError?(error.localizedDescription)
+                    return
                 }
-                for i in timeline.audioClips.indices where timeline.audioClips[i].sourcePath == old {
-                    timeline.audioClips[i].sourcePath = new
-                }
-                for i in timeline.videoClips.indices where timeline.videoClips[i].sourcePath == old {
-                    timeline.videoClips[i].sourcePath = new
+                guard ProjectFiles.package == package, editorStore.project.timeline.mediaAssets.contains(where: { $0.id == asset.id && $0.path == old }) else { return }
+                EditorMediaPresence.shared.invalidate(absolutePath(asset))
+                commitTimelineEdit(editorStore, action: "重新关联素材") { timeline in
+                    if let i = timeline.mediaAssets.firstIndex(where: { $0.id == asset.id }) { timeline.mediaAssets[i].path = new }
+                    for i in timeline.animationClips.indices where timeline.animationClips[i].sourcePath == old {
+                        timeline.animationClips[i].sourcePath = new
+                    }
+                    for i in timeline.audioClips.indices where timeline.audioClips[i].sourcePath == old {
+                        timeline.audioClips[i].sourcePath = new
+                    }
+                    for i in timeline.videoClips.indices {
+                        if timeline.videoClips[i].sourcePath == old {
+                            timeline.videoClips[i].sourcePath = new
+                            timeline.videoClips[i].sourceFileEnd = fileEnd
+                        }
+                        timeline.videoClips[i].videoAudio?.relinkSource(from: old, to: new)
+                    }
+                    for id in timeline.primarySegmentAudioOverrides.keys {
+                        timeline.primarySegmentAudioOverrides[id]?.videoAudio?.relinkSource(from: old, to: new)
+                    }
                 }
             }
         }
@@ -1284,6 +1270,13 @@ struct EditorMediaBottomBar: View {
                 .action("放大缩略图", isEnabled: !showsList && tileWidth < 200) { tileWidth = min(tileWidth + 30, 200) },
                 .action("缩小缩略图", isEnabled: !showsList && tileWidth > 80) { tileWidth = max(tileWidth - 30, 80) },
                 .separator,
+                .action("打开包装模板文件夹") {
+                    openFolder(MotionTemplateLibrary.folder)
+                },
+                .action("打开共享素材文件夹") {
+                    openFolder(AssetLibrary.sharedMediaFolder)
+                },
+                .separator,
                 .action("移除未使用的素材") { editorStore.removeUnusedMedia() },
                 .action("全部移除…") { confirmRemoveAll() }
             ]) {
@@ -1294,6 +1287,13 @@ struct EditorMediaBottomBar: View {
         .frame(height: 40)
         .background(EditorTheme.panelSurface)
         .overlay(alignment: .top) { Rectangle().fill(EditorTheme.hairline).frame(height: 1) }
+    }
+
+    private func openFolder(_ url: URL) {
+        do {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            NSWorkspace.shared.open(url)
+        } catch { editorStore.reportError?(error.localizedDescription) }
     }
 
     private func confirmRemoveAll() {

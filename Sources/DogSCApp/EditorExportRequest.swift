@@ -403,7 +403,7 @@ enum EditorExportRequestBuilder {
             default: break
             }
         }
-        paths.formUnion(project.timeline.programAudioClips.map(\.sourcePath))
+        paths.formUnion(project.timeline.programAudioClips(audio: project.audio).map(\.sourcePath))
         paths.formUnion(project.timeline.stickerClips.map(\.relativePath))
         paths.formUnion(project.timeline.animationClips.map(\.sourcePath))
         if case let .edited(segments) = project.timeline.sourceSequence {

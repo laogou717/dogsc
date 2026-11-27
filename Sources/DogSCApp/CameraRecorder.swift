@@ -54,8 +54,7 @@ final class CameraRecorder: NSObject,
     private var sampleWriterPauseStartedAt: TimeInterval?
     private var sampleWriterIsPaused = false
     private var sampleWriterIsFinishing = false
-    private var configuredCameraWidth: Int?
-    private var configuredCameraHeight: Int?
+    private var sourceFraming: CameraSourceFraming?
     private var reportedCaptureSessionFailure = false
     private let cameraDiagnostics = CameraCaptureDiagnosticsMonitor()
 
@@ -72,10 +71,6 @@ final class CameraRecorder: NSObject,
         // A file output terminates on a device format change. Consume samples
         // ourselves so iOS renegotiation cannot end the user-visible take.
         synchronizedVideoOutput.alwaysDiscardsLateVideoFrames = true
-        synchronizedVideoOutput.videoSettings = [
-            kCVPixelBufferPixelFormatTypeKey as String:
-                kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
-        ]
         synchronizedVideoOutput.setSampleBufferDelegate(self, queue: sessionQueue)
         deviceAudioOutput.audioSettings = [
             AVFormatIDKey: kAudioFormatLinearPCM,
@@ -105,6 +100,10 @@ final class CameraRecorder: NSObject,
     var onPreviewSampleBuffer: (@Sendable (CMSampleBuffer) -> Void)? {
         get { syncOnSessionQueue { previewSampleHandler } }
         set { syncOnSessionQueue { previewSampleHandler = newValue } }
+    }
+
+    var firstFrameHostTime: TimeInterval? {
+        syncOnSessionQueue { sampleWriterFirstHostTime }
     }
 
     var recordingStartedAt: Date? {
@@ -280,7 +279,7 @@ final class CameraRecorder: NSObject,
                         activity = .starting(requestID)
                         startContinuation = (requestID, continuation)
                         resetSampleWriterStateLocked()
-                        self.captureCodec = role == .iosDevice ? captureCodec : .h264
+                        self.captureCodec = captureCodec
                         cameraDiagnostics.beginRecording()
                         sampleWriterOutputURL = outputURL
                         deviceAudioWriter = audioWriter
@@ -360,7 +359,7 @@ final class CameraRecorder: NSObject,
 
     nonisolated func captureOutput(
         _ output: AVCaptureOutput,
-        didOutput sampleBuffer: CMSampleBuffer,
+        didOutput incoming: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
         // The delegate queue is `sessionQueue`; keeping the body nonisolated
@@ -368,10 +367,17 @@ final class CameraRecorder: NSObject,
         // the recorder's one serial queue.
         dispatchPrecondition(condition: .onQueue(sessionQueue))
         if output === deviceAudioOutput {
-            appendDeviceAudioLocked(sampleBuffer)
+            appendDeviceAudioLocked(incoming)
             return
         }
         guard output === synchronizedVideoOutput else { return }
+        let sampleBuffer: CMSampleBuffer
+        if let sourceFraming {
+            guard let framed = sourceFraming.sample(from: incoming, settling: sampleWriter == nil) else { return }
+            sampleBuffer = framed
+        } else {
+            sampleBuffer = incoming
+        }
         guard let validated = sampleIntegrityGate.validatedImageBuffer(
             from: sampleBuffer
         ) else {
@@ -521,7 +527,7 @@ final class CameraRecorder: NSObject,
             }
             let writerImageBuffer = try sampleWriterFrameNormalizer.normalizedImageBuffer(
                 imageBuffer,
-                adaptor: adaptor,
+                pool: adaptor.pixelBufferPool,
                 roleName: role.displayName
             )
             guard adaptor.append(
@@ -604,16 +610,8 @@ final class CameraRecorder: NSObject,
                 "摄像头输出路径尚未准备"
             )
         }
-        let sourceWidth = CVPixelBufferGetWidth(imageBuffer)
-        let sourceHeight = CVPixelBufferGetHeight(imageBuffer)
-        let outputDimensions = CameraSampleWriterFrameNormalizer.outputDimensions(
-            configuredWidth: role == .camera ? configuredCameraWidth : nil,
-            configuredHeight: role == .camera ? configuredCameraHeight : nil,
-            sourceWidth: sourceWidth,
-            sourceHeight: sourceHeight
-        )
-        let width = outputDimensions.width
-        let height = outputDimensions.height
+        let width = CVPixelBufferGetWidth(imageBuffer)
+        let height = CVPixelBufferGetHeight(imageBuffer)
         let deliveredDuration = sampleBuffer.duration.seconds
         let expectedFrameRate: Int
         if deliveredDuration.isFinite,
@@ -682,14 +680,14 @@ final class CameraRecorder: NSObject,
             width: width,
             height: height,
             pixelFormat: CVPixelBufferGetPixelFormatType(imageBuffer),
-            sourceWidth: sourceWidth,
-            sourceHeight: sourceHeight,
+            sourceWidth: width,
+            sourceHeight: height,
             sourcePixelFormat: CVPixelBufferGetPixelFormatType(imageBuffer),
             roleName: role.displayName,
-            fitsSourceInsideCanvas: role == .iosDevice
+            fitsSourceInsideCanvas: true
         )
         Self.logger.notice(
-            "capture writer role=\(String(describing: self.role), privacy: .public) contract=\(width)x\(height) firstSample=\(sourceWidth)x\(sourceHeight) codec=\(codec.rawValue, privacy: .public) bitrate=\(bitrate)"
+            "capture writer role=\(String(describing: self.role), privacy: .public) contract=\(width)x\(height) codec=\(codec.rawValue, privacy: .public) bitrate=\(bitrate)"
         )
         let duration = sampleBuffer.duration.seconds
         if duration.isFinite,
@@ -710,6 +708,20 @@ final class CameraRecorder: NSObject,
         }
     }
 
+    private func configureVideoOutput(nativeSize: CMVideoDimensions?) {
+        var settings: [String: Any] = [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+        ]
+        if let nativeSize {
+            // On macOS the session negotiates a UVC mode from the output's
+            // requirements at commit/start, even after setting device.activeFormat.
+            settings[kCVPixelBufferWidthKey as String] = Int(nativeSize.width)
+            settings[kCVPixelBufferHeightKey as String] = Int(nativeSize.height)
+            settings[AVVideoScalingModeKey] = AVVideoScalingModeResizeAspect
+        }
+        synchronizedVideoOutput.videoSettings = settings
+    }
+
     private func configureLocked(
         deviceUniqueID: String?,
         capturesDeviceAudio: Bool,
@@ -721,6 +733,9 @@ final class CameraRecorder: NSObject,
             selectedUniqueID: deviceUniqueID
         )
 
+        let format = CameraCaptureDeviceConfigurator.selectedFormat(
+            for: device, role: role, resolution: role == .camera ? captureResolution : nil
+        )
         let hasCurrentOutput = session.outputs.contains { $0 === synchronizedVideoOutput }
         // Both webcams and wired devices can renegotiate their format between
         // preview and recording, so reapply it at every configuration boundary.
@@ -750,29 +765,14 @@ final class CameraRecorder: NSObject,
             }
             session.addOutput(deviceAudioOutput)
         }
-        // Build the complete graph before fixing the native format. Adding
-        // an input under .high can otherwise choose a smaller device format.
-        if role == .camera {
-            if let captureResolution {
-                try CameraCaptureDeviceConfigurator.applyCameraFormat(
-                    captureResolution,
-                    to: device,
-                    role: role
-                )
-            } else {
-                // Automatic still selects a deterministic native format. The
-                // old condition accidentally made this unreachable for cameras.
-                try CameraCaptureDeviceConfigurator.applyPreferredFormat(
-                    to: device,
-                    role: role
-                )
-            }
-        } else {
-            try CameraCaptureDeviceConfigurator.applyPreferredFormat(
-                to: device,
-                role: role
-            )
+        let dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+        if role == .camera, let preset = CameraCaptureDeviceConfigurator.sessionPreset(for: dimensions),
+           session.canSetSessionPreset(preset) {
+            session.sessionPreset = preset
         }
+        try CameraCaptureDeviceConfigurator.apply(format, to: device, role: role, label: captureResolution?.label)
+        let externalCamera = role == .camera && device.deviceType == .external
+        configureVideoOutput(nativeSize: externalCamera ? dimensions : nil)
         if role == .camera {
             // Query locked-duration support only after the output graph exists;
             // support may depend on the complete session configuration. nil is
@@ -782,17 +782,55 @@ final class CameraRecorder: NSObject,
                 device: device
             )
         }
-        let dimensions = CMVideoFormatDescriptionGetDimensions(
-            device.activeFormat.formatDescription
-        )
-        configuredCameraWidth = Int(dimensions.width)
-        configuredCameraHeight = Int(dimensions.height)
+        sourceFraming = nil
+        if externalCamera {
+            let inputID = ObjectIdentifier(input)
+            sourceFraming = CameraSourceFraming { [weak self] width, height in
+                guard let self,
+                      let native = CameraCaptureDeviceConfigurator.preferredFormat(
+                        on: device, sourceIsLandscape: width > height,
+                        quality: captureResolution ?? CameraCaptureResolution(width: width, height: height)
+                      ) else { return false }
+                let size = CMVideoFormatDescriptionGetDimensions(native.formatDescription)
+                guard (size.width > size.height) == (width > height),
+                      let formatIndex = device.formats.firstIndex(of: native) else { return false }
+                // Return the sample to AVFoundation before renegotiating its input.
+                sessionQueue.async { [weak self] in
+                    self?.switchCameraFormatLocked(inputID: inputID, formatIndex: formatIndex, size: size)
+                }
+                return true
+            }
+        }
         configuredDeviceUniqueID = device.uniqueID
         configuredCapturesDeviceAudio = capturesDeviceAudio
         configuredCaptureResolution = captureResolution
         runtimeFormatMonitor.reset(keepingCapacity: true)
         sampleIntegrityGate.reset()
         isConfigured = true
+    }
+
+    private func switchCameraFormatLocked(inputID: ObjectIdentifier, formatIndex: Int, size: CMVideoDimensions) {
+        guard session.isRunning,
+              let input = session.inputs.first(where: { ObjectIdentifier($0) == inputID }) as? AVCaptureDeviceInput
+        else { return }
+        let device = input.device
+        let formats = device.formats
+        guard formats.indices.contains(formatIndex) else { return }
+        let format = formats[formatIndex]
+        let currentSize = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+        guard currentSize.width == size.width, currentSize.height == size.height else { return }
+        let preset = CameraCaptureDeviceConfigurator.sessionPreset(for: size) ?? .high
+        let updatePreset = session.sessionPreset != preset && session.canSetSessionPreset(preset)
+        session.beginConfiguration()
+        defer { session.commitConfiguration() }
+        if updatePreset { session.sessionPreset = preset }
+        do {
+            try CameraCaptureDeviceConfigurator.apply(format, to: device, role: .camera)
+            configureVideoOutput(nativeSize: size)
+            Self.logger.notice("camera source picture requested native \(size.width)x\(size.height)")
+        } catch {
+            Self.logger.notice("camera native format unavailable: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private func handleCaptureSessionEventLocked(
@@ -882,8 +920,7 @@ final class CameraRecorder: NSObject,
         configuredDeviceUniqueID = nil
         configuredCapturesDeviceAudio = false
         configuredCaptureResolution = nil
-        configuredCameraWidth = nil
-        configuredCameraHeight = nil
+        sourceFraming = nil
         reportedCaptureSessionFailure = false
         runtimeFormatMonitor.reset(keepingCapacity: false)
         sampleIntegrityGate.reset()

@@ -49,21 +49,8 @@ public struct OutputFrameSchedule: Equatable, Sendable {
             throw Error.durationTooLong
         }
 
-        // Values such as (1 / 90) * 90 are conceptually integral but can be a
-        // handful of binary floating-point ulps away on a different platform or
-        // after timeline arithmetic. Snap only that representation noise; unlike
-        // a fixed epsilon, this cannot erase a real sub-1/60000-second tail.
-        let nearestInteger = scaledDuration.rounded()
-        let boundaryTolerance = max(
-            scaledDuration.ulp * 4,
-            nearestInteger.ulp * 4
-        )
-        let boundarySafeDuration = abs(scaledDuration - nearestInteger) <= boundaryTolerance
-            ? nearestInteger
-            : scaledDuration
-        let frameCount = boundarySafeDuration > 0
-            ? Int(boundarySafeDuration.rounded(.up))
-            : 0
+        let count = Self.firstFrameIndex(atOrAfter: duration, frameRate: frameRate.rawValue)
+        let frameCount = Int(count)
 
         if frameCount > 0 {
             let lastFrameIndex = Int64(frameCount - 1)
@@ -75,6 +62,17 @@ public struct OutputFrameSchedule: Equatable, Sendable {
         self.duration = duration
         self.frameCount = frameCount
         self.ticksPerFrame = ticksPerFrame
+    }
+
+    /// Also locates the displayed frames on either side of a camera handoff.
+    static func firstFrameIndex(atOrAfter time: TimeInterval, frameRate: Int) -> Double {
+        let scaled = time * Double(frameRate)
+        // Values such as (1 / 90) * 90 are conceptually integral but can be a
+        // handful of binary floating-point ulps away on a different platform or
+        // after timeline arithmetic. Snap only that representation noise; unlike
+        // a fixed epsilon, this cannot erase a real sub-1/60000-second tail.
+        let nearest = scaled.rounded()
+        return abs(scaled - nearest) <= 4 * max(scaled.ulp, nearest.ulp) ? nearest : scaled.rounded(.up)
     }
 
     public func frame(at index: Int) -> Frame? {

@@ -49,6 +49,7 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
     @ViewBuilder
     func primarySegmentContextMenu(segment: ResolvedRecordingSegment) -> some View {
         clipClipboardMenu(for: .primarySegment(segment.id))
+        videoAudioMenu(for: .primarySegment(segment.id))
         Divider()
         Button {
             splitPrimarySegmentAtPlayhead()
@@ -59,25 +60,8 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
 
         Divider()
 
-        Menu {
-            ForEach([1.0, 1.5, 2.0, 4.0, 8.0, 12.0, 20.0, 50.0, 100.0], id: \.self) { rate in
-                Button {
-                    setPrimarySegmentPlaybackRate(segment.id, rate: rate)
-                } label: {
-                    if abs(segment.playbackRate - rate) < 0.000_1 {
-                        EditorSymbolLabel(timelinePlaybackRateText(rate), systemImage: "checkmark")
-                    } else {
-                        Text(timelinePlaybackRateText(rate))
-                    }
-                }
-            }
-            Divider()
-            Button {} label: {
-                EditorSymbolLabel("按住 Control 拖右端自由变速", systemImage: "arrow.left.and.right")
-            }
-            .disabled(true)
-        } label: {
-            EditorSymbolLabel("片段速度", systemImage: "speedometer")
+        timelinePlaybackRateMenu(currentRate: segment.playbackRate, isOverlay: false) { rate in
+            setPrimarySegmentPlaybackRate(segment.id, rate: rate)
         }
 
         Divider()
@@ -163,6 +147,37 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
         }
     }
 
+    func timelinePlaybackRateMenu(currentRate: Double, isOverlay: Bool, setRate: @escaping (Double) -> Void) -> some View {
+        let fastRates = [1.0, 1.5, 2.0, 4.0, 8.0, 12.0, 20.0, 50.0, 100.0]
+        var rates = isOverlay ? [0.25, 0.5, 0.8] + fastRates : fastRates
+        if !rates.contains(where: { abs($0 - currentRate) < 0.000_1 }) {
+            rates.append(currentRate)
+            rates.sort()
+        }
+        return Menu {
+            ForEach(rates, id: \.self) { rate in
+                Button {
+                    setRate(rate)
+                } label: {
+                    if abs(currentRate - rate) < 0.000_1 {
+                        EditorSymbolLabel(timelinePlaybackRateText(rate), systemImage: "checkmark")
+                    } else {
+                        Text(timelinePlaybackRateText(rate))
+                    }
+                }
+            }
+            if !isOverlay {
+                Divider()
+                Button {} label: {
+                    EditorSymbolLabel("按住 Control 拖右端自由变速", systemImage: "arrow.left.and.right")
+                }
+                .disabled(true)
+            }
+        } label: {
+            EditorSymbolLabel("片段速度", systemImage: "speedometer")
+        }
+    }
+
     func setPrimarySegmentPlaybackRate(_ id: UUID, rate: Double) {
         do {
             try editorStore.setPrimarySegmentPlaybackRate(
@@ -178,10 +193,7 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
     }
 
     func timelinePlaybackRateText(_ rate: Double) -> String {
-        if abs(rate.rounded() - rate) < 0.000_1 {
-            return "\(Int(rate.rounded()))×"
-        }
-        return EditorSliderValueFormat.compact(rate, unit: "×")
+        EditorSliderValueFormat.compact(rate, unit: "×")
     }
 
     func segmentJunctionAction(
@@ -507,7 +519,7 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
         let overrides = editorStore.previewProject.timeline.primarySegmentAudioOverrides
         let gains = plan.slices.filter { $0.media != nil }.map { slice in
             let value = overrides[slice.segmentID]
-            let gain = value?.isSystemMuted == true ? 0 : (value?.systemVolume ?? 1)
+            let gain = value?.videoAudio?.detachedGroup != nil || value?.isSystemMuted == true ? 0 : (value?.systemVolume ?? 1)
             return EditorTimelineWaveformGainRange(startTime: slice.outputStart,
                 endTime: slice.outputStart + slice.duration, gain: gain)
         }
@@ -550,7 +562,7 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
             return EditorTimelineWaveformGainRange(
                 startTime: segment.outputStart,
                 endTime: segment.outputEnd,
-                gain: gain
+                gain: overrides.videoAudio?.detachedGroup == nil ? gain : 0
             )
         }
     }
@@ -866,6 +878,8 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
         _ id: UUID,
         extendingWith modifiers: NSEvent.ModifierFlags
     ) {
+        let additive = !modifiers.intersection([.shift, .command]).isEmpty
+        if additive { multiSelection = itemsForExtendingSelection }
         if modifiers.contains(.shift),
            let anchorID = selectedPrimarySegmentID,
            let segments = timelineMap?.segments,
@@ -877,11 +891,11 @@ var primarySegmentJunctions: [EditorTimelineSegmentJunction] {
             editorStore.selection = .primarySegment(id)
             return
         }
-        if modifiers.contains(.command) {
-            if selectedPrimarySegmentIDs.contains(id) {
+        if additive {
+            if modifiers.contains(.command), selectedPrimarySegmentIDs.contains(id) {
                 selectedPrimarySegmentIDs.remove(id)
                 if selectedPrimarySegmentIDs.isEmpty {
-                    editorStore.selection = .canvas
+                    editorStore.selection = multiSelection.first ?? .canvas
                 } else if selectedPrimarySegmentID == id {
                     let nextID = timelineMap?.segments.first(where: {
                         selectedPrimarySegmentIDs.contains($0.id)

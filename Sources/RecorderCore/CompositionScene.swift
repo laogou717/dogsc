@@ -101,6 +101,13 @@ public enum ScreenFrameGeometry {
 }
 
 public struct CameraSceneEvaluation: Equatable, Sendable {
+    public init(rect: CompositionRect, cornerRadius: Double, borderWidth: Double, opacity: Double) {
+        self.rect = rect
+        self.cornerRadius = cornerRadius
+        self.borderWidth = borderWidth
+        self.opacity = opacity
+    }
+
     public var rect: CompositionRect
     public var cornerRadius: Double
     public var borderWidth: Double
@@ -141,6 +148,7 @@ public enum CompositionSceneEvaluator {
         canvasWidth: Double,
         canvasHeight: Double,
         sourceAspectRatio: Double,
+        layoutAspectRatio: Double? = nil,
         cameraAspectRatio: Double? = nil,
         styleScale: Double = 1,
         automaticZoomFocus: NormalizedPoint? = nil,
@@ -160,16 +168,20 @@ public enum CompositionSceneEvaluator {
         let padding = min(max(project.canvas.padding * scale, 0), maximumPadding)
         let availableWidth = max(width - padding * 2, 2)
         let availableHeight = max(height - padding * 2, 2)
-        let fittedSize = aspectFit(
-            aspectRatio: croppedAspect,
-            width: availableWidth,
-            height: availableHeight
-        )
+        // Decide full bleed in the authored canvas. Preview rasters round to pixels;
+        // export may round again to an even codec size. A matching source covers
+        // those last fractional pixels at its own aspect, including during zoom.
+        let canvasAspect = layoutAspectRatio ?? (width / height)
+        let fullBleed = padding == 0 && project.canvas.screenFrame == .none
+            && abs(croppedAspect / canvasAspect - 1) < 1e-9
+        let heightAtCanvasWidth = availableWidth / croppedAspect
+        let fittedHeight = fullBleed ? max(heightAtCanvasWidth, availableHeight) : min(heightAtCanvasWidth, availableHeight)
+        let fittedWidth = fittedHeight * croppedAspect
         let fittedRect = CompositionRect(
-            x: (width - fittedSize.width) / 2,
-            y: (height - fittedSize.height) / 2,
-            width: fittedSize.width,
-            height: fittedSize.height
+            x: (width - fittedWidth) / 2,
+            y: (height - fittedHeight) / 2,
+            width: fittedWidth,
+            height: fittedHeight
         )
 
         let sampleTime = time.isFinite ? max(time, 0) : 0
@@ -235,7 +247,7 @@ public enum CompositionSceneEvaluator {
             height: fittedRect.height * manualScale
         )
 
-        let zoom = zoomTrack?.sample(
+        let zoom = zoomTrack?.forTarget(.recording).sample(
             at: sampleTime,
             motion: project.motion,
             automaticFocus: automaticZoomFocus,
@@ -412,18 +424,6 @@ public enum CompositionSceneEvaluator {
 
     private static func mix(_ from: Double, _ to: Double, _ progress: Double) -> Double {
         from + (to - from) * progress
-    }
-
-    private static func aspectFit(
-        aspectRatio: Double,
-        width: Double,
-        height: Double
-    ) -> (width: Double, height: Double) {
-        let safeAspect = max(aspectRatio, 0.01)
-        if width / max(height, 1) > safeAspect {
-            return (height * safeAspect, height)
-        }
-        return (width, width / safeAspect)
     }
 }
 

@@ -579,8 +579,16 @@ final class EditorMediaSession: ObservableObject {
         return message
     }
 
-    func thumbnail(atOutputTime outputTime: TimeInterval,
+    func thumbnail(atOutputTime outputTime: TimeInterval, overlay: VideoClip? = nil,
                    maximumSize: CGSize = CGSize(width: 640, height: 360)) async -> CGImage? {
+        if let overlay {
+            let asset = AVURLAsset(url: ProjectFiles.url(overlay.sourcePath))
+            guard let track = try? await asset.loadTracks(withMediaType: .video).first,
+                  let range = try? await track.load(.timeRange) else { return nil }
+            let sourceTime = range.start.seconds + FrameVideoScene(clip: overlay, at: outputTime).sourceTime
+            let request = EditorMediaThumbnailRequest(source: ImmutablePreviewAsset(asset), maximumSize: maximumSize, tolerance: 1 / 30)
+            return try? await request.image(at: CMTime(seconds: sourceTime, preferredTimescale: 600), timeout: .seconds(4))
+        }
         guard let prepared, let input = prepared.screenFrameInput(at: outputTime) else { return nil }
         let decoder = thumbnailDecoders[input.cacheKey] ?? EditorMediaThumbnailDecoder()
         thumbnailDecoders[input.cacheKey] = decoder

@@ -1118,6 +1118,7 @@ public struct AudioStyle: Codable, Equatable, Sendable {
 }
 
 public struct CameraStyle: Codable, Equatable, Sendable {
+    public var isFullscreen: Bool = false
     public var shape: CameraShape
     public var position: NormalizedPoint
     public var size: Double
@@ -1164,13 +1165,14 @@ public struct CameraStyle: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case shape, position, size, borderWidth, shadowStrength
+        case isFullscreen, shape, position, size, borderWidth, shadowStrength
         case roundness, isMirrored, isHidden, scaleDuringZoom
         case contentPosition, contentScale, beauty
     }
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        isFullscreen = try container.decodeIfPresent(Bool.self, forKey: .isFullscreen) ?? false
         shape = try container.decodeIfPresent(CameraShape.self, forKey: .shape) ?? .square
         position = try container.decodeIfPresent(NormalizedPoint.self, forKey: .position)
             ?? NormalizedPoint(x: 0.96, y: 0.47)

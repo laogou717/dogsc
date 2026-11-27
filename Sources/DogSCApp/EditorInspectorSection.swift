@@ -172,6 +172,7 @@ struct EditorInspectorEmptyState: View {
 struct EditorSegmentedControl<Option: Hashable>: View {
     let options: [Option]
     let title: (Option) -> String
+    var compactTitle: ((Option) -> String?)? = nil
     var icon: (Option) -> String? = { _ in nil }
     var accessibilityTitle: ((Option) -> String)? = nil
     var optionHelp: ((Option) -> String)? = nil
@@ -214,6 +215,13 @@ struct EditorSegmentedControl<Option: Hashable>: View {
                                     .modifier(AppChoiceIconFeedback())
                                     Text(localizedTitle)
                                 }
+                            } else if let compact = compactTitle?(option) {
+                                ViewThatFits(in: .horizontal) {
+                                    Text(localizedTitle).fixedSize(horizontal: true, vertical: false)
+                                    Text(appLocalized(compact))
+                                }
+                                .padding(.horizontal, 6)
+                                .modifier(AppChoiceIconFeedback())
                             } else {
                                 Text(localizedTitle)
                                     .modifier(AppChoiceIconFeedback())

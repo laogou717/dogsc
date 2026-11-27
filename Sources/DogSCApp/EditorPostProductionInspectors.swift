@@ -44,21 +44,48 @@ extension EditorStore {
         return clip.id
     }
 
-    /// Adds files to the bin by reference; already-present paths are reused.
+    func importAssetForPlacement(_ path: String) throws -> MediaAsset {
+        guard let asset = importMediaAssets([ProjectFiles.url(path)], keepingInProject: true).first else {
+            throw CocoaError(.fileReadUnknown)
+        }
+        return asset
+    }
+
+    /// Ordinary imports are references. Cross-project library placements own a local copy.
     @discardableResult
-    func importMediaAssets(_ urls: [URL], library: AssetLibrary? = nil) -> [MediaAsset] {
+    func importMediaAssets(_ urls: [URL], library: AssetLibrary? = nil, keepingInProject: Bool = false) -> [MediaAsset] {
         var timeline = project.timeline
         var result: [MediaAsset] = []
         var recordingProjects: [URL] = []
-        for url in urls {
+        let local = library ?? ProjectFiles.package.map { AssetLibrary.projectAssets(in: $0) }
+        for input in urls {
+            var url = input
             if url.pathExtension.lowercased() == "dogscproject" {
                 recordingProjects.append(url)
                 continue
             }
+            let isShared = AssetLibrary.isSharedMedia(input)
+            guard let kind = isShared ? AssetLibrary.sharedMediaKind(input) : MediaAssetKind.kind(forExtension: input.pathExtension) else { continue }
+            let external = ProjectFiles.portable(input.path).hasPrefix("/")
+            let favorite = library == nil && external ? AssetLibrary.shared.entries.first {
+                $0.favorite && $0.references(input.path)
+            } : nil
+            if external && (keepingInProject || isShared || favorite != nil || MotionTemplateLibrary.contains(input)) {
+                guard let local else { continue }
+                do {
+                    let sharedSource = isShared ? AssetLibrary.sharedMedia.entries.first { $0.references(input.path) } : nil
+                    let kept = try local.keepCopy(of: input, kind: kind, name: favorite?.name ?? input.lastPathComponent,
+                                                 remote: sharedSource?.remoteSource ?? favorite?.remoteSource)
+                    url = URL(fileURLWithPath: kept.path)
+                } catch {
+                    reportError?(appErrorDescription(error))
+                    continue
+                }
+            }
             let stored = ProjectFiles.portable(url.path)
-            if HTMLMotion.isHTMLMotion(url.path), let entry = (library ?? .shared).motionEntry(for: url.path) {
+            if HTMLMotion.isHTMLMotion(url.path), let entry = local?.motionEntry(for: url.path) {
                 let file = HTMLMotionEditing.File(url: url, entry: entry, reused: true)
-                let id = HTMLMotionEditing.register(file, in: &timeline)
+                let id = HTMLMotionEditing.register(file, in: &timeline, replacing: input)
                 if let asset = timeline.mediaAssets.first(where: { $0.id == id }) { result.append(asset) }
                 continue
             }
@@ -66,8 +93,12 @@ extension EditorStore {
                 result.append(existing)
                 continue
             }
-            guard let kind = MediaAssetKind.kind(forExtension: url.pathExtension) else { continue }
-            let asset = MediaAsset(path: stored, kind: kind, name: url.lastPathComponent)
+            if url != input, let index = timeline.mediaAssets.firstIndex(where: { ProjectFiles.url($0.path) == input }) {
+                timeline.mediaAssets[index].path = stored
+                result.append(timeline.mediaAssets[index])
+                continue
+            }
+            let asset = MediaAsset(path: stored, kind: kind, name: favorite?.name ?? url.lastPathComponent)
             timeline.mediaAssets.append(asset)
             result.append(asset)
         }
@@ -93,8 +124,8 @@ extension EditorStore {
         switch asset.kind {
         case .video:
             path = asset.path
-            fileDuration = (try? await AVURLAsset(url: ProjectFiles.url(asset.path)).load(.duration).seconds) ?? 0
-            length = marked ?? fileDuration
+            fileDuration = try await OverlayVideoSource.end(of: ProjectFiles.url(path))
+            length = sourceRange.map { $0.upperBound - $0.lowerBound } ?? fileDuration
         case .image:
             guard let package = ProjectFiles.package else { return }
             let imageURL = ProjectFiles.url(asset.path)
@@ -117,12 +148,13 @@ extension EditorStore {
             let declared = HTMLMotion.declaredDuration(path: ProjectFiles.resolve(asset.path)) ?? 3
             let duration = marked ?? (declared.isFinite && declared > 0 ? max(declared, 0.2) : 3)
             _ = try await insertHTMLMotionOnMainTrack(path: asset.path, name: asset.name, at: time,
-                duration: duration, usesFrameStyle: false, sound: nil, sourceDurations: sourceDurations)
+                duration: duration, usesFrameStyle: false, sound: nil, sourceDurations: sourceDurations,
+                sourceStart: sourceRange?.lowerBound ?? 0, fileDuration: max(declared, sourceRange?.upperBound ?? 0))
             return
         default:
             return
         }
-        guard fileDuration.isFinite, fileDuration > 0.1 else { return }
+        guard fileDuration.isFinite, fileDuration > 0 else { return }
         if imagePath == nil,
            let track = try? await AVURLAsset(url: ProjectFiles.url(path)).loadTracks(withMediaType: .video).first,
            let size = try? await track.load(.naturalSize), let transform = try? await track.load(.preferredTransform) {
@@ -162,26 +194,25 @@ extension EditorStore {
     /// editable. A black stand-in gives the span its video track; the sound,
     /// if any, is the clip's own file and moves with it.
     func insertHTMLMotionOnMainTrack(path: String, name: String, at time: TimeInterval, duration: TimeInterval,
-                                     usesFrameStyle: Bool, sound: URL?, sourceDurations: [UUID: TimeInterval]) async throws -> UUID {
+                                     usesFrameStyle: Bool, sound: URL?, sourceDurations: [UUID: TimeInterval],
+                                     sourceStart: Double = 0, fileDuration: Double? = nil) async throws -> UUID {
         guard let package = ProjectFiles.package else { throw CocoaError(.fileNoSuchFile) }
         let folder = package.appendingPathComponent("Inserted", isDirectory: true)
+        let fullDuration = max(fileDuration ?? duration, sourceStart + duration)
+        let soundtrack = try HTMLMotion.placementSound(at: path, override: sound)
         let standIn = try await StillVideoMaker.makeSolid(color: CGColor(gray: 0, alpha: 1), into: folder,
-                                                          duration: max(duration, 0.2) + 0.1)
+                                                          duration: max(fullDuration, 0.2) + 0.1)
         do { try Task.checkCancellation() }
         catch {
             try? FileManager.default.removeItem(at: standIn)
             throw error
         }
-        var soundPath: String?
-        if let sound {
-            let kept = folder.appendingPathComponent("sound-" + UUID().uuidString.prefix(6) + "." + sound.pathExtension)
-            try FileManager.default.copyItem(at: sound, to: kept)
-            soundPath = ProjectFiles.portable(kept.path)
-        }
-        return try insertMedia(InsertedMedia(path: ProjectFiles.portable(standIn.path), fileDuration: duration,
-                                             name: name, usesFrameStyle: usesFrameStyle,
-                                             motionPath: ProjectFiles.portable(path), soundPath: soundPath),
-                               at: time, duration: duration, sourceDurations: sourceDurations, actionName: "插入开场")
+        var media = InsertedMedia(path: ProjectFiles.portable(standIn.path), fileDuration: fullDuration,
+            name: name, usesFrameStyle: usesFrameStyle, motionPath: ProjectFiles.portable(path), soundPath: soundtrack?.path)
+        media.transferSound = soundtrack
+        media.cameraSlot = HTMLMotion.cameraSlot(at: path)
+        return try insertMedia(media, at: time, duration: duration, sourceDurations: sourceDurations,
+                               actionName: "插入开场", sourceStart: sourceStart)
     }
 
     /// EDT-071: one field of a main-track HTML motion (nil restores the
@@ -197,11 +228,11 @@ extension EditorStore {
 
     @discardableResult
     private func insertMedia(_ media: InsertedMedia, at time: TimeInterval, duration: TimeInterval,
-                             sourceDurations: [UUID: TimeInterval], actionName: String) throws -> UUID {
+                             sourceDurations: [UUID: TimeInterval], actionName: String, sourceStart: Double = 0) throws -> UUID {
         let id = UUID()
         let timeline = try ProjectTimelineEditing.insertMediaSegment(
             in: project.timeline, media: media, atOutputTime: time, duration: duration,
-            newSegmentID: id, sourceDurations: sourceDurations)
+            newSegmentID: id, sourceDurations: sourceDurations, sourceStart: sourceStart)
         try replaceTimeline(with: timeline, actionName: actionName)
         selection = .primarySegment(id)
         return id
@@ -220,9 +251,11 @@ extension EditorStore {
 
     /// EDT-054: an overlay video at the playhead, sized to its own aspect.
     func addVideoClip(sourcePath: String, at time: TimeInterval, outputDuration: TimeInterval,
-                      sourceRange: ClosedRange<TimeInterval>? = nil) async throws -> UUID {
+                      sourceRange: ClosedRange<TimeInterval>? = nil, configure: (inout VideoClip) -> Void = { _ in }) async throws -> UUID {
+        let original = project.timeline
+        let package = ProjectFiles.package
         let asset = AVURLAsset(url: ProjectFiles.url(sourcePath))
-        let fileDuration = (try? await asset.load(.duration).seconds) ?? 5
+        let fileDuration = try await OverlayVideoSource.end(of: asset.url)
         var aspect = 9.0 / 16.0
         if let track = try? await asset.loadTracks(withMediaType: .video).first,
            let size = try? await track.load(.naturalSize),
@@ -230,27 +263,53 @@ extension EditorStore {
             let rect = CGRect(origin: .zero, size: size).applying(transform)
             if rect.width > 0 { aspect = abs(rect.height) / abs(rect.width) }
         }
+        guard project.timeline == original, ProjectFiles.package == package else { throw RecordingImportError.changed }
         let start = min(max(time, 0), max(outputDuration - 0.25, 0))
-        let whole = fileDuration.isFinite && fileDuration > 0 ? fileDuration : 5
-        let wanted = sourceRange.map { max($0.upperBound - $0.lowerBound, 0.05) } ?? whole
-        let length = max(min(wanted, outputDuration - start), 0.25)
+        let sourceStart = max(sourceRange?.lowerBound ?? 0, 0)
+        let sourceEnd = min(sourceRange?.upperBound ?? fileDuration, fileDuration)
+        let length = min(sourceEnd - sourceStart, outputDuration - start)
+        guard length > 0 else { throw VideoSourceError.invalidRange(name: asset.url.lastPathComponent) }
         let canvasAspect = PreviewSnapshot.latest.map { Double($0.extent.height / max($0.extent.width, 1)) } ?? (9.0 / 16.0)
         // Full width when it fits the frame, otherwise full height.
         let width = aspect <= canvasAspect ? 1 : canvasAspect / aspect
         let timing = OverlayTiming(startTime: start, duration: length)
-        let clip = VideoClip(
+        var clip = VideoClip(
             timing: timing,
             sourcePath: sourcePath,
-            sourceStart: max(sourceRange?.lowerBound ?? 0, 0),
+            sourceStart: sourceStart,
             width: width,
             aspect: aspect,
             layerIndex: project.timeline.visualLayer(for: timing)
         )
+        clip.cameraMode = AppPreferences.newVideoCameraMode()
+        clip.sourceFileEnd = fileDuration
+        configure(&clip)
+        try clip.validateSourceRange()
         var timeline = project.timeline
         timeline.videoClips.append(clip)
         try replaceTimeline(with: timeline, actionName: "添加视频")
         selection = .videoClip(clip.id)
         return clip.id
+    }
+
+    func setOverlayPlaybackRate(_ rate: Double, id: UUID) throws {
+        var timeline = project.timeline
+        guard let i = timeline.videoClips.firstIndex(where: { $0.id == id }) else { return }
+        try timeline.videoClips[i].setPlaybackRate(rate)
+        let end = outputDuration()
+        guard end <= 0 || timeline.videoClips[i].timing.endTime <= end + 0.000_001 else {
+            throw VideoSourceError.insufficientTimeline
+        }
+        timeline.organizeVisualLayers()
+        try replaceTimeline(with: timeline, actionName: "调整片段速度")
+    }
+
+    func setVideoCameraAbove(_ above: Bool, clipID: UUID, defaults: UserDefaults = .standard) throws {
+        var timeline = project.timeline
+        guard let index = timeline.videoClips.firstIndex(where: { $0.id == clipID }) else { return }
+        timeline.videoClips[index].cameraMode = above ? .pictureInPicture : .videoInFront
+        try replaceTimeline(with: timeline, actionName: "调整叠放顺序")
+        AppPreferences.rememberVideoCameraAbove(above, in: defaults)
     }
 
     /// Replaces every subtitle at once (AI generation, SRT import).
@@ -937,6 +996,9 @@ func timelineSlider(
 struct EditorVideoClipInspector: View {
     @ObservedObject var editorStore: EditorStore
     let clipID: UUID
+    let hasCamera: Bool
+    let cameraAboveVideo: Bool
+    let canvasAspect: Double
 
     private var clip: VideoClip? {
         editorStore.previewProject.timeline.videoClips.first { $0.id == clipID }
@@ -956,19 +1018,18 @@ struct EditorVideoClipInspector: View {
     var body: some View {
         VStack(alignment: .leading, spacing: EditorInterfaceSpacing.sectionGap) {
             if let clip {
-                Text(URL(fileURLWithPath: clip.sourcePath).lastPathComponent)
-                    .font(EditorTypography.helper).foregroundStyle(EditorTheme.tertiaryText)
-                    .lineLimit(1).truncationMode(.middle)
                 EditorInspectorSection("布局") {
                     HStack(spacing: 8) {
-                        Button { place(width: 1, x: 0.5, y: 0.5) } label: { Text(appLocalized("铺满")).frame(maxWidth: .infinity) }
-                        Button { place(width: 0.32, x: 0.78, y: 0.76) } label: { Text(appLocalized("画中画")).frame(maxWidth: .infinity) }
+                        Button {
+                            changeClip("铺满画布") { $0.fillCanvas(canvasAspect: canvasAspect) }
+                        } label: { Text(appLocalized("铺满画布")).frame(maxWidth: .infinity) }
+                        Button { place(width: 0.32, x: 0.78, y: 0.76) } label: { Text(appLocalized("缩为小窗")).frame(maxWidth: .infinity) }
                     }
                     .buttonStyle(.editorQuiet)
                     EditorTransactionalPositionPad(
                         editorStore: editorStore,
-                        title: "位置",
-                        point: positionBinding,
+                        title: "画布位置",
+                        point: pointBinding(\.position),
                         commandScope: .selection,
                         selection: .videoClip(clipID),
                         actionName: "移动视频",
@@ -976,9 +1037,42 @@ struct EditorVideoClipInspector: View {
                     )
                     slider("大小", \.width, 0.1...1.5)
                 }
+                EditorInspectorSection("蒙版") {
+                    EditorSegmentedControl(options: VideoMaskShape.allCases, title: { $0.rawValue },
+                        selection: Binding(get: { clip.maskShape }, set: { shape in
+                            changeClip("调整视频蒙版") { $0.maskShape = shape }
+                        }))
+                    if clip.maskShape == .rounded {
+                        slider("圆角程度", \.maskCornerRadius, VideoClip.maskRadiusRange)
+                    }
+                    slider("取景缩放", \.contentScale, 1...4, .multiplier)
+                    switch clip.framingAxes {
+                    case (true, true):
+                        EditorTransactionalPositionPad(editorStore: editorStore, title: "框内位置",
+                            point: pointBinding(\.contentPosition), commandScope: .selection,
+                            selection: .videoClip(clipID), actionName: "调整蒙版内取景",
+                            onError: { editorStore.reportError?($0) })
+                    case (true, false): slider("水平取景", \.contentPosition.x, 0...1)
+                    case (false, true): slider("垂直取景", \.contentPosition.y, 0...1)
+                    case (false, false): EmptyView()
+                    }
+                }
+                if hasCamera {
+                    EditorInspectorSection("叠放顺序") {
+                        EditorSegmentedControl(options: [false, true], title: { $0 ? "摄像头在上" : "视频在上" },
+                            selection: Binding(get: { cameraAboveVideo }, set: { above in
+                                do { try editorStore.setVideoCameraAbove(above, clipID: clipID) }
+                                catch { editorStore.reportError?(error.localizedDescription) }
+                            }))
+                    }
+                }
                 EditorInspectorSection("外观") {
                     slider("不透明度", \.opacity, 0...1)
-                    slider("音量", \.volume, 0...1)
+                    if clip.videoAudio?.detachedGroup == nil {
+                        slider("音量", \.volume, 0...1)
+                    } else {
+                        Text(appLocalized("声音已分离到音频轨")).foregroundStyle(.secondary)
+                    }
                 }
                 Button(role: .destructive) {
                     do { try editorStore.removeSelectedOverlay(actionName: "删除视频") }
@@ -989,14 +1083,21 @@ struct EditorVideoClipInspector: View {
         }
     }
 
-    private var positionBinding: Binding<NormalizedPoint> {
+    private func changeClip(_ action: String, _ update: @escaping (inout VideoClip) -> Void) {
+        commitTimelineEdit(editorStore, action: action) { timeline in
+            guard let i = timeline.videoClips.firstIndex(where: { $0.id == clipID }) else { return }
+            update(&timeline.videoClips[i])
+        }
+    }
+
+    private func pointBinding(_ keyPath: WritableKeyPath<VideoClip, NormalizedPoint>) -> Binding<NormalizedPoint> {
         let id = clipID
         return Binding(
-            get: { editorStore.previewProject.timeline.videoClips.first { $0.id == id }?.position ?? NormalizedPoint(x: 0.5, y: 0.5) },
+            get: { editorStore.previewProject.timeline.videoClips.first { $0.id == id }?[keyPath: keyPath] ?? NormalizedPoint(x: 0.5, y: 0.5) },
             set: { value in
                 editorStore.updateInteraction { project in
                     guard let i = project.timeline.videoClips.firstIndex(where: { $0.id == id }) else { return }
-                    project.timeline.videoClips[i].position = value
+                    project.timeline.videoClips[i][keyPath: keyPath] = value
                 }
             }
         )
@@ -1072,7 +1173,7 @@ enum StillVideoMaker {
     }
 
     /// One H.264 file, drawing each frame with `draw` (time in seconds).
-    private static func write(to output: URL, width: Int, height: Int, fps: Int32, duration: TimeInterval,
+    static func write(to output: URL, width: Int, height: Int, fps: Int32, duration: TimeInterval,
                               draw: (CGContext, Double) -> Void) async throws {
         let writer = try AVAssetWriter(outputURL: output, fileType: .mov)
         defer { if writer.status == .writing { writer.cancelWriting() } }

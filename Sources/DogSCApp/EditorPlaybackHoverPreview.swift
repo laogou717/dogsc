@@ -19,14 +19,15 @@ extension EditorPlaybackController {
             hoverPreviewTime,
             duration: duration
         )
+        let frame = preparedMedia?.composition.frameMetadata(at: time)
         return EditorPlaybackRenderTick(
             mediaGeneration: endpoints.generation,
             discontinuityID: discontinuityID,
             outputTime: time,
             itemTime: CMTime(seconds: time, preferredTimescale: 60_000),
-            cameraIsAvailable: cameraIsAvailable(at: time),
+            cameraIsAvailable: frame?.usesPrimaryFrameForCamera == true || cameraIsAvailable(at: time),
             isPlaying: false,
-            sourceFrame: preparedMedia?.composition.frameMetadata(at: time)
+            sourceFrame: frame
         )
     }
 

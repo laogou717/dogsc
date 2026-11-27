@@ -25,7 +25,7 @@ final class AudioOnlyExportPipeline: @unchecked Sendable {
         audioSourceCache: AudioSourceCache = .shared,
         progressHandler: (@Sendable (Double) -> Void)?
     ) throws {
-        let tracks = voiceOnly ? media.recordingAudioTracks : media.mixedAudioTracks
+        let tracks = voiceOnly ? media.speechAudioTracks : media.mixedAudioTracks
         guard !tracks.isEmpty else {
             throw VideoExporterError.noAudioToExport
         }

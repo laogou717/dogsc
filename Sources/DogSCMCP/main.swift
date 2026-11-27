@@ -1,4 +1,6 @@
 import Foundation
+import ImageIO
+import UniformTypeIdentifiers
 
 // dogsc-mcp: a stdio MCP server that forwards tool calls to the open DogSC
 // editor's local bridge (EDT-054). It holds no project state itself.
@@ -18,23 +20,29 @@ let number: [String: Any] = ["type": "number"]
 let string: [String: Any] = ["type": "string"]
 let tools: [Tool] = [
     Tool(name: "project_summary", method: "project.summary",
-         description: "Open project's title, output duration in seconds, playhead and clip counts.", properties: [:], required: []),
+         description: "Open project's title, duration, playhead, clip counts, motionUsage by template/source, and footage (recording sources and timed main/overlay visuals).", properties: [:], required: []),
     Tool(name: "media_list", method: "media.list",
-         description: "List existing media: scope project (default), library, or all; optional kind video/image/audio/animation. Returns IDs, names, paths and missing status.",
+         description: "List existing media: scope project (default), shared (reusable files), library (favorites), or all; optional kind video/image/audio/animation. Returns IDs, names, paths and missing status.",
          properties: ["scope": string, "kind": string], required: []),
     Tool(name: "media_import", method: "media.import",
-         description: "Add files to the media bin by reference (never copied).",
+         description: "Import media into the project bin. External files get a project-owned copy.",
          properties: ["paths": ["type": "array", "items": string]], required: ["paths"]),
+    Tool(name: "image_download", method: "image.download",
+         description: "Import a direct HTTPS PNG, JPEG, WebP or standalone SVG (imported as PNG) into shared media and the project bin. Supply the source page URL and optional display name. Returns assetId, path and projectPath for image slots.",
+         properties: ["url": string, "sourceURL": string, "name": string], required: ["url", "sourceURL"]),
     Tool(name: "sound_download", method: "sound.download",
-         description: "Download an existing CC0 sound into the library and project bin; retries reuse files. Supply its direct audio url, source page sourceURL and verified CC0 licenseURL. Returns local path/duration; place with timeline_add_audio or attach via html_create soundPath.",
+         description: "Download an existing CC0 sound into shared media and keep a project copy; retries reuse files. Supply its direct audio url, source page sourceURL and verified CC0 licenseURL. Returns local path/duration; place with timeline_add_audio or attach via html_create soundPath.",
          properties: ["url": string, "sourceURL": string, "licenseURL": string, "name": string], required: ["url", "sourceURL", "licenseURL"]),
     Tool(name: "timeline_add_audio", method: "timeline.addAudio",
          description: "Place background music or a sound effect. volume 0-1, fades in seconds. Reuses the same path/start/kind on a retry.",
          properties: ["path": string, "start": number, "kind": ["type": "string", "enum": ["music", "effect"]],
                       "volume": number, "fadeIn": number, "fadeOut": number], required: ["path", "start"]),
     Tool(name: "timeline_add_video", method: "timeline.addVideo",
-         description: "Place a video (B-roll) over the recording. Full frame by default; for picture-in-picture use width ~0.3 and x/y (centre, 0-1). volume 0-1.",
-         properties: ["path": string, "start": number, "x": number, "y": number, "width": number, "volume": number], required: ["path", "start"]),
+         description: "Place fitted B-roll. maskShape and maskCornerRadius control the video mask (radius as a fraction of its short edge, default 0.12). pictureInPicture puts the camera above the video; videoInFront puts the video above. Omit cameraMode to use the last manual choice, initially camera above.",
+         properties: ["path": string, "start": number, "x": number, "y": number, "width": number, "volume": number,
+                      "maskShape": ["type": "string", "enum": ["矩形", "圆角矩形", "圆形"]],
+                      "maskCornerRadius": ["type": "number", "minimum": 0, "maximum": 0.5],
+                      "cameraMode": ["type": "string", "enum": ["videoInFront", "pictureInPicture"]]], required: ["path", "start"]),
     Tool(name: "subtitles_get", method: "subtitles.get",
          description: "Current subtitle cues with stable IDs, text and output times.", properties: [:], required: []),
     Tool(name: "subtitles_update_text", method: "subtitles.updateText",
@@ -50,20 +58,25 @@ let tools: [Tool] = [
          description: "Subtitle style: fontScale (of canvas height; default 0.03), bottomMargin (default 0.05), backgroundOpacity (default 1), showsSecondary. Existing custom styles are preserved.",
          properties: ["fontScale": number, "bottomMargin": number, "backgroundOpacity": number, "showsSecondary": ["type": "boolean"]],
          required: []),
+    Tool(name: "template_read", method: "template.read",
+         description: "Browse local style packs. Folders return immediate entries and all nested HTML paths in templates. Folder and template results include applicable README paths and introductions in styleGuides. Pass a returned relative path to read a README or inspect template properties, editable imageSlots, camera placement and soundCues. includeSource returns authored HTML.",
+         properties: ["path": string, "includeSource": ["type": "boolean"]], required: []),
     Tool(name: "html_create", method: "html.create",
-         description: "Create and place an HTML motion (format in the skill). placement overlay puts it above the recording; main inserts a full-screen clip. Identical retries reuse the file and placement. Revise with html_update; copy:true creates an independent asset. sound: optional events attached to a main-track clip.",
-         properties: ["name": string, "html": string, "start": number, "duration": number,
+         description: "Create and place an HTML motion (format in the skill). Supply html or a templatePath from template_read. For a speech-timed overlay, supply speechAnchor instead of start. It aligns a local visual beat (seconds, default 0) with the onset of a numbered transcript word. placement overlay puts it above the recording; main inserts a full-screen clip. Identical retries reuse the file and placement. Revise with html_update; copy:true creates an independent asset. Both tracks use the HTML score unless sound or soundPath overrides it.",
+         properties: ["name": string, "html": string, "templatePath": string, "start": number, "speechAnchor": ["type": "object", "properties": [
+                    "analysisId": string, "word": ["type": "integer"], "localTime": number],
+                    "required": ["analysisId", "word"], "additionalProperties": false], "duration": number,
                       "placement": ["type": "string", "enum": ["overlay", "main"]], "x": number, "y": number, "width": number,
                       "framed": ["type": "boolean"], "copy": ["type": "boolean"], "soundPath": string, "sound": ["type": "array", "items": ["type": "object"]]],
-         required: ["name", "html", "placement"]),
+         required: ["name", "placement"]),
     Tool(name: "html_update", method: "html.update",
-         description: "Revise an existing library HTML motion used by this project. Supply exactly one current clip/asset id or path, plus the full html. One undoable edit preserves IDs, timing, per-instance fields and user edits, with one bin item. Returns the new path; other projects retain their source.",
+         description: "Revise an existing HTML motion used by this project. Supply exactly one current clip/asset id or path, plus the full html. One undoable edit preserves IDs, timing, per-instance fields and user edits, with one bin item. Returns the new path; other projects retain their source.",
          properties: ["id": string, "path": string, "html": string], required: ["html"]),
     Tool(name: "html_preview", method: "html.preview",
          description: "Render PNG frames of an HTML motion page at given times (seconds) to check the design and the timing.",
          properties: ["path": string, "times": ["type": "array", "items": number]], required: ["path"]),
     Tool(name: "sound_create", method: "sound.create",
-         description: "Synthesise a sound effect from layered events and save it to the library; with start, also place it on an audio track. Event types: whoosh (rising air), swoosh_down, riser (build-up), hit, boom (low impact), click, tick, pop, ding, chime (3-note), shimmer (sparkle), glitch, tone. Each event: {type, at (s), duration?, volume 0-1.5?, pitch Hz?, pan -1..1?}.",
+         description: "Synthesise a sound effect from layered events and save it to the project; with start, also place it on an audio track. Event types: whoosh (rising air), swoosh_down, riser (build-up), hit, boom (low impact), click, tick, pop, ding, chime (3-note), shimmer (sparkle), glitch, tone. Each event: {type, at (s), duration?, volume 0-1.5?, pitch Hz?, pan -1..1?}.",
          properties: ["name": string, "events": ["type": "array", "items": ["type": "object"]], "start": number, "volume": number],
          required: ["name", "events"]),
     Tool(name: "timeline_insert_black", method: "timeline.insertBlack",
@@ -76,7 +89,7 @@ let tools: [Tool] = [
          description: "Read native editable values for timeline objects, optionally filtered by ids. Returns a project revision and objects {id,kind,value}. Main clip value exposes source {start,end,speed}, audio, sceneStyle and media. source uses media seconds; output timing and availableSource bounds are reported separately.",
          properties: ["ids": ["type": "array", "items": string]], required: []),
     Tool(name: "timeline_update", method: "timeline.update",
-         description: "Apply partial patches to existing native objects in one undoable edit. changes [{id,patch}] uses the value shape from timeline_inspect; omitted fields stay unchanged. Supports zoom, 3D, camera motion, highlight, sticker, animation, video, audio, subtitle, and main clip source/media/appearance/audio. Main patch.source {start?,end?,speed?} trims or extends media-source edges and ripples dependent tracks, like manual edge dragging. Optional revision detects intervening edits. Returns actual updated values.",
+         description: "Apply partial patches to existing native objects in one undoable edit. changes [{id,patch}] uses the value shape from timeline_inspect; omitted fields stay unchanged. Supports zoom, 3D, camera motion, highlight, sticker, animation, video, audio, subtitle, and main clip source/media/appearance/audio. On a video, patch playbackRate to retime the same source frames; explicit timing.duration selects output seconds, limited by the read-only sourceFileEnd. You can also patch maskShape (矩形/圆角矩形/圆形), maskCornerRadius (0–0.5 of short edge), cameraMode (pictureInPicture/videoInFront), or layerIndex among visual overlays. Main patch.source {start?,end?,speed?} trims or extends media-source edges and ripples dependent tracks, like manual edge dragging. Optional revision detects intervening edits. Returns actual updated values.",
          properties: ["revision": string, "changes": ["type": "array", "items": ["type": "object", "properties": ["id": string, "patch": ["type": "object"]], "required": ["id", "patch"]]]], required: ["changes"]),
     Tool(name: "timeline_add_sticker", method: "timeline.addSticker",
          description: "Place an image as a native editable sticker over the program. start/end are output seconds; x/y are canvas centre coordinates (0-1); width is canvas width fraction.",
@@ -94,8 +107,8 @@ let tools: [Tool] = [
          description: "Recorded mouse clicks (and optionally moves) in output seconds with x,y (0-1 of the recording). Clicks show where the viewer's attention was — good zoom targets.",
          properties: ["from": ["type": "number"], "to": ["type": "number"], "kinds": ["type": "array", "items": ["type": "string", "enum": ["click", "move"]]]], required: [] as [String]),
     Tool(name: "zoom_add", method: "zoom.add",
-         description: "Add a purposeful camera push-in on the recording. x,y = source focus (0-1), scale 1.05-4 (default: the project's). start begins entrance; end begins return; transition is seconds per leg. Choose the span around the actual explanation or action. Touching clips continue without a 1x reset. Existing startTime/endTime, focus, scale and separate transition durations are editable with timeline_update; timeline_get reports zoomJoins.",
-         properties: ["start": ["type": "number"], "end": ["type": "number"], "x": ["type": "number"], "y": ["type": "number"], "scale": ["type": "number"], "transition": ["type": "number"]], required: ["start", "end", "x", "y"]),
+         description: "Zoom the recording (default target recording) or the frontmost active imported video (target overlayVideo). x,y = focus in the targeted source (0-1), scale 1.05-4 (default: the project's). start begins entrance; end begins return; transition is seconds per leg. Choose the span around the actual explanation or action. Touching zooms on the same surface continue without a 1x reset. Existing target, startTime/endTime, focus, scale and separate transition durations are editable with timeline_update; timeline_get reports zoomJoins.",
+         properties: ["start": ["type": "number"], "end": ["type": "number"], "x": ["type": "number"], "y": ["type": "number"], "scale": ["type": "number"], "transition": ["type": "number"], "target": ["type": "string", "enum": ["recording", "overlayVideo"]]], required: ["start", "end", "x", "y"]),
     Tool(name: "motion3d_add", method: "motion3d.add",
          description: "Add a 3D move of the recording (tilt in degrees). Position and timing are editable.",
          properties: ["start": ["type": "number"], "end": ["type": "number"], "rotationX": ["type": "number"], "rotationY": ["type": "number"], "rotationZ": ["type": "number"], "scale": ["type": "number"], "x": ["type": "number"], "y": ["type": "number"], "leadIn": ["type": "number"]], required: ["start", "end"]),
@@ -112,7 +125,7 @@ let tools: [Tool] = [
          description: "How DogSC itself is used: where each setting lives, shortcuts and step-by-step paths. Use it to answer the user's 'how do I…' questions accurately.",
          properties: ["topic": ["type": "string"]], required: [] as [String]),
     Tool(name: "canvas_snapshot", method: "canvas.snapshot",
-         description: "Render a specified output time independently of the editor playhead. Returns PNG path, requested/rendered time, decoded source timestamp, source/clip IDs and coordinate geometry. view canvas (default) includes all effects; source shows the uncropped recording. maxDimension defaults to 1280 (64...8192).",
+         description: "Render a specified output time independently of the editor playhead. Returns PNG path, requested/rendered time, decoded source timestamp, source/clip IDs and coordinate geometry. view canvas (default) includes all effects and reports the active caption’s subtitleRestingRect in top-left canvas pixels. source shows the uncropped recording. maxDimension defaults to 1280 (64...8192).",
          properties: ["time": number, "view": string, "maxDimension": number], required: []),
     Tool(name: "audio_transcribe", method: "audio.transcribe",
          description: "Transcribe the edited program voice with the macOS recognizer. Returns phrases and numbered tokens {i,s,e,t} in output seconds. Cached with audio_analyze_edits; refresh forces reanalysis. For speech cuts use audio_analyze_edits for waveform boundaries.",
@@ -176,6 +189,37 @@ func send(_ object: [String: Any]) {
     FileHandle.standardOutput.write(data + Data("\n".utf8))
 }
 
+/// Keep the original PNG paths and geometry in the text result. Attach bounded
+/// previews so vision clients can inspect the frame in the same tool call.
+func previewImages(method: String, result: Any?) -> [[String: Any]] {
+    let paths: [String]
+    let format: UTType
+    switch method {
+    case "canvas.snapshot":
+        guard let path = (result as? [String: Any])?["path"] as? String else { return [] }
+        paths = [path]
+        format = .jpeg
+    case "html.preview":
+        paths = result as? [String] ?? []
+        format = .png // A motion page may be transparent.
+    default: return []
+    }
+    return paths.compactMap { path in
+        let url = URL(fileURLWithPath: path)
+        let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
+                                        kCGImageSourceCreateThumbnailWithTransform: true,
+                                        kCGImageSourceThumbnailMaxPixelSize: 1024]
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let frame = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(data, format.identifier as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(destination, frame, [kCGImageDestinationLossyCompressionQuality: 0.82] as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return ["type": "image", "mimeType": format == .png ? "image/png" : "image/jpeg",
+                "data": data.base64EncodedString()]
+    }
+}
+
 while let line = readLine(strippingNewline: true) {
     guard let data = line.data(using: .utf8),
           let message = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -216,7 +260,8 @@ while let line = readLine(strippingNewline: true) {
             text = result.map { "\($0)" } ?? "ok"
         }
         send(["jsonrpc": "2.0", "id": id, "result": [
-            "content": [["type": "text", "text": text]], "isError": error != nil,
+            "content": [["type": "text", "text": text]] + previewImages(method: tool.method, result: result),
+            "isError": error != nil,
         ]])
     default:
         send(["jsonrpc": "2.0", "id": id, "error": ["code": -32601, "message": "Method not found"]])

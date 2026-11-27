@@ -39,6 +39,7 @@ final class HTMLMotionPreviewBuffer {
         return result
     }
     var failedFrameIndices: Set<Int> { failedFrames }
+    var sourceIsMissing: Bool { modified == .distantPast }
 
 
     func reset() {
@@ -86,6 +87,7 @@ final class HTMLMotionPreviewBuffer {
         self.didChange = didChange
         // Integer IDs avoid rounding misses between adjacent cached frames.
         wanted = Int((max(time, 0) * Self.frameRate + 1e-6).rounded(.down))
+        guard !sourceIsMissing else { return nil }
         let bytesPerFrame = max(size.width * size.height * 4, 1)
         frameLimit = max(1, min(12, Int(Double(memoryBudget) / bytesPerFrame)))
         let range = frameRange

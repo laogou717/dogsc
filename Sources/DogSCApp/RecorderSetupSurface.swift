@@ -10,8 +10,8 @@ struct RecorderSetupSurface: View {
     @AppStorage("recorder.capture-mode") private var storedMode = CaptureSource.display.rawValue
     @State private var rollsForward = true
 
-    private var mode: CaptureSource {
-        model.selectedCaptureSource ?? CaptureSource(rawValue: storedMode) ?? .display
+    private var mode: RecorderSourceMode {
+        RecorderSourceMode.restored(from: storedMode)
     }
 
     var body: some View {
@@ -24,7 +24,7 @@ struct RecorderSetupSurface: View {
                     RecorderMicrophoneGlyph(meter: model.microphoneInputLevel, enabled: model.configuration.recordsMicrophone)
                 } panel: { RecorderInputPopover(model: model, kind: .microphone) }
                 RecorderPopoverButton(id: "camera", title: "摄像头", width: 44, height: 44) {
-                    RecorderInputGlyph(on: "video.fill", off: "video.slash.fill", enabled: model.configuration.recordsCamera)
+                    RecorderInputGlyph(on: "video", off: "video.slash", enabled: model.configuration.recordsCamera)
                 } panel: { RecorderInputPopover(model: model, kind: .camera) }
                 RecorderPopoverButton(id: "system-audio", title: "系统声音", width: 44, height: 44) {
                     RecorderInputGlyph(on: "speaker.wave.2.fill", off: "speaker.slash.fill", enabled: model.configuration.recordsSystemAudio)
@@ -37,7 +37,7 @@ struct RecorderSetupSurface: View {
                 EditorSymbol("ellipsis", size: 15).font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(RecorderStyle.muted)
                     .frame(width: 44, height: 44)
-            } panel: { RecorderSavePopover(model: model) }
+            } panel: { RecorderSavePopover(model: model, mode: mode) }
             .firstUseTourTarget("recorder.save", in: .recorder, highlight: .rounded(RecorderStyle.controlRadius))
 
             recordButton.padding(.leading, 4)
@@ -46,6 +46,10 @@ struct RecorderSetupSurface: View {
         .padding(.horizontal, 8)
         .frame(height: 56)
         .foregroundStyle(RecorderStyle.ink)
+        .onAppear {
+            let restored = RecorderSourceMode.restored(from: storedMode).captureSource.rawValue
+            if storedMode != restored { storedMode = restored }
+        }
         .firstUseTour(.recorder, enabled: model.phase == .setup && !model.showsRequiredPermissionGate)
     }
 
@@ -90,15 +94,16 @@ struct RecorderSetupSurface: View {
     }
 
     private func roll(_ step: Int) {
-        let all = CaptureSource.allCases
+        let all = RecorderSourceMode.allCases
         guard step != 0, let index = all.firstIndex(of: mode) else { return }
         let next = all[(index + step % all.count + all.count) % all.count]
         rollsForward = step > 0
         RecorderPopoverPresenter.shared.dismiss()
-        withAnimation(RecorderMotion.settle) { storedMode = next.rawValue }
+        if model.captureSetup.selectedSource != nil { model.captureSetup.reset() }
+        withAnimation(RecorderMotion.settle) { storedMode = next.captureSource.rawValue }
     }
 
-    private static func label(for mode: CaptureSource) -> String {
+    private static func label(for mode: RecorderSourceMode) -> String {
         switch mode {
         case .display: "显示器"
         case .window: "窗口"
@@ -112,13 +117,13 @@ struct RecorderSetupSurface: View {
 /// grid with one stroke so they read as a family.
 /// The capture source as one of the app's icons (EDT-078).
 struct RecorderModeGlyph: View {
-    let mode: CaptureSource
+    let mode: RecorderSourceMode
     var size: CGFloat = 18
     var body: some View {
         AppLineIcon(kind: Self.kind(mode), size: size)
     }
 
-    static func kind(_ mode: CaptureSource) -> AppLineIcon.Kind {
+    static func kind(_ mode: RecorderSourceMode) -> AppLineIcon.Kind {
         switch mode {
         case .display: .display
         case .window: .window

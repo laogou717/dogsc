@@ -332,7 +332,7 @@ public enum ProjectTimelineEditing {
                     inserting($0, at: resolved.outputStart, duration: outputAmount)
                 }
                 result.audioClips = timeline.audioClips.map { insertingTimed($0, at: resolved.outputStart, duration: outputAmount) }
-                result.videoClips = timeline.videoClips.map { insertingTimed($0, at: resolved.outputStart, duration: outputAmount) }
+                result.videoClips = insertingVideoGap(in: timeline.videoClips, at: resolved.outputStart, duration: outputAmount)
                 result.subtitleCues = timeline.subtitleCues.map { insertingTimed($0, at: resolved.outputStart, duration: outputAmount) }
                 sortZoom(&result.zoomClips)
                 sortScreenMotion(&result.screenMotionClips)
@@ -384,7 +384,7 @@ public enum ProjectTimelineEditing {
                     inserting($0, at: resolved.outputEnd, duration: outputAmount)
                 }
                 result.audioClips = timeline.audioClips.map { insertingTimed($0, at: resolved.outputEnd, duration: outputAmount) }
-                result.videoClips = timeline.videoClips.map { insertingTimed($0, at: resolved.outputEnd, duration: outputAmount) }
+                result.videoClips = insertingVideoGap(in: timeline.videoClips, at: resolved.outputEnd, duration: outputAmount)
                 result.subtitleCues = timeline.subtitleCues.map { insertingTimed($0, at: resolved.outputEnd, duration: outputAmount) }
                 sortZoom(&result.zoomClips)
                 sortScreenMotion(&result.screenMotionClips)
@@ -603,7 +603,7 @@ public enum ProjectTimelineEditing {
             inserting($0, at: insertionTime, duration: restoredDuration)
         }
         result.audioClips = timeline.audioClips.map { insertingTimed($0, at: insertionTime, duration: restoredDuration) }
-        result.videoClips = timeline.videoClips.map { insertingTimed($0, at: insertionTime, duration: restoredDuration) }
+        result.videoClips = insertingVideoGap(in: timeline.videoClips, at: insertionTime, duration: restoredDuration)
         result.subtitleCues = timeline.subtitleCues.map { insertingTimed($0, at: insertionTime, duration: restoredDuration) }
         sortZoom(&result.zoomClips)
         sortScreenMotion(&result.screenMotionClips)
@@ -670,7 +670,7 @@ public enum ProjectTimelineEditing {
             inserting($0, at: 0, duration: restoredDuration)
         }
         result.audioClips = timeline.audioClips.map { insertingTimed($0, at: 0, duration: restoredDuration) }
-        result.videoClips = timeline.videoClips.map { insertingTimed($0, at: 0, duration: restoredDuration) }
+        result.videoClips = insertingVideoGap(in: timeline.videoClips, at: 0, duration: restoredDuration)
         result.subtitleCues = timeline.subtitleCues.map { insertingTimed($0, at: 0, duration: restoredDuration) }
         sortZoom(&result.zoomClips)
         sortScreenMotion(&result.screenMotionClips)
@@ -809,8 +809,9 @@ public enum ProjectTimelineEditing {
         sourceDurations: [UUID: TimeInterval],
         sourceStart requestedSourceStart: TimeInterval = 0
     ) throws -> ProjectTimeline {
-        let sourceStart = min(max(requestedSourceStart, 0), max(media.fileDuration - 0.1, 0))
-        let duration = min(max(requestedDuration, 0.1), max(media.fileDuration - sourceStart, 0.1))
+        let sourceStart = max(requestedSourceStart, 0)
+        let duration = min(requestedDuration, media.fileDuration - sourceStart)
+        guard duration > 0 else { throw ProjectTimelineEditingError.invalidSourceSequence }
         return try insertPrimarySegments(in: timeline,
             segments: [RecordingSegment(id: newSegmentID, sourceStart: sourceStart, sourceDuration: duration, media: media)],
             atOutputTime: requestedTime, sourceDurations: sourceDurations, splitEffectsAtInsertion: false)
@@ -878,7 +879,7 @@ public enum ProjectTimelineEditing {
         result.stickerClips = timeline.stickerClips.map { inserting($0, at: insertionTime, duration: duration) }
         result.animationClips = timeline.animationClips.map { inserting($0, at: insertionTime, duration: duration) }
         result.audioClips = timeline.audioClips.map { insertingTimed($0, at: insertionTime, duration: duration) }
-        result.videoClips = timeline.videoClips.map { insertingTimed($0, at: insertionTime, duration: duration) }
+        result.videoClips = insertingVideoGap(in: timeline.videoClips, at: insertionTime, duration: duration)
         result.subtitleCues = timeline.subtitleCues.map { insertingTimed($0, at: insertionTime, duration: duration) }
         sortZoom(&result.zoomClips)
         sortScreenMotion(&result.screenMotionClips)
@@ -1044,6 +1045,7 @@ public enum ProjectTimelineEditing {
         try validateMosaicClips(timeline.mosaicClips)
         try validateStickerClips(timeline.stickerClips)
         try validateAnimationClips(timeline.animationClips)
+        for video in timeline.videoClips { try video.validateSourceRange() }
     }
 
     public static func validate(
@@ -1066,7 +1068,7 @@ extension ProjectTimelineEditing {
                   clip.width.isFinite, clip.width > 0,
                   clip.opacity.isFinite, (0...1).contains(clip.opacity),
                   clip.playbackRate.isFinite, clip.playbackRate > 0,
-                  !clip.sourcePath.isEmpty else {
+                  clip.cameraSlot?.isValid != false, !clip.sourcePath.isEmpty else {
                 throw ProjectTimelineEditingError.invalidClip(track: .animation, id: clip.id)
             }
         }

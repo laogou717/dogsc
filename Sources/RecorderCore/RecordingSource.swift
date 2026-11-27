@@ -14,6 +14,7 @@ public struct RecordingSource: Codable, Equatable, Identifiable, Sendable {
     public var crop: NormalizedCrop
     /// Stable import-order palette slot; nil preserves projects saved before source colours.
     public var colorIndex: Int?
+    public var cameraAppearance: CameraStyle?
     public var screenAppearance: ScreenCardAppearance?
 
     public init(
@@ -24,6 +25,7 @@ public struct RecordingSource: Codable, Equatable, Identifiable, Sendable {
         cameraContentCrop: NormalizedCrop? = nil,
         crop: NormalizedCrop = .full,
         colorIndex: Int? = nil,
+        cameraAppearance: CameraStyle? = nil,
         screenAppearance: ScreenCardAppearance? = nil
     ) {
         self.id = id
@@ -33,11 +35,12 @@ public struct RecordingSource: Codable, Equatable, Identifiable, Sendable {
         self.cameraContentCrop = cameraContentCrop?.clamped()
         self.crop = crop.clamped()
         self.colorIndex = colorIndex.map { max($0, 0) }
+        self.cameraAppearance = cameraAppearance
         self.screenAppearance = screenAppearance
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, media, capture, cameraContentCrop, crop, colorIndex, screenAppearance
+        case id, name, media, capture, cameraContentCrop, crop, colorIndex, cameraAppearance, screenAppearance
     }
 
     public init(from decoder: any Decoder) throws {
@@ -50,6 +53,7 @@ public struct RecordingSource: Codable, Equatable, Identifiable, Sendable {
             cameraContentCrop: try c.decodeIfPresent(NormalizedCrop.self, forKey: .cameraContentCrop),
             crop: try c.decodeIfPresent(NormalizedCrop.self, forKey: .crop) ?? .full,
             colorIndex: try c.decodeIfPresent(Int.self, forKey: .colorIndex),
+            cameraAppearance: try c.decodeIfPresent(CameraStyle.self, forKey: .cameraAppearance),
             screenAppearance: try c.decodeIfPresent(ScreenCardAppearance.self, forKey: .screenAppearance)
         )
     }

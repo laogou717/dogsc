@@ -224,7 +224,8 @@ extension EditorInspectorView {
     @ViewBuilder
     var cameraInspector: some View {
         Group {
-            if playheadSourceID.map({ mediaSession.inventories(for: $0).camera.hasVideo }) == true {
+            if playheadSourceID.map({ mediaSession.inventories(for: $0).camera.hasVideo
+                || (editorStore.project.source($0)?.capture.source == .cameraOnly && editorStore.project.timeline.insertedMedia(atOutputTime: playbackTime) == nil) }) == true {
                 if case let .cameraMotion(id) = editorStore.selection {
                     CameraMotionTargetInspector(
                         editorStore: editorStore,
@@ -252,8 +253,26 @@ extension EditorInspectorView {
         }
     }
 
+    /// Consult the displayed source and the same host resolution as export.
+    /// A normally fullscreen presenter can have an editable inset at this frame.
+    func cameraLayerScene(at time: TimeInterval) -> FrameScene? {
+        let project = editorStore.previewProject
+        guard let id = mediaSession.sourceID(at: time),
+              let geometry = mediaSession.prepared?.recordingGeometry[id] else { return nil }
+        let cameraOnly = project.source(id)?.capture.source == .cameraOnly
+        guard let camera = geometry.cameraSize ?? (cameraOnly ? geometry.screenSize : nil) else { return nil }
+        let aspect = EditorWorkspaceGeometry.aspectRatio(canvas: project.canvas, sourceSize: mediaSession.canvasSourceSize(for: project))
+        return FrameSceneEvaluator.scene(project: project, time: time, outputDuration: mediaSession.outputDuration,
+            canvasSize: .init(width: 1080 * aspect, height: 1080),
+            sourceAspectRatio: geometry.screenSize.width / max(1, geometry.screenSize.height),
+            cameraSourceSize: .init(width: camera.width, height: camera.height), cameraTimeline: mediaSession.mediaPlan?.camera, recordingSourceID: id)
+    }
+
     var cameraInspectorControls: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        let hasOverlay = editorStore.previewProject.timeline.videoClips.contains { $0.timing.contains(playbackTime) }
+        let isInset = hasOverlay && cameraLayerScene(at: playbackTime)?.camera?.insetVideoID != nil
+        let showsShape = isInset || !editorStore.sceneEditingPreviewProject.camera.isFullscreen
+        return VStack(alignment: .leading, spacing: 14) {
             EditorToggle(
                 isOn: Binding(
                     get: { !editorStore.sceneEditingPreviewProject.camera.isHidden },
@@ -272,48 +291,55 @@ extension EditorInspectorView {
                 .buttonStyle(.editorQuiet)
             } else {
                 EditorInspectorSection("位置与形状") {
-                    EditorTransactionalPositionPad(
-                        editorStore: editorStore,
-                        title: "摄像头位置",
-                        point: cameraBinding(
-                            \.position,
-                            actionName: "移动摄像头"
-                        ),
-                        commandScope: .camera,
-                        actionName: "移动摄像头",
-                        onError: onError
-                    )
+                    if !isInset {
+                        EditorToggle(isOn: cameraBinding(\.isFullscreen, actionName: "全屏摄像头"), title: "全屏摄像头")
+                    }
+                    if showsShape {
+                        EditorTransactionalPositionPad(
+                            editorStore: editorStore,
+                            title: "摄像头位置",
+                            point: cameraBinding(
+                                \.position,
+                                actionName: "移动摄像头"
+                            ),
+                            commandScope: .camera,
+                            actionName: "移动摄像头",
+                            onError: onError
+                        )
 
-                    CameraShapeIconPicker(
-                        selection: editorStore.sceneEditingPreviewProject.camera.shape,
-                        onSelect: { cameraBinding(\.shape, actionName: "调整摄像头形状").wrappedValue = $0 }
-                    )
+                        CameraShapeIconPicker(
+                            selection: editorStore.sceneEditingPreviewProject.camera.shape,
+                            onSelect: { cameraBinding(\.shape, actionName: "调整摄像头形状").wrappedValue = $0 }
+                        )
+                    }
                 }
 
                 EditorInspectorSection("外观") {
-                    EditorKnobRow {
-                        knob(
-                            "摄像头大小", label: "大小",
-                            value: cameraBinding(\.size, actionName: "调整摄像头大小"),
-                            range: 0.05...0.8, format: .percent
-                        )
-                        if editorStore.sceneEditingPreviewProject.camera.shape != .circle {
+                    if showsShape {
+                        EditorKnobRow {
                             knob(
-                                "圆角程度", label: "圆角",
-                                value: cameraBinding(\.roundness, actionName: "调整摄像头圆角"),
+                                "摄像头大小", label: "大小",
+                                value: cameraBinding(\.size, actionName: "调整摄像头大小"),
+                                range: 0.05...0.8, format: .percent
+                            )
+                            if editorStore.sceneEditingPreviewProject.camera.shape != .circle {
+                                knob(
+                                    "圆角程度", label: "圆角",
+                                    value: cameraBinding(\.roundness, actionName: "调整摄像头圆角"),
+                                    range: 0...1, format: .percent
+                                )
+                            }
+                            knob(
+                                "摄像头描边", label: "描边",
+                                value: cameraBinding(\.borderWidth, actionName: "调整摄像头描边"),
+                                range: 0...18, format: .points
+                            )
+                            knob(
+                                "摄像头阴影", label: "阴影",
+                                value: cameraBinding(\.shadowStrength, actionName: "调整摄像头阴影"),
                                 range: 0...1, format: .percent
                             )
                         }
-                        knob(
-                            "摄像头描边", label: "描边",
-                            value: cameraBinding(\.borderWidth, actionName: "调整摄像头描边"),
-                            range: 0...18, format: .points
-                        )
-                        knob(
-                            "摄像头阴影", label: "阴影",
-                            value: cameraBinding(\.shadowStrength, actionName: "调整摄像头阴影"),
-                            range: 0...1, format: .percent
-                        )
                     }
                     EditorToggle(
                         isOn: cameraBinding(\.isMirrored, actionName: "切换摄像头镜像"),
@@ -726,7 +752,9 @@ extension EditorInspectorView {
                 selectedAudioContext(segmentID)
                 EditorInspectorSection("片段声音", showsTitle: !usesCompactSelectedAudioLayout) {
                     VStack(alignment: .leading, spacing: 4) {
-                    if let context = primarySegmentContext(id: segmentID), context.segment.media != nil {
+                    if editorStore.previewProject.timeline.primarySegmentAudioOverrides[segmentID]?.videoAudio?.detachedGroup != nil {
+                        Text(appLocalized("声音已分离到音频轨")).foregroundStyle(.secondary)
+                    } else if let context = primarySegmentContext(id: segmentID), context.segment.media != nil {
                         if insertedSegmentHasControllableSound(context.segment) {
                             insertedSegmentSoundRows(segmentID: segmentID, segment: context.segment)
                         } else {

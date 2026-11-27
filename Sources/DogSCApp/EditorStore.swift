@@ -123,6 +123,11 @@ enum EditorCanvasEditScope: Equatable, Hashable, Sendable {
         }
     }
 
+    var isCameraMotion: Bool {
+        if case .camera(.motion) = self { return true }
+        return false
+    }
+
     var selection: EditorSelection? {
         switch self {
         case .screen(.base): return .screen
@@ -1265,32 +1270,45 @@ final class EditorStore: ObservableObject {
         return clip.id
     }
 
-    /// EDT-053: a Rive file referenced where it lives (not copied).
+    /// HTML pages author their composition in the project canvas coordinate space.
     func addAnimation(
         sourcePath: String,
         at time: TimeInterval,
         outputDuration: TimeInterval,
         sourceRange: ClosedRange<TimeInterval>? = nil,
+        requestedDuration: TimeInterval? = nil,
+        position: NormalizedPoint = .init(x: 0.5, y: 0.5),
+        width: Double? = nil,
+        sound: URL? = nil,
         actionName: String = "添加动效"
     ) throws -> UUID {
-        let safeStart = min(max(time, 0), max(outputDuration - min(0.25, max(outputDuration, 0)), 0))
-        let wanted = sourceRange.map { max($0.upperBound - $0.lowerBound, 0.05) } ?? 3
+        let safeStart = Self.animationStart(time, outputDuration: outputDuration)
+        let isHTML = HTMLMotion.isHTMLMotion(sourcePath)
+        let declared = isHTML ? HTMLMotion.declaredDuration(path: ProjectFiles.resolve(sourcePath)) : nil
+        let wanted = sourceRange.map { max($0.upperBound - $0.lowerBound, 0.05) } ?? requestedDuration ?? declared ?? 3
         let timing = OverlayTiming(
             startTime: safeStart,
-            duration: max(min(wanted, outputDuration - safeStart), min(0.25, max(outputDuration, 0)))
+            duration: min(wanted, outputDuration - safeStart)
         )
         var clip = AnimationClip(
             timing: timing,
             sourcePath: sourcePath,
+            position: position, width: width ?? (isHTML ? 1 : 0.5),
             layerIndex: project.timeline.visualLayer(for: timing)
         )
         // The marked in point is where the motion starts playing from.
+        clip.soundtrack = try HTMLMotion.placementSound(at: sourcePath, override: sound)
+        clip.cameraSlot = HTMLMotion.cameraSlot(at: sourcePath)
         clip.timeOffset = max(sourceRange?.lowerBound ?? 0, 0)
         var timeline = project.timeline
         timeline.animationClips.append(clip)
         try replaceTimeline(with: timeline, actionName: actionName)
         selection = .animation(clip.id)
         return clip.id
+    }
+
+    static func animationStart(_ time: TimeInterval, outputDuration: TimeInterval) -> TimeInterval {
+        min(max(time, 0), max(outputDuration - 0.05, 0))
     }
 
     func removeSelectedOverlay(actionName: String = "删除叠加内容") throws {

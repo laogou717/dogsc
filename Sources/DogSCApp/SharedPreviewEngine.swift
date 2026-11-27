@@ -22,6 +22,7 @@ final class SharedPreviewEngine: NSObject, @unchecked Sendable {
     var onProgress: (@Sendable (EditorPlaybackRenderTick) -> Void)?
     var onFrameReady: (@Sendable (PreviewFrameReadiness) -> Void)?
     var onRetired: (@Sendable (PreviewLayerRetirementRequest) -> Void)?
+    private var isPointerPreview = false
     private var pausedRetryAttempt = 0
     private var cameraSeekPending = false
     private var cameraSeekSerial: UInt64 = 0
@@ -46,6 +47,7 @@ final class SharedPreviewEngine: NSObject, @unchecked Sendable {
         if let configuration = work.configuration {
             let input = configuration.input
             activeRevision = configuration.revision; activeEpoch = configuration.epoch
+            isPointerPreview = input.isPointerPreview
             pausedRetryAttempt = 0
             layer = input.layer; bounds = input.bounds; backingScale = input.backingScale
             assetRootURL = input.assetRootURL
@@ -286,8 +288,8 @@ final class SharedPreviewEngine: NSObject, @unchecked Sendable {
     var motionStarts: [PreviewMotionStart] = []
     var lastMotionWarmTime = -Double.infinity
     /// EDT-054: latest overlay-video frame per clip and the source time it shows.
-    private var videoFrames: [UUID: (time: TimeInterval, image: CIImage)] = [:]
-    private var videoRequests: Set<UUID> = []
+    private var videoFrames: [UUID: (path: String, time: TimeInterval, image: CIImage?)] = [:]
+    private var videoRequests: [UUID: (path: String, token: UUID)] = [:]
     private var wallpaperRevision: UInt64 = 0
     private var preparedBackgroundCache = PreviewPreparedBackgroundCache()
     private var cursorAssetID: CursorAssetID?
@@ -469,10 +471,7 @@ final class SharedPreviewEngine: NSObject, @unchecked Sendable {
     func renderCurrentFrame() {
         guard !presentationIsSuspended else { return }
         if playbackSource != nil && currentDrawable == nil { return }
-        guard let renderPlan, let semanticScene, let colorProfile else {
-            layer?.isHidden = true
-            return
-        }
+        guard let renderPlan, let semanticScene, let colorProfile else { return }
         // Cursor, camera and subtitles share the same GPU frame and clock.
         // Playback has no per-frame AppKit/Core Animation layer transaction.
         if let assetID = renderPlan.scene.cursor?.assetID,
@@ -495,7 +494,7 @@ final class SharedPreviewEngine: NSObject, @unchecked Sendable {
             screenFrameGeneration = renderTick.mediaGeneration
             contentRevision &+= 1
         }
-        if renderTick?.cameraIsAvailable == true,
+        if renderTick?.cameraIsAvailable == true, renderTick?.sourceFrame?.usesPrimaryFrameForCamera != true,
            let renderTick,
            let cameraOutput,
            let decoded = decodedFrame(
@@ -536,7 +535,10 @@ final class SharedPreviewEngine: NSObject, @unchecked Sendable {
         // one-frame flash of the wrong recording at a source boundary.
         if let renderTick,
            screenFrameSegmentID != renderTick.sourceFrame?.screenSlice?.segmentID
-            || screenFrameGeneration != renderTick.mediaGeneration { return }
+            || screenFrameGeneration != renderTick.mediaGeneration {
+            if playbackSource == nil { retryStationaryFrame(revision: activeRevision, epoch: activeEpoch) }
+            return
+        }
         var screen = screenFrame
         if suppressScreenContent, let current = screen {
             // 屏幕素材拖动抑制：几何不变但内容透明，由 SwiftUI 覆盖层即时绘制。
@@ -546,12 +548,15 @@ final class SharedPreviewEngine: NSObject, @unchecked Sendable {
             // Do not fall back to the retired SwiftUI layer compositor.
             // A precise paused frame or the first video-output frame will
             // populate this surface as soon as AVFoundation makes it ready.
-            layer?.isHidden = true
+            if playbackSource == nil { retryStationaryFrame(revision: activeRevision, epoch: activeEpoch) }
             return
         }
         let cameraResource: CIImage? = {
             guard !suppressCameraContent else { return nil }
             guard let renderTick, renderTick.cameraIsAvailable else { return nil }
+            if renderTick.sourceFrame?.usesPrimaryFrameForCamera == true, let frame = screenFrame {
+                return renderTick.sourceFrame?.cameraContentCrop.map { CameraLetterboxAnalysis.cropped(frame, to: $0) } ?? frame
+            }
             let currentSourceID = renderTick.sourceFrame?.cameraSlice?.sourceID
             if usesPausedFrame, let pausedCameraFrame, pausedCameraFrameSourceID == currentSourceID {
                 cameraFrame = pausedCameraFrame
@@ -571,13 +576,18 @@ final class SharedPreviewEngine: NSObject, @unchecked Sendable {
             guard let frame, let cameraContentCrop = renderTick.sourceFrame?.cameraContentCrop else { return frame }
             return CameraLetterboxAnalysis.cropped(frame, to: cameraContentCrop)
         }()
+        let animations = animationResources(for: semanticScene)
+        let insertedMotion = insertedMotionResource(for: semanticScene)
+        let videos = videoResources(for: semanticScene)
+        // Keep the last complete drawable while the incoming video's first frame decodes.
+        guard !animations.pending, insertedMotion?.pending != true, !videos.pending else { return }
         var resources = SharedFrameRenderResources(
             screen: screen,
             camera: cameraResource,
             wallpaper: wallpaperFrame,
             cursor: cursorFrame,
             stickers: stickerFrames,
-            animations: animationResources(for: semanticScene),
+            animations: animations.images,
             preparedBackground: preparedBackgroundCache.image(
                 scene: semanticScene.background,
                 canvasSize: semanticScene.canvasSize,
@@ -589,14 +599,33 @@ final class SharedPreviewEngine: NSObject, @unchecked Sendable {
         resources.cameraBeauty = CameraBeautyFrame(tracker: cameraBeautyTracker, time: beautyTime,
             sourceID: renderTick?.sourceFrame?.cameraSlice?.sourceID,
             mediaGeneration: renderTick?.mediaGeneration ?? 0, discontinuityID: renderTick?.discontinuityID ?? 0)
-        resources.videos = videoResources(for: semanticScene)
+        resources.videos = videos.images
         for sticker in semanticScene.stickers {
             resources.timedStickers[sticker.id] = ImageMediaFrameCache.shared.frame(
                 at: assetURL(sticker.relativePath), time: sticker.sourceTime)
         }
-        resources.insertedMotion = insertedMotionResource(for: semanticScene)
+        resources.insertedMotion = insertedMotion?.image
         resources.insertedImage = suppressScreenContent ? nil : semanticScene.insertedImage.flatMap {
             ImageMediaFrameCache.shared.frame(at: assetURL($0.sourcePath), time: $0.localTime)
+        }
+        let cameraIsPrimaryPicture = !semanticScene.layerOrder.contains(.screen)
+        if cameraIsPrimaryPicture, renderTick?.cameraIsAvailable == true, semanticScene.camera == nil {
+            // The transport can finish preparing before the view receives
+            // the camera geometry. Its next configuration supplies the scene.
+            return
+        }
+        if !suppressCameraContent, renderTick?.cameraIsAvailable == true,
+           (semanticScene.camera?.opacity ?? 0) > 0, cameraResource == nil {
+            // A camera-only recording or a template's aperture needs its
+            // subject before presentation. An independent PIP retains the
+            // existing bounded stationary retry and live playback policy.
+            let needsCamera = cameraIsPrimaryPicture || semanticScene.animations.contains(where: \.hostsCamera)
+            if needsCamera || (playbackSource == nil && cameraOutput != nil && (isPointerPreview || pausedRetryAttempt < 5)) {
+                if playbackSource == nil {
+                    retryStationaryFrame(revision: activeRevision, epoch: activeEpoch)
+                }
+                return
+            }
         }
         // PRE-007: `semanticScene` is already evaluated at the selected raster
         // size. Flow mode therefore owns a deliberate 1× view raster, while
@@ -701,18 +730,21 @@ extension SharedPreviewEngine {
     /// Overlay and main-track HTML use the same bounded, integer-indexed
     /// lookahead. Playback consumes ready frames rather than requesting one
     /// remote web snapshot after each displayed frame.
-    private func animationResources(for scene: FrameScene) -> [UUID: CIImage] {
+    private func animationResources(for scene: FrameScene) -> (images: [UUID: CIImage], pending: Bool) {
         let live = Set(scene.animations.map(\.id)).union(warmedAnimationIDs)
         for id in Array(animationBuffers.keys) where !live.contains(id) {
             animationBuffers.removeValue(forKey: id)?.reset()
         }
         var images: [UUID: CIImage] = [:]
+        var pending = false
         for animation in scene.animations {
-            images[animation.id] = animationResource(animation, in: scene)
+            let sample = animationResource(animation, in: scene)
+            images[animation.id] = sample.image
+            pending = pending || sample.pending
         }
-        return images
+        return (images, pending)
     }
-    func animationResource(_ animation: FrameAnimationScene, in scene: FrameScene) -> CIImage? {
+    func animationResource(_ animation: FrameAnimationScene, in scene: FrameScene) -> PreviewMotionFrames.Sample {
             let buffer = animationBuffers[animation.id] ?? makeMotionBuffer()
             animationBuffers[animation.id] = buffer
             let backing = backingScale
@@ -722,9 +754,10 @@ extension SharedPreviewEngine {
             let size = CGSize(width: width,
                 height: max((width * CGFloat(scene.canvasSize.height) / max(CGFloat(scene.canvasSize.width), 1)).rounded(), 2))
             let edits = applyingLiveDrag(animation.elementEdits, for: .overlay(animation.id))
-            return buffer.image(path: assetURL(animation.sourcePath).path,
+            return buffer.sample(path: assetURL(animation.sourcePath).path,
                 properties: animation.properties, edits: edits, time: animation.localTime, size: size,
-                memoryBudget: motionMemoryBudget(for: scene)
+                memoryBudget: motionMemoryBudget(for: scene), exact: playbackSource == nil,
+                playbackEpoch: playbackSource == nil ? nil : activeEpoch
             ) { [weak self] in
                 guard let self else { return }
                 self.contentRevision &+= 1
@@ -735,7 +768,7 @@ extension SharedPreviewEngine {
 }
 
 extension SharedPreviewEngine {
-    func insertedMotionResource(for scene: FrameScene, segmentID: UUID? = nil) -> CIImage? {
+    func insertedMotionResource(for scene: FrameScene, segmentID: UUID? = nil) -> PreviewMotionFrames.Sample? {
         let current = renderTick?.sourceFrame?.screenSlice?.segmentID
         let keep = warmedMainIDs.union([current, segmentID].compactMap { $0 })
         for id in Array(insertedMotionBuffers.keys) where !keep.contains(id) {
@@ -750,9 +783,10 @@ extension SharedPreviewEngine {
         let scale = min(onScreen, 1)
         let size = CGSize(width: max((full.width * scale).rounded(), 2), height: max((full.height * scale).rounded(), 2))
         let edits = applyingLiveDrag(motion.elementEdits, for: .mainTrack(id))
-        return buffer.image(path: assetURL(motion.sourcePath).path,
+        return buffer.sample(path: assetURL(motion.sourcePath).path,
             properties: motion.properties, edits: edits, time: motion.localTime, size: size,
-            memoryBudget: motionMemoryBudget(for: scene)
+            memoryBudget: motionMemoryBudget(for: scene), exact: playbackSource == nil,
+            playbackEpoch: playbackSource == nil ? nil : activeEpoch
         ) { [weak self] in
             guard let self else { return }
             self.contentRevision &+= 1
@@ -762,31 +796,34 @@ extension SharedPreviewEngine {
 
     /// Overlay video frames available now; stale ones are requested and the
     /// surface redraws when they land.
-    fileprivate func videoResources(for scene: FrameScene) -> [UUID: CIImage] {
-        guard !scene.videos.isEmpty else {
-            if !videoFrames.isEmpty { videoFrames = [:] }
-            return [:]
-        }
+    func videoResources(for scene: FrameScene) -> (images: [UUID: CIImage], pending: Bool) {
         let live = Set(scene.videos.map(\.id))
         videoFrames = videoFrames.filter { live.contains($0.key) }
+        videoRequests = videoRequests.filter { live.contains($0.key) }
         var images: [UUID: CIImage] = [:]
+        var pending = false
         for video in scene.videos {
-            if let cached = videoFrames[video.id] { images[video.id] = cached.image }
-            let step = (video.sourceTime * 60).rounded(.down) / 60
-            guard videoFrames[video.id]?.time != step, !videoRequests.contains(video.id) else { continue }
-            videoRequests.insert(video.id)
             let id = video.id, path = assetURL(video.sourcePath).path
+            let step = video.sourceTime
+            let cached = videoFrames[id].flatMap { $0.path == path ? $0 : nil }
+            images[id] = cached?.image
+            guard cached?.time != step else { continue }
+            pending = pending || cached == nil || usesPausedFrame
+            guard videoRequests[id]?.path != path else { continue }
+            let token = UUID()
+            videoRequests[id] = (path, token)
             Task.detached { [weak self] in
                 let image = await VideoOverlayDecoder.shared.frame(clip: id, path: path, at: step)
                 self?.renderQueue.async { [weak self] in
-                    guard let self else { return }
-                    self.videoRequests.remove(id)
-                    if let image { self.videoFrames[id] = (step, image); self.contentRevision &+= 1 }
+                    guard let self, self.videoRequests[id]?.token == token else { return }
+                    self.videoRequests.removeValue(forKey: id)
+                    self.videoFrames[id] = (path, step, image ?? cached?.image)
+                    self.contentRevision &+= 1
                     self.renderCurrentFrame()
                 }
             }
         }
-        return images
+        return (images, pending)
     }
 }
 

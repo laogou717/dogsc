@@ -341,7 +341,7 @@ enum WindowCoordinator {
         // permission window as soon as the full-screen introduction disappears.
         AppSettingsWindowController.shared.hideForFirstLaunchGuide()
         RecorderPopoverPresenter.shared.dismiss()
-        RecorderMemoController.shared.hide()
+        RecorderMemoController.shared.suspend()
         recorderPanelController?.hide()
         permissionWindowController.presentManually()
     }
@@ -360,6 +360,7 @@ enum WindowCoordinator {
 
     private static let editorWindowController = EditorWindowController()
     private static let recordingProjectEditor = RecordingProjectEditor()
+    private static var cameraStudio: CameraStudioWindowController?
     private static let completionWindowController = RecordingCompletionWindowController()
     private static var recorderPanelController: RecorderPanelController?
     private static var permissionWindowController: RequiredPermissionWindowController?
@@ -383,6 +384,7 @@ enum WindowCoordinator {
         recorderPanelController = RecorderPanelController(model: model)
         permissionWindowController = RequiredPermissionWindowController(model: model)
         let presentationTriggers: [AnyPublisher<Void, Never>] = [
+            model.$cameraStudioIsPresented.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             model.$phase.map { _ in () }.eraseToAnyPublisher(),
             model.$hasVerifiedScreenRecordingPermission
                 .map { _ in () }.eraseToAnyPublisher(),
@@ -408,7 +410,7 @@ enum WindowCoordinator {
 
     private static func apply(phase: AppPhase, model: AppModel) {
         if model.showsRequiredPermissionGate || (phase != .setup && phase != .preparing && phase != .recording) {
-            RecorderMemoController.shared.hide()
+            RecorderMemoController.shared.suspend()
         }
         let guideAvailable = phase == .setup || phase == .editor
         if FirstLaunchGuideAccess.shared.isAvailable != guideAvailable {
@@ -426,6 +428,13 @@ enum WindowCoordinator {
         }
         if phase != .recordingComplete {
             completionWindowController.close()
+        }
+        if model.cameraStudioIsPresented, phase == .recordingComplete || phase == .editor {
+            model.leaveCameraStudio()
+        }
+        if !model.cameraStudioIsPresented, let controller = cameraStudio {
+            cameraStudio = nil
+            controller.close()
         }
         if model.showsRequiredPermissionGate {
             completionWindowController.close()
@@ -452,6 +461,17 @@ enum WindowCoordinator {
             }
         } else {
             editorWindowController.closeForPhaseChange()
+        }
+        if model.cameraStudioIsPresented {
+            if cameraStudio == nil {
+                let controller = CameraStudioWindowController(model: model, screen: recorderPanelController.window.screen)
+                cameraStudio = controller
+                RecorderMemoController.shared.suspend()
+                recorderPanelController.hide()
+                controller.showWindow(nil)
+                controller.window?.makeKeyAndOrderFront(nil)
+            }
+            return
         }
         switch phase {
         case .recordingComplete:
@@ -507,7 +527,7 @@ enum WindowCoordinator {
             return true
         }
         guard requester === recorder else { return false }
-        let separateEditorIsRequired = hasRecordingProjectEditor
+        let separateEditorIsRequired = recorder.cameraStudioIsPresented || hasRecordingProjectEditor
             || recorderOwnsPendingTake
         guard separateEditorIsRequired else { return false }
         recordingProjectEditor.openProject(at: packageURL)
@@ -522,8 +542,8 @@ enum WindowCoordinator {
         await recordingProjectEditor.flushForTermination()
     }
 
-    static func beginCaptureSourceSelection(source: CaptureSource) {
-        RecorderMemoController.shared.suspendForSelection()
+    static func beginCaptureSourceSelection(source: RecorderSourceMode) {
+        RecorderMemoController.shared.suspend()
         recorderPanelController?.setCaptureSelectionActive(true, source: source)
     }
 
@@ -531,7 +551,7 @@ enum WindowCoordinator {
         // Selection cleanup also runs during permission onboarding. Never
         // restore the recorder or memo before the permission page hands off.
         let shouldRestoreRecorder = restoringRecorder
-            && model?.phase == .setup
+            && model?.phase == .setup && model?.cameraStudioIsPresented != true
             && model?.showsRequiredPermissionGate == false
             && permissionWindowController?.isManualGuideActive != true
         recorderPanelController?.setCaptureSelectionActive(
@@ -540,7 +560,7 @@ enum WindowCoordinator {
         )
         guard shouldRestoreRecorder else { return }
         if let owner = recorderPanelController?.window {
-            RecorderMemoController.shared.resumeAfterSelection(relativeTo: owner)
+            RecorderMemoController.shared.restoreIfNeeded(relativeTo: owner)
         }
     }
 
@@ -574,6 +594,8 @@ enum WindowCoordinator {
     static func bringCurrentWindowFront() {
         if permissionWindowController?.isManualGuideActive == true {
             permissionWindowController?.bringToFront()
+        } else if let cameraStudio {
+            cameraStudio.window?.makeKeyAndOrderFront(nil)
         } else if model?.phase == .recordingComplete {
             completionWindowController.bringToFront()
         } else if activeEditorModel != nil {
@@ -645,6 +667,8 @@ enum WindowCoordinator {
     static func shutdown() {
         RecorderMemoController.shared.shutdown()
         presentationObservation = nil
+        cameraStudio?.close()
+        cameraStudio = nil
         completionWindowController.close()
         editorWindowController.closeForPhaseChange()
         recordingProjectEditor.shutdown()

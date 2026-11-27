@@ -24,7 +24,7 @@ private struct EditorLiveAudioMixState: Equatable {
     init(project: RecorderProject) {
         audio = project.audio
         primarySegmentAudioOverrides = project.timeline.primarySegmentAudioOverrides
-        externalClips = project.timeline.programAudioClips
+        externalClips = project.timeline.programAudioClips(audio: project.audio)
         speech = project.timeline.audioClips.contains(where: \.ducksUnderSpeech)
             ? project.timeline.subtitleCues.map(\.timing)
             : []

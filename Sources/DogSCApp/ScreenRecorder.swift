@@ -174,7 +174,7 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
             let logicalHeight = contentSize.height > 0 ? contentSize.height : window.frame.height
             sourceWidth = max(Int((logicalWidth * pixelScale).rounded()), 2)
             sourceHeight = max(Int((logicalHeight * pixelScale).rounded()), 2)
-        case .device:
+        case .device, .cameraOnly:
             throw ScreenRecorderError.unsupportedSource
         }
 
@@ -637,7 +637,7 @@ final class ScreenRecorder: NSObject, ObservableObject, SCStreamDelegate {
               let stream,
               ObjectIdentifier(stream) == update.streamIdentity,
               configuration.source != .window,
-              configuration.source != .device else {
+              configuration.source.capturesDesktop else {
             throw ScreenRecorderError.runNotActive(update.run.runID)
         }
         let content = try await SCShareableContent.excludingDesktopWindows(

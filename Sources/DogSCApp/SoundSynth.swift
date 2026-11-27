@@ -156,6 +156,7 @@ enum SoundSynth {
             let ratios: [Double] = e.type == "chime" ? [1, 1.25, 1.5] : e.type == "shimmer" ? [1, 1.5, 2, 2.5, 3] : [1]
             for (n, offset) in notes.enumerated() {
                 let startFrame = Int(offset * sampleRate)
+                guard startFrame < count else { continue }
                 for i in startFrame..<count {
                     let time = t(i - startFrame)
                     let attack = min(time / 0.004, 1)

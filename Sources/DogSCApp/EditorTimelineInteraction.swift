@@ -697,6 +697,14 @@ struct EditorOverlayTimelineDrag: Equatable {
     var sourceStart: TimeInterval = 0
     var playbackRate: Double = 1
 
+    var sourceFileEnd: TimeInterval?
+
+    var maximumTrailingEndTime: TimeInterval {
+        guard kind == .video else { return .infinity }
+        guard let sourceFileEnd else { return original.endTime }
+        return original.startTime + (sourceFileEnd - sourceStart) / playbackRate
+    }
+
     var minimumLeadingStartTime: TimeInterval {
         switch kind {
         case .sticker, .animation, .audio, .video: max(0, original.startTime - sourceStart / max(playbackRate, 0.001))
@@ -808,9 +816,9 @@ enum EditorTimelineSelectionReveal {
         let interval: (start: TimeInterval, end: TimeInterval, preferred: TimeInterval)?
         switch selection {
         case let .zoom(id):
-            let visibleZooms = outputDuration.map {
-                ZoomTransitionResolution.resolve(project.zoomAnimations, outputDuration: $0)
-            } ?? project.zoomAnimations
+            guard let zoom = project.zoomAnimations.first(where: { $0.id == id }) else { return nil }
+            let visibleZooms = ZoomAnimationTrack(project.zoomAnimations, outputDuration: outputDuration)
+                .forTarget(zoom.target).animations
             interval = visibleZooms.first(where: { $0.id == id }).map {
                 (
                     start: $0.startTime,

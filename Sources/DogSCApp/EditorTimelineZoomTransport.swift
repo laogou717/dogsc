@@ -34,7 +34,7 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                     CGFloat((segment.endTime - segment.startTime) / max(duration, 0.001)) * width,
                     14
                 )
-                let originTitle = appLocalized(segment.origin == .manual ? "手动" : "自动")
+                let originTitle = appLocalized(segment.target == .overlayVideo ? "叠加视频" : (segment.origin == .manual ? "手动" : "自动"))
                 let accessibilityValue = String(
                     format: appLocalized("%@ 至 %@，%@ 倍，%@"),
                     timelineTimestamp(segment.startTime), timelineTimestamp(segment.endTime),
@@ -53,7 +53,7 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                 ZStack(alignment: .leading) {
                     // Mockup: "1.6×", "1.4× · 自动" in the deep hue.
                     if segmentWidth > 44 {
-                        Text(segment.origin == .manual || segmentWidth <= 86
+                        Text((segment.target == .recording && segment.origin == .manual) || segmentWidth <= 86
                              ? EditorSliderValueFormat.compact(segment.scale, unit: "×", digits: 1)
                              : EditorSliderValueFormat.compact(segment.scale, unit: "×", digits: 1) + " · " + originTitle)
                             .font(.appUI(size: 12, weight: .medium))
@@ -268,6 +268,7 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                 zoomGestureOrigin = nil
                 manualZoomDragStart = nil
                 manualZoomDragEnd = nil
+                defer { effectPressSelection = nil }
                 switch drag {
                 case .create:
                     guard gestureOwnership.activeIntent == .zoomCreate else { return }
@@ -305,7 +306,7 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                         splitZoomAnimation(id: origin.id, at: splitTime)
                     } else if abs(value.translation.width) < 3 {
                         editorStore.cancelInteraction()
-                        activateTimelineSelection(.zoom(id))
+                        finishEffectClick(.zoom(id))
                     } else {
                         commitZoomInteraction()
                     }
@@ -313,7 +314,12 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
                 case let .resize(id, leading):
                     let intent = EditorTimelineGestureIntent.zoomResize(id, leading: leading)
                     guard gestureOwnership.activeIntent == intent else { return }
-                    commitZoomInteraction()
+                    if effectPressSelection != nil, abs(value.translation.width) < 3 {
+                        editorStore.cancelInteraction()
+                        finishEffectClick(.zoom(id))
+                    } else {
+                        commitZoomInteraction()
+                    }
                     endTimelineGesture(intent)
                 case nil:
                     break
@@ -332,6 +338,7 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
         // still targeting the previous edit.  A new physical press is a safe
         // boundary, so retire the complete previous session before hit testing.
         cancelActiveTimelineGesture()
+        captureEffectPressSelection()
         let zone = EditorTimelineMath.zoomHitZone(
             x: Double(point.x),
             y: Double(point.y),
@@ -497,17 +504,18 @@ func zoomTimeline(width: CGFloat, duration: TimeInterval) -> some View {
             }
             let clipboardModifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
             if !event.isARepeat {
-                if event.keyCode == 8, clipboardModifiers == [.command],
-                   EditorClipClipboard.isClip(editorStore.selection) {
-                    copyTimelineClip(editorStore.selection)
+                if event.keyCode == 8, clipboardModifiers == [.command] {
+                    let targets = timelineCopyTargets()
+                    guard !targets.isEmpty else { return event }
+                    copyTimelineClips(targets)
                     return nil
                 }
-                if event.keyCode == 9, clipboardModifiers == [.command], EditorClipClipboard.shared.hasClip {
+                if event.keyCode == 9, clipboardModifiers == [.command], clipClipboard.hasClip {
                     pasteTimelineClip(at: clipboardInsertionTime)
                     return nil
                 }
                 if event.keyCode == 9, clipboardModifiers == [.command, .shift],
-                   EditorClipClipboard.shared.supportsAttributes(editorStore.selection) {
+                   clipClipboard.supportsAttributes(editorStore.selection) {
                     pasteTimelineAttributes(editorStore.selection)
                     return nil
                 }

@@ -23,7 +23,7 @@ public enum RecordingSourceEditing {
                                              atOutputTime time: TimeInterval,
                                              sourceDurations: [UUID: TimeInterval],
                                              sourceRange: ClosedRange<TimeInterval>? = nil) throws -> RecorderProject {
-        guard project.source(sourceID) != nil, let duration = sourceDurations[sourceID], duration > 0 else {
+        guard let source = project.source(sourceID), let duration = sourceDurations[sourceID], duration > 0 else {
             throw ProjectTimelineEditingError.invalidSourceSequence
         }
         let sourceStart = min(max(sourceRange?.lowerBound ?? 0, 0), max(duration - 0.1, 0))
@@ -41,6 +41,12 @@ public enum RecordingSourceEditing {
         }
         segments[index] = RecordingSegment(id: id, sourceStart: sourceStart, sourceDuration: span,
             sourceID: sourceID == RecordingSource.primaryID ? nil : sourceID)
+        if let camera = source.cameraAppearance {
+            var style = SegmentSceneStyle(project: project)
+            source.screenAppearance?.apply(to: &style.canvas)
+            style.camera = camera
+            segments[index].sceneStyle = style
+        }
         timeline.sourceSequence = .edited(segments)
         try ProjectTimelineEditing.validate(timeline, sourceDurations: sourceDurations)
         var result = project; result.timeline = timeline

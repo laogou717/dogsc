@@ -39,7 +39,7 @@ enum RemoteSoundImport {
     }
 
     /// Bin registration is an ordinary undoable project edit. Undo leaves the
-    /// downloaded library file available for this project or a later one.
+    /// downloaded project file available for redo.
     @discardableResult
     static func register(_ entry: AssetLibrary.Entry, store: EditorStore) throws -> UUID {
         var timeline = store.project.timeline

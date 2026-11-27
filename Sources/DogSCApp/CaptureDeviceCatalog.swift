@@ -105,7 +105,7 @@ enum CaptureDeviceCatalog {
             resolutions.insert(CameraCaptureResolution(
                 width: Int(dimensions.width),
                 height: Int(dimensions.height)
-            ))
+            ).qualitySize)
         }
 
         return resolutions.sorted {

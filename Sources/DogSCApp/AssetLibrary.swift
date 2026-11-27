@@ -3,21 +3,19 @@ import Darwin
 import Foundation
 import RecorderCore
 
-/// EDT-058: the cross-project library. AI-generated reusable media is saved
-/// in its folder (one subfolder per kind) so deleting a project never takes
-/// it along. Favouriting a file from elsewhere copies it in as well: a motion
-/// generated inside a project package would otherwise die with that project.
-/// The index lives inside the folder, so it travels with it (e.g. to an
-/// external drive).
+/// Favorites, reusable files and project-owned media have separate catalogs.
 @MainActor
 final class AssetLibrary: ObservableObject {
     static let shared = AssetLibrary()
+    static let sharedMediaFolder = FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("DogSC/共享素材", isDirectory: true)
+    static let sharedMedia = AssetLibrary(folder: sharedMediaFolder, purpose: .sharedMedia)
     static let folderKey = "cn.laogou.dogsc.asset-library-folder"
 
     struct RemoteSource: Codable, Equatable, Sendable {
         var url: String
         var pageURL: String
-        var licenseURL: String
+        var licenseURL: String?
         var sha256: String
     }
 
@@ -38,7 +36,7 @@ final class AssetLibrary: ObservableObject {
         /// written before this existed still decodes.
         var copiedRoot: String?
         /// Immutable source versions of one logical motion, oldest first.
-        /// Hidden revision files are not separate library entries.
+        /// Every version belongs to this single library entry.
         var revisionPaths: [String]?
         var remoteSource: RemoteSource?
         var addedAt = Date()
@@ -83,11 +81,30 @@ final class AssetLibrary: ObservableObject {
     }
     private var favoriteKeys: Set<String>?
     private var favoriteQueries: [String: Bool] = [:]
-    /// The last removal, while it can still be undone from a notice.
     @Published private(set) var lastRemoval: Removal?
 
     private let folderOverride: URL?
-    init(folder: URL? = nil) { folderOverride = folder; reload() }
+    private enum Purpose { case favorites, project, sharedMedia }
+    private let purpose: Purpose
+    private static var currentProject: AssetLibrary?
+
+    convenience init(folder: URL? = nil, isProject: Bool = false) {
+        self.init(folder: folder, purpose: isProject ? .project : .favorites)
+    }
+
+    private init(folder: URL?, purpose: Purpose) {
+        folderOverride = folder
+        self.purpose = purpose
+        reload()
+    }
+
+    static func projectAssets(in package: URL) -> AssetLibrary {
+        let folder = package.standardizedFileURL.appendingPathComponent("AI/素材", isDirectory: true)
+        if let currentProject, currentProject.folder == folder { return currentProject }
+        let catalog = AssetLibrary(folder: folder, isProject: true)
+        currentProject = catalog
+        return catalog
+    }
 
     var folder: URL {
         if let folderOverride { return folderOverride }
@@ -127,14 +144,24 @@ final class AssetLibrary: ObservableObject {
         URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
     }
 
-    /// Reads the index and picks up media the AI saved straight into the
-    /// library folder.
+    static func isSharedMedia(_ url: URL) -> Bool {
+        fileKey(url.path).hasPrefix(fileKey(sharedMediaFolder.path) + "/")
+    }
+
+    static func sharedMediaKind(_ url: URL) -> MediaAssetKind? {
+        url.pathExtension.lowercased() == "svg" ? .image : MediaAssetKind.kind(forExtension: url.pathExtension)
+    }
+
     func reload() {
         favoriteKeys = nil
         favoriteQueries.removeAll(keepingCapacity: true)
-        var loaded = (try? JSONDecoder().decode([Entry].self, from: Data(contentsOf: indexURL))) ?? []
+        let stored = (try? JSONDecoder().decode([Entry].self, from: Data(contentsOf: indexURL))) ?? []
+        var loaded = stored.map { entry in
+            mapPaths(entry) { $0.hasPrefix("/") ? $0 : folder.appendingPathComponent($0).path }
+        }
+        let previous = loaded
         let known = Set(loaded.flatMap { [$0.path] + ($0.revisionPaths ?? []) }.map(Self.fileKey))
-        for kind in [MediaAssetKind.animation, .image, .audio, .video] {
+        for kind in [MediaAssetKind.animation, .image, .audio, .video] where purpose == .project {
             let directory = folder.appendingPathComponent(Self.subfolderName(for: kind), isDirectory: true)
             let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.creationDateKey])) ?? []
             for file in files where !file.lastPathComponent.hasPrefix(".")
@@ -144,11 +171,24 @@ final class AssetLibrary: ObservableObject {
                                     name: file.lastPathComponent, favorite: false, generated: true, addedAt: created))
             }
         }
+        if purpose == .sharedMedia {
+            let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey]
+            let files = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: Array(keys),
+                options: [.skipsHiddenFiles, .skipsPackageDescendants])
+            while let file = files?.nextObject() as? URL {
+                guard let kind = Self.sharedMediaKind(file), let values = try? file.resourceValues(forKeys: keys),
+                      values.isRegularFile == true, values.isSymbolicLink != true,
+                      !known.contains(Self.fileKey(file.path)) else { continue }
+                loaded.append(Entry(path: file.path, kind: kind, name: file.lastPathComponent,
+                                    favorite: false, generated: false))
+            }
+            loaded.removeAll { !$0.exists }
+        }
         // AI files that were deleted in Finder leave the library; favourites
         // stay visible as missing so they can be relinked or removed.
         loaded.removeAll { $0.generated && !$0.favorite && !$0.exists }
         if loaded != entries { entries = loaded }
-        save()
+        if loaded != previous || (purpose != .project && !FileManager.default.fileExists(atPath: indexURL.path)) { save() }
     }
 
     private func save() {
@@ -157,7 +197,21 @@ final class AssetLibrary: ObservableObject {
 
     private func writeIndex(_ values: [Entry]) throws {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        try JSONEncoder().encode(values).write(to: indexURL, options: .atomic)
+        let prefix = folder.path + "/"
+        let stored = values.map { entry in
+            mapPaths(entry) { $0.hasPrefix(prefix) ? String($0.dropFirst(prefix.count)) : $0 }
+        }
+        try JSONEncoder().encode(stored).write(to: indexURL, options: .atomic)
+    }
+
+    private func mapPaths(_ entry: Entry, using transform: (String) -> String) -> Entry {
+        guard purpose != .favorites else { return entry }
+        var copy = entry
+        copy.path = transform(entry.path)
+        copy.revisionPaths = entry.revisionPaths?.map(transform)
+        copy.origin = entry.origin.map(transform)
+        copy.copiedRoot = entry.copiedRoot.map(transform)
+        return copy
     }
 
     func motionEntry(for path: String) -> Entry? {
@@ -178,6 +232,7 @@ final class AssetLibrary: ObservableObject {
     /// its tile in a project keeps showing a filled star.
     func isFavorite(_ path: String) -> Bool {
         guard !path.isEmpty else { return false }
+        let path = favoriteLookupPath(path)
         if let hit = favoriteQueries[path] { return hit }
         if favoriteKeys == nil {
             favoriteKeys = Set(entries.filter(\.favorite).flatMap {
@@ -189,12 +244,21 @@ final class AssetLibrary: ObservableObject {
         return result
     }
 
+    private func favoriteLookupPath(_ path: String) -> String {
+        guard purpose == .favorites, let local = Self.currentProject,
+              path.hasPrefix(local.folder.path + "/"),
+              let entry = local.entries.first(where: { ($0.revisionPaths?.first ?? $0.path) == path }),
+              let origin = entry.origin, entries.contains(where: { $0.favorite && $0.path == origin }) else { return path }
+        return origin
+    }
+
     /// Favouriting takes a copy unless the file already lives in the library,
     /// so the motion survives the project that produced it. Unfavouriting a
     /// copy takes it away again.
     func toggleFavorite(path: String, kind: MediaAssetKind, name: String) throws {
+        let path = favoriteLookupPath(path)
         if let index = entries.firstIndex(where: { $0.references(path) || $0.origin == path }) {
-            if entries[index].favorite, !entries[index].generated { remove([entries[index].id]); return }
+            if entries[index].favorite { remove([entries[index].id]); return }
             entries[index].favorite.toggle()
             save()
             return
@@ -205,9 +269,33 @@ final class AssetLibrary: ObservableObject {
         } else {
             let copy = try copyIntoLibrary(path: path, kind: kind, name: name)
             entries.append(Entry(path: copy.file.path, kind: kind, name: name, favorite: true, generated: false,
-                                 origin: path, copiedRoot: copy.owned.path))
+                                 origin: path, copiedRoot: copy.owned.path,
+                                 remoteSource: Self.currentProject?.entries.first(where: { $0.path == path })?.remoteSource))
         }
         save()
+    }
+
+    /// A placed favorite has a project-owned copy, including relative HTML dependencies.
+    func keepCopy(of source: URL, kind: MediaAssetKind, name: String, remote: RemoteSource? = nil) throws -> Entry {
+        let path = source.standardizedFileURL.path
+        if let remote, let existing = entries.first(where: {
+            $0.kind == kind && $0.remoteSource?.sha256 == remote.sha256 && $0.exists
+        }) { return existing }
+        if let entry = entries.first(where: { $0.references(path) && $0.exists }) { return entry }
+        if var entry = entries.first(where: { $0.origin == path }) {
+            entry.path = entry.revisionPaths?.first ?? entry.path
+            if entry.exists { return entry }
+        }
+        let inside = path.hasPrefix(folder.path + "/")
+        let copy = inside ? (file: source, owned: source) : try copyIntoLibrary(path: path, kind: kind, name: name)
+        let entry = Entry(path: copy.file.path, kind: kind, name: name, favorite: false, generated: true,
+                          origin: inside ? nil : path, copiedRoot: inside ? nil : copy.owned.path, remoteSource: remote)
+        do { try publish(entry) }
+        catch {
+            if !inside { try? FileManager.default.removeItem(at: copy.owned) }
+            throw error
+        }
+        return entry
     }
 
     /// Clones the file into the library — free on one APFS volume. An HTML
@@ -215,29 +303,45 @@ final class AssetLibrary: ObservableObject {
     /// everything it references are mirrored under the smallest directory
     /// that contains them all; every relative URL then still resolves and the
     /// page itself is never rewritten.
-    private func copyIntoLibrary(path: String, kind: MediaAssetKind,
-                                 name: String) throws -> (file: URL, owned: URL) {
+    func copyIntoLibrary(path: String, kind: MediaAssetKind,
+                         name: String, entryExtension: String? = nil) throws -> (file: URL, owned: URL) {
         let source = URL(fileURLWithPath: path).standardizedFileURL
         let destination = folder(for: kind)
         let base = Self.sanitized(((name as NSString).deletingPathExtension))
         let dependencies = kind == .animation ? Self.htmlDependencies(of: source) : []
+        var partialCopy: URL?
         do {
+            if kind == .image, source.pathExtension.lowercased() == "svg" {
+                let target = Self.unused(in: destination, base: base, extension: "png")
+                let image = try RemoteImageDownload.decoded(Data(contentsOf: source))
+                try image.bytes.write(to: target, options: .withoutOverwriting)
+                return (target, target)
+            }
             guard !dependencies.isEmpty else {
-                let target = Self.unused(in: destination, base: base, extension: source.pathExtension)
+                let target = Self.unused(in: destination, base: base, extension: entryExtension ?? source.pathExtension)
                 try Self.clone(source, to: target)
                 return (target, target)
             }
             let files = [source] + dependencies
             let root = Self.commonDirectory(of: files)
             let bundle = Self.unused(in: destination, base: base, extension: "")
-            for file in files {
+            try FileManager.default.createDirectory(at: bundle, withIntermediateDirectories: false)
+            partialCopy = bundle
+            for file in dependencies {
                 let target = bundle.appendingPathComponent(Self.relative(file, to: root))
                 try FileManager.default.createDirectory(at: target.deletingLastPathComponent(),
                                                         withIntermediateDirectories: true)
                 try Self.clone(file, to: target)
             }
-            return (bundle.appendingPathComponent(Self.relative(source, to: root)), bundle)
+            let original = bundle.appendingPathComponent(Self.relative(source, to: root))
+            let parent = original.deletingLastPathComponent()
+            try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+            let entry = entryExtension.map { Self.unused(in: parent,
+                base: original.deletingPathExtension().lastPathComponent, extension: $0) } ?? original
+            try Self.clone(source, to: entry)
+            return (entry, bundle)
         } catch {
+            if let partialCopy { try? FileManager.default.removeItem(at: partialCopy) }
             throw LibraryError.copyFailed(name: source.lastPathComponent, reason: appErrorDescription(error))
         }
     }
@@ -249,7 +353,7 @@ final class AssetLibrary: ObservableObject {
     }
 
     /// A name that is safe as one path component, and never empty.
-    private static func sanitized(_ name: String) -> String {
+    static func sanitized(_ name: String) -> String {
         let cleaned = name.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return cleaned.isEmpty ? appLocalized("素材") : cleaned

@@ -88,6 +88,9 @@ struct RequiredRecordingPermissionView: View {
                 .focused($isEntryButtonFocused).focusEffectDisabled()
                 .firstUseTourTarget("permission.finish", in: .permissions, highlight: .rounded(8))
                 .modifier(introReveal(3))
+            } else if !isReview {
+                Button(appLocalized("单独录制摄像头…")) { model.openCameraStudio() }
+                    .buttonStyle(.link).modifier(introReveal(3))
             }
         }
         .padding(.horizontal, PermissionOnboardingStyle.brandInset.x)

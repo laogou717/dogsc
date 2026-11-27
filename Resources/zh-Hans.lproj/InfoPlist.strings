@@ -2,4 +2,4 @@
 "CFBundleTypeName" = "DogSC 项目";
 "NSCameraUsageDescription" = "用于在录屏中添加摄像头画面，并使用已连接的连续互通相机。";
 "NSMicrophoneUsageDescription" = "用于在录屏中录制麦克风声音。";
-"NSSpeechRecognitionUsageDescription" = "用系统自带的语音识别把你的讲解转成字幕。";
+"NSSpeechRecognitionUsageDescription" = "用系统语音识别跟随提词稿的朗读进度，并把讲解转成字幕。";

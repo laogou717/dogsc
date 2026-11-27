@@ -140,7 +140,14 @@ struct ExportSheet: View {
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                 Group {
                     switch phase {
-                    case .options: optionsColumn
+                    case .options:
+                        // Keep the sheet at its video-options size when the audio rows disappear.
+                        ScrollView {
+                            optionsColumn
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .scrollBounceBehavior(.basedOnSize)
+                        .frame(height: 420)
                     case .running: runningColumn
                     case .done: doneColumn
                     }
@@ -154,10 +161,9 @@ struct ExportSheet: View {
             footer
         }
         .frame(width: 760)
+        .fixedSize(horizontal: false, vertical: true)
         .background(EditorTheme.panelSurface)
         .appControlFocusAppearance()
-        .animation(RecorderMotion.reduces ? nil : .timingCurve(0.2, 0, 0, 1, duration: 0.22), value: selectedOutputKind)
-        .animation(RecorderMotion.reduces ? nil : .timingCurve(0.2, 0, 0, 1, duration: 0.22), value: phase)
         .onExitCommand { closeSheet() }
         .onAppear {
             guard !didPrepareOutput else { return }

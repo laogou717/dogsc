@@ -47,6 +47,10 @@ struct TimelineCompositionBundle {
         [systemAudioTrack, microphoneAudioTrack].compactMap { $0 }
     }
 
+    var speechAudioTracks: [AVMutableCompositionTrack] {
+        recordingAudioTracks + externalAudio.filter { $0.clip.videoOrigin?.isRecordingSound == true }.map(\.track)
+    }
+
     /// The reader must receive every mix input. Audio-mix parameters alone
     /// cannot include music, motion sounds or imported video audio in its output.
     var mixedAudioTracks: [AVMutableCompositionTrack] {
@@ -70,7 +74,7 @@ struct TimelineCompositionBundle {
                 guard let value = overrides[external.clip.id] else { return external }
                 var clip = external.clip
                 clip.volume = value.isSystemMuted == true ? 0 : (value.systemVolume ?? clip.volume)
-                clip.isMuted = value.isSystemMuted == true
+                clip.isMuted = value.videoAudio != nil || value.isSystemMuted == true
                 return TimelineExternalAudioTrack(track: external.track, clip: clip, speech: external.speech)
             }
             guard let liveClipsByID else { return external }
@@ -112,10 +116,10 @@ struct TimelineCompositionBundle {
                 ?? audio.isSystemMuted
             let microphoneIsMuted = segmentOverrides.isMicrophoneMuted
                 ?? audio.isMicrophoneMuted
-            let systemVolume = systemIsMuted
+            let systemVolume = systemIsMuted || segmentOverrides.videoAudio != nil
                 ? 0
                 : min(max(segmentOverrides.systemVolume ?? audio.systemVolume, 0), 1)
-            let microphoneVolume = microphoneIsMuted
+            let microphoneVolume = microphoneIsMuted || segmentOverrides.videoAudio != nil
                 ? 0
                 : min(max(segmentOverrides.microphoneVolume ?? audio.microphoneVolume, 0), 1)
             return TimelineSegmentAudioMixRange(
@@ -153,9 +157,8 @@ struct TimelineCompositionBundle {
             systemTrack: systemAudioTrack,
             systemVolume: baseSysVolume * masterGain,
             primarySegmentRanges: ranges,
-            externalAudio: includeExternalAudio
-                ? externalAudioWithSegmentVolumes(overrides, externalClips: externalClips, speech: speech)
-                : [],
+            externalAudio: externalAudioWithSegmentVolumes(overrides, externalClips: externalClips, speech: speech)
+                .filter { includeExternalAudio || $0.clip.videoOrigin?.isRecordingSound == true },
             microphoneTrack: microphoneAudioTrack,
             microphoneVolume: baseMicVolume * masterGain,
             requiresTimePitchProcessing: requiresAudioTimePitchProcessing,
@@ -271,7 +274,7 @@ enum TimelineCompositionBuilder {
             let start = CMTime(seconds: clip.sourceStart, preferredTimescale: 48_000) + available.start
             let length = min(clip.timing.duration, max(outputDuration - clip.timing.startTime, 0),
                              max(available.end.seconds - start.seconds, 0) / clip.playbackRate)
-            guard length > 0.01 else { return nil }
+            guard length >= 1 / 48_000.0 else { return nil }
             do {
                 try track.insertTimeRange(
                     CMTimeRange(start: start, duration: CMTime(seconds: length * clip.playbackRate, preferredTimescale: 48_000)),
@@ -484,6 +487,17 @@ struct TimelineRecordingSourceTracks {
     let microphone: LoadedTimelineTrack?
     let cameraContentCrop: NormalizedCrop?
     let pointerEvents: [PointerEventRecord]
+
+    var usesCameraAsPrimary: Bool { camera?.track === screen.track }
+}
+
+extension TimelineMediaSlice {
+    func sharesCameraFrame(with camera: TimelineMediaSlice?, at time: TimeInterval, sourceOffset: TimeInterval) -> Bool {
+        guard media == nil, let camera, sourceID == camera.sourceID,
+              let primaryTime = sourceTime(atOutputTime: time),
+              let cameraTime = camera.sourceTime(atOutputTime: time) else { return false }
+        return abs(primaryTime + sourceOffset - cameraTime) < 0.000_001
+    }
 }
 
 struct TimelinePreparedSourceTracks {
@@ -606,11 +620,12 @@ enum TimelinePreviewCompositionLoader {
         let cameraURL = try declared(cameraURL, reference: manifest?.camera, needed: needsCamera, role: "摄像头")
         let microphoneURL = try declared(microphoneURL, reference: manifest?.microphone, needed: needsMicrophone, role: "麦克风")
         async let systemAudioTask = needsSystemAudio ? loadOptionalTrack(at: screenURL, mediaType: .audio, role: "系统声音") : nil
-        async let cameraTask = loadTrackIfPresent(at: cameraURL, mediaType: .video, role: "摄像头")
+        let cameraIsPrimary = cameraURL?.standardizedFileURL == screenURL.standardizedFileURL
+        async let cameraTask = loadTrackIfPresent(at: cameraIsPrimary ? nil : cameraURL, mediaType: .video, role: "摄像头")
         async let microphoneTask = loadTrackIfPresent(at: microphoneURL, mediaType: .audio, role: "麦克风")
         async let detectedCropTask = cameraContentCrop == nil ? cameraContentCropIfPresent(at: cameraURL) : cameraContentCrop
         let systemAudio = try await systemAudioTask
-        let camera = try await cameraTask
+        let camera = cameraIsPrimary ? screen : try await cameraTask
         let microphone = try await microphoneTask
         let detectedCrop = await detectedCropTask
         return TimelineRecordingSourceTracks(screen: screen, systemAudio: systemAudio,

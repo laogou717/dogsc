@@ -50,17 +50,32 @@ extension EditorTimelineView {
     func moveVisualToOverlay(_ id: UUID, at time: TimeInterval, target: EditorDropLane) {
         guard visualTransferTask == nil else { return }
         let layer: Int? = if case let .layer(n) = target { n } else { nil }
-        do {
-            let timeline = try VisualTrackTransfer.moveToOverlay(id, at: time, layer: layer,
-                in: editorStore.project.timeline, sourceDurations: sourceDurations,
-                defaultTransition: editorStore.project.motion.defaultZoomTransitionDuration)
-            try editorStore.replaceTimeline(with: timeline, actionName: "移到画面叠加")
-            selectedPrimarySegmentIDs = []; multiSelection = []
-            if timeline.animationClips.contains(where: { $0.id == id }) { editorStore.selection = .animation(id) }
-            else if timeline.stickerClips.contains(where: { $0.id == id }) { editorStore.selection = .sticker(id) }
-            else { editorStore.selection = .videoClip(id) }
-            revealTransferredOverlay()
-        } catch { reportVisualTransferError(error) }
+        let original = editorStore.project.timeline
+        let package = ProjectFiles.package
+        visualTransferTask = Task { @MainActor in
+            defer { visualTransferTask = nil }
+            do {
+                let segment = try TimelineMap(sourceSequence: original.sourceSequence, sourceDurations: sourceDurations)
+                    .segments.first { $0.id == id }
+                let videoEnd: Double?
+                if let media = segment?.media, media.imagePath == nil, media.motionPath == nil {
+                    videoEnd = try await OverlayVideoSource.end(of: ProjectFiles.url(media.path))
+                } else { videoEnd = nil }
+                try Task.checkCancellation()
+                guard editorStore.project.timeline == original, ProjectFiles.package == package else { throw RecordingImportError.changed }
+                let timeline = try VisualTrackTransfer.moveToOverlay(id, at: time, layer: layer,
+                    in: original, sourceDurations: sourceDurations,
+                    defaultTransition: editorStore.project.motion.defaultZoomTransitionDuration,
+                    newVideoCameraMode: AppPreferences.newVideoCameraMode(), videoSourceEnd: videoEnd)
+                try editorStore.replaceTimeline(with: timeline, actionName: "移到画面叠加")
+                selectedPrimarySegmentIDs = []; multiSelection = []
+                if timeline.animationClips.contains(where: { $0.id == id }) { editorStore.selection = .animation(id) }
+                else if timeline.stickerClips.contains(where: { $0.id == id }) { editorStore.selection = .sticker(id) }
+                else { editorStore.selection = .videoClip(id) }
+                revealTransferredOverlay()
+            } catch is CancellationError { }
+            catch { reportVisualTransferError(error) }
+        }
     }
 
     func moveVisualToMain(_ id: UUID, at time: TimeInterval) {
@@ -81,8 +96,7 @@ extension EditorTimelineView {
                 let media: InsertedMedia
                 switch clip {
                 case let .video(c):
-                    let asset = AVURLAsset(url: ProjectFiles.url(c.sourcePath))
-                    let duration = try await asset.load(.duration).seconds
+                    let duration = try await OverlayVideoSource.end(of: ProjectFiles.url(c.sourcePath))
                     media = InsertedMedia(path: c.sourcePath, fileDuration: duration,
                         name: URL(fileURLWithPath: c.sourcePath).deletingPathExtension().lastPathComponent,
                         sourceAspectRatio: 1 / max(c.aspect, 0.001))

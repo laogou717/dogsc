@@ -9,11 +9,13 @@ final class RecorderMemoStore: ObservableObject {
         static let text = "recorder.memo.text"
         static let fontSize = "recorder.memo.font-size"
         static let opacity = "recorder.memo.background-opacity"
+        static let lineCount = "cameraStudio.prompter.lineCount"
     }
 
     @Published var text: String { didSet { scheduleSave() } }
     @Published var fontSize: Double { didSet { scheduleSave() } }
     @Published var opacity: Double { didSet { scheduleSave() } }
+    @Published var lineCount: Int { didSet { defaults.set(lineCount, forKey: Key.lineCount) } }
     private let defaults: UserDefaults
     private var pendingSave: Task<Void, Never>?
     private var hasChanges = false
@@ -26,6 +28,17 @@ final class RecorderMemoStore: ObservableObject {
         let savedOpacity = defaults.object(forKey: Key.opacity) as? Double ?? 0.92
         fontSize = savedSize.isFinite ? min(max(savedSize, 16), 40) : 22
         opacity = savedOpacity.isFinite ? min(max(savedOpacity, 0.55), 1) : 0.92
+        let legacyKey = "cameraStudio.prompter.nextLine"
+        let savedCount = defaults.integer(forKey: Key.lineCount)
+        if (1...3).contains(savedCount) {
+            lineCount = savedCount
+        } else {
+            lineCount = (defaults.object(forKey: legacyKey) as? Bool) == false ? 1 : 3
+        }
+        if defaults.object(forKey: legacyKey) != nil {
+            defaults.set(lineCount, forKey: Key.lineCount)
+            defaults.removeObject(forKey: legacyKey)
+        }
     }
 
     private func scheduleSave() {
@@ -56,7 +69,7 @@ final class RecorderMemoController: NSObject, ObservableObject, NSWindowDelegate
     private let defaults: UserDefaults
     private var panel: RecorderMemoPanel?
     private var screenObserver: NSObjectProtocol?
-    private var shouldResumeAfterSelection = false
+    private let openKey = "recorder.memo.open"
     private let frameKey = "recorder.memo.frame"
 
     init(defaults: UserDefaults = .standard) {
@@ -66,7 +79,10 @@ final class RecorderMemoController: NSObject, ObservableObject, NSWindowDelegate
     }
 
     func toggle(relativeTo owner: NSWindow) {
-        if isVisible { hide() } else { show(relativeTo: owner) }
+        if isVisible { hide() } else {
+            defaults.set(true, forKey: openKey)
+            show(relativeTo: owner)
+        }
     }
 
     private func show(relativeTo owner: NSWindow) {
@@ -134,7 +150,11 @@ final class RecorderMemoController: NSObject, ObservableObject, NSWindowDelegate
     }
 
     func hide() {
-        shouldResumeAfterSelection = false
+        defaults.set(false, forKey: openKey)
+        suspend()
+    }
+
+    func suspend() {
         guard isVisible else { return }
         store.save()
         saveFrame()
@@ -142,25 +162,19 @@ final class RecorderMemoController: NSObject, ObservableObject, NSWindowDelegate
         isVisible = false
     }
 
-    func suspendForSelection() {
-        let wasVisible = isVisible || shouldResumeAfterSelection
-        hide()
-        shouldResumeAfterSelection = wasVisible
-    }
-
-    func resumeAfterSelection(relativeTo owner: NSWindow) {
-        guard shouldResumeAfterSelection else { return }
-        shouldResumeAfterSelection = false
+    func restoreIfNeeded(relativeTo owner: NSWindow) {
+        guard !isVisible, defaults.bool(forKey: openKey) else { return }
         show(relativeTo: owner)
     }
 
     func resumeAfterPhaseChange(_ phase: AppPhase, isSelectingSource: Bool, relativeTo owner: NSWindow) {
         guard phase == .recording || (phase == .setup && !isSelectingSource) else { return }
-        resumeAfterSelection(relativeTo: owner)
+        restoreIfNeeded(relativeTo: owner)
     }
 
     func shutdown() {
-        hide()
+        store.save()
+        suspend()
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
         screenObserver = nil
         panel?.delegate = nil
@@ -301,10 +315,12 @@ private struct RecorderMemoView: View {
 
 /// NSTextView supplies IME, plain-text paste, native undo and smooth scrolling.
 /// Updating settings never replaces text or selection during marked-text input.
-private struct RecorderMemoTextView: NSViewRepresentable {
+struct RecorderMemoTextView: NSViewRepresentable {
     @Environment(\.locale) private var locale
     @Binding var text: String
     let fontSize: Double
+    var initialOffset: Int? = nil
+    var onCursorChange: ((Int) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
     func makeNSView(context: Context) -> NSScrollView {
@@ -334,11 +350,22 @@ private struct RecorderMemoTextView: NSViewRepresentable {
         view.string = text
         view.delegate = context.coordinator
         scroll.documentView = view
+        context.coordinator.onCursorChange = onCursorChange
+        if let initialOffset {
+            let range = NSRange(location: min(max(0, initialOffset), (text as NSString).length), length: 0)
+            view.setSelectedRange(range)
+            DispatchQueue.main.async { [weak view] in
+                guard let view else { return }
+                view.window?.makeFirstResponder(view)
+                view.scrollRangeToVisible(view.selectedRange())
+            }
+        }
         return scroll
     }
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         _ = locale
         context.coordinator.text = $text
+        context.coordinator.onCursorChange = onCursorChange
         guard let view = scroll.documentView as? NSTextView else { return }
         view.setAccessibilityLabel(appLocalized("备忘录文稿"))
         view.isEditable = true
@@ -356,10 +383,15 @@ private struct RecorderMemoTextView: NSViewRepresentable {
     }
     @MainActor final class Coordinator: NSObject, NSTextViewDelegate {
         var text: Binding<String>
+        var onCursorChange: ((Int) -> Void)?
         init(text: Binding<String>) { self.text = text }
         func textDidChange(_ notification: Notification) {
             guard let view = notification.object as? NSTextView else { return }
             text.wrappedValue = view.string
+        }
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard let view = notification.object as? NSTextView else { return }
+            onCursorChange?(view.selectedRange().location)
         }
     }
 

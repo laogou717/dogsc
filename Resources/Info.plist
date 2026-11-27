@@ -24,9 +24,9 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.2.0</string>
+    <string>0.2.1</string>
     <key>CFBundleVersion</key>
-    <string>20</string>
+    <string>21</string>
     <key>SUFeedURL</key>
     <string>https://github.com/laogou717/dogsc/releases/latest/download/appcast.xml</string>
     <key>SUPublicEDKey</key>
@@ -102,6 +102,6 @@
         </dict>
     </array>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>DogSC uses the built-in macOS recognizer to turn your narration into subtitles.</string>
+	<string>DogSC uses the built-in macOS recognizer to follow your teleprompter script and transcribe narration into subtitles.</string>
 </dict>
 </plist>

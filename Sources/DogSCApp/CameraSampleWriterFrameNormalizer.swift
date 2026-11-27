@@ -16,21 +16,6 @@ final class CameraSampleWriterFrameNormalizer {
         reset()
     }
 
-    static func outputDimensions(
-        configuredWidth: Int?,
-        configuredHeight: Int?,
-        sourceWidth: Int,
-        sourceHeight: Int
-    ) -> (width: Int, height: Int) {
-        if let configuredWidth,
-           let configuredHeight,
-           configuredWidth > 0,
-           configuredHeight > 0 {
-            return (configuredWidth, configuredHeight)
-        }
-        return (max(sourceWidth, 1), max(sourceHeight, 1))
-    }
-
     func prepareContract(
         width: Int,
         height: Int,
@@ -85,7 +70,7 @@ final class CameraSampleWriterFrameNormalizer {
 
     func normalizedImageBuffer(
         _ imageBuffer: CVPixelBuffer,
-        adaptor: AVAssetWriterInputPixelBufferAdaptor,
+        pool: CVPixelBufferPool?,
         roleName: String
     ) throws -> CVPixelBuffer {
         guard let width, let height else { return imageBuffer }
@@ -93,7 +78,7 @@ final class CameraSampleWriterFrameNormalizer {
 
         try prepareTransferSession(roleName: roleName)
         guard let transferSession,
-              let pool = adaptor.pixelBufferPool else {
+              let pool else {
             throw CameraRecorderError.recordingFailed(
                 roleName,
                 "摄像头画面规格转换缓冲池尚未准备"

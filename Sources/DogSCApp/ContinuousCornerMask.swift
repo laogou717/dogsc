@@ -5,8 +5,19 @@ import CoreVideo
 import Foundation
 import SwiftUI
 
-/// Generates smooth, Apple-standard continuous corner rounded masks (squircles)
-/// with G2 curvature continuity matching macOS/iOS system UI.
+/// One outline for the rendered mask and the editor’s selection and hit target.
+struct ContinuousCornerShape: Shape {
+    let radius: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        let limit = min(rect.width, rect.height) / 2
+        if radius >= limit && abs(rect.width - rect.height) < 0.5 {
+            return Path(ellipseIn: rect)
+        }
+        return RoundedRectangle(cornerRadius: min(radius, limit), style: .continuous).path(in: rect)
+    }
+}
+
 enum ContinuousCornerMask {
     private static let cache = ContinuousCornerMaskCache()
 
@@ -37,14 +48,8 @@ enum ContinuousCornerMask {
         } else {
             let safeWidth = max(width, 1)
             let safeHeight = max(height, 1)
-            let path: CGPath
-            if clampedRadius >= min(rect.width, rect.height) / 2 && abs(rect.width - rect.height) < 0.5 {
-                path = CGPath(ellipseIn: CGRect(x: 0, y: 0, width: rect.width, height: rect.height), transform: nil)
-            } else {
-                path = RoundedRectangle(cornerRadius: clampedRadius, style: .continuous)
-                    .path(in: CGRect(x: 0, y: 0, width: rect.width, height: rect.height))
-                    .cgPath
-            }
+            let path = ContinuousCornerShape(radius: clampedRadius)
+                .path(in: CGRect(origin: .zero, size: rect.size)).cgPath
 
             // Only the four corners contain changing coverage. A full 5K
             // coverage buffer on every zoom tick spends the CPU frame budget

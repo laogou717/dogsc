@@ -4,10 +4,10 @@ import SwiftUI
 /// Custom floating surface, shared by inputs, destination and recording actions.
 /// One panel owns outside-click / Escape dismissal; switching anchors replaces it.
 @MainActor
-final class RecorderPopoverPresenter {
+final class RecorderPopoverPresenter: ObservableObject {
     static let shared = RecorderPopoverPresenter()
     private var panel: RecorderConfigurationPanel?
-    private var identifier: String?
+    @Published private(set) var identifier: String?
     private var localMonitor: Any?
     private var globalMonitor: Any?
     private var observers: [NSObjectProtocol] = []
@@ -19,20 +19,25 @@ final class RecorderPopoverPresenter {
         let anchorRect = owner.convertToScreen(anchor.convert(anchor.bounds, to: nil))
         let visible = screen.visibleFrame.insetBy(dx: 12, dy: 12)
         let maxHeight = visible.height - 16
-        let host = NSHostingController(rootView: RecorderPopoverViewport(content: content, width: width, maxHeight: maxHeight) { [weak self] height in
-            guard let self, self.identifier == id, let panel = self.panel else { return }
-            let newHeight = min(height, maxHeight)
-            guard abs(panel.frame.height - newHeight) > 1 else { return }
-            let below = anchorRect.minY - newHeight - 16
-            let y = below >= visible.minY ? below : min(anchorRect.maxY + 16, visible.maxY - newHeight)
-            panel.setFrame(NSRect(x: panel.frame.minX, y: y, width: width, height: newHeight), display: true)
+        let tipHeight: CGFloat = id == "camera" ? 8 : 0
+        let gap: CGFloat = tipHeight > 0 ? 2 : 16
+        let x = min(max(anchorRect.midX - width / 2, visible.minX), visible.maxX - width)
+        let roomBelow = anchorRect.minY - visible.minY - gap
+        func placedFrame(height: CGFloat) -> NSRect {
+            let y = height <= roomBelow ? anchorRect.minY - gap - height
+                : min(anchorRect.maxY + gap, visible.maxY - height)
+            return NSRect(x: x, y: y, width: width, height: height)
+        }
+        let host = NSHostingController(rootView: RecorderPopoverViewport(content: content,
+            width: width, maxHeight: maxHeight, tipHeight: tipHeight, anchorX: anchorRect.midX - x,
+            roomBelow: roomBelow) { [weak self] height in
+            guard let self, self.identifier == id, let panel = self.panel,
+                  abs(panel.frame.height - height) > 1 else { return }
+            panel.setFrame(placedFrame(height: height), display: true)
             panel.invalidateShadow()
         }.appControlFocusAppearance())
         let height = min(max(host.view.fittingSize.height, 80), maxHeight)
-        let x = min(max(anchorRect.midX - width / 2, visible.minX), visible.maxX - width)
-        let below = anchorRect.minY - height - 16
-        let y = below >= visible.minY ? below : min(anchorRect.maxY + 16, visible.maxY - height)
-        let frame = NSRect(x: x, y: y, width: width, height: height)
+        let frame = placedFrame(height: height)
         let panel = RecorderConfigurationPanel(contentRect: frame, styleMask: [.borderless], backing: .buffered, defer: false)
         panel.setFrame(frame, display: false)
         panel.isOpaque = false
@@ -105,21 +110,41 @@ private struct RecorderPopoverViewport: View {
     let content: AnyView
     let width: CGFloat
     let maxHeight: CGFloat
+    let tipHeight: CGFloat
+    let anchorX: CGFloat
+    let roomBelow: CGFloat
     let onResize: (CGFloat) -> Void
     @State private var contentHeight: CGFloat = 300
     var body: some View {
+        let height = min(contentHeight + tipHeight, maxHeight)
+        let below = height <= roomBelow
         ScrollView(.vertical) {
             content.fixedSize(horizontal: false, vertical: true)
                 .onGeometryChange(for: CGFloat.self) { $0.size.height.rounded(.up) } action: { value in
                     guard value > 0 else { return }
                     contentHeight = value
-                    onResize(min(value, maxHeight))
+                    onResize(min(value + tipHeight, maxHeight))
                 }
         }
         .scrollIndicators(.hidden)
-        .frame(width: width, height: min(contentHeight, maxHeight))
+        .frame(width: width, height: height - tipHeight)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .recorderSurface(radius: 12)
+        .padding(.top, below ? tipHeight : 0)
+        .padding(.bottom, below ? 0 : tipHeight)
+        .overlay(alignment: .topLeading) {
+            if tipHeight > 0 {
+                Path { path in
+                    let center = min(max(anchorX, 20), width - 20)
+                    let base = below ? tipHeight + 1 : height - tipHeight - 1
+                    path.move(to: CGPoint(x: center - tipHeight, y: base))
+                    path.addLine(to: CGPoint(x: center, y: below ? 0.5 : height - 0.5))
+                    path.addLine(to: CGPoint(x: center + tipHeight, y: base))
+                }
+                .fill(RecorderStyle.base).stroke(RecorderStyle.edgeTop, lineWidth: 1)
+                .allowsHitTesting(false)
+            }
+        }
     }
 }
 
@@ -137,11 +162,14 @@ struct RecorderPopoverButton<Label: View, Panel: View>: View {
     @ViewBuilder let label: () -> Label
     @ViewBuilder let panel: () -> Panel
     @State private var pressed = false
+    @ObservedObject private var presenter = RecorderPopoverPresenter.shared
     private var cornerRadius: CGFloat { RecorderStyle.controlRadius }
     var body: some View {
         ZStack {
             label()
                 .frame(width: width, height: height)
+                .background(presenter.identifier == id ? RecorderStyle.selection : .clear,
+                            in: RoundedRectangle(cornerRadius: cornerRadius))
                 .modifier(RecorderPressFeedback(isPressed: pressed))
                 .accessibilityHidden(true)
             RecorderPopoverTrigger(id: id, title: title, content: AnyView(panel()), panelWidth: panelWidth,

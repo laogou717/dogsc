@@ -161,7 +161,9 @@ enum RecordingProjectImporter {
         let map = try TimelineMap(sourceSequence: loaded.project.timeline.sourceSequence, sourceDurations: durations)
         guard map.outputDuration > 0 else { throw RecordingImportError.missingRecording }
         try verify(versions)
-        return RecordingImportPreview(packageURL: package, project: loaded.project,
+        var project = loaded.project
+        project.timeline.videoClips = try await OverlayVideoSource.resolve(project.timeline.videoClips, in: loaded.session).clips
+        return RecordingImportPreview(packageURL: package, project: project,
             sourceDurations: durations, sourceSizes: sizes, frameRate: frameRate, cameraCrops: crops,
             fileVersions: versions, outputDuration: map.outputDuration)
     }

@@ -131,6 +131,36 @@ enum SharedFrameRenderer {
                 resources.screen = black
             }
         }
+        // Insert an attached camera next to its owner in the mixed visual stack.
+        // A higher title or video can still cover it, and a lower video cannot
+        // fill the aperture between a template and its camera.
+        let cameraOwner = scene.camera?.insetVideoID ?? scene.camera?.coveringVideoID ?? scene.animations.last(where: \.hostsCamera)?.id
+        let cameraBeforeOwner = scene.cameraBeforeVisualOverlays
+        func camera(over base: CIImage) -> CIImage {
+            guard cameraVisibility > 0.001 else { return base }
+            guard let cameraScene = scene.camera,
+                  cameraScene.opacity > 0,
+                  let cameraImage = resources.camera else { return base }
+            var cameraLayer = renderCamera(
+                source: cameraImage,
+                scene: cameraScene,
+                tracking: resources.cameraBeauty,
+                over: transparent,
+                canvasRect: canvasRect
+            )
+            // Only stickers that opt in contribute camera blur.
+            let cameraBlur = scene.stickers.isEmpty ? 0 : scene.stickerBackdrop.cameraBlur
+            if cameraBlur > 0.01 {
+                cameraLayer = cameraLayer.clampedToExtent()
+                    .applyingFilter(
+                        "CIGaussianBlur",
+                        parameters: [kCIInputRadiusKey: cameraBlur]
+                    )
+                    .cropped(to: canvasRect)
+            }
+            let visibleCamera = applyingOpacity(cameraLayer, cameraVisibility)
+            return visibleCamera.composited(over: base).cropped(to: canvasRect)
+        }
         for role in scene.layerOrder where role != .background {
             switch role {
             case .background:
@@ -185,31 +215,7 @@ enum SharedFrameRenderer {
                     canvasRect: canvasRect
                 )
             case .camera:
-                guard cameraVisibility > 0.001 else { continue }
-                guard let cameraScene = scene.camera,
-                      cameraScene.opacity > 0,
-                      let cameraImage = resources.camera else { continue }
-                var cameraLayer = renderCamera(
-                    source: cameraImage,
-                    scene: cameraScene,
-                    tracking: resources.cameraBeauty,
-                    over: transparent,
-                    canvasRect: canvasRect
-                )
-                // The camera stays above every sticker. It is softened only
-                // when an active sticker clip explicitly opts in.
-                let cameraBlur = scene.stickers.isEmpty ? 0 : scene.stickerBackdrop.cameraBlur
-                if cameraBlur > 0.01 {
-                    cameraLayer = cameraLayer.clampedToExtent()
-                        .applyingFilter(
-                            "CIGaussianBlur",
-                            parameters: [kCIInputRadiusKey: cameraBlur]
-                        )
-                        .cropped(to: canvasRect)
-                }
-                result = applyingOpacity(cameraLayer, cameraVisibility)
-                    .composited(over: result)
-                    .cropped(to: canvasRect)
+                if cameraOwner == nil { result = camera(over: result) }
             case .stickers, .videos, .animations:
                 // EDT-054: pictures, motion graphics and videos share one layer
                 // order (`layerIndex`, then video < sticker < animation), so a
@@ -228,11 +234,16 @@ enum SharedFrameRenderer {
                     }
                 }
                 enum Item { case video(FrameVideoScene), sticker(FrameStickerScene), animation(FrameAnimationScene) }
-                let items: [(layer: Int, rank: Int, item: Item)] =
-                    scene.videos.map { ($0.layerIndex, 0, .video($0)) }
-                    + scene.stickers.map { ($0.layerIndex, 1, .sticker($0)) }
-                    + scene.animations.map { ($0.layerIndex, 2, .animation($0)) }
+                let items: [(layer: Int, rank: Int, id: UUID, item: Item)] =
+                    scene.videos.map { ($0.layerIndex, 0, $0.id, .video($0)) }
+                    + scene.stickers.map { ($0.layerIndex, 1, $0.id, .sticker($0)) }
+                    + scene.animations.map { ($0.layerIndex, 2, $0.id, .animation($0)) }
                 for entry in items.sorted(by: { $0.layer == $1.layer ? $0.rank < $1.rank : $0.layer < $1.layer }) {
+                    let ownsCamera = entry.id == cameraOwner
+                    if ownsCamera && cameraBeforeOwner { result = camera(over: result) }
+                    defer {
+                        if ownsCamera && !cameraBeforeOwner { result = camera(over: result) }
+                    }
                     switch entry.item {
                     case let .sticker(sticker):
                         guard let source = resources.timedStickers[sticker.id] ?? resources.stickers[sticker.relativePath] else { continue }
@@ -243,16 +254,27 @@ enum SharedFrameRenderer {
                               source.extent.width > 0, source.extent.height > 0 else { continue }
                         let size = CGSize(width: canvasRect.width * CGFloat(video.width),
                                           height: canvasRect.width * CGFloat(video.width) * CGFloat(video.aspect))
-                        let scale = max(size.width / source.extent.width, size.height / source.extent.height)
                         let center = CGPoint(x: canvasRect.minX + canvasRect.width * CGFloat(video.position.x),
                                              y: canvasRect.maxY - canvasRect.height * CGFloat(video.position.y))
                         let frame = CGRect(x: center.x - size.width / 2, y: center.y - size.height / 2,
                                            width: size.width, height: size.height)
-                        let placed = source
-                            .transformed(by: CGAffineTransform(translationX: -source.extent.midX, y: -source.extent.midY))
-                            .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-                            .transformed(by: CGAffineTransform(translationX: center.x, y: center.y))
+                        guard let fill = CameraContentFill.layout(
+                            sourceWidth: source.extent.width, sourceHeight: source.extent.height,
+                            target: CompositionRect(x: 0, y: 0, width: frame.width, height: frame.height),
+                            focus: video.contentPosition, contentScale: video.contentScale, overscan: 1
+                        ), let crop = cameraSourceCropRect(sourceExtent: source.extent, layout: fill) else { continue }
+                        var placed = source
+                            .transformed(by: CGAffineTransform(translationX: -crop.minX, y: -crop.minY))
+                            .transformed(by: CGAffineTransform(scaleX: frame.width / crop.width, y: frame.height / crop.height))
+                            .transformed(by: CGAffineTransform(translationX: frame.minX, y: frame.minY))
                             .cropped(to: frame)
+                        if video.maskRadiusFraction > 0 {
+                            let radius = min(frame.width, frame.height) * video.maskRadiusFraction
+                            placed = placed.applyingFilter("CIBlendWithMask", parameters: [
+                                kCIInputMaskImageKey: roundedMask(rect: frame, radius: radius),
+                                kCIInputBackgroundImageKey: CIImage(color: .clear).cropped(to: frame)
+                            ])
+                        }
                         result = applyingOpacity(placed, video.opacity).composited(over: result).cropped(to: canvasRect)
                     case let .animation(animation):
                         guard let source = resources.animations[animation.id],
@@ -266,7 +288,12 @@ enum SharedFrameRenderer {
                             .transformed(by: CGAffineTransform(translationX: -source.extent.minX, y: -source.extent.minY))
                             .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
                             .transformed(by: CGAffineTransform(translationX: center.x - size.width / 2, y: center.y - size.height / 2))
-                        result = applyingOpacity(placed, animation.opacity).composited(over: result).cropped(to: canvasRect)
+                        var graphic = applyingOpacity(placed, animation.opacity)
+                        if let matte = animation.movingMatte, let camera = scene.camera, resources.camera != nil {
+                            graphic = movingMatte(graphic, matte: matte, canvas: canvasRect,
+                                                  cameraOpacity: camera.opacity * cameraVisibility)
+                        }
+                        result = graphic.composited(over: result).cropped(to: canvasRect)
                     }
                 }
             case .subtitles:
@@ -277,6 +304,30 @@ enum SharedFrameRenderer {
             }
         }
         return result.cropped(to: canvasRect)
+    }
+
+    /// Keep a flattened foreground (including its hole and lettering) registered
+    /// to the moving aperture. Painting camera pixels back over a stationary
+    /// hole leaves both silhouettes visible throughout the 240 ms handoff.
+    private nonisolated static func movingMatte(
+        _ graphic: CIImage, matte: FrameAnimationScene.MovingMatte, canvas: CGRect, cameraOpacity: Double
+    ) -> CIImage {
+        let source = coreImageRect(from: matte.aperture, canvasHeight: canvas.height)
+        let target = coreImageRect(from: matte.presented, canvasHeight: canvas.height)
+        guard !source.isEmpty, !target.isEmpty else { return graphic }
+        let transform = CGAffineTransform(translationX: target.minX, y: target.minY)
+            .scaledBy(x: target.width / source.width, y: target.height / source.height)
+            .translatedBy(x: -source.minX, y: -source.minY)
+        // Extend the authored outer pixels up to the original plate bounds
+        // when the moving plate shrinks. Transparent edges stay transparent.
+        let moved = graphic.clampedToExtent().transformed(by: transform).cropped(to: graphic.extent)
+        let mask = CIFilter.roundedRectangleGenerator()
+        mask.extent = target
+        mask.radius = Float(min(matte.cornerRadius, min(target.width, target.height) / 2))
+        mask.color = CIColor(red: 1, green: 1, blue: 1, alpha: matte.reveal * cameraOpacity)
+        guard let aperture = mask.outputImage else { return moved }
+        return moved.applyingFilter("CISourceOutCompositing",
+                                    parameters: [kCIInputBackgroundImageKey: aperture.cropped(to: target)])
     }
 
     private nonisolated static func applyingOpacity(
@@ -606,8 +657,8 @@ enum SharedFrameRenderer {
         guard baseRect.width > 0, baseRect.height > 0,
               finalRect.width > 0, finalRect.height > 0 else { return nil }
 
-        let widthScale = baseRect.width / max(croppedSource.extent.width, 1)
-        let heightScale = baseRect.height / max(croppedSource.extent.height, 1)
+        let widthScale = baseRect.width / cropRect.width
+        let heightScale = baseRect.height / cropRect.height
         let fitScale = scene.fillsFrame ? max(widthScale, heightScale) : min(widthScale, heightScale)
         // Reconstruct the former viewport transform from the canonical base and
         // final rectangles. This retains the exact 2D lowering while keeping
@@ -619,23 +670,30 @@ enum SharedFrameRenderer {
         // therefore downsampled before a 1.6x/2x zoom. One combined transform
         // retains every source pixel until the final output sampling pass.
         let finalScale = fitScale * zoomScale
-        let transformed = croppedSource
-            .transformed(
-                by: CGAffineTransform(scaleX: finalScale, y: finalScale)
-            )
-            .transformed(
-                by: CGAffineTransform(
-                    translationX: finalRect.midX
-                        - croppedSource.extent.width * finalScale / 2,
-                    y: finalRect.midY
-                        - croppedSource.extent.height * finalScale / 2
-                )
-            )
+        guard finalScale.isFinite, finalScale > 0 else { return nil }
+        let sourceToCanvas = CGAffineTransform(
+            a: finalScale, b: 0, c: 0, d: finalScale,
+            tx: finalRect.midX - cropRect.width / 2 * finalScale,
+            ty: finalRect.midY - cropRect.height / 2 * finalScale
+        )
+        // Sample opaque edge pixels before clipping in output space. Cropping a
+        // fractional source row first otherwise magnifies its transparent fringe.
+        let sampleRect = CGRect(x: ceil(cropRect.minX), y: ceil(cropRect.minY),
+                                width: floor(cropRect.maxX) - ceil(cropRect.minX),
+                                height: floor(cropRect.maxY) - ceil(cropRect.minY))
+        let transform = sourceToCanvas.translatedBy(x: -cropRect.minX, y: -cropRect.minY)
+        let transformed = normalizedSource.clamped(to: sampleRect.isEmpty ? cropRect : sampleRect)
+            .transformed(by: transform)
+            .cropped(to: cropRect.applying(transform))
 
         let projectionRect = coreImageRect(
             from: scene.projectionRect,
             canvasHeight: canvasRect.height
         )
+        let contentCornerRadius: Double = switch scene.decoration {
+        case .none: scene.cornerRadius
+        case let .chrome(chrome): chrome.contentCornerRadius
+        }
         let projectionCornerRadius: Double = switch scene.decoration {
         case .none: scene.cornerRadius
         case let .chrome(chrome): chrome.outerCornerRadius
@@ -648,14 +706,7 @@ enum SharedFrameRenderer {
         var cachedContentMask: CIImage?
         func contentMask() -> CIImage {
             if let cachedContentMask { return cachedContentMask }
-            let mask: CIImage = switch scene.decoration {
-            case .none:
-                roundedMask(rect: finalRect, radius: scene.cornerRadius)
-            case let .chrome(chrome):
-                chrome.contentCornerRadius > 0
-                    ? roundedMask(rect: finalRect, radius: chrome.contentCornerRadius)
-                    : CIImage(color: .white).cropped(to: finalRect)
-            }
+            let mask = roundedMask(rect: finalRect, radius: contentCornerRadius)
             cachedContentMask = mask
             return mask
         }
@@ -776,31 +827,21 @@ enum SharedFrameRenderer {
             // Clip rounded corners in native source coordinates before the
             // single perspective pass. Projecting a second full-card mask
             // would add another perspective kernel in full-resolution preview.
-            let nativeClippedSource: CIImage
-            switch scene.decoration {
-            case .none:
-                let sourceCornerRadius = scene.cornerRadius
-                    / max(finalScale, 0.000_1)
-                let nativeMask = roundedMask(
-                    rect: croppedSource.extent,
-                    radius: sourceCornerRadius
-                )
-                let nativeTransparent = CIImage(color: .clear)
-                    .cropped(to: croppedSource.extent)
-                nativeClippedSource = croppedSource.applyingFilter(
-                    "CIBlendWithMask",
-                    parameters: [
-                        kCIInputBackgroundImageKey: nativeTransparent,
-                        kCIInputMaskImageKey: nativeMask,
-                    ]
-                )
-            case .chrome:
-                nativeClippedSource = croppedSource
-            }
+            let canvasToNative = sourceToCanvas.inverted()
+            let nativeMask = roundedMask(
+                rect: finalRect.applying(canvasToNative),
+                radius: contentCornerRadius / finalScale
+            )
+            let nativeClippedSource = croppedSource.applyingFilter(
+                "CIBlendWithMask", parameters: [
+                    kCIInputBackgroundImageKey: CIImage(color: .clear).cropped(to: croppedSource.extent),
+                    kCIInputMaskImageKey: nativeMask,
+                ]
+            ).cropped(to: croppedSource.extent)
             if case .chrome = scene.decoration,
                let unifiedCard = unifiedDecoratedPerspectiveTransform(
                    nativeSource: nativeClippedSource,
-                   finalRect: finalRect,
+                   canvasToNative: canvasToNative,
                    projectionRect: projectionRect,
                    chromeScene: scene.decoration,
                    projectionCornerRadius: projectionCornerRadius,
@@ -957,16 +998,35 @@ enum SharedFrameRenderer {
             from: scene.rect,
             canvasHeight: canvasRect.height
         )
-        let transparent = CIImage(color: .clear).cropped(to: contentRect)
-        let cameraMask = roundedMask(rect: contentRect, radius: scene.cornerRadius)
-        let borderOuterRect = contentRect.insetBy(
+        // The foreground owns the visible edge of a below-graphics aperture.
+        // Extend just the masked pixels, keeping the crop and framing exact.
+        // Interpolating bleed to zero exposed the wallpaper in fractional
+        // edge pixels during the last few frames of a fullscreen handoff.
+        let bleed = scene.usesCircularCorners ? 3 * max(1, min(canvasRect.width, canvasRect.height) / 1080) : 0
+        let underlayRect = contentRect.insetBy(dx: -bleed, dy: -bleed)
+        let underlayRadius = scene.cornerRadius + bleed
+        let transparent = CIImage(color: .clear).cropped(to: underlayRect)
+        func mask(_ rect: CGRect, radius: CGFloat) -> CIImage {
+            // CSS border-radius uses circular arcs. A native continuous corner
+            // with the same radius can still uncover the foreground aperture.
+            if scene.usesCircularCorners && radius > 0 {
+                let generator = CIFilter.roundedRectangleGenerator()
+                generator.extent = rect
+                generator.radius = Float(min(radius, min(rect.width, rect.height) / 2))
+                generator.color = .white
+                if let image = generator.outputImage { return image.cropped(to: rect) }
+            }
+            return roundedMask(rect: rect, radius: radius)
+        }
+        let cameraMask = mask(underlayRect, radius: underlayRadius)
+        let borderOuterRect = underlayRect.insetBy(
             dx: -scene.borderWidth,
             dy: -scene.borderWidth
         )
         let borderOuterMask = scene.borderWidth > 0
-            ? roundedMask(
-                rect: borderOuterRect,
-                radius: scene.cornerRadius + scene.borderWidth
+            ? mask(
+                borderOuterRect,
+                radius: underlayRadius + scene.borderWidth
             )
             : cameraMask
         var cameraLayer = transparent
@@ -1007,7 +1067,7 @@ enum SharedFrameRenderer {
         guard let fill = scene.contentFill ?? CameraContentFill.layout(
             sourceWidth: normalizedSource.extent.width,
             sourceHeight: normalizedSource.extent.height,
-            target: scene.rect
+            target: scene.rect, focus: scene.sourceFocus, contentScale: scene.contentScale
         ) else { return background }
         // `cameraDisplaySize` comes from the track contract, while the decoded
         // CIImage can expose a slightly different extent after clean-aperture
@@ -1021,8 +1081,9 @@ enum SharedFrameRenderer {
         ) else { return background }
         let scaleX = contentRect.width / sourceCrop.width
         let scaleY = contentRect.height / sourceCrop.height
+        // Keep neighbouring source pixels for the resampling footprint. Cropping
+        // a fractional aperture before scaling it would bake transparency into its edges.
         var placed = normalizedSource
-            .cropped(to: sourceCrop)
             .clampedToExtent()
             .transformed(by: CGAffineTransform(
                 translationX: -sourceCrop.minX,
@@ -1033,7 +1094,6 @@ enum SharedFrameRenderer {
                 translationX: contentRect.minX,
                 y: contentRect.minY
             ))
-            .cropped(to: contentRect)
         if scene.isMirrored {
             let axis = CGFloat(fill.mirrorAxisX)
             placed = placed
@@ -1047,7 +1107,7 @@ enum SharedFrameRenderer {
                 kCIInputBackgroundImageKey: transparent,
                 kCIInputMaskImageKey: cameraMask,
             ]
-        ).cropped(to: contentRect)
+        ).cropped(to: underlayRect)
         cameraLayer = clipped.composited(over: cameraLayer)
         let visibleLayer = scene.opacity >= 0.999
             ? cameraLayer
@@ -1200,7 +1260,7 @@ enum SharedFrameRenderer {
     /// first rasterizing a zoomed screen into the output-canvas resolution.
     private nonisolated static func unifiedDecoratedPerspectiveTransform(
         nativeSource: CIImage,
-        finalRect: CGRect,
+        canvasToNative: CGAffineTransform,
         projectionRect: CGRect,
         chromeScene decoration: FrameScreenDecoration,
         projectionCornerRadius: Double,
@@ -1211,33 +1271,7 @@ enum SharedFrameRenderer {
         mapping: UnitSquareHomography?,
         canvasRect: CGRect
     ) -> CIImage? {
-        let sourceExtent = nativeSource.extent
-        guard sourceExtent.width > 0,
-              sourceExtent.height > 0,
-              finalRect.width > 0,
-              finalRect.height > 0,
-              projectionRect.width > 0,
-              projectionRect.height > 0,
-              let mapping else { return nil }
-
-        let scaleX = sourceExtent.width / finalRect.width
-        let scaleY = sourceExtent.height / finalRect.height
-        guard scaleX.isFinite,
-              scaleY.isFinite,
-              scaleX > 0,
-              scaleY > 0 else { return nil }
-
-        // Core Image coordinates are bottom-left based here. Map the final
-        // content rectangle exactly onto the decoded crop without an
-        // intermediate resize; vector chrome follows the same change of basis.
-        let canvasToNative = CGAffineTransform(
-            a: scaleX,
-            b: 0,
-            c: 0,
-            d: scaleY,
-            tx: sourceExtent.minX - finalRect.minX * scaleX,
-            ty: sourceExtent.minY - finalRect.minY * scaleY
-        )
+        guard let mapping else { return nil }
         let nativeProjectionRect = projectionRect
             .applying(canvasToNative)
             .standardized

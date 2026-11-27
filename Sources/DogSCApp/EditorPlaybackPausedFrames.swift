@@ -10,14 +10,17 @@ extension EditorPlaybackController {
         let requestedGeneration = preparedMedia.generation
         let requestedSeek = seekToken ?? self.seekToken
         let pausedFrameRate = max(frameRate(atOutputTime: time), 1)
-        let frame = floor(EditorPlaybackClockPolicy.clampedTime(time, duration: duration)
-            * Double(pausedFrameRate))
-        let requestedTime = CMTime(
-            seconds: frame / Double(pausedFrameRate),
-            preferredTimescale: 60_000
-        )
-        guard let primaryInput = preparedMedia.screenFrameInput(at: requestedTime.seconds) else { return }
-        let cameraInput = preparedMedia.cameraFrameInput(at: requestedTime.seconds)
+        let target = EditorPlaybackClockPolicy.frameLookupTime(time, duration: duration)
+        let gridTime = floor(target * Double(pausedFrameRate)) / Double(pausedFrameRate)
+        let targetFrame = preparedMedia.composition.frameMetadata(at: target)
+        let gridFrame = preparedMedia.composition.frameMetadata(at: gridTime)
+        // A fractional cut can be later than the containing grid frame. Seek
+        // in the target slice before converting its asset time to CMTime.
+        let sameSlices = targetFrame.screenSlice?.id == gridFrame.screenSlice?.id
+            && targetFrame.cameraSlice?.id == gridFrame.cameraSlice?.id
+        let requestedTime = sameSlices ? gridTime : target
+        guard let primaryInput = preparedMedia.screenFrameInput(at: requestedTime) else { return }
+        let cameraInput = preparedMedia.cameraFrameInput(at: requestedTime)
         let shouldLoadCamera = cameraInput != nil
         cancelPausedFrameDecode()
         let screenRequest = PausedPreviewFrameRequest(primaryInput.asset.asset)
@@ -26,9 +29,9 @@ extension EditorPlaybackController {
         let cameraTime = CMTime(seconds: cameraInput?.assetTime ?? 0, preferredTimescale: 60_000)
         pausedFrameRequests = [screenRequest] + (cameraRequest.map { [$0] } ?? [])
         let requestedDecode = pausedFrameDecodeToken
-        let imageInput = preparedMedia.composition.frameMetadata(at: requestedTime.seconds).screenSlice.flatMap { slice in
+        let imageInput = targetFrame.screenSlice.flatMap { slice in
             slice.media?.imagePath.map { path in
-                (ProjectFiles.url(path), slice.sourceStart + max(requestedTime.seconds - slice.outputStart, 0) * slice.sourceTimeScale)
+                (ProjectFiles.url(path), slice.sourceStart + max(requestedTime - slice.outputStart, 0) * slice.sourceTimeScale)
             }
         }
         pausedFrameTask = Task { [weak self] in
@@ -59,12 +62,12 @@ extension EditorPlaybackController {
                       self.pausedFrameDecodeToken == requestedDecode,
                       !self.isPlaying else { return }
                 if let screenImage {
-                    self.pausedScreenSegmentID = preparedMedia.composition.frameMetadata(at: requestedTime.seconds).screenSlice?.segmentID
+                    self.pausedScreenSegmentID = targetFrame.screenSlice?.segmentID
                     self.pausedScreenImage = NSImage(cgImage: screenImage,
                         size: NSSize(width: screenImage.width, height: screenImage.height))
                 }
                 if let cameraImage {
-                    self.pausedCameraSourceID = preparedMedia.composition.frameMetadata(at: requestedTime.seconds).cameraSlice?.sourceID
+                    self.pausedCameraSourceID = targetFrame.cameraSlice?.sourceID
                     self.pausedCameraImage = NSImage(cgImage: cameraImage,
                         size: NSSize(width: cameraImage.width, height: cameraImage.height))
                 } else if !shouldLoadCamera {

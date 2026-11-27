@@ -19,7 +19,7 @@ public enum MediaAssetKind: String, Codable, CaseIterable, Sendable {
         case "mov", "mp4", "m4v": .video
         case "png", "jpg", "jpeg", "heic", "gif", "webp", "tiff": .image
         case "mp3", "m4a", "wav", "aiff", "aif", "aac", "caf", "flac": .audio
-        case "dmhtml": .animation
+        case "dmhtml", "html": .animation
         default: nil
         }
     }
@@ -51,11 +51,92 @@ public struct MediaAsset: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+public enum VideoMaskShape: String, Codable, CaseIterable, Sendable {
+    case rectangle = "矩形"
+    case rounded = "圆角矩形"
+    case circle = "圆形"
+}
+
+public enum VideoCameraMode: String, Codable, CaseIterable, Sendable {
+    case videoInFront, pictureInPicture
+    // Decoded from projects authored before explicit stacking order.
+    case original, hidden, automatic
+}
+
+public enum VideoSourceError: LocalizedError {
+    case insufficientTimeline
+    case invalidRange(name: String)
+    case unreadable(name: String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .insufficientTimeline: return "成片剩余时长不足以容纳这个速度下的完整片段。"
+        case let .invalidRange(name): return "视频「\(name)」的取材范围超出了可播放画面。"
+        case let .unreadable(name): return "无法读取视频「\(name)」的画面轨道。"
+        }
+    }
+}
+
 /// A video placed over the recording for a span of time (picture-in-picture
 /// or full-frame B-roll), with its own sound.
 public struct VideoClip: Codable, Equatable, Identifiable, Sendable, TimedOverlayClip {
+    public var cameraMode: VideoCameraMode = .pictureInPicture {
+        didSet {
+            if cameraMode != oldValue {
+                legacyAutoCoverage = cameraMode == .automatic ? .init(minimumCanvasAspect: minimumAspectForAutomaticInset) : nil
+            }
+        }
+    }
+    // Legacy Auto used the opening layout to decide whether the video covered
+    // the canvas. Freeze its coverage threshold on load so moving or cropping
+    // an old video cannot silently reverse the order shown in the inspector.
+    private struct LegacyAutoCoverage: Codable, Equatable, Sendable {
+        let minimumCanvasAspect: Double?
+    }
+    private var legacyAutoCoverage: LegacyAutoCoverage?
+    // Round-trip old documents without using video-local camera appearance.
+    private var cameraInsetMirrored: Bool?
+    private var cameraInsetShape: CameraShape?
+    private var cameraInsetPosition: NormalizedPoint?
+    private var cameraInsetSize: Double?
+    public static let maskRadiusRange = 0.0...0.5
+    public static let defaultMaskRadius = 0.12
+    /// Radius as a fraction of the mask's shorter edge. Retained while another shape is selected.
+    public var maskCornerRadius: Double = Self.defaultMaskRadius
+    public var maskShape: VideoMaskShape = .rectangle
+    public var contentPosition = NormalizedPoint(x: 0.5, y: 0.5)
+    public var contentScale: Double = 1
+    public static let sourceTimeTolerance: TimeInterval = 1.0 / 120_000
+    /// Playable source seconds measured from the video track start. Older documents
+    /// acquire this metadata when their media is opened.
+    public var sourceFileEnd: TimeInterval?
     public var playbackRate: Double = 1
+    public var sourceDuration: TimeInterval { timing.duration * playbackRate }
+    public var sourceEnd: TimeInterval { sourceStart + sourceDuration }
+
+    public func validateSourceRange() throws {
+        guard timing.duration.isFinite, timing.duration > 0,
+              timing.startTime.isFinite, timing.startTime >= 0,
+              sourceStart.isFinite, sourceStart >= 0, playbackRate.isFinite,
+              playbackRate > 0, sourceEnd.isFinite, sourceEnd > sourceStart,
+              !sourcePath.isEmpty else {
+            throw VideoSourceError.invalidRange(name: URL(fileURLWithPath: sourcePath).lastPathComponent)
+        }
+        if let end = sourceFileEnd, !(end.isFinite && sourceStart < end && sourceEnd <= end + Self.sourceTimeTolerance) {
+            throw VideoSourceError.invalidRange(name: URL(fileURLWithPath: sourcePath).lastPathComponent)
+        }
+    }
+
+    /// A speed change keeps the selected source frames. Only their output duration changes.
+    public mutating func setPlaybackRate(_ rate: Double) throws {
+        var updated = self
+        updated.timing.duration = sourceDuration / rate
+        updated.playbackRate = rate
+        try updated.validateSourceRange()
+        self = updated
+    }
     public var mainTrackStyle: MainTrackVisualStyle? = nil
+    public var videoAudio: VideoAudioAttachment?
     public var id: UUID
     public var timing: OverlayTiming
     public var sourcePath: String
@@ -94,7 +175,9 @@ public struct VideoClip: Codable, Equatable, Identifiable, Sendable, TimedOverla
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, timing, sourcePath, sourceStart, position, width, aspect, opacity, volume, layerIndex, playbackRate, mainTrackStyle
+        case cameraMode, legacyAutoCoverage, cameraInsetMirrored, cameraInsetShape, cameraInsetPosition, cameraInsetSize
+        case maskShape, maskCornerRadius, contentPosition, contentScale
+        case id, timing, sourcePath, sourceStart, position, width, aspect, opacity, volume, layerIndex, playbackRate, mainTrackStyle, videoAudio, sourceFileEnd
     }
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -103,12 +186,78 @@ public struct VideoClip: Codable, Equatable, Identifiable, Sendable, TimedOverla
             position: try c.decode(NormalizedPoint.self, forKey: .position), width: try c.decode(Double.self, forKey: .width),
             aspect: try c.decode(Double.self, forKey: .aspect), opacity: try c.decode(Double.self, forKey: .opacity),
             volume: try c.decode(Double.self, forKey: .volume), layerIndex: try c.decode(Int.self, forKey: .layerIndex))
+        maskShape = try c.decodeIfPresent(VideoMaskShape.self, forKey: .maskShape) ?? .rectangle
+        maskCornerRadius = try c.decodeIfPresent(Double.self, forKey: .maskCornerRadius) ?? Self.defaultMaskRadius
+        guard Self.maskRadiusRange.contains(maskCornerRadius) else {
+            throw DecodingError.dataCorruptedError(forKey: .maskCornerRadius, in: c, debugDescription: "maskCornerRadius must be in 0...0.5.")
+        }
+        cameraMode = try c.decodeIfPresent(VideoCameraMode.self, forKey: .cameraMode) ?? .original
+        if cameraMode == .automatic {
+            legacyAutoCoverage = try c.decodeIfPresent(LegacyAutoCoverage.self, forKey: .legacyAutoCoverage)
+                ?? .init(minimumCanvasAspect: minimumAspectForAutomaticInset)
+        }
+        cameraInsetMirrored = try c.decodeIfPresent(Bool.self, forKey: .cameraInsetMirrored)
+        cameraInsetShape = try c.decodeIfPresent(CameraShape.self, forKey: .cameraInsetShape)
+        cameraInsetPosition = try c.decodeIfPresent(NormalizedPoint.self, forKey: .cameraInsetPosition)
+        cameraInsetSize = try c.decodeIfPresent(Double.self, forKey: .cameraInsetSize)
+        contentPosition = try c.decodeIfPresent(NormalizedPoint.self, forKey: .contentPosition) ?? NormalizedPoint(x: 0.5, y: 0.5)
+        contentScale = try c.decodeIfPresent(Double.self, forKey: .contentScale) ?? 1
         playbackRate = try c.decodeIfPresent(Double.self, forKey: .playbackRate) ?? 1
+        sourceFileEnd = try c.decodeIfPresent(Double.self, forKey: .sourceFileEnd)
+        videoAudio = try c.decodeIfPresent(VideoAudioAttachment.self, forKey: .videoAudio)
         mainTrackStyle = try c.decodeIfPresent(MainTrackVisualStyle.self, forKey: .mainTrackStyle)
+    }
+
+    static func layerOrder(_ lhs: Self, _ rhs: Self) -> Bool {
+        lhs.layerIndex == rhs.layerIndex ? lhs.id.uuidString < rhs.id.uuidString : lhs.layerIndex < rhs.layerIndex
+    }
+
+    public mutating func fillCanvas(canvasAspect: Double) {
+        position = .init(x: 0.5, y: 0.5)
+        width = max(1, 1 / max(aspect * canvasAspect, 0.0001))
+        maskShape = .rectangle
+    }
+
+    public var maskAspect: Double { maskShape == .circle ? 1 : aspect }
+    public var framingAxes: (horizontal: Bool, vertical: Bool) {
+        guard let fill = CameraContentFill.layout(sourceWidth: 1, sourceHeight: aspect,
+            target: .init(x: 0, y: 0, width: 1, height: maskAspect), contentScale: contentScale, overscan: 1)
+        else { return (false, false) }
+        return (fill.visibleSource.width < 1 - 0.000001, fill.visibleSource.height < aspect * (1 - 0.000001))
+    }
+
+    private var minimumAspectForAutomaticInset: Double? {
+        // Fitted video edges can be a fraction of a pixel shy of the canvas.
+        let tolerance = 0.002
+        guard maskShape == .rectangle, opacity >= 0.999, width > 0, aspect > 0,
+              width + tolerance >= 1 + 2 * abs(position.x - 0.5) else { return nil }
+        return (1 + 2 * abs(position.y - 0.5) - tolerance) / (width * aspect)
+    }
+
+    func requestsCameraInset(cameraOnlyFullscreen: Bool, canvasAspect: Double) -> Bool {
+        switch cameraMode {
+        case .videoInFront, .original, .hidden: return false
+        case .pictureInPicture: return true
+        case .automatic:
+            guard cameraOnlyFullscreen, let minimum = legacyAutoCoverage?.minimumCanvasAspect else { return false }
+            return canvasAspect >= minimum
+        }
     }
 }
 
 public extension ProjectTimeline {
+    /// The focus map follows the visible overlay under the playhead. When inspecting a zoom
+    /// from outside its range, use the first covered frame in that range.
+    func focusMapVideo(for zoom: ZoomAnimationClip, at time: TimeInterval) -> VideoClip? {
+        let candidates = videoClips.filter {
+            $0.opacity > 0 && $0.timing.endTime > zoom.startTime && videoPresentationStart($0) < zoom.effectEndTime
+        }
+        let first = candidates.map { max(zoom.startTime, videoPresentationStart($0)) }.min()
+        guard let first else { return nil }
+        let sample = (zoom.startTime..<zoom.effectEndTime).contains(time) ? time : first
+        return candidates.filter { presentsVideo($0, at: sample) }.max(by: VideoClip.layerOrder)
+    }
+
     /// Pictures, motion graphics and overlay videos share one stacking order;
     /// a newly added item goes on a new layer above everything.
     var nextVisualLayer: Int {
@@ -197,9 +346,17 @@ public extension ProjectTimeline {
     /// 0% volume and muted audio clips. Preview and export render the same
     /// stable track structure into their shared program audio.
     var programAudioClips: [AudioClip] {
-        audioClips + videoClips.map {
-            AudioClip(id: $0.id, timing: $0.timing, sourcePath: $0.sourcePath, sourceStart: $0.sourceStart,
-                      volume: $0.volume, fadeIn: 0, fadeOut: 0, kind: .effect, playbackRate: $0.playbackRate)
+        programAudioClips(audio: .init())
+    }
+
+    func programAudioClips(audio: AudioStyle) -> [AudioClip] {
+        audioClips + linkedPrimaryAudioClips(audio: audio) + videoClips.flatMap { video -> [AudioClip] in
+            if let attachment = video.videoAudio {
+                return attachment.clips(for: video.id, timing: video.timing, sourceStart: video.sourceStart,
+                                        rate: video.playbackRate, gain: { _ in video.volume })
+            }
+            return [AudioClip(id: video.id, timing: video.timing, sourcePath: video.sourcePath, sourceStart: video.sourceStart,
+                      volume: video.volume, fadeIn: 0, fadeOut: 0, kind: .effect, playbackRate: video.playbackRate)]
         } + animationClips.compactMap { clip in
             guard let sound = clip.soundtrack else { return nil }
             return AudioClip(id: clip.id, timing: clip.timing, sourcePath: sound.path, sourceStart: clip.timeOffset,
@@ -230,9 +387,10 @@ public struct AudioClip: Codable, Equatable, Identifiable, Sendable, TimedOverla
     public var ducksUnderSpeech: Bool
     /// Audio row on the timeline (0 = first row under the recording).
     public var lane: Int
+    public var videoOrigin: VideoAudioOrigin?
 
     private enum CodingKeys: String, CodingKey {
-        case id, timing, sourcePath, sourceStart, volume, isMuted, fadeIn, fadeOut, kind, ducksUnderSpeech, lane, playbackRate
+        case id, timing, sourcePath, sourceStart, volume, isMuted, fadeIn, fadeOut, kind, ducksUnderSpeech, lane, playbackRate, videoOrigin
     }
 
     public init(from decoder: any Decoder) throws {
@@ -247,6 +405,7 @@ public struct AudioClip: Codable, Equatable, Identifiable, Sendable, TimedOverla
         fadeOut = try c.decodeIfPresent(TimeInterval.self, forKey: .fadeOut) ?? 0
         kind = try c.decodeIfPresent(AudioClipKind.self, forKey: .kind) ?? .music
         ducksUnderSpeech = try c.decodeIfPresent(Bool.self, forKey: .ducksUnderSpeech) ?? (kind == .music)
+        videoOrigin = try c.decodeIfPresent(VideoAudioOrigin.self, forKey: .videoOrigin)
         lane = try c.decodeIfPresent(Int.self, forKey: .lane) ?? (kind == .music ? 0 : 1)
         playbackRate = try c.decodeIfPresent(Double.self, forKey: .playbackRate) ?? 1
     }

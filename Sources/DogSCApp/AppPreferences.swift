@@ -329,6 +329,7 @@ enum AppPreferences {
         "cn.laogou.dogsc.editor-window-full-screen"
     static let exportDirectoryKey =
         "cn.laogou.dogsc.export-directory"
+    private static let overlayCameraAboveKey = "editor.video.last-camera-above"
     private static let stickerCreationDefaultsKey =
         "editor.sticker.last-used-creation-defaults.v1"
     private static let zoomCreationScaleKey =
@@ -360,6 +361,14 @@ enum AppPreferences {
         } else {
             UserDefaults.standard.removeObject(forKey: applicationLanguagesKey)
         }
+    }
+
+    static func newVideoCameraMode(in defaults: UserDefaults = .standard) -> VideoCameraMode {
+        (defaults.object(forKey: overlayCameraAboveKey) as? Bool ?? true) ? .pictureInPicture : .videoInFront
+    }
+
+    static func rememberVideoCameraAbove(_ above: Bool, in defaults: UserDefaults = .standard) {
+        defaults.set(above, forKey: overlayCameraAboveKey)
     }
 
     static var appearancePreference: AppAppearancePreference {

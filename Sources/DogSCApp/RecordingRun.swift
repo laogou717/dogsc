@@ -52,7 +52,7 @@ enum RecordingPlanError: LocalizedError, Equatable {
 /// Target identity and every track decision remain value snapshots for the
 /// complete async lifetime of that run.
 struct RecordingPlan: Equatable, Sendable {
-    let target: CaptureSelectionTarget
+    let target: CaptureSelectionTarget?
     let configuration: CaptureConfiguration
     /// Fixed capture frame for display/area targets and a bootstrap frame for
     /// windows. Live window geometry belongs to CaptureWindowGeometryRuntime.
@@ -84,6 +84,27 @@ struct RecordingPlan: Equatable, Sendable {
                 throw RecordingPlanError.invalidDevice
             }
         }
+        try Self.validateInputs(configuration)
+        self.target = target
+        self.configuration = configuration
+        self.pointerCaptureFrame = pointerCaptureFrame
+    }
+
+    init(cameraOnly inputs: CaptureConfiguration) throws {
+        configuration = CaptureConfiguration(
+            source: .cameraOnly, captureFrameRate: inputs.captureFrameRate,
+            captureCodec: inputs.captureCodec, recordsSystemAudio: false,
+            recordsMicrophone: inputs.recordsMicrophone,
+            microphoneDeviceID: inputs.microphoneDeviceID, microphoneDeviceName: inputs.microphoneDeviceName,
+            recordsCamera: true, cameraDeviceID: inputs.cameraDeviceID, cameraDeviceName: inputs.cameraDeviceName,
+            cameraCaptureResolution: inputs.cameraCaptureResolution
+        )
+        try Self.validateInputs(configuration)
+        target = nil
+        pointerCaptureFrame = .zero
+    }
+
+    private static func validateInputs(_ configuration: CaptureConfiguration) throws {
         if configuration.recordsCamera,
            configuration.cameraDeviceID?.isEmpty != false {
             throw RecordingPlanError.missingCamera
@@ -92,12 +113,10 @@ struct RecordingPlan: Equatable, Sendable {
            configuration.microphoneDeviceID?.isEmpty != false {
             throw RecordingPlanError.missingMicrophone
         }
-        self.target = target
-        self.configuration = configuration
-        self.pointerCaptureFrame = pointerCaptureFrame
     }
 
     var primaryRecordingRelativePath: String {
+        if configuration.source == .cameraOnly { return "media/camera-0001.mov" }
         if configuration.source == .device {
             return "media/device-0001.mov"
         }
@@ -113,8 +132,8 @@ struct RecordingPlan: Equatable, Sendable {
                 ? ProjectMediaReference(relativePath: "media/camera-0001.mov") : nil,
             microphone: configuration.recordsMicrophone
                 ? ProjectMediaReference(relativePath: "media/microphone.m4a") : nil,
-            pointerEvents: configuration.source == .device
-                ? nil : ProjectMediaReference(relativePath: "events/pointer.jsonl")
+            pointerEvents: configuration.source.capturesDesktop
+                ? ProjectMediaReference(relativePath: "events/pointer.jsonl") : nil
         )
     }
 
@@ -123,6 +142,7 @@ struct RecordingPlan: Equatable, Sendable {
         windowIDs: Set<UInt32>,
         deviceIDs: Set<String>
     ) throws {
+        guard let target else { return }
         switch target {
         case let .display(id, _):
             guard displayIDs.contains(id) else { throw RecordingPlanError.displayUnavailable }
@@ -241,7 +261,7 @@ func pointerCaptureFrame(
         // frame may be minutes old after a take, so freeze current geometry
         // again for every new run, including an immediate re-record.
         return geometry.frame
-    case .device:
+    case .device, .cameraOnly:
         return .zero
     }
 }

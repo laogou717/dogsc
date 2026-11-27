@@ -18,7 +18,7 @@ enum NativeScreenRecordingBackendPolicy {
         switch source {
         case .window, .area:
             .best
-        case .display, .device:
+        case .display, .device, .cameraOnly:
             .nominal
         }
     }

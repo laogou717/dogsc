@@ -298,7 +298,7 @@ extension EditorInspectorView {
             get: {
                 guard let id,
                       let clip = editorStore.previewProject.zoomAnimations.first(where: { $0.id == id }),
-                      clip.origin == .automatic,
+                      clip.origin == .automatic, clip.target == .recording,
                       let pointer = mediaSession.mediaPlan?.pointer
                 else { return authoredFocus.wrappedValue }
                 let time = playbackController.outputTime

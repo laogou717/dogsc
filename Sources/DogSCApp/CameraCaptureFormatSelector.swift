@@ -1,12 +1,12 @@
-import Foundation
+import RecorderCore
 
 enum CameraCaptureFormatSelector {
-    /// 摄像头的 PIP 显示不需要盲目上 4K：横屏格式优先选择
-    /// 1080p 档以内的最高像素；如果没有该档位，再退回最高像素横屏。
-    /// 手机屏幕或只有竖屏格式的设备则保持它们的原始方向。
+    /// For a webcam, keep the source orientation when choosing a quality tier.
+    /// Wired iOS screen capture continues to select its highest resolution.
     static func preferredFormatIndex(
         dimensions: [(width: Int, height: Int)],
-        prefersLandscape: Bool
+        sourceIsLandscape: Bool?,
+        requestedQuality: CameraCaptureResolution? = nil
     ) -> Int? {
         let valid = dimensions.enumerated().filter {
             $0.element.width > 0 && $0.element.height > 0
@@ -22,13 +22,22 @@ enum CameraCaptureFormatSelector {
             }!.offset
         }
 
-        guard prefersLandscape else { return highestPixels(in: valid) }
-        let landscape = valid.filter { $0.element.width >= $0.element.height }
-        guard !landscape.isEmpty else { return highestPixels(in: valid) }
-        let fullHDPixels = 1920 * 1080
-        let withinCap = landscape.filter {
-            $0.element.width * $0.element.height <= Int(Double(fullHDPixels) * 1.05)
-        }
-        return highestPixels(in: withinCap.isEmpty ? landscape : withinCap)
+        guard let sourceIsLandscape else { return highestPixels(in: valid) }
+        let matching = valid.filter { ($0.element.width >= $0.element.height) == sourceIsLandscape }
+        let candidates = matching.isEmpty ? valid : matching
+        if let quality = requestedQuality?.qualitySize,
+           let exact = candidates.first(where: {
+               max($0.element.width, $0.element.height) == quality.width
+                   && min($0.element.width, $0.element.height) == quality.height
+           }) { return exact.offset }
+
+        // A quality tier available only in the other orientation may be selected
+        // from an older preference or before turning the camera.
+        let pixelLimit = requestedQuality.map { $0.width * $0.height } ?? Int(1920.0 * 1080 * 1.05)
+        let withinCap = candidates.filter { $0.element.width * $0.element.height <= pixelLimit }
+        if !withinCap.isEmpty { return highestPixels(in: withinCap) }
+        return candidates.min {
+            $0.element.width * $0.element.height < $1.element.width * $1.element.height
+        }?.offset
     }
 }

@@ -168,6 +168,10 @@ final class AppModel: ObservableObject {
     @Published var recordingMarkerShortcutAvailable = false
     let microphoneInputLevel = LiveMicrophoneLevelState()
     let configurationCameraFrameSink = ImmediateCameraPreviewFrameSink()
+    let studioCameraFrameSink = ImmediateCameraPreviewFrameSink()
+    @Published var cameraStudioIsPresented = false
+    var cameraBeforeStudio: CaptureDeviceInfo?
+    var resolutionBeforeStudio: CameraCaptureResolution?
     @Published var recordingDestinationName = ProjectStore.savedProjectsFolder.lastPathComponent
     @Published var recordingTitleDraft = ""
     @Published var recordingCameraMirrored = UserDefaults.standard.object(forKey: "recording.camera-mirrored") as? Bool ?? true {
@@ -219,7 +223,7 @@ final class AppModel: ObservableObject {
     }
 
     var showsRequiredPermissionGate: Bool {
-        phase == .setup
+        phase == .setup && !cameraStudioIsPresented
             && (!hasRequiredRecordingPermissions
                 || !hasCompletedRequiredPermissionOnboarding)
     }
@@ -231,7 +235,7 @@ final class AppModel: ObservableObject {
     lazy var microphoneRecorder = MicrophoneRecorder()
     lazy var cameraPreviewController = CameraPreviewWindowController()
     lazy var cameraBeautyPreviewProcessor = CameraBeautyPreviewProcessor(
-        sinks: [cameraPreviewController.frameSink, configurationCameraFrameSink], settings: recordingCameraBeauty
+        sinks: [cameraPreviewController.frameSink, configurationCameraFrameSink, studioCameraFrameSink], settings: recordingCameraBeauty
     )
     lazy var pointerRecorder = PointerEventRecorder()
     lazy var trackFinalizer = RecordingTrackFinalizer(operations: .live(
@@ -363,9 +367,6 @@ final class AppModel: ObservableObject {
         captureDeviceLifecycle.start()
         refreshRecentProjects()
     }
-    var selectedCaptureSource: CaptureSource? {
-        captureSetup.selectedSource
-    }
 
     var cameraReadiness: RecorderCameraReadiness {
         RecorderCameraReadiness(
@@ -376,7 +377,7 @@ final class AppModel: ObservableObject {
 
     var recorderStartAvailability: RecorderStartAvailability {
         RecorderStartAvailability(
-            hasCaptureTarget: captureSetup.canStartRecording,
+            hasCaptureTarget: cameraStudioIsPresented ? configuration.recordsCamera : captureSetup.canStartRecording,
             cameraReadiness: cameraReadiness
         )
     }
@@ -385,11 +386,11 @@ final class AppModel: ObservableObject {
         guard purpose == .recording, phase == .setup else { return }
         cancelPendingRecordingRestart()
         defer {
-            if phase == .setup { captureSetup.recordingStartDidNotProceed() }
+            if phase == .setup && !cameraStudioIsPresented { captureSetup.recordingStartDidNotProceed() }
         }
         switch recorderStartAvailability {
         case .needsCaptureTarget:
-            errorMessage = "请先选择显示器、窗口、区域或设备。"
+            errorMessage = cameraStudioIsPresented ? "未发现设备" : "请先选择显示器、窗口、区域或设备。"
             return
         case .preparingCamera:
             errorMessage = "摄像头正在建立实时画面并确认分辨率与帧率，请稍候再开始录制。"
@@ -397,26 +398,26 @@ final class AppModel: ObservableObject {
         case .ready:
             break
         }
-        guard let selectedTarget = captureSetup.target else {
-            errorMessage = "请先选择显示器、窗口、区域或设备。"
-            return
-        }
-        if selectedTarget.source == .device { refreshCaptureDevices() }
-        refreshCaptureReadiness()
         let plan: RecordingPlan
         do {
-            let candidate = try captureSetup.makeRecordingPlan(
-                pointerCaptureFrame: try pointerCaptureFrame(
-                    for: configuration,
-                    availableWindows: availableWindows
+            if cameraStudioIsPresented {
+                plan = try RecordingPlan(cameraOnly: configuration)
+            } else {
+                if captureSetup.target?.source == .device { refreshCaptureDevices() }
+                refreshCaptureReadiness()
+                let candidate = try captureSetup.makeRecordingPlan(
+                    pointerCaptureFrame: try pointerCaptureFrame(
+                        for: configuration,
+                        availableWindows: availableWindows
+                    )
                 )
-            )
-            try candidate.validateAvailability(
-                displayIDs: Set(availableDisplays.map(\.id)),
-                windowIDs: currentCaptureWindowIDs(),
-                deviceIDs: Set(availableScreenDevices.map(\.id))
-            )
-            plan = candidate
+                try candidate.validateAvailability(
+                    displayIDs: Set(availableDisplays.map(\.id)),
+                    windowIDs: candidate.configuration.source == .window ? currentCaptureWindowIDs() : [],
+                    deviceIDs: Set(availableScreenDevices.map(\.id))
+                )
+                plan = candidate
+            }
         } catch {
             errorMessage = appErrorDescription(error)
             return
@@ -425,7 +426,7 @@ final class AppModel: ObservableObject {
             errorMessage = message
             return
         }
-        guard hasRequiredRecordingPermissions else {
+        guard plan.configuration.source == .cameraOnly || hasRequiredRecordingPermissions else {
             // The permission gate owns authorization. Recording preparation
             // must never prompt after an area/window overlay is already live.
             captureSetup.stopPresentation()
@@ -445,7 +446,7 @@ final class AppModel: ObservableObject {
             microphoneMeterTask = nil
             microphoneInputLevel.update(0)
         }
-        captureSetup.beginRecordingPresentation(for: plan)
+        if plan.target != nil { captureSetup.beginRecordingPresentation(for: plan) }
         recorderTransitionStage = .checkingPermissions
         phase = .preparing
         errorMessage = nil
@@ -492,7 +493,7 @@ final class AppModel: ObservableObject {
                     guard permitted else {
                         throw CameraRecorderError.permissionDenied("iPhone/iPad 屏幕")
                     }
-                } else if !hasRequiredRecordingPermissions {
+                } else if plan.configuration.source.capturesDesktop && !hasRequiredRecordingPermissions {
                     throw ScreenRecorderError.permissionDenied
                 }
                 preparationLogger.notice("prepare: screen permission ok")
@@ -526,6 +527,14 @@ final class AppModel: ObservableObject {
                 )
                 let customTitle = recordingTitleDraft.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !customTitle.isEmpty { project.title = String(customTitle.prefix(120)) }
+                if plan.configuration.source == .cameraOnly {
+                    project.canvas.aspectRatio = .adaptive
+                    project.canvas.crop = .full
+                    project.camera.contentScale = 1
+                    project.camera.contentPosition = NormalizedPoint(x: 0.5, y: 0.5)
+                    project.camera.isFullscreen = true
+                    project.camera.isHidden = false
+                }
                 project.camera.isMirrored = recordingCameraMirrored
                 project.camera.beauty = recordingCameraBeauty
                 let session = try ProjectStore.createSession(
@@ -564,7 +573,7 @@ final class AppModel: ObservableObject {
                 // pre-roll against the exact first video PTS and converts its
                 // last position into a non-clicking t=0 seed.
                 let pointerStartedAt: PointerRecordingStart?
-                if plan.configuration.source != .device {
+                if plan.configuration.source.capturesDesktop {
                     pointerStartedAt = await pointerRecorder.start(
                         frameSource: captureSetup.pointerFrameSource(for: plan)
                     )
@@ -583,33 +592,29 @@ final class AppModel: ObservableObject {
                     return
                 }
                 do {
+                    // A primary camera's first sample is project time zero.
+                    if plan.configuration.source == .cameraOnly, plan.configuration.recordsMicrophone {
+                        try await startMicrophoneTrack(for: run, session: session)
+                        guard recordingRuns.isCurrent(run.id) else { return }
+                    }
                     if plan.configuration.recordsCamera {
                         recorderTransitionStage = .startingCamera
                         try await cameraRecorder.start(
                             to: session.cameraRecordingURL,
                             deviceUniqueID: plan.configuration.cameraDeviceID,
-                            captureResolution: plan.configuration.cameraCaptureResolution
+                            captureResolution: plan.configuration.cameraCaptureResolution,
+                            captureCodec: plan.configuration.source == .cameraOnly ? plan.configuration.captureCodec : .h264
                         )
                         guard recordingRuns.isCurrent(run.id) else { return }
                         recordingRuns.markStarted(.camera, for: run.id)
                         cameraRecordingURL = session.cameraRecordingURL
                         preparationLogger.notice("prepare: camera track started")
                     }
-                    if plan.configuration.recordsMicrophone {
-                        recorderTransitionStage = .startingMicrophone
-                        // A track is owned as soon as start is requested, not
-                        // only after the first sample. Failed preparation must
-                        // therefore stop/cancel a half-started writer too.
-                        recordingRuns.markStarted(.microphone, for: run.id)
-                        try await microphoneRecorder.start(
-                            to: session.microphoneRecordingURL,
-                            deviceUniqueID: plan.configuration.microphoneDeviceID
-                        )
+                    if plan.configuration.source != .cameraOnly, plan.configuration.recordsMicrophone {
+                        try await startMicrophoneTrack(for: run, session: session)
                         guard recordingRuns.isCurrent(run.id) else { return }
-                        microphoneRecordingURL = session.microphoneRecordingURL
-                        preparationLogger.notice("prepare: microphone track started")
                     }
-                    recorderTransitionStage = .startingPrimaryCapture
+                    if plan.configuration.source != .cameraOnly { recorderTransitionStage = .startingPrimaryCapture }
                     if plan.configuration.source == .device {
                         try await deviceRecorder.start(
                             to: session.deviceRecordingURL,
@@ -620,7 +625,7 @@ final class AppModel: ObservableObject {
                         guard recordingRuns.isCurrent(run.id) else { return }
                         recordingRuns.markStarted(.device, for: run.id)
                         project.canvas.applyScreenFrameStyle(.devicePhone)
-                    } else {
+                    } else if plan.configuration.source.capturesDesktop {
                         try await recorder.start(
                             runID: run.id, configuration: plan.configuration,
                             outputURL: session.recordingURL(relativePath: plan.primaryRecordingRelativePath)
@@ -629,7 +634,11 @@ final class AppModel: ObservableObject {
                         recordingRuns.markStarted(.screen, for: run.id)
                         if let error = recorder.terminalError(for: run.id) { throw error }
                     }
-                    preparationLogger.notice("prepare: screen track started")
+                    if let preparingInterruptedError {
+                        self.preparingInterruptedError = nil
+                        throw preparingInterruptedError
+                    }
+                    preparationLogger.notice("prepare: primary video started")
                 } catch {
                     guard recordingRuns.isCurrent(run.id) else { return }
                     let startError = error
@@ -655,13 +664,22 @@ final class AppModel: ObservableObject {
                     )
                 }
                 recorderTransitionStage = .aligningTimeline
-                let mediaTimelineOrigin = plan.configuration.source == .device
-                    ? (deviceRecorder.recordingStartedAt ?? Date())
-                    : (recorder.firstFrameStartedAt ?? Date())
+                let mediaTimelineOrigin: Date
+                let primaryHostTime: TimeInterval?
+                switch plan.configuration.source {
+                case .device:
+                    mediaTimelineOrigin = deviceRecorder.recordingStartedAt ?? Date()
+                    primaryHostTime = nil
+                case .cameraOnly:
+                    mediaTimelineOrigin = cameraRecorder.recordingStartedAt ?? Date()
+                    primaryHostTime = cameraRecorder.firstFrameHostTime
+                default:
+                    mediaTimelineOrigin = recorder.firstFrameStartedAt ?? Date()
+                    primaryHostTime = recorder.firstFrameStartedAtHostTime
+                }
                 if var media = project.media {
                     if var camera = media.camera {
-                        if plan.configuration.source != .device,
-                           let videoHostTime = recorder.firstFrameStartedAtHostTime,
+                        if let videoHostTime = primaryHostTime,
                            let sourceTime = cameraRecorder.recordedSourceTime(
                             atHostTime: videoHostTime
                            ) {
@@ -676,8 +694,7 @@ final class AppModel: ObservableObject {
                         media.camera = camera
                     }
                     if var microphone = media.microphone {
-                        if plan.configuration.source != .device,
-                           let videoHostTime = recorder.firstFrameStartedAtHostTime,
+                        if let videoHostTime = primaryHostTime,
                            let sourceTime = microphoneRecorder.recordedSourceTime(
                             atHostTime: videoHostTime
                            ) {
@@ -706,11 +723,6 @@ final class AppModel: ObservableObject {
                     }
                     project.media = media
                 }
-                if let preparingInterruptedError {
-                    // 流已在准备期间死亡：走 catch 的 rollback，而不是进入 .recording。
-                    self.preparingInterruptedError = nil
-                    throw preparingInterruptedError
-                }
                 startedAt = mediaTimelineOrigin
                 recorderTransitionStage = .idle
                 phase = .recording
@@ -737,6 +749,17 @@ final class AppModel: ObservableObject {
             }
         }
     }
+    private func startMicrophoneTrack(for run: RecordingRun, session: RecordingSession) async throws {
+        recorderTransitionStage = .startingMicrophone
+        // Own the writer during preparation too, so a partial start is finalized.
+        recordingRuns.markStarted(.microphone, for: run.id)
+        try await microphoneRecorder.start(to: session.microphoneRecordingURL,
+            deviceUniqueID: run.plan.configuration.microphoneDeviceID)
+        guard recordingRuns.isCurrent(run.id) else { return }
+        microphoneRecordingURL = session.microphoneRecordingURL
+        preparationLogger.notice("prepare: microphone track started")
+    }
+
     func stopRecording() {
         guard phase == .recording, let run = recordingRuns.active else { return }
         guard !isPauseTransitioning else {
@@ -793,8 +816,7 @@ final class AppModel: ObservableObject {
                 await recoverFromFinalizeFailure(
                     run: run,
                     error: error,
-                    resetCapture: false,
-                    restart: false
+                    resetCapture: false
                 )
                 return
             }
@@ -805,6 +827,8 @@ final class AppModel: ObservableObject {
                    isNonemptyFile(candidate) {
                     recordingURL = candidate
                 }
+            } else if run.plan.configuration.source == .cameraOnly {
+                recordingURL = cameraRecordingURL
             } else if run.startedTracks.contains(.screen) {
                 recordingURL = stopResult.outputURL(for: .screen)
                 if recordingURL == nil {
@@ -843,8 +867,7 @@ final class AppModel: ObservableObject {
                 await recoverFromFinalizeFailure(
                     run: run,
                     error: error,
-                    resetCapture: false,
-                    restart: false
+                    resetCapture: false
                 )
                 return
             }
@@ -918,8 +941,8 @@ final class AppModel: ObservableObject {
                                 state: "complete",
                                 session: currentSession,
                                 frameRate: run.plan.configuration.captureFrameRate,
-                                measurement: run.plan.configuration.source == .device
-                                    ? nil : recorder.lastMeasurement,
+                                measurement: run.plan.configuration.source.capturesDesktop
+                                    ? recorder.lastMeasurement : nil,
                                 cameraDiagnostics: cameraDiagnostics,
                                 systemAudioDiagnostics: systemAudioDiagnostics,
                                 microphoneDiagnostics: microphoneDiagnostics,
@@ -986,8 +1009,10 @@ final class AppModel: ObservableObject {
             }
             if recordingIsUsable {
                 if !missingTracks.isEmpty {
+                    let warning = run.plan.configuration.source == .cameraOnly
+                        ? "摄像头录制已保存，但%@轨道未成功写入。" : "屏幕录制已保存，但%@轨道未成功写入。"
                     finalizationErrors.insert(
-                        String(format: appLocalized("屏幕录制已保存，但%@轨道未成功写入。"),
+                        String(format: appLocalized(warning),
                                missingTracks.map(appLocalized).joined(separator: appLocalized("和"))),
                         at: 0
                     )
@@ -1039,7 +1064,7 @@ final class AppModel: ObservableObject {
                 }
             }
             guard phase == .recording, recordingRuns.isCurrent(run.id) else { return }
-            let renewsNativeStream = !run.startedTracks.contains(.device)
+            let renewsNativeStream = run.startedTracks.contains(.screen)
                 && recorder.usesNativePauseSessions
             if isRecordingPaused {
                 if renewsNativeStream {
@@ -1050,10 +1075,20 @@ final class AppModel: ObservableObject {
                           recordingRuns.isCurrent(run.id), recorder.isCapturing,
                           !recorder.isPaused else { return }
                 } else {
-                    resumeAuxiliaryTracks(for: run)
+                    let timing: RecordingResumeTiming?
+                    let now = CMClockGetTime(CMClockGetHostTimeClock()).seconds
+                    if run.plan.configuration.source == .cameraOnly,
+                       let start = cameraRecorder.firstFrameHostTime,
+                       let duration = cameraRecorder.recordedSourceTime(atHostTime: now) {
+                        timing = RecordingResumeTiming(videoStartedAtHostTime: start,
+                            resumedAtHostTime: now, completedVideoDuration: duration)
+                    } else {
+                        timing = nil
+                    }
+                    resumeAuxiliaryTracks(for: run, at: timing)
                     if run.startedTracks.contains(.device) {
                         deviceRecorder.resume()
-                    } else {
+                    } else if run.startedTracks.contains(.screen) {
                         await recorder.resume(runID: run.id)
                         guard recordingRuns.isCurrent(run.id), !recorder.isPaused else { return }
                     }
@@ -1063,7 +1098,7 @@ final class AppModel: ObservableObject {
             } else {
                 if run.startedTracks.contains(.device) {
                     deviceRecorder.pause()
-                } else {
+                } else if run.startedTracks.contains(.screen) {
                     await recorder.pause(runID: run.id)
                     guard recordingRuns.isCurrent(run.id), recorder.isPaused else { return }
                 }

@@ -658,21 +658,15 @@ struct MotionElementInspector: View {
     }
 }
 
-/// Images the user puts into a motion are copied into the library, so the
-/// project keeps them if the original moves.
 enum MotionElementImages {
     static let extensions = ["png", "jpg", "jpeg", "heic", "gif", "webp", "tiff", "svg"]
 
     @MainActor
     static func keep(_ url: URL) -> String? {
-        guard extensions.contains(url.pathExtension.lowercased()) else { return nil }
-        let folder = AssetLibrary.shared.folder(for: .image)
-        let copy = folder.appendingPathComponent(url.lastPathComponent)
-        if !FileManager.default.fileExists(atPath: copy.path) {
-            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            try? FileManager.default.copyItem(at: url, to: copy)
-        }
-        return FileManager.default.fileExists(atPath: copy.path) ? copy.path : url.path
+        guard extensions.contains(url.pathExtension.lowercased()), let package = ProjectFiles.package else { return nil }
+        let catalog = AssetLibrary.projectAssets(in: package)
+        guard let entry = try? catalog.keepCopy(of: url, kind: .image, name: url.lastPathComponent) else { return nil }
+        return ProjectFiles.portable(entry.path)
     }
 }
 

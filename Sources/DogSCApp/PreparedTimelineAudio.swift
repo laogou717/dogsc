@@ -41,6 +41,7 @@ final class PreparedTimelineAudio {
         let voiceSourceIDs = Set(bundle.plan.sources.compactMap { id, source in
             source.manifest?.microphone != nil || source.microphoneRange != nil ? id : nil
         })
+        let detachedVoiceTracks = Set(bundle.externalAudio.filter { $0.clip.videoOrigin?.normalizesAsVoice == true }.map { $0.track.trackID })
         var trackKeys: [[AudioSourceKey?]] = []
         var missing: [AudioSourceKey] = []
         var seen = Set<AudioSourceKey>()
@@ -55,7 +56,7 @@ final class PreparedTimelineAudio {
                     $0.value.systemAudio?.asset.url.standardizedFileURL.path == version.standardizedPath
                         && $0.value.systemAudio?.track.trackID == segment.sourceTrackID
                 }?.key : nil
-                let boosts = original.trackID == microphoneID
+                let boosts = original.trackID == microphoneID || detachedVoiceTracks.contains(original.trackID)
                     || (original.trackID == systemID && recordingID.map { !voiceSourceIDs.contains($0) } == true)
                 let key = AudioSourceKey(file: version, trackID: segment.sourceTrackID, boostsLoudness: boosts)
                 keys.append(key)
@@ -108,7 +109,7 @@ final class PreparedTimelineAudio {
     }
 
     func tracks(includeExternalAudio: Bool = true) -> [AVCompositionTrack] {
-        (includeExternalAudio ? bundle.mixedAudioTracks : bundle.recordingAudioTracks)
+        (includeExternalAudio ? bundle.mixedAudioTracks : bundle.speechAudioTracks)
             .compactMap { composition.track(withTrackID: $0.trackID) }
     }
 

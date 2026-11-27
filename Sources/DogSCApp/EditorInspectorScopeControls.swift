@@ -14,7 +14,7 @@ extension EditorInspectorView {
     @ViewBuilder
     func zoomTransitionAvailability(_ animation: ZoomAnimationClip) -> some View {
         if let resolved = ZoomTransitionResolution.resolve(
-            editorStore.previewProject.zoomAnimations, outputDuration: timelineDuration
+            editorStore.previewProject.zoomAnimations.filter { $0.target == animation.target }, outputDuration: timelineDuration
         ).first(where: { $0.id == animation.id }) {
             let constrained = abs(resolved.enterDuration - animation.requestedEnterDuration) > 0.001
                 || abs(resolved.exitDuration - animation.requestedExitDuration()) > 0.001
@@ -41,7 +41,7 @@ extension EditorInspectorView {
     func selectedAudioContext(_ segmentID: UUID) -> some View {
         if let context = primarySegmentContext(id: segmentID) {
             let overrides = editorStore.previewProject.timeline.primarySegmentAudioOverrides[segmentID]
-            let inherits = overrides?.isEmpty ?? true
+            let inherits = overrides?.inheritsMix ?? true
             VStack(alignment: .leading, spacing: usesCompactSelectedAudioLayout ? 6 : 9) {
                 HStack(alignment: .firstTextBaseline) {
                     if usesCompactSelectedAudioLayout {
@@ -69,7 +69,7 @@ extension EditorInspectorView {
                     if !inherits {
                         Button("恢复继承") {
                             var timeline = editorStore.project.timeline
-                            timeline.primarySegmentAudioOverrides.removeValue(forKey: segmentID)
+                            timeline.resetSegmentAudioMix(segmentID)
                             performEditorCommand {
                                 try editorStore.replaceTimeline(with: timeline, actionName: "恢复片段声音继承")
                             }

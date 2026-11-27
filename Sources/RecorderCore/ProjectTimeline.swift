@@ -19,6 +19,7 @@ public struct InsertedMedia: Codable, Equatable, Sendable {
     /// only a black stand-in that gives the span a video track; the picture
     /// is drawn from this page (with `properties`) in preview and export, so
     /// its text and colours stay editable.
+    public var cameraSlot: MotionCameraSlot?
     public var motionPath: String?
     public var imagePath: String?
     public var properties: [String: AnimationPropertyValue]
@@ -54,7 +55,7 @@ public struct InsertedMedia: Codable, Equatable, Sendable {
         self.soundPath = soundPath
     }
 
-    private enum CodingKeys: String, CodingKey { case path, fileDuration, name, usesFrameStyle, motionPath, imagePath, properties, soundPath, elementEdits, screenAppearance, sourceAspectRatio, overlayOrigin, transferSound }
+    private enum CodingKeys: String, CodingKey { case cameraSlot, path, fileDuration, name, usesFrameStyle, motionPath, imagePath, properties, soundPath, elementEdits, screenAppearance, sourceAspectRatio, overlayOrigin, transferSound }
 
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -64,6 +65,7 @@ public struct InsertedMedia: Codable, Equatable, Sendable {
         usesFrameStyle = try c.decodeIfPresent(Bool.self, forKey: .usesFrameStyle) ?? false
         screenAppearance = try c.decodeIfPresent(ScreenCardAppearance.self, forKey: .screenAppearance)
         sourceAspectRatio = try c.decodeIfPresent(Double.self, forKey: .sourceAspectRatio).flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+        cameraSlot = try c.decodeIfPresent(MotionCameraSlot.self, forKey: .cameraSlot)
         motionPath = try c.decodeIfPresent(String.self, forKey: .motionPath)
         imagePath = try c.decodeIfPresent(String.self, forKey: .imagePath)
         properties = try c.decodeIfPresent([String: AnimationPropertyValue].self, forKey: .properties) ?? [:]
@@ -319,6 +321,7 @@ public struct TransitionTiming: Codable, Equatable, Sendable {
 /// keeps the familiar System Sound / Microphone controls as the default while
 /// allowing a selected clip to diverge only for the source the user edits.
 public struct PrimarySegmentAudioOverrides: Codable, Equatable, Sendable {
+    public var videoAudio: VideoAudioAttachment?
     public var systemVolume: Double?
     public var microphoneVolume: Double?
     public var isSystemMuted: Bool?
@@ -336,12 +339,14 @@ public struct PrimarySegmentAudioOverrides: Codable, Equatable, Sendable {
         self.isMicrophoneMuted = isMicrophoneMuted
     }
 
-    public var isEmpty: Bool {
+    public var inheritsMix: Bool {
         systemVolume == nil
             && microphoneVolume == nil
             && isSystemMuted == nil
             && isMicrophoneMuted == nil
     }
+
+    public var isEmpty: Bool { videoAudio == nil && inheritsMix }
 }
 
 /// The single persisted owner of every time-varying project edit.
@@ -355,7 +360,36 @@ public struct ProjectTimeline: Codable, Equatable, Sendable {
     public var stickerClips: [StickerClip]
     public var animationClips: [AnimationClip]
     public var audioClips: [AudioClip]
-    public var videoClips: [VideoClip]
+    public var videoClips: [VideoClip] {
+        didSet { videoJoinStarts = Self.videoJoinStarts(for: videoClips) }
+    }
+    // Derived visual coverage only. Audio, editable edges and the media clock keep authored time.
+    private var videoJoinStarts: [UUID: TimeInterval]
+
+    private static func videoJoinStarts(for clips: [VideoClip]) -> [UUID: TimeInterval] {
+        guard clips.count > 1 else { return [:] }
+        var starts: [UUID: TimeInterval] = [:]
+        let layers = Dictionary(grouping: clips.filter { $0.opacity > 0 && $0.timing.duration > 0 }, by: \.layerIndex)
+        for layer in layers.values {
+            var coveredUntil = -Double.infinity
+            for clip in layer.sorted(by: { $0.timing.startTime < $1.timing.startTime }) {
+                let gap = clip.timing.startTime - coveredUntil
+                // Audio-sample edits and frame-aligned trims can differ by a fraction
+                // of a millisecond. Only bridge such a seam between videos on this lane.
+                if gap > 0, gap <= 0.001 { starts[clip.id] = coveredUntil }
+                coveredUntil = max(coveredUntil, clip.timing.endTime)
+            }
+        }
+        return starts
+    }
+
+    func videoPresentationStart(_ clip: VideoClip) -> TimeInterval {
+        videoJoinStarts[clip.id] ?? clip.timing.startTime
+    }
+
+    public func presentsVideo(_ clip: VideoClip, at time: TimeInterval) -> Bool {
+        clip.opacity > 0 && time >= videoPresentationStart(clip) && time < clip.timing.endTime
+    }
     public var subtitleCues: [SubtitleCue]
     public var subtitleStyle: SubtitleStyle
     /// Project media bin (EDT-054); files are referenced, not copied.
@@ -386,6 +420,7 @@ public struct ProjectTimeline: Codable, Equatable, Sendable {
         self.animationClips = animationClips
         self.audioClips = audioClips
         self.videoClips = videoClips
+        videoJoinStarts = Self.videoJoinStarts(for: videoClips)
         self.subtitleCues = subtitleCues
         self.subtitleStyle = subtitleStyle
         self.mediaAssets = mediaAssets
@@ -443,6 +478,7 @@ public struct ProjectTimeline: Codable, Equatable, Sendable {
         ) ?? []
         audioClips = try container.decodeIfPresent([AudioClip].self, forKey: .audioClips) ?? []
         videoClips = try container.decodeIfPresent([VideoClip].self, forKey: .videoClips) ?? []
+        videoJoinStarts = Self.videoJoinStarts(for: videoClips)
         subtitleCues = try container.decodeIfPresent([SubtitleCue].self, forKey: .subtitleCues) ?? []
         subtitleStyle = try container.decodeIfPresent(SubtitleStyle.self, forKey: .subtitleStyle) ?? SubtitleStyle()
         mediaAssets = try container.decodeIfPresent([MediaAsset].self, forKey: .mediaAssets) ?? []
@@ -473,8 +509,16 @@ public extension ProjectTimeline {
         let maxShortDuration = max((end - start) * 3, 15)
         return audioClips.filter { clip in
             let overlap = min(clip.timing.endTime, end) - max(clip.timing.startTime, start)
-            guard overlap > 0.02 else { return false }
+            guard clip.videoOrigin == nil, overlap > 0.02 else { return false }
             return clip.kind == .effect || clip.timing.duration <= maxShortDuration
         }
+    }
+}
+
+public extension ProjectTimeline {
+    mutating func resetSegmentAudioMix(_ id: UUID) {
+        var inherited = PrimarySegmentAudioOverrides()
+        inherited.videoAudio = primarySegmentAudioOverrides[id]?.videoAudio
+        primarySegmentAudioOverrides[id] = inherited.isEmpty ? nil : inherited
     }
 }

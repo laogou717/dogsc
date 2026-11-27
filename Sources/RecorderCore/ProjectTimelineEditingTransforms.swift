@@ -36,7 +36,7 @@ extension ProjectTimelineEditing {
         result.audioClips = timeline.audioClips.compactMap {
             rippleTimed($0, deleting: deletion, deletesOutputTail: deletesOutputTail)
         }
-        result.videoClips = timeline.videoClips.compactMap {
+        result.videoClips = RecordingProjectImport.splitVideos(timeline.videoClips, at: deletion.start).compactMap {
             rippleTimed($0, deleting: deletion, deletesOutputTail: deletesOutputTail)
         }
         result.subtitleCues = timeline.subtitleCues.compactMap {
@@ -178,6 +178,16 @@ extension ProjectTimelineEditing {
         var edited = clip
         edited.timing = inserting(clip.timing, at: insertionTime, duration: duration)
         return edited
+    }
+
+    /// An insertion opens a gap between source frames. Stretching an overlay across
+    /// that gap would consume additional footage and could read beyond the asset.
+    static func insertingVideoGap(in clips: [VideoClip], at time: Double, duration: Double) -> [VideoClip] {
+        RecordingProjectImport.splitVideos(clips, at: time).map { clip in
+            var moved = clip
+            if clip.timing.startTime >= time { moved.timing.startTime += duration }
+            return moved
+        }
     }
 
     static func insertingTimed<C: TimedOverlayClip>(_ clip: C, at insertionTime: TimeInterval, duration: TimeInterval) -> C {

@@ -181,7 +181,7 @@ struct SetupView: View {
 
 struct RecordingBar: View {
     @ObservedObject var model: AppModel
-    @State private var pendingAction: RecordingBarAction?
+    @State private var pendingAction: AppDialog?
     @State private var qualityWarningMonitor = RecordingQualityWarningMonitor()
 
     var body: some View {
@@ -196,28 +196,7 @@ struct RecordingBar: View {
         .foregroundStyle(RecorderStyle.ink)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(RecorderAccessibilityID.phaseRecording)
-        .appDialog(isPresented: Binding(
-            get: { pendingAction != nil },
-            set: { if !$0 { pendingAction = nil } }
-        )) {
-            let restarting = pendingAction == .restart
-            let runID = model.recordingRuns.active?.id
-            return AppDialog(
-                title: restarting ? "停止当前录制并重新开始？" : "将这次录制移到废纸篓？",
-                message: restarting
-                    ? "当前录制将移到废纸篓，随后使用相同设置重新开始。"
-                    : "当前录制和相关素材将移到废纸篓，随后返回录制条。",
-                symbol: restarting ? "arrow.counterclockwise" : "trash",
-                actions: [
-                    .init(id: "cancel", title: "取消", role: .cancel),
-                    .init(id: "confirm", title: restarting ? "重新录制" : "移到废纸篓", role: .destructive) { _ in
-                        guard model.recordingRuns.active?.id == runID else { return }
-                        if restarting { model.restartCurrentRecording() }
-                        else { model.discardCurrentRecording() }
-                    }
-                ]
-            )
-        }
+        .appDialog($pendingAction)
         .appDialog(isPresented: Binding(
             get: { model.errorMessage.map(RecorderSetupErrorRecovery.isSurfaceUpdateErrorMessage) == true },
             set: { if !$0 { model.errorMessage = nil } }
@@ -366,13 +345,13 @@ struct RecordingBar: View {
         }
 
         items.append(
-            .action("重新录制…", isEnabled: !model.isPauseTransitioning) {
-                pendingAction = .restart
+            .action(RecordingTakeAction.restart.title, isEnabled: !model.isPauseTransitioning) {
+                pendingAction = RecordingTakeAction.restart.confirmation(for: model)
             }
         )
         items.append(
-            .action("丢弃这次录制…", isEnabled: !model.isPauseTransitioning) {
-                pendingAction = .discard
+            .action(RecordingTakeAction.discard.title, isEnabled: !model.isPauseTransitioning) {
+                pendingAction = RecordingTakeAction.discard.confirmation(for: model)
             }
         )
         return items
@@ -388,9 +367,30 @@ struct RecordingBar: View {
     }
 }
 
-private enum RecordingBarAction {
-    case restart
-    case discard
+enum RecordingTakeAction {
+    case restart, discard
+
+    var title: String { self == .restart ? "重新录制…" : "丢弃这次录制…" }
+    var symbol: String { self == .restart ? "arrow.counterclockwise" : "trash" }
+
+    @MainActor func confirmation(for model: AppModel) -> AppDialog? {
+        guard model.phase == .recording, !model.isPauseTransitioning,
+              let runID = model.recordingRuns.active?.id else { return nil }
+        return AppDialog(
+            title: self == .restart ? "停止当前录制并重新开始？" : "将这次录制移到废纸篓？",
+            message: self == .restart
+                ? "当前录制将移到废纸篓，随后使用相同设置重新开始。"
+                : "当前录制和相关素材将移到废纸篓，随后返回录制准备。",
+            symbol: symbol,
+            actions: [
+                .init(id: "cancel", title: "取消", role: .cancel),
+                .init(id: "confirm", title: self == .restart ? "重新录制" : "移到废纸篓", role: .destructive) { _ in
+                    guard model.recordingRuns.isCurrent(runID) else { return }
+                    if self == .restart { model.restartCurrentRecording() }
+                    else { model.discardCurrentRecording() }
+                }
+            ])
+    }
 }
 
 /// A live take breathes; a paused one holds still in amber.

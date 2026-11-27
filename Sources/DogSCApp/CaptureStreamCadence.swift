@@ -14,7 +14,7 @@ enum CaptureStreamTimingPolicy {
         switch source {
         case .display, .window, .area:
             CMTime(value: 1, timescale: 60)
-        case .device:
+        case .device, .cameraOnly:
             .zero
         }
     }

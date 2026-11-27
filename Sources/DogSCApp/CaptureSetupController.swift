@@ -215,12 +215,12 @@ final class CaptureSetupController: ObservableObject {
 
     var onStartRequested: (() -> Void)?
     var onError: ((String?) -> Void)?
-    var onSelectionPresentationStarted: ((CaptureSource) -> Void)?
+    var onSelectionPresentationStarted: ((RecorderSourceMode) -> Void)?
     var onSelectionPresentationEnded: (() -> Void)?
     var onFocusRestorationRequested: (() -> Void)?
     var recorderDisplayID: (() -> UInt32?)?
 
-    var selectedSource: CaptureSource? { selection.state.selectedSource }
+    var selectedSource: RecorderSourceMode? { selection.state.selectedSource }
     var target: CaptureSelectionTarget? { selection.state.target }
     var selectionToken: CaptureSelectionToken? { selection.state.session?.token }
     var canStartRecording: Bool { selection.state.canStartRecording }
@@ -234,7 +234,7 @@ final class CaptureSetupController: ObservableObject {
     private var windowsRefreshToken: CaptureSelectionToken?
     private var focusRestorationGeneration: UInt64 = 0
     private var startRequestedToken: CaptureSelectionToken?
-    private var presentationSource: CaptureSource?
+    private var presentationSource: RecorderSourceMode?
     private var selectionBaselineToken: CaptureSelectionToken?
     private var selectionBaselineConfiguration: CaptureConfiguration?
     private var selectionBaselineTarget: CaptureSelectionTarget?
@@ -272,7 +272,7 @@ final class CaptureSetupController: ObservableObject {
         presenter.updateScreenDevices(availableScreenDevices)
     }
 
-    func selectSource(_ source: CaptureSource) {
+    func selectSource(_ source: RecorderSourceMode) {
         focusRestorationGeneration &+= 1
         let baselineConfiguration = configuration
         let baselineTarget = selection.state.target
@@ -288,7 +288,7 @@ final class CaptureSetupController: ObservableObject {
         onSelectionPresentationStarted?(source)
 
         var updated = configuration
-        updated.source = source
+        updated.source = source.captureSource
         if source != .window {
             updated.selectedApplicationBundleIdentifier = nil
             updated.selectedApplicationName = nil
@@ -725,7 +725,7 @@ final class CaptureSetupController: ObservableObject {
     }
 
     private func clearTarget(
-        for source: CaptureSource,
+        for source: RecorderSourceMode,
         in configuration: inout CaptureConfiguration
     ) {
         switch source {

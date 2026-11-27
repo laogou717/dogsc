@@ -13,57 +13,42 @@ enum CameraCaptureDeviceConfigurator {
         category: "camera-recorder"
     )
 
-    static func applyPreferredFormat(
-        to device: AVCaptureDevice,
-        role: MovieCaptureRole
-    ) throws {
-        let dimensions = device.formats.map {
-            CMVideoFormatDescriptionGetDimensions($0.formatDescription)
-        }
-        guard let index = CameraCaptureFormatSelector.preferredFormatIndex(
-            dimensions: dimensions.map { (width: Int($0.width), height: Int($0.height)) },
-            prefersLandscape: role == .camera
-        ) else { return }
-        let targetDimensions = dimensions[index]
-        let candidates = device.formats.filter { format in
-            let candidate = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
-            return candidate.width == targetDimensions.width
-                && candidate.height == targetDimensions.height
-                && !format.videoSupportedFrameRateRanges.isEmpty
-        }
-        let format = candidates.max { lhs, rhs in
-            let lhsMax = lhs.videoSupportedFrameRateRanges.map(\.maxFrameRate).max() ?? 0
-            let rhsMax = rhs.videoSupportedFrameRateRanges.map(\.maxFrameRate).max() ?? 0
-            return lhsMax < rhsMax
-        } ?? device.formats[index]
-        try apply(format, to: device, role: role)
+    static func selectedFormat(
+        for device: AVCaptureDevice,
+        role: MovieCaptureRole,
+        resolution: CameraCaptureResolution?
+    ) -> AVCaptureDevice.Format {
+        let active = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
+        let landscape = role == .camera ? active.width >= active.height : nil
+        return preferredFormat(on: device, sourceIsLandscape: landscape, quality: resolution) ?? device.activeFormat
     }
 
-    static func applyCameraFormat(
-        _ resolution: CameraCaptureResolution,
-        to device: AVCaptureDevice,
-        role: MovieCaptureRole
-    ) throws {
-        let candidates = device.formats.filter { format in
-            let dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
-            return Int(dimensions.width) == resolution.width
-                && Int(dimensions.height) == resolution.height
-                && !format.videoSupportedFrameRateRanges.isEmpty
+    static func preferredFormat(
+        on device: AVCaptureDevice, sourceIsLandscape: Bool?, quality: CameraCaptureResolution?
+    ) -> AVCaptureDevice.Format? {
+        let formats = device.formats.filter { !$0.videoSupportedFrameRateRanges.isEmpty }
+        let sizes = formats.map { CMVideoFormatDescriptionGetDimensions($0.formatDescription) }
+        guard let index = CameraCaptureFormatSelector.preferredFormatIndex(
+            dimensions: sizes.map { (Int($0.width), Int($0.height)) },
+            sourceIsLandscape: sourceIsLandscape, requestedQuality: quality
+        ) else { return nil }
+        let target = sizes[index]
+        return formats.indices.filter { sizes[$0].width == target.width && sizes[$0].height == target.height }
+            .map { formats[$0] }
+            .max {
+                ($0.videoSupportedFrameRateRanges.map(\.maxFrameRate).max() ?? 0)
+                    < ($1.videoSupportedFrameRateRanges.map(\.maxFrameRate).max() ?? 0)
+            }
+    }
+
+    static func sessionPreset(for size: CMVideoDimensions) -> AVCaptureSession.Preset? {
+        switch (size.width, size.height) {
+        case (640, 480): .vga640x480
+        case (1280, 720): .hd1280x720
+        case (1920, 1080): .hd1920x1080
+        case (3840, 2160): .hd4K3840x2160
+        default: nil
         }
-        // Multiple formats can expose the same dimensions with different pixel
-        // encodings. Choose the broadest automatic cadence range, but never set
-        // a concrete FPS; the device remains authoritative.
-        guard let format = candidates.max(by: { lhs, rhs in
-            let lhsMax = lhs.videoSupportedFrameRateRanges.map(\.maxFrameRate).max() ?? 0
-            let rhsMax = rhs.videoSupportedFrameRateRanges.map(\.maxFrameRate).max() ?? 0
-            return lhsMax < rhsMax
-        }) else {
-            throw CameraRecorderError.recordingFailed(
-                role.displayName,
-                String(format: appLocalized("摄像头不再支持所选分辨率 %@"), resolution.label)
-            )
-        }
-        try apply(format, to: device, role: role, label: resolution.label)
     }
 
     static func restoreAutomaticCadence(
@@ -80,7 +65,7 @@ enum CameraCaptureDeviceConfigurator {
         logConfiguredMode(device: device)
     }
 
-    private static func apply(
+    static func apply(
         _ format: AVCaptureDevice.Format,
         to device: AVCaptureDevice,
         role: MovieCaptureRole,

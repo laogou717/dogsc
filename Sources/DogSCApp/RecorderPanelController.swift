@@ -714,7 +714,7 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
     }
     private var contentPresentationRevision: UInt64 = 0
     private var selectionIsActive = false
-    private var selectionSource: CaptureSource?
+    private var selectionSource: RecorderSourceMode?
     private let transition = RecorderPanelTransition()
     private let logger = Logger(
         subsystem: "cn.laogou.dogsc",
@@ -917,7 +917,7 @@ final class RecorderPanelController: NSObject, NSWindowDelegate {
 
     func setCaptureSelectionActive(
         _ active: Bool,
-        source: CaptureSource? = nil,
+        source: RecorderSourceMode? = nil,
         restoringSetup: Bool = true
     ) {
         if selectionIsActive != active {

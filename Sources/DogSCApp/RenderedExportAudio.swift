@@ -52,7 +52,7 @@ final class RenderedExportAudio: @unchecked Sendable {
         let output = AVAssetReaderAudioMixOutput(audioTracks: prepared.tracks(includeExternalAudio: includeExternalAudio),
             audioSettings: format.settings)
         output.audioMix = prepared.mix(audio: project.audio, overrides: project.timeline.primarySegmentAudioOverrides,
-            externalClips: project.timeline.programAudioClips, speech: project.timeline.subtitleCues.map(\.timing),
+            externalClips: project.timeline.programAudioClips(audio: project.audio), speech: project.timeline.subtitleCues.map(\.timing),
             includeExternalAudio: includeExternalAudio)
         output.audioTimePitchAlgorithm = .spectral
         guard reader.canAdd(output) else { throw failure("无法准备成片混音") }

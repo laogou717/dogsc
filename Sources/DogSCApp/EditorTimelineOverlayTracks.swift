@@ -8,12 +8,13 @@ enum EditorOverlayTimingEditing {
         mode: EditorMotionTimelineEditMode,
         delta: TimeInterval,
         timelineDuration: TimeInterval,
-        minimumLeadingStartTime: TimeInterval = 0
+        minimumLeadingStartTime: TimeInterval = 0,
+        maximumTrailingEndTime: TimeInterval = .infinity
     ) -> OverlayTiming {
         guard delta.isFinite, timelineDuration.isFinite, timelineDuration > 0 else {
             return original
         }
-        let minimumDuration = min(0.08, max(original.duration, 0.001))
+        let minimumDuration = min(0.08, original.duration)
         var timing = original
         switch mode {
         case .move:
@@ -35,7 +36,7 @@ enum EditorOverlayTimingEditing {
         case .trailing:
             let end = min(
                 max(original.endTime + delta, original.startTime + minimumDuration),
-                timelineDuration
+                min(timelineDuration, maximumTrailingEndTime)
             )
             timing.duration = end - original.startTime
         }
@@ -104,7 +105,7 @@ extension EditorTimelineView {
             TimelineOverlayClip(
                 id: $0.id,
                 timing: $0.timing,
-                title: appLocalized($0.kind == .music ? "音乐" : "音效"),
+                title: appLocalized($0.videoOrigin.map { $0.microphone ? "麦克风" : "视频原声" } ?? ($0.kind == .music ? "音乐" : "音效")),
                 kind: .audio,
                 layerIndex: 20_000,
                 sourcePath: $0.sourcePath,
@@ -733,7 +734,7 @@ extension EditorTimelineView {
             Divider()
         }
         Button(appLocalized("粘贴")) { pasteTimelineClip(at: clipboardContextTime ?? clipboardInsertionTime) }
-            .disabled(!EditorClipClipboard.shared.hasClip)
+            .disabled(!clipClipboard.hasClip)
         Button(appLocalized("在播放头分割")) { splitCurrentTimelineSelectionAtPlayhead() }
             .disabled(!canSplitCurrentTimelineSelectionAtPlayhead)
         Divider()
@@ -763,6 +764,16 @@ extension EditorTimelineView {
         Button(appLocalized("在播放头分割")) {
             editorStore.selection = clip.kind.selection(id: clip.id)
             splitCurrentTimelineSelectionAtPlayhead()
+        }
+        if clip.kind == .video, let video = editorStore.project.timeline.videoClips.first(where: { $0.id == clip.id }) {
+            timelinePlaybackRateMenu(currentRate: video.playbackRate, isOverlay: true) { rate in
+                do {
+                    try editorStore.setOverlayPlaybackRate(rate, id: video.id)
+                    activateTimelineSelection(.videoClip(video.id), extendingWith: [])
+                } catch {
+                    onError(error.localizedDescription)
+                }
+            }
         }
         Button(appLocalized("删除"), role: .destructive) {
             editorStore.selection = clip.kind.selection(id: clip.id)
@@ -914,8 +925,7 @@ extension EditorTimelineView {
         .onContinuousHover { phase in
             switch phase {
             case let .active(point):
-                let time = Double(point.x / max(width, 1)) * duration
-                let clip = clips.last { $0.timing.startTime <= time && $0.timing.endTime >= time }
+                let clip = overlayClip(at: point.x, clips: clips, timelineWidth: width, duration: duration)
                 let selection = clip.map { $0.kind.selection(id: $0.id) }
                 if hoveredOverlaySelection != selection { hoveredOverlaySelection = selection }
             case .ended:
@@ -929,6 +939,7 @@ extension EditorTimelineView {
                 clipArrangeMenu(clip)
                 Divider()
                 clipClipboardMenu(for: clip.kind.selection(id: clip.id))
+                videoAudioMenu(for: clip.kind.selection(id: clip.id))
             } else {
                 timelineContextMenu()
             }
@@ -1008,7 +1019,8 @@ extension EditorTimelineView {
                         mode: drag.mode,
                         delta: delta,
                         timelineDuration: duration,
-                        minimumLeadingStartTime: drag.minimumLeadingStartTime
+                        minimumLeadingStartTime: drag.minimumLeadingStartTime,
+                        maximumTrailingEndTime: drag.maximumTrailingEndTime
                     )
                     if drag.kind == .subtitle, drag.mode == .move, !overlayGroupOriginals.isEmpty {
                         let originals = [drag.kind.selection(id: drag.id): drag.original].merging(overlayGroupOriginals) { a, _ in a }
@@ -1124,12 +1136,15 @@ extension EditorTimelineView {
 
     private func overlayClip(at x: CGFloat, clips: [TimelineOverlayClip],
                              timelineWidth: CGFloat, duration: TimeInterval) -> TimelineOverlayClip? {
-        let candidates = clips.filter { clip in
+        var topmost: TimelineOverlayClip?
+        for clip in clips.reversed() {
             let startX = CGFloat(clip.timing.startTime / max(duration, 0.001)) * timelineWidth
             let clipWidth = max(CGFloat(clip.timing.duration / max(duration, 0.001)) * timelineWidth, 3)
-            return x >= startX && x <= startX + clipWidth
+            guard x >= startX && x <= startX + clipWidth else { continue }
+            if editorStore.selection == clip.kind.selection(id: clip.id) { return clip }
+            if topmost == nil { topmost = clip }
         }
-        return candidates.first { editorStore.selection == $0.kind.selection(id: $0.id) } ?? candidates.last
+        return topmost
     }
 
     func beginOverlayTimelineDrag(
@@ -1201,6 +1216,7 @@ extension EditorTimelineView {
             }
         case .video:
             if let c = timeline.videoClips.first(where: { $0.id == clip.id }) {
+                overlayTimelineDrag?.sourceFileEnd = c.sourceFileEnd
                 overlayTimelineDrag?.sourceStart = c.sourceStart; overlayTimelineDrag?.playbackRate = c.playbackRate
             }
         case .audio:
@@ -1244,14 +1260,16 @@ extension EditorTimelineView {
         mode: EditorMotionTimelineEditMode,
         delta: TimeInterval,
         timelineDuration: TimeInterval,
-        minimumLeadingStartTime: TimeInterval = 0
+        minimumLeadingStartTime: TimeInterval = 0,
+        maximumTrailingEndTime: TimeInterval = .infinity
     ) -> OverlayTiming {
         EditorOverlayTimingEditing.adjustedTiming(
             original: original,
             mode: mode,
             delta: delta,
             timelineDuration: timelineDuration,
-            minimumLeadingStartTime: minimumLeadingStartTime
+            minimumLeadingStartTime: minimumLeadingStartTime,
+            maximumTrailingEndTime: maximumTrailingEndTime
         )
     }
 

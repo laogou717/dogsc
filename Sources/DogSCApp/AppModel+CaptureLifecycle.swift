@@ -126,7 +126,7 @@ extension AppModel {
                 height: format.height
             )
         }
-        if phase == .setup || phase == .preparing || phase == .recording {
+        if !cameraStudioIsPresented && (phase == .setup || phase == .preparing || phase == .recording) {
             cameraPreviewController.showConnecting(deviceName: device.name)
         }
         cameraPreviewTask = Task { @MainActor [weak self, recorder = cameraRecorder] in
@@ -168,7 +168,7 @@ extension AppModel {
                     }
                     try await Task.sleep(for: .milliseconds(100))
                 }
-                self.cameraPreviewController.showPreview()
+                if !self.cameraStudioIsPresented { self.cameraPreviewController.showPreview() }
             } catch {
                 guard let self,
                       !Task.isCancelled,
@@ -191,7 +191,7 @@ extension AppModel {
                 // no-frame timeout is deliberately silent so the fallback
                 // remains non-blocking; real permission and device failures
                 // still use the existing recorder alert.
-                self.errorMessage = didTimeOut ? nil : appErrorDescription(error)
+                self.errorMessage = didTimeOut && !self.cameraStudioIsPresented ? nil : appErrorDescription(error)
             }
         }
     }
@@ -315,7 +315,7 @@ extension AppModel {
     }
 
     func resumeLiveInputIndicatorsForRecording(plan: RecordingPlan) {
-        if plan.configuration.recordsCamera {
+        if plan.configuration.recordsCamera && !cameraStudioIsPresented {
             cameraPreviewController.showPreview()
         }
     }
@@ -374,8 +374,8 @@ extension AppModel {
                             state: self.isRecordingPaused ? "paused" : "recording",
                             session: session,
                             frameRate: plan.configuration.captureFrameRate,
-                            measurement: plan.configuration.source == .device
-                                ? nil : self.recorder.liveMeasurement,
+                            measurement: plan.configuration.source.capturesDesktop
+                                ? self.recorder.liveMeasurement : nil,
                             cameraDiagnostics: cameraDiagnostics,
                             systemAudioDiagnostics: systemAudioDiagnostics,
                             microphoneDiagnostics: microphoneDiagnostics,
@@ -691,8 +691,7 @@ extension AppModel {
                 await recoverFromFinalizeFailure(
                     run: run,
                     error: error,
-                    resetCapture: !restart,
-                    restart: restart
+                    resetCapture: !restart && !cameraStudioIsPresented
                 )
                 return
             }
@@ -724,7 +723,7 @@ extension AppModel {
             guard recordingRuns.end(run.id) != nil else { return }
             finishingTask = nil
             resetTransientRecordingState()
-            if !restart { captureSetup.reset() }
+            if !restart && !cameraStudioIsPresented { captureSetup.reset() }
             refreshRecentProjects()
             // 丢弃/放弃录制回悬浮窗同样恢复麦克风监听与摄像头预览。
             resumeLiveInputIndicatorsForSetup()
@@ -732,8 +731,9 @@ extension AppModel {
             phase = .setup
             if !finalizationErrors.isEmpty {
                 errorMessage = finalizationErrors.joined(separator: appLocalized("；"))
+            } else if restart {
+                requestRecordingRestart(after: run)
             }
-            if restart { requestRecordingRestart(after: run) }
         }
     }
 
@@ -744,8 +744,7 @@ extension AppModel {
     func recoverFromFinalizeFailure(
         run: RecordingRun,
         error: any Error,
-        resetCapture: Bool,
-        restart: Bool
+        resetCapture: Bool
     ) async {
         finishingTask = nil
         if let session = await workspace.invalidateCurrentSession() {
@@ -760,8 +759,8 @@ extension AppModel {
                     state: "failed",
                     session: session,
                     frameRate: run.plan.configuration.captureFrameRate,
-                    measurement: run.plan.configuration.source == .device
-                        ? nil : recorder.lastMeasurement,
+                    measurement: run.plan.configuration.source.capturesDesktop
+                        ? recorder.lastMeasurement : nil,
                     cameraDiagnostics: cameraDiagnostics,
                     systemAudioDiagnostics: systemAudioDiagnostics,
                     microphoneDiagnostics: microphoneDiagnostics,
@@ -781,7 +780,6 @@ extension AppModel {
         recorderTransitionStage = .idle
         phase = .setup
         errorMessage = appErrorDescription(error)
-        if restart { requestRecordingRestart(after: run) }
     }
 
     func cancelPendingRecordingRestart() {
@@ -790,23 +788,31 @@ extension AppModel {
         pendingRecordingRestartTask = nil
     }
 
+    func matchesRestartSource(_ plan: RecordingPlan, selectionToken: CaptureSelectionToken?) -> Bool {
+        if cameraStudioIsPresented {
+            return configuration.recordsCamera && (try? RecordingPlan(cameraOnly: configuration)) == plan
+        }
+        return plan.target != nil && plan.target == captureSetup.target
+            && selectionToken != nil && selectionToken == captureSetup.selectionToken
+    }
+
     /// Restoring setup creates a new camera sample generation. Restart only
     /// after that generation has delivered a real format, while the target and
     /// configuration still belong to this exact automatic restart request.
     private func requestRecordingRestart(after run: RecordingRun) {
         cancelPendingRecordingRestart()
+        let selectionToken = captureSetup.selectionToken
+        let expectedConfiguration = configuration
         guard !Task.isCancelled,
               phase == .setup,
               currentSession == nil,
               recordingRuns.active == nil,
-              captureSetup.target == run.plan.target,
-              let selectionToken = captureSetup.selectionToken else { return }
+              matchesRestartSource(run.plan, selectionToken: selectionToken) else { return }
         if cameraReadiness.permitsRecording {
             startRecording()
             return
         }
 
-        let expectedConfiguration = configuration
         let generation = pendingRecordingRestartGeneration
         let deadline = ContinuousClock.now.advanced(by: .seconds(12))
         pendingRecordingRestartTask = Task { @MainActor [weak self] in
@@ -821,8 +827,7 @@ extension AppModel {
                       self.phase == .setup,
                       self.currentSession == nil,
                       self.recordingRuns.active == nil,
-                      self.captureSetup.selectionToken == selectionToken,
-                      self.captureSetup.target == run.plan.target,
+                      self.matchesRestartSource(run.plan, selectionToken: selectionToken),
                       self.configuration == expectedConfiguration else { return }
                 if self.cameraReadiness.permitsRecording {
                     // startRecording cancels pending requests too. Detach this
@@ -902,7 +907,7 @@ extension AppModel {
     func handleUnexpectedCaptureStop(runID: RecordingRunID, error: any Error) {
         guard recordingRuns.isCurrent(runID) else { return }
         Logger(subsystem: "cn.laogou.dogsc", category: "recording-stop").error(
-            "unexpected stop source=\(self.configuration.source.rawValue, privacy: .public) phase=\(String(describing: self.phase), privacy: .public) error=\(self.detailedErrorDescription(error), privacy: .public)"
+            "unexpected stop source=\(self.recordingRuns.active?.plan.configuration.source.rawValue ?? self.configuration.source.rawValue, privacy: .public) phase=\(String(describing: self.phase), privacy: .public) error=\(self.detailedErrorDescription(error), privacy: .public)"
         )
         if phase == .preparing {
             // 屏幕流在准备期间已死亡（markStarted 之后、phase 切换之前）。

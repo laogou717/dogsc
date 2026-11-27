@@ -251,7 +251,7 @@ private final class CaptureAreaRecordingOverlayView: NSView {
     }
 }
 
-private final class CaptureAreaSelectionView: NSView {
+final class CaptureAreaSelectionView: NSView {
     var onComplete: ((NormalizedRect?) -> Void)?
     /// Publishes a valid region as soon as the drag settles, while the
     /// selection's own toolbar remains responsible for starting capture.
@@ -332,9 +332,9 @@ private final class CaptureAreaSelectionView: NSView {
         case resize(handle: ResizeHandle, original: CGRect)
     }
 
-    private let controlCard = NSView()
+    private let controlCard = AreaSelectionCardView()
     private let presetSelection = AreaPresetSelectionView()
-    private let escapeHintCard = NSView()
+    private let escapeHintCard = AreaSelectionCardView()
     private let escapeHintContent = EscapeHintContentView()
     private let controlDividers = (0..<3).map { _ in NSView() }
     private let widthCaption = NSTextField(labelWithString: appLocalized("宽"))
@@ -422,14 +422,18 @@ private final class CaptureAreaSelectionView: NSView {
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
+        refreshControlColors()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil { refreshControlColors() }
+    }
+
+    private func refreshControlColors() {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            for card in [controlCard, escapeHintCard] {
-                card.layer?.backgroundColor = captureSelectionSurfaceNSColor.cgColor
-                card.layer?.borderColor = captureSelectionInkNSColor.withAlphaComponent(0.08).cgColor
-                card.layer?.shadowOpacity = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? 0.36 : 0.16
-            }
             sizeWell.layer?.backgroundColor = RecorderStyle.chromeNSColor.withAlphaComponent(0.09).cgColor
             for divider in controlDividers {
                 divider.layer?.backgroundColor = captureSelectionInkNSColor.withAlphaComponent(0.08).cgColor
@@ -437,8 +441,12 @@ private final class CaptureAreaSelectionView: NSView {
             for field in [widthField, heightField] {
                 field.layer?.borderColor = captureSelectionInkNSColor.withAlphaComponent(0.08).cgColor
             }
+            for caption in [widthCaption, heightCaption] {
+                caption.textColor = captureSelectionInkNSColor.withAlphaComponent(0.65)
+            }
             CATransaction.commit()
         }
+        escapeHintContent.needsDisplay = true
         needsDisplay = true
     }
 
@@ -446,20 +454,15 @@ private final class CaptureAreaSelectionView: NSView {
         wantsLayer = true
 
         [controlCard, escapeHintCard].forEach { card in
-            card.appearance = nil
             card.wantsLayer = true
             card.layer?.cornerRadius = RecorderStyle.cardRadius
-            card.layer?.backgroundColor = captureSelectionSurfaceNSColor.cgColor
             card.layer?.borderWidth = 1
-            card.layer?.borderColor = captureSelectionInkNSColor.withAlphaComponent(0.08).cgColor
             card.layer?.shadowColor = NSColor.black.cgColor
-            card.layer?.shadowOpacity = 0.22
             card.layer?.shadowRadius = 26
             card.layer?.shadowOffset = CGSize(width: 0, height: -12)
             addSubview(card)
         }
         sizeWell.wantsLayer = true
-        sizeWell.layer?.backgroundColor = RecorderStyle.chromeNSColor.withAlphaComponent(0.09).cgColor
         sizeWell.layer?.cornerCurve = .continuous
         controlCard.addSubview(sizeWell)
         controlCard.addSubview(presetSelection)
@@ -470,7 +473,6 @@ private final class CaptureAreaSelectionView: NSView {
         controlCard.alphaValue = 0
         controlDividers.forEach { divider in
             divider.wantsLayer = true
-            divider.layer?.backgroundColor = captureSelectionInkNSColor.withAlphaComponent(0.08).cgColor
             controlCard.addSubview(divider)
         }
 
@@ -479,7 +481,6 @@ private final class CaptureAreaSelectionView: NSView {
 
         [widthCaption, heightCaption].forEach { caption in
             caption.font = .systemFont(ofSize: 11.5, weight: .medium)
-            caption.textColor = captureSelectionInkNSColor.withAlphaComponent(0.65)
             caption.alignment = .center
             caption.drawsBackground = false
             caption.backgroundColor = .clear
@@ -496,7 +497,6 @@ private final class CaptureAreaSelectionView: NSView {
             field.wantsLayer = true
             field.layer?.cornerRadius = 8
             field.layer?.borderWidth = 1
-            field.layer?.borderColor = captureSelectionInkNSColor.withAlphaComponent(0.08).cgColor
             field.focusRingType = .none
             field.target = self
             field.action = #selector(applyManualSize(_:))

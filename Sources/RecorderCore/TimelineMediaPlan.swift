@@ -59,6 +59,9 @@ public struct TimelineMediaPlan: Equatable, Sendable {
     /// real camera/audio availability gap remains a gap.
     private static let numericalBoundaryTolerance: TimeInterval = 0.000_000_001
 
+    // Sample either side outside the primary cut's numeric snap tolerance.
+    static let boundaryProbeOffset = 2 * numericalBoundaryTolerance
+
     public let outputDuration: TimeInterval
     public let slices: [TimelineMediaSlice]
 

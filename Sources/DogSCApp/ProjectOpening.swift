@@ -18,7 +18,7 @@ struct ProjectOpenSnapshot: Sendable {
         !ProjectStore.isWorkingProject(normalizedURL)
     }
 
-    static func load(at packageURL: URL) throws -> ProjectOpenSnapshot {
+    static func load(at packageURL: URL) async throws -> ProjectOpenSnapshot {
         try Task.checkCancellation()
         let normalizedURL = packageURL.lastPathComponent == "project.json"
             ? packageURL.deletingLastPathComponent()
@@ -133,6 +133,14 @@ struct ProjectOpenSnapshot: Sendable {
         )
 
         var warnings: [String] = []
+        let videos = try await OverlayVideoSource.resolve(project.timeline.videoClips, in: loaded.session)
+        project.timeline.videoClips = videos.clips
+        if videos.shortened > 0 {
+            warnings.append(String(format: appLocalized("已将 %ld 段叠加视频的末端对齐到源视频最后的画面。"), videos.shortened))
+        }
+        if videos.empty > 0 {
+            warnings.append(String(format: appLocalized("已略过 %ld 段取材起点超出源视频的空片段。"), videos.empty))
+        }
         if loaded.recoveredFromPreviousRevision {
             warnings.append(appLocalized("项目主文件损坏，已恢复到上一个完整保存版本。"))
         }

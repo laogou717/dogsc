@@ -20,17 +20,19 @@ enum HTMLMotionEditing {
         func name(for path: String, library: AssetLibrary = .shared) -> String {
             let url = ProjectFiles.url(path).standardizedFileURL
             if let name = projectNames[url] { return name }
-            if let name = Self.visibleName(url.lastPathComponent) { return name }
-            if let entry = library.motionEntry(for: url.path) {
+            let filename = Self.visibleName(url.lastPathComponent)
+            if let filename, !filename.contains(" · v") { return filename }
+            let local = ProjectFiles.package.flatMap { AssetLibrary.projectAssets(in: $0).motionEntry(for: url.path) }
+            if let entry = local ?? library.motionEntry(for: url.path) {
                 return projectNames[ProjectFiles.url(entry.path).standardizedFileURL]
                     ?? Self.visibleName(entry.name) ?? appLocalized("动效")
             }
-            return appLocalized("动效")
+            return filename ?? appLocalized("动效")
         }
 
         private static func visibleName(_ rawName: String) -> String? {
             let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
-            let stem = (name as NSString).pathExtension.lowercased() == "dmhtml"
+            let stem = HTMLMotion.isHTMLMotion(name)
                 ? (name as NSString).deletingPathExtension : name
             guard !stem.isEmpty else { return nil }
             let prefix = HTMLMotionEditing.revisionPrefix
@@ -51,13 +53,10 @@ enum HTMLMotionEditing {
         let unchanged: Bool
     }
 
-    static func canonical(_ html: String) -> String {
-        html.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
     private static func validated(_ html: String) throws -> String {
-        let content = canonical(html)
+        let content = try MotionTemplateLibrary.embedReferencedSamples(in: HTMLMotionPage.authoredPage(html))
         guard content.contains("<") else { throw failure("html must contain a complete HTML motion page.") }
+        _ = try MotionSoundScore.read(in: content)
         return content
     }
 
@@ -66,30 +65,59 @@ enum HTMLMotionEditing {
             userInfo: [NSLocalizedDescriptionKey: message])
     }
 
+    private static func currentMotionPaths(in timeline: ProjectTimeline) -> [String] {
+        var paths = timeline.animationClips.map(\.sourcePath)
+        if case let .edited(segments) = timeline.sourceSequence {
+            paths += segments.compactMap { $0.media?.motionPath }
+        }
+        paths += timeline.mediaAssets.filter { $0.kind == .animation }.map(\.path)
+        return paths.map(ProjectFiles.resolve)
+    }
+
     static func create(name rawName: String, html: String, copy: Bool = false,
-                       library: AssetLibrary) throws -> File {
+                       template: URL? = nil, timeline: ProjectTimeline? = nil, library: AssetLibrary) throws -> File {
         let content = try validated(html)
         let cleaned = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
-        let name = cleaned.isEmpty ? "动效" : cleaned
+        let stem = HTMLMotion.isHTMLMotion(cleaned) ? (cleaned as NSString).deletingPathExtension : cleaned
+        var name = AssetLibrary.sanitized(stem.isEmpty ? template?.deletingPathExtension().lastPathComponent ?? "动效" : stem)
         library.reload()
-        if !copy, let existing = library.entries.first(where: {
-            $0.kind == .animation && $0.name == name + ".dmhtml"
-        }) {
-            if let old = try? String(contentsOfFile: existing.path, encoding: .utf8), canonical(old) == content {
-                return File(url: URL(fileURLWithPath: existing.path), entry: existing, reused: true)
+        if !copy {
+            let active = timeline.map(currentMotionPaths(in:)) ?? library.entries.map(\.path)
+            for entry in library.entries where entry.kind == .animation && (entry.name as NSString).deletingPathExtension == name {
+                guard let path = active.first(where: entry.references) else { continue }
+                if let old = try? String(contentsOfFile: path, encoding: .utf8), HTMLMotionPage.authoredPage(old) == content {
+                    return File(url: URL(fileURLWithPath: path), entry: entry, reused: true)
+                }
+                throw failure("A current motion already has this name. Revise it with html_update using its clip/asset id, or use copy:true for an independent asset.")
             }
-            throw failure("A different motion already has this name. Revise it with html_update using its current clip/asset id; use copy:true only for an independent asset. Existing path: \(existing.path)")
+        }
+        if copy {
+            let base = name
+            let names = Set(library.entries.filter { $0.kind == .animation }.map { ($0.name as NSString).deletingPathExtension })
+            var suffix = 2
+            while names.contains(name) { name = "\(base) \(suffix)"; suffix += 1 }
+        }
+        let page = HTMLMotionPage.standalonePage(content)
+        if let template {
+            let copied = try library.copyIntoLibrary(path: template.path, kind: .animation, name: name + ".html", entryExtension: "html")
+            let entry = AssetLibrary.Entry(path: copied.file.path, kind: .animation, name: name + ".html",
+                favorite: false, generated: true, origin: template.path, copiedRoot: copied.owned.path)
+            do {
+                try page.write(to: copied.file, atomically: true, encoding: .utf8)
+                try library.publish(entry)
+            }
+            catch { try? FileManager.default.removeItem(at: copied.owned); throw error }
+            return File(url: copied.file, entry: entry, reused: false)
         }
         let folder = library.folder(for: .animation)
-        var url = folder.appendingPathComponent(name).appendingPathExtension("dmhtml")
+        var url = folder.appendingPathComponent(name).appendingPathExtension("html")
         var suffix = 2
         while FileManager.default.fileExists(atPath: url.path) {
-            url = folder.appendingPathComponent("\(name) \(suffix)").appendingPathExtension("dmhtml")
+            url = folder.appendingPathComponent("\(name) \(suffix)").appendingPathExtension("html")
             suffix += 1
         }
-        try content.write(to: url, atomically: true, encoding: .utf8)
-        let entry = AssetLibrary.Entry(path: url.path, kind: .animation, name: url.lastPathComponent,
+        try page.write(to: url, atomically: true, encoding: .utf8)
+        let entry = AssetLibrary.Entry(path: url.path, kind: .animation, name: name + ".html",
             favorite: false, generated: true)
         do { try library.publish(entry) }
         catch { try? FileManager.default.removeItem(at: url); throw error }
@@ -99,9 +127,10 @@ enum HTMLMotionEditing {
     /// Keep one bin tile for all versions of this logical asset. Native IDs,
     /// names and import dates survive a revision or another placement.
     @discardableResult
-    static func register(_ file: File, in timeline: inout ProjectTimeline) -> UUID {
+    static func register(_ file: File, in timeline: inout ProjectTimeline, replacing original: URL? = nil) -> UUID {
         let matches = timeline.mediaAssets.indices.filter {
-            file.entry.references(ProjectFiles.resolve(timeline.mediaAssets[$0].path))
+            let path = ProjectFiles.resolve(timeline.mediaAssets[$0].path)
+            return file.entry.references(path) || original?.path == path
         }
         if let first = matches.first {
             timeline.mediaAssets[first].path = ProjectFiles.portable(file.url.path)
@@ -129,27 +158,50 @@ enum HTMLMotionEditing {
             ?? before.mediaAssets.first(where: { $0.id == id && $0.kind == .animation })?.path
         guard let source else { throw failure("The HTML motion target no longer exists.") }
         let url = ProjectFiles.url(source).standardizedFileURL
-        let knownPaths = before.animationClips.map(\.sourcePath)
-            + segments.compactMap { $0.media?.motionPath } + before.mediaAssets.map(\.path)
-        guard HTMLMotion.isHTMLMotion(url.path), knownPaths.contains(where: {
+        guard HTMLMotion.isHTMLMotion(url.path), currentMotionPaths(in: before).contains(where: {
             ProjectFiles.url($0).standardizedFileURL == url
-        }), let entry = library.motionEntry(for: url.path),
-              url.resolvingSymlinksInPath().path.hasPrefix(library.folder.resolvingSymlinksInPath().path + "/")
-        else { throw failure("Target must be a library HTML motion used by the current project.") }
+        }) else { throw failure("Target must be an HTML motion used by the current project.") }
+        let binAsset = before.mediaAssets.first { ProjectFiles.url($0.path).standardizedFileURL == url }
+        let entry: AssetLibrary.Entry
+        let localURL: URL
+        if let local = library.motionEntry(for: url.path) {
+            entry = local
+            localURL = url
+        } else {
+            // Editing an older external source must leave other projects and the favorite untouched.
+            entry = try library.keepCopy(of: url, kind: .animation, name: binAsset?.name ?? url.lastPathComponent)
+            localURL = URL(fileURLWithPath: entry.revisionPaths?.first ?? entry.path)
+        }
+        guard localURL.resolvingSymlinksInPath().path.hasPrefix(library.folder.resolvingSymlinksInPath().path + "/") else {
+            throw failure("Motion revisions must be saved inside the project media folder.")
+        }
         let original = try String(contentsOf: url, encoding: .utf8)
-        if canonical(original) == content {
+        if HTMLMotionPage.authoredPage(original) == content && url == localURL {
             return Update(path: url.path, assetID: before.mediaAssets.first(where: {
                 entry.references(ProjectFiles.resolve($0.path))
             })?.id ?? entry.id, unchanged: true)
         }
         let matching = (entry.revisionPaths ?? []).first {
-            (try? String(contentsOfFile: $0, encoding: .utf8)).map { canonical($0) == content } == true
+            (try? String(contentsOfFile: $0, encoding: .utf8)).map { HTMLMotionPage.authoredPage($0) == content } == true
         }
-        let revised = matching.map { URL(fileURLWithPath: $0) }
-            ?? url.deletingLastPathComponent().appendingPathComponent("\(revisionPrefix)\(UUID()).dmhtml")
+        let revised: URL
+        if let matching {
+            revised = URL(fileURLWithPath: matching)
+        } else {
+            let stem = AssetLibrary.sanitized(HTMLMotion.isHTMLMotion(entry.name)
+                ? (entry.name as NSString).deletingPathExtension : entry.name)
+            let folder = localURL.deletingLastPathComponent()
+            var version = (entry.revisionPaths?.count ?? 1) + 1
+            var candidate: URL
+            repeat {
+                candidate = folder.appendingPathComponent("\(stem) · v\(version).html")
+                version += 1
+            } while FileManager.default.fileExists(atPath: candidate.path)
+            revised = candidate
+        }
         var removeOnFailure = matching == nil
         defer { if removeOnFailure { try? FileManager.default.removeItem(at: revised) } }
-        if matching == nil { try content.write(to: revised, atomically: true, encoding: .utf8) }
+        if matching == nil { try HTMLMotionPage.standalonePage(content).write(to: revised, atomically: true, encoding: .utf8) }
         var nextEntry = entry
         var versions = entry.revisionPaths ?? [entry.path]
         if !versions.contains(revised.path) { versions.append(revised.path) }
@@ -158,16 +210,48 @@ enum HTMLMotionEditing {
         let file = File(url: revised, entry: nextEntry, reused: matching != nil)
         let portable = ProjectFiles.portable(revised.path)
         var next = before
+        let oldSlot = HTMLMotion.cameraSlot(in: original)
+        let slot = HTMLMotion.cameraSlot(in: content)
+        let oldScore = try MotionSoundScore.read(in: original)
+        let newScore = try MotionSoundScore.read(in: content)
+        var oldSoundPath: String?
+        var newSoundPath: String?
+        if oldScore != newScore {
+            guard let package = ProjectFiles.package else { throw CocoaError(.fileNoSuchFile) }
+            oldSoundPath = try oldScore.map { try ProjectFiles.portable($0.file(in: package).path) }
+            newSoundPath = try newScore.map { try ProjectFiles.portable($0.file(in: package).path) }
+        }
+        func followsScore(_ path: String?) -> Bool {
+            oldScore != newScore && path.map { ProjectFiles.url($0).standardizedFileURL } == oldSoundPath.map { ProjectFiles.url($0).standardizedFileURL }
+        }
         for index in next.animationClips.indices where ProjectFiles.url(next.animationClips[index].sourcePath).standardizedFileURL == url {
+            if next.animationClips[index].cameraSlot == oldSlot { next.animationClips[index].cameraSlot = slot }
+            if followsScore(next.animationClips[index].soundtrack?.path) {
+                var sound = next.animationClips[index].soundtrack
+                next.animationClips[index].soundtrack = newSoundPath.map { path in
+                    sound?.path = path
+                    return sound ?? VisualClipSound(path: path, volume: MotionSoundScore.defaultVolume)
+                }
+            }
             next.animationClips[index].sourcePath = portable
         }
         if case var .edited(values) = next.sourceSequence {
             for index in values.indices where values[index].media?.motionPath.map({ ProjectFiles.url($0).standardizedFileURL == url }) == true {
+                if values[index].media?.cameraSlot == oldSlot { values[index].media?.cameraSlot = slot }
+                if followsScore(values[index].media?.transferSound?.path ?? values[index].media?.soundPath) {
+                    values[index].media?.soundPath = newSoundPath
+                    if let newSoundPath {
+                        var sound = values[index].media?.transferSound ?? VisualClipSound(path: newSoundPath, volume: MotionSoundScore.defaultVolume)
+                        sound.path = newSoundPath
+                        values[index].media?.transferSound = sound
+                    }
+                    else { values[index].media?.transferSound = nil }
+                }
                 values[index].media?.motionPath = portable
             }
             next.sourceSequence = .edited(values)
         }
-        let assetID = register(file, in: &next)
+        let assetID = register(file, in: &next, replacing: url)
         try ProjectValidator.validate(next)
         try Task.checkCancellation()
         try library.publish(nextEntry)

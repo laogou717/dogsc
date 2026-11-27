@@ -12,11 +12,21 @@ final class AntigravitySession {
     private let writes = DispatchQueue(label: "cn.laogou.dogsc.antigravity-input")
     private var updateHandler: ((AntigravityCLI.StreamUpdate) -> Void)?
     private var completionHandler: ((String?, String) -> Void)?
+    enum Silence { case waiting, expired }
+    private let waitNotice: Duration
+    private let inactivityLimit: Duration
+    private var lastProgress = SuspendingClock.now
+    private var silenceTask: Task<Void, Never>?
+    private var exitError: String?
     private(set) var isStopping = false
     var canSend: Bool { process.isRunning && !isStopping && completionHandler == nil }
 
-    init(key: String, executable: String, arguments: [String], workspace: URL) throws {
+    init(key: String, executable: String, arguments: [String], workspace: URL,
+         waitNotice: Duration = .seconds(90), inactivityLimit: Duration = .seconds(960)) throws {
         self.key = key
+        self.waitNotice = waitNotice
+        // Leave room for a full 900-second DogSC tool call and CLI stream retries.
+        self.inactivityLimit = inactivityLimit
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
         process.currentDirectoryURL = workspace
@@ -42,7 +52,8 @@ final class AntigravitySession {
         _ = fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
     }
 
-    func send(_ prompt: String, update: @escaping (AntigravityCLI.StreamUpdate) -> Void,
+    func send(_ prompt: String, onSilence: @escaping (Silence) -> Void = { _ in },
+              update: @escaping (AntigravityCLI.StreamUpdate) -> Void,
               completion: @escaping (String?, String) -> Void) throws {
         guard canSend else { throw CocoaError(.fileWriteUnknown) }
         var data = try JSONSerialization.data(withJSONObject: ["event": "user", "message": ["content": prompt]])
@@ -51,6 +62,7 @@ final class AntigravitySession {
         reader.resetDetail()
         updateHandler = update
         completionHandler = completion
+        monitorSilence(onSilence)
         let input = input.fileHandleForWriting
         writes.async { [weak self] in
             do { try input.write(contentsOf: payload) }
@@ -61,8 +73,34 @@ final class AntigravitySession {
         }
     }
 
+    func noteProgress() { lastProgress = .now }
+
+    private func monitorSilence(_ notify: @escaping (Silence) -> Void) {
+        noteProgress()
+        let interval = min(waitNotice, .seconds(5))
+        silenceTask = Task { [weak self] in
+            var reported: SuspendingClock.Instant?
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: interval, clock: .suspending) } catch { return }
+                guard !Task.isCancelled, let self, completionHandler != nil, !isStopping else { return }
+                let idle = lastProgress.duration(to: .now)
+                if idle >= inactivityLimit {
+                    exitError = appLocalized("Antigravity 长时间没有返回新进展，本轮已结束。可以在这段对话里继续。")
+                    cancel()
+                    notify(.expired)
+                    return
+                }
+                if idle >= waitNotice, reported != lastProgress {
+                    reported = lastProgress
+                    notify(.waiting)
+                }
+            }
+        }
+    }
+
     func cancel() {
         guard !isStopping else { return }
+        silenceTask?.cancel()
         isStopping = true
         AgentProcessCancellation.request(process)
     }
@@ -74,8 +112,12 @@ final class AntigravitySession {
 
     private func receive(_ updates: [AntigravityCLI.StreamUpdate]) {
         for update in updates {
+            if update.event == "init" || update.state != nil || !update.texts.isEmpty {
+                noteProgress()
+            }
             updateHandler?(update)
             if update.status != nil, !isStopping {
+                silenceTask?.cancel()
                 let completion = completionHandler
                 completionHandler = nil
                 updateHandler = nil
@@ -89,12 +131,13 @@ final class AntigravitySession {
     }
 
     private func ended(status: Int32, detail: String) {
+        silenceTask?.cancel()
         let completion = completionHandler
         completionHandler = nil
         updateHandler = nil
         try? input.fileHandleForWriting.close()
         // A result, rather than process teardown, normally finishes the turn.
-        completion?("Antigravity CLI exited before its result (\(status)).", detail)
+        completion?(exitError ?? "Antigravity CLI exited before its result (\(status)).", detail)
     }
 
     private final class Reader: @unchecked Sendable {

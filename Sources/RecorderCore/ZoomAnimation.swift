@@ -174,12 +174,17 @@ public struct ZoomBezierCurve: Codable, Equatable, Sendable {
     }
 }
 
+public enum ZoomTarget: String, Codable, CaseIterable, Sendable {
+    case recording, overlayVideo
+}
+
 public struct ZoomAnimationClip: Codable, Equatable, Identifiable, Sendable {
     public var id: UUID
     public var startTime: TimeInterval
     public var endTime: TimeInterval
     public var scale: Double
     public var focus: NormalizedPoint
+    public var target: ZoomTarget
     public var origin: ZoomKeyframeOrigin
     public var easing: ZoomEasingPreset
     public var customCurve: ZoomBezierCurve
@@ -212,14 +217,15 @@ public struct ZoomAnimationClip: Codable, Equatable, Identifiable, Sendable {
         focusEffect: FocusEffect? = nil,
         preferredEnterDuration: TimeInterval? = nil,
         preferredExitDuration: TimeInterval? = nil,
-        transitionIntentVersion: Int = 1
+        transitionIntentVersion: Int = 1,
+        target: ZoomTarget = .recording
     ) {
         self.id = id
         self.startTime = max(startTime, 0)
         self.endTime = max(endTime, self.startTime)
         self.scale = max(scale, 1)
         self.focus = focus.constrained(to: ZoomViewportTransform.focusEdgeInset)
-        self.origin = origin
+        self.origin = target == .overlayVideo ? .manual : origin
         self.easing = easing
         self.customCurve = customCurve
         self.enterDuration = min(max(enterDuration, 0), 5)
@@ -230,6 +236,7 @@ public struct ZoomAnimationClip: Codable, Equatable, Identifiable, Sendable {
         self.preferredEnterDuration = preferredEnterDuration
         self.preferredExitDuration = preferredExitDuration
         self.transitionIntentVersion = transitionIntentVersion
+        self.target = target
     }
 
     public var duration: TimeInterval {
@@ -246,7 +253,7 @@ public struct ZoomAnimationClip: Codable, Equatable, Identifiable, Sendable {
         case enterProgressOffset, exitProgressOffset
         case focusEffect
         case preferredEnterDuration, preferredExitDuration
-        case transitionIntentVersion
+        case transitionIntentVersion, target
     }
 
     public init(from decoder: any Decoder) throws {
@@ -268,7 +275,8 @@ public struct ZoomAnimationClip: Codable, Equatable, Identifiable, Sendable {
             focusEffect: try container.decodeIfPresent(FocusEffect.self, forKey: .focusEffect),
             preferredEnterDuration: try container.decodeIfPresent(TimeInterval.self, forKey: .preferredEnterDuration),
             preferredExitDuration: try container.decodeIfPresent(TimeInterval.self, forKey: .preferredExitDuration),
-            transitionIntentVersion: try container.decodeIfPresent(Int.self, forKey: .transitionIntentVersion) ?? 0
+            transitionIntentVersion: try container.decodeIfPresent(Int.self, forKey: .transitionIntentVersion) ?? 0,
+            target: try container.decodeIfPresent(ZoomTarget.self, forKey: .target) ?? .recording
         )
     }
 
@@ -480,6 +488,15 @@ public struct ZoomAnimationTrack: Equatable, Sendable {
     public let animations: [ZoomAnimationClip]
     public let outputDuration: TimeInterval?
     private let authoredAnimations: [ZoomAnimationClip]
+    private let targetTracks: [ZoomTarget: ZoomAnimationTrack]
+    private static let empty = ZoomAnimationTrack([])
+
+    /// Each surface has its own entrance, hold and return, even when clips on different surfaces touch.
+    public func forTarget(_ target: ZoomTarget) -> Self {
+        if let track = targetTracks[target] { return track }
+        return authoredAnimations.first?.target == target ? self : Self.empty
+    }
+
     private let animationIndicesByID: [UUID: Int]
     /// Prefix maxima retain the former last-active-wins behaviour even if a
     /// caller constructs an unvalidated overlapping track. Valid project
@@ -489,9 +506,23 @@ public struct ZoomAnimationTrack: Equatable, Sendable {
     public init(_ authoredAnimations: [ZoomAnimationClip], outputDuration: TimeInterval? = nil) {
         self.authoredAnimations = authoredAnimations
         self.outputDuration = outputDuration
-        let animations = outputDuration.map {
-            ZoomTransitionResolution.resolve(authoredAnimations, outputDuration: $0)
-        } ?? authoredAnimations
+        let tracks: [ZoomTarget: ZoomAnimationTrack]
+        if let first = authoredAnimations.first, authoredAnimations.contains(where: { $0.target != first.target }) {
+            tracks = Dictionary(grouping: authoredAnimations, by: \.target).mapValues {
+                ZoomAnimationTrack($0, outputDuration: outputDuration)
+            }
+        } else {
+            tracks = [:]
+        }
+        targetTracks = tracks
+        let animations: [ZoomAnimationClip]
+        if !tracks.isEmpty {
+            animations = ZoomTarget.allCases.flatMap { tracks[$0]?.animations ?? [] }
+        } else if let outputDuration {
+            animations = ZoomTransitionResolution.resolve(authoredAnimations, outputDuration: outputDuration)
+        } else {
+            animations = authoredAnimations
+        }
         if TimelineTrackOrdering.zoomAnimationsNeedRepair(animations) {
             self.animations = animations
                 .filter { $0.duration > 0.001 }
@@ -603,7 +634,7 @@ public enum ZoomInterpolator {
         inheritedAutomaticFocus: NormalizedPoint? = nil,
         reanchorAutomaticEntry: Bool = false
     ) -> ZoomSample {
-        trackCache.track(for: animations).sample(
+        trackCache.track(for: animations).forTarget(.recording).sample(
             at: time,
             motion: motion,
             automaticFocus: automaticFocus,

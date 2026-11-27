@@ -275,7 +275,7 @@ struct EditorSessionContext {
             mediaManifest: project.media,
             pointerEvents: media.pointerEvents
         )
-        request.audioClips = project.timeline.programAudioClips
+        request.audioClips = project.timeline.programAudioClips(audio: project.audio)
         request.speech = project.timeline.audioClips.contains(where: \.ducksUnderSpeech)
             ? project.timeline.subtitleCues.map(\.timing) : []
         for source in project.additionalSources {

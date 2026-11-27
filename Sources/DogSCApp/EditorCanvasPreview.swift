@@ -491,8 +491,10 @@ struct CanvasPreview: View {
                 renderTick: activeTick,
                 renderPlan: plan, semanticScene: scene,
                 effectPrewarmPlans: isCropping ? [] : effectPrewarmPlans,
-                pausedScreenImage: playbackController.pausedScreenImage,
-                pausedCameraImage: playbackController.pausedCameraImage,
+                pausedScreenImage: playbackController.pausedScreenSegmentID == activeTick?.sourceFrame?.screenSlice?.segmentID
+                    ? playbackController.pausedScreenImage : nil,
+                pausedCameraImage: playbackController.pausedCameraSourceID == activeTick?.sourceFrame?.cameraSlice?.sourceID
+                    ? playbackController.pausedCameraImage : nil,
                 wallpaperImage: isCropping ? nil : resolvedWallpaperImage,
                 wallpaperVideoURL: isCropping ? nil : resolvedWallpaperVideoURL,
                 sceneWallpapers: isCropping ? [:] : resolvedSceneWallpapers,
@@ -531,11 +533,11 @@ struct CanvasPreview: View {
             isPlaying: playbackController.isPlaying
         )
 
-        screenSelectionTarget(
-            scene: layout.frameScene.screen,
-            canvasSize: canvasSize
-        )
-        .accessibilityHidden(isScreenSelectionActive)
+        let layers = layout.frameScene.layerOrder
+        if layers.contains(.screen) {
+            screenSelectionTarget(scene: layout.frameScene.screen, canvasSize: canvasSize)
+                .accessibilityHidden(isScreenSelectionActive)
+        }
 
         // EDT-073: a main-track HTML motion's elements sit where its picture
         // does — above the screen target, below every overlay, subtitle and
@@ -544,7 +546,7 @@ struct CanvasPreview: View {
             motionElementLayer(layout: layout, canvasSize: canvasSize)
         }
 
-        if showsEditingOverlays,
+        if showsEditingOverlays, layers.contains(.screen),
            case .screen = editScope,
            let contentPosition = editScope.position(in: interactionSceneProject),
            let contentScale = editScope.scale(in: interactionSceneProject) {
@@ -575,29 +577,25 @@ struct CanvasPreview: View {
         if showsEditingOverlays {
             frontOverlaySelectionTargets(
                 scene: layout.frameScene,
-                canvasSize: canvasSize)
+                canvasSize: canvasSize) {
+                cameraTarget(in: layout.frameScene, canvasSize: canvasSize, activeTick: activeTick, scope: cameraInteractionScope)
+                    .zIndex(layout.frameScene.cameraHitLayer)
+            }
             .zIndex({
                 if case .sticker = editorStore.selection { return 150.0 }
-                return 0.0
+                // Match the hit order to a camera rendered directly on the background.
+                return layers.prefix(2).elementsEqual([.background, .camera]) ? 1.0 : 0.0
             }())
+        }
+
+        if showsEditingOverlays, case let .animation(id) = editorStore.selection,
+           let selected = layout.frameScene.animations.first(where: { $0.id == id }) {
+            animationHandles(selected, canvasSize: canvasSize).zIndex(240)
         }
 
         if showsEditingOverlays, case .overlay = motionElementEditor.target {
             motionElementLayer(layout: layout, canvasSize: canvasSize)
                 .zIndex(160)
-        }
-
-        if showsEditingOverlays,
-           hasCameraTrack,
-           !interactionSceneProject.camera.isHidden,
-           let cameraEvaluation = layout.scene.camera {
-            cameraInteractionOverlay(
-                in: canvasSize,
-                evaluation: cameraEvaluation,
-                isAvailable: activeTick?.cameraIsAvailable == true,
-                scope: cameraInteractionScope,
-                dragPreviewImage: cameraDragPreviewImage
-            )
         }
 
         if showsEditingOverlays,
@@ -1235,27 +1233,36 @@ struct CanvasPreview: View {
     }
 
     @ViewBuilder
+    private func cameraTarget(in scene: FrameScene, canvasSize: CGSize, activeTick: EditorPlaybackRenderTick?,
+                              scope: EditorCanvasEditScope) -> some View {
+        if let camera = scene.camera, camera.opacity > 0,
+           hasCameraTrack || activeTick?.sourceFrame?.usesPrimaryFrameForCamera == true {
+            cameraInteractionOverlay(in: canvasSize,
+                evaluation: CameraSceneEvaluation(rect: camera.rect, cornerRadius: camera.cornerRadius,
+                    borderWidth: camera.borderWidth, opacity: camera.opacity),
+                isAvailable: activeTick?.cameraIsAvailable == true, scope: scope, dragPreviewImage: cameraDragPreviewImage,
+                allowsDetachedPreview: scene.videos.isEmpty && scene.animations.isEmpty && scene.stickers.isEmpty && scene.subtitle == nil)
+        }
+    }
+
+    @ViewBuilder
     func cameraInteractionOverlay(
         in size: CGSize,
         evaluation: CameraSceneEvaluation,
         isAvailable: Bool,
         scope: EditorCanvasEditScope,
-        dragPreviewImage: NSImage?
+        dragPreviewImage: NSImage?,
+        allowsDetachedPreview: Bool = true
     ) -> some View {
         let effectiveSize = scope.scale(in: interactionSceneProject) ?? interactionSceneProject.camera.size
         let effectivePosition = scope.position(in: interactionSceneProject) ?? interactionSceneProject.camera.position
-        let isSelected: Bool = {
-            if case .camera = editScope { return true }
-            return false
-        }()
         let selection = scope.selection ?? .camera
+        let isSelected = editorStore.selection == selection
         let chrome = canvasObjectChrome(for: selection, isSelected: isSelected)
         let isResizing = cameraSizeOrigin != nil
         let base = min(size.width, size.height)
         let width = CGFloat(evaluation.rect.width)
         let height = CGFloat(evaluation.rect.height)
-        let x = CGFloat(evaluation.rect.midX) - size.width / 2
-        let y = CGFloat(evaluation.rect.midY) - size.height / 2
         let cameraBorderWidth = CGFloat(evaluation.borderWidth)
         let cameraOuterSize = CGSize(
             width: width + cameraBorderWidth * 2,
@@ -1312,15 +1319,17 @@ struct CanvasPreview: View {
                                 scope: scope,
                                 operation: .move
                             ) else { return }
+
                             cameraDragOrigin = effectivePosition
                             cameraDragScope = scope
-                            cameraDragPreviewImage = pausedCameraDragImage(
+                            cameraDragPreviewImage = allowsDetachedPreview ? pausedCameraDragImage(
                                 canvasSize: size
-                            )
+                            ) : nil
                             cameraCompositorSuppressed = cameraDragPreviewImage != nil
                         }
                         guard let origin = cameraDragOrigin,
                               let interactionScope = cameraDragScope else { return }
+                        guard hypot(value.translation.width, value.translation.height) >= 2 else { return }
                         let base = Double(min(size.width, size.height))
                         let travelX = size.width - width - CGFloat(CompositionSceneEvaluator.cameraEdgeInset(
                             canvas: Double(size.width), camera: Double(width), base: base,
@@ -1370,9 +1379,7 @@ struct CanvasPreview: View {
                 EditorDragFrameCoalescer.shared.flush()
                         if cameraDragOrigin != nil {
                             commitCanvasInteraction(
-                                actionName: scope == .camera(.base)
-                                    ? "移动摄像头"
-                                    : "调整摄像运动位置"
+                                actionName: scope.isCameraMotion ? "调整摄像运动位置" : "移动摄像头"
                             )
                         }
                         cameraDragOrigin = nil
@@ -1384,8 +1391,17 @@ struct CanvasPreview: View {
                         canvasSnapGuideY = nil
                     }
             )
-            .onHover {
-                updateCanvasHover(selection, hovering: $0)
+            .onHover { updateCanvasHover(selection, hovering: $0) }
+            .contextMenu {
+                Button {
+                    editorStore.selection = .camera
+                    editorStore.sceneEditingSegmentID = project.timeline.recordingSegment(atOutputTime: playbackController.latestOutputTime)?.id
+                    let mirrored = editorCameraBinding(store: editorStore, keyPath: \.isMirrored,
+                        actionName: "切换摄像头镜像", onError: onError)
+                    mirrored.wrappedValue.toggle()
+                } label: {
+                    Label(appLocalized("镜像摄像头"), systemImage: interactionSceneProject.camera.isMirrored ? "checkmark" : "flip.horizontal")
+                }
             }
             .accessibilityLabel("摄像头画面")
             .accessibilityHint("拖动以移动，拖右下角圆点调整大小")
@@ -1403,6 +1419,7 @@ struct CanvasPreview: View {
             .accessibilityAction {
                 if let selection = scope.selection {
                     editorStore.selection = selection
+
                 }
             }
 
@@ -1425,9 +1442,9 @@ struct CanvasPreview: View {
                                     ) else { return }
                                     cameraSizeOrigin = effectiveSize
                                     cameraSizeScope = scope
-                                    cameraDragPreviewImage = pausedCameraDragImage(
+                                    cameraDragPreviewImage = allowsDetachedPreview ? pausedCameraDragImage(
                                         canvasSize: size
-                                    )
+                                    ) : nil
                                     cameraCompositorSuppressed = cameraDragPreviewImage != nil
                                 }
                                 guard let origin = cameraSizeOrigin,
@@ -1436,9 +1453,7 @@ struct CanvasPreview: View {
                                     (value.translation.width + value.translation.height)
                                         / max(base, 1)
                                 )
-                                let limits = scope == .camera(.base)
-                                    ? 0.05...0.8
-                                    : 0.05...1
+                                let limits = scope.isCameraMotion ? 0.05...1 : 0.05...0.8
                                 editorStore.updateCanvasScale(
                                     min(max(origin + delta * 1.2, limits.lowerBound), limits.upperBound),
                                     scope: interactionScope
@@ -1449,9 +1464,7 @@ struct CanvasPreview: View {
                 EditorDragFrameCoalescer.shared.flush()
                                 if cameraSizeOrigin != nil {
                                     commitCanvasInteraction(
-                                        actionName: scope == .camera(.base)
-                                            ? "调整摄像头大小"
-                                            : "调整摄像运动大小"
+                                        actionName: scope.isCameraMotion ? "调整摄像运动大小" : "调整摄像头大小"
                                     )
                                 }
                                 cameraSizeOrigin = nil
@@ -1464,7 +1477,8 @@ struct CanvasPreview: View {
             }
         }
         .frame(width: cameraOuterSize.width, height: cameraOuterSize.height)
-        .offset(x: x, y: y)
+        .position(x: evaluation.rect.midX, y: evaluation.rect.midY)
+        .frame(width: size.width, height: size.height)
         .opacity(isAvailable ? evaluation.opacity : 0)
         // 摄像头不可用/隐藏的时间段：透明 overlay 不得继续拦截画布拖拽与点选。
         .allowsHitTesting(isAvailable)
@@ -1503,14 +1517,12 @@ struct CanvasPreview: View {
     ) -> CanvasRenderedFrame? {
         // Crop mode owns a separate, deliberately flat source-only renderer.
         guard !isCropping else { return nil }
-        let renderScale = previewRenderScale(for: canvasSize)
         let playbackTracks = playbackTrackCache.tracks(for: project, outputDuration: mediaSession.outputDuration)
         let playbackTime = interactionPreviewTime()
             ?? activeTick?.outputTime
             ?? playbackController.outputTime
         let layout = previewLayout(
             canvasSize: canvasSize,
-            renderScale: renderScale,
             playbackTime: playbackTime,
             tracks: playbackTracks
         )
@@ -1518,12 +1530,13 @@ struct CanvasPreview: View {
     }
 
     private func interactionPreviewTime() -> TimeInterval? {
-        guard let selection = editorStore.interaction?.selection else { return nil }
+        guard !playbackController.scrubIsActive, playbackController.hoverPreviewTime == nil,
+              let selection = editorStore.interaction?.selection else { return nil }
         switch selection {
         case let .zoom(id):
             guard showsEditingControls, !playbackController.isPlaying,
                   let clip = project.timeline.zoomClips.first(where: { $0.id == id }),
-                  clip.origin == .manual else { return nil }
+                  clip.origin == .manual, clip.target == .recording else { return nil }
             // Inspect the fully entered composition without seeking the media
             // or changing the authored animation. Stay strictly inside this
             // clip: its exact end can already select an adjacent next zoom.

@@ -33,6 +33,9 @@ public enum RecordingProjectImport {
                 throw ProjectTimelineEditingError.invalidSourceSequence
             }
             source.screenAppearance = source.screenAppearance ?? ScreenCardAppearance(canvas: imported.canvas)
+            if source.capture.source == .cameraOnly && source.cameraAppearance == nil {
+                source.cameraAppearance = imported.camera
+            }
             source.id = id
             source.colorIndex = nextColor; nextColor += 1
             result.additionalSources.append(source)
@@ -74,6 +77,9 @@ public enum RecordingProjectImport {
                 throw ProjectTimelineEditingError.invalidSourceSequence
             }
             source.screenAppearance = source.screenAppearance ?? ScreenCardAppearance(canvas: imported.canvas)
+            if source.capture.source == .cameraOnly && source.cameraAppearance == nil {
+                source.cameraAppearance = imported.camera
+            }
             source.id = id
             source.colorIndex = nextColor; nextColor += 1
             result.additionalSources.append(source)
@@ -101,11 +107,13 @@ public enum RecordingProjectImport {
             incomingMap.segments.compactMap { segment in
                 guard let id = segmentIDs[segment.id] else { return nil }
                 let overrides = imported.timeline.primarySegmentAudioOverrides[segment.id]
-                return (id, PrimarySegmentAudioOverrides(
+                var settings = PrimarySegmentAudioOverrides(
                     systemVolume: overrides?.systemVolume ?? imported.audio.systemVolume,
                     microphoneVolume: overrides?.microphoneVolume ?? imported.audio.microphoneVolume,
                     isSystemMuted: overrides?.isSystemMuted ?? imported.audio.isSystemMuted,
-                    isMicrophoneMuted: overrides?.isMicrophoneMuted ?? imported.audio.isMicrophoneMuted))
+                    isMicrophoneMuted: overrides?.isMicrophoneMuted ?? imported.audio.isMicrophoneMuted)
+                settings.videoAudio = overrides?.videoAudio
+                return (id, settings)
             })
         if !options.includesMotion {
             edits.zoomClips = []; edits.screenMotionClips = []; edits.cameraMotionClips = []
@@ -132,6 +140,7 @@ public enum RecordingProjectImport {
         edits.animationClips = shifted(edits.animationClips, timing: \.timing, id: \.id, by: time)
         edits.audioClips = shifted(edits.audioClips, timing: \.timing, id: \.id, by: time)
         edits.videoClips = shifted(edits.videoClips, timing: \.timing, id: \.id, by: time)
+        edits.isolateCopiedVideoAudio(ids: Set(segmentIDs.values).union(edits.videoClips.map(\.id)).union(edits.audioClips.map(\.id)))
         edits.subtitleCues = shifted(edits.subtitleCues, timing: \.timing, id: \.id, by: time)
         edits.mediaAssets = edits.mediaAssets.map { var a = $0; a.id = UUID(); return a }
         let placeholderID = UUID()
@@ -254,7 +263,7 @@ public enum RecordingProjectImport {
             c.sourceStart += offset * c.playbackRate
             if offset > 0 { c.fadeIn = 0 } else { c.fadeOut = 0 }
         }
-        t.videoClips = splitOverlays(t.videoClips, timing: \.timing, id: \.id, at: time) { $0.sourceStart += $1 * $0.playbackRate }
+        t.videoClips = splitVideos(t.videoClips, at: time)
         t.subtitleCues = splitOverlays(t.subtitleCues, timing: \.timing, id: \.id, at: time)
         return t
     }
@@ -279,6 +288,12 @@ public enum RecordingProjectImport {
             return [left, right]
         }
     }
+    static func splitVideos(_ clips: [VideoClip], at time: Double) -> [VideoClip] {
+        splitOverlays(clips, timing: \.timing, id: \.id, at: time) { clip, elapsed in
+            clip.sourceStart += elapsed * clip.playbackRate
+        }
+    }
+
     private static func splitOverlays<C>(_ clips: [C], timing: WritableKeyPath<C, OverlayTiming>,
                                         id: WritableKeyPath<C, UUID>, at time: Double,
                                         adjusting: (inout C, Double) -> Void = { _, _ in }) -> [C] {

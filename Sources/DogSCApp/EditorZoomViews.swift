@@ -6,6 +6,7 @@ struct ZoomFocusMap: View {
     @ObservedObject var mediaSession: EditorMediaSession
     let outputTime: TimeInterval
     let sourcePixelSize: CGSize
+    var overlay: VideoClip? = nil
     @Binding var focus: NormalizedPoint
     var allowsEditing = true
     var refreshesDuringPlayback = false
@@ -189,13 +190,13 @@ struct ZoomFocusMap: View {
             }
             .accessibilityHidden(true)
         }
-        .frame(height: min(max(312 / max(sourcePixelSize.width / max(sourcePixelSize.height, 1), 0.5), 150), 200))
+        .frame(height: min(max(312 / max(sourcePixelSize.width / max(sourcePixelSize.height, 0.000_001), 0.5), 150), 200))
         .accessibilityIdentifier("zoom.focus-map")
     }
 
     private func focusMapRect(in size: CGSize) -> CGRect {
         let padded = CGRect(origin: .zero, size: size).insetBy(dx: 8, dy: 8)
-        let sourceAspect = max(sourcePixelSize.width / max(sourcePixelSize.height, 1), 0.01)
+        let sourceAspect = max(sourcePixelSize.width / max(sourcePixelSize.height, 0.000_001), 0.01)
         let widthFromHeight = padded.height * sourceAspect
         if widthFromHeight <= padded.width {
             return CGRect(
@@ -250,15 +251,18 @@ struct ZoomFocusMap: View {
 
     private var thumbnailRequestID: String {
         let generation = mediaSession.prepared?.generation.description ?? "none"
+        if let overlay {
+            let sourceTime = FrameVideoScene(clip: overlay, at: outputTime).sourceTime
+            return "\(generation)#\(overlay.id)#\(overlay.sourcePath)#\(sourceTime)"
+        }
         return "\(generation)#\(String(format: "%.3f", outputTime))"
     }
 
     @MainActor
     private func loadThumbnail() async {
-        guard let image = await mediaSession.thumbnail(atOutputTime: outputTime) else {
-            thumbnail = nil
-            return
-        }
-        thumbnail = NSImage(cgImage: image, size: .zero)
+        thumbnail = nil
+        let image = await mediaSession.thumbnail(atOutputTime: outputTime, overlay: overlay)
+        guard !Task.isCancelled else { return }
+        thumbnail = image.map { NSImage(cgImage: $0, size: .zero) }
     }
 }

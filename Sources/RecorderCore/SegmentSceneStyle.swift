@@ -115,9 +115,16 @@ public struct RecordingSegmentBoundary: Equatable, Sendable {
 /// two different clocks reads as two separate glitches.
 public enum SegmentAppearanceTransition {
     public static var duration: TimeInterval { RecordingAspectTransitions.duration }
+    public static let cameraDuration: TimeInterval = 0.36
+
+    static func cameraProgress(at time: TimeInterval, boundary: RecordingSegmentBoundary) -> Double? {
+        guard let segment = boundary.segment else { return nil }
+        return progress(at: time, boundary: boundary.start, duration: min(cameraDuration, segment.outputDuration))
+    }
 
     /// 0...1 inside the window after a cut, nil once the clip has settled.
-    public static func progress(at time: TimeInterval, boundary: TimeInterval) -> Double? {
+    public static func progress(at time: TimeInterval, boundary: TimeInterval,
+                                duration: TimeInterval = SegmentAppearanceTransition.duration) -> Double? {
         let elapsed = time - boundary
         guard elapsed.isFinite, elapsed >= 0, elapsed < duration else { return nil }
         let x = elapsed / duration

@@ -48,6 +48,7 @@ final class AgentBridgeServer {
         let manifests: [UUID: ProjectMediaManifest]
         let audio: AudioStyle
         let overrides: [UUID: PrimarySegmentAudioOverrides]
+        let recordingAudioEdits: [AudioClip]
         let language: String
     }
     private var speechAnalysis: (context: SpeechContext, analysis: SpeechEditAnalysis)?
@@ -55,23 +56,55 @@ final class AgentBridgeServer {
     /// The open project's package, for the per-project AI workspace.
     var projectPackageURL: () -> URL? = { nil }
 
-    /// Everything an agent creates for this project lives here (transcripts,
-    /// Rive files, rendered overlays, downloaded music). New media files in
-    /// it are picked up by the media bin.
-    var workspaceURL: URL? {
+    /// Stable project storage for saved conversations, including older projects.
+    var conversationRootURL: URL? {
         guard let package = projectPackageURL() else { return nil }
         ProjectFiles.setPackage(package)
-        let url = package.appendingPathComponent("AI", isDirectory: true)
-        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        return url
+        let root = package.appendingPathComponent("AI", isDirectory: true)
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
     }
 
-    /// When the current AI turn began: library files made after this are
-    /// added to the open project's media bin when the turn ends.
-    private var turnStartedAt = Date.distantFuture
+    static func workspace(for thread: String, in root: URL) -> URL {
+        root.appendingPathComponent("工作区", isDirectory: true).appendingPathComponent(thread, isDirectory: true)
+    }
+
+    var workspaceURL: URL? {
+        guard let root = conversationRootURL else { return nil }
+        let url = Self.workspace(for: AgentChatModel.shared.currentThreadID ?? "external", in: root)
+        do {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            return url
+        } catch { return nil }
+    }
+
+    /// Direct file output is scoped to the turn. Durable tool-created assets and
+    /// undo revisions stay in the project catalog, outside the agent's working folder.
+    private func outputFolders(create: Bool) throws -> [String: URL] {
+        guard let workspace = workspaceURL else { throw BridgeError(message: "Project workspace is unavailable.") }
+        var root = workspace.appendingPathComponent("输出", isDirectory: true)
+        if let currentTurn { root.appendPathComponent(currentTurn.uuidString, isDirectory: true) }
+        var folders: [String: URL] = [:]
+        for kind in [MediaAssetKind.animation, .image, .audio, .video] {
+            let folder = root.appendingPathComponent(AssetLibrary.subfolderName(for: kind), isDirectory: true)
+            if create { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+            folders[kind.rawValue] = folder
+        }
+        return folders
+    }
+
+    private var existingAssetIDs = Set<UUID>()
+
+    private func projectAssets() throws -> AssetLibrary {
+        guard let package = projectPackageURL() else { throw BridgeError(message: "No project package is open.") }
+        return AssetLibrary.projectAssets(in: package)
+    }
 
     func beginUndoBatch(turn: UUID? = nil) {
-        turnStartedAt = Date()
+        if let assets = try? projectAssets() {
+            assets.reload()
+            existingAssetIDs = Set(assets.entries.map(\.id))
+        }
         currentTurn = turn
         turnStart = store?.project.timeline
         if let turn, let start = turnStart { turnSnapshots[turn] = start }
@@ -159,18 +192,22 @@ final class AgentBridgeServer {
         return out
     }
 
-    /// Collect reusable library results; workspace files are scratch work
-    /// unless the agent explicitly imports or places them.
+    /// Publish finished project media in the bin. Workspace drafts are imported on request.
     func collectWorkspaceMedia() {
         guard let store else { return }
         let known = Set(store.project.timeline.mediaAssets.map { ProjectFiles.resolve($0.path) })
-        // Reusable results the AI saved into the library during this turn.
-        let library = AssetLibrary.shared
+        guard let library = try? projectAssets() else { return }
         library.reload()
         let libraryFiles = library.entries
-            .filter { $0.generated && $0.addedAt >= turnStartedAt.addingTimeInterval(-2) }
+            .filter { $0.generated && !existingAssetIDs.contains($0.id) }
             .map { URL(fileURLWithPath: $0.path) }
-        let fresh = libraryFiles.filter { !known.contains($0.path) }
+        let folders = (try? outputFolders(create: false)) ?? [:]
+        let outputs = folders.values.flatMap { folder in
+            (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.isRegularFileKey],
+                options: .skipsHiddenFiles)) ?? []
+        }.filter { (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+            && MediaAssetKind.kind(forExtension: $0.pathExtension) != nil }
+        let fresh = (libraryFiles + outputs).filter { !known.contains($0.path) }
         guard !fresh.isEmpty else { return }
         EditorStore.$isAgentMutation.withValue(true) {
             _ = store.importMediaAssets(fresh)
@@ -325,22 +362,24 @@ final class AgentBridgeServer {
     }
 
     static let methods: [(name: String, summary: String)] = [
-        ("project.summary", "Title, output duration (s), playhead, counts of clips, subtitles and media."),
-        ("media.list", "List existing media: scope project (default), library, or all; optional kind video/image/audio/animation. Returns IDs, names, paths and missing status."),
-        ("media.import", "params: {paths:[absolute file paths]} → adds to the bin by reference."),
-        ("sound.download", "params: {url, sourceURL, licenseURL, name?} → downloads a CC0 audio file into the library and project bin, reusing existing files. Returns path and duration; place with timeline.addAudio or attach as an HTML main clip's soundPath."),
+        ("project.summary", "Title, output duration (s), playhead, clip counts and footage (recording sources, main-track spans and visual overlays)."),
+        ("media.list", "List existing media: scope project (default), shared (reusable files), library (favorites), or all; optional kind video/image/audio/animation. Returns IDs, names, paths and missing status."),
+        ("media.import", "params: {paths:[absolute file paths]} → imports into the project bin, copying external files into the project."),
+        ("image.download", "params: {url, sourceURL, name?} → import a direct HTTPS PNG, JPEG, WebP or standalone SVG (imported as PNG) into shared media and the project bin, retaining its source page. Returns assetId, path and project-relative projectPath."),
+        ("sound.download", "params: {url, sourceURL, licenseURL, name?} → downloads a CC0 audio file into shared media and keeps a project copy, reusing existing files. Returns path and duration; place with timeline.addAudio or attach to a motion with soundPath."),
         ("timeline.addAudio", "params: {path, start, kind:'music'|'effect', volume?, fadeIn?, fadeOut?}."),
-        ("timeline.addVideo", "params: {path, start, x?, y?, width?, volume?} → places a video over the recording (full frame by default)."),
+        ("timeline.addVideo", "params: {path, start, x?, y?, width?, volume?, maskShape?, maskCornerRadius?, cameraMode?} → fitted B-roll. Masks: 矩形, 圆角矩形, 圆形. Rounded radius is 0–0.5 of the short edge. pictureInPicture places the recording camera above the video; videoInFront reverses the order. Omit to use the last manual choice (initially camera above)."),
         ("subtitles.get", "All subtitle cues with stable IDs, text and output times."),
         ("subtitles.updateText", "params: {cues:[{id,text?,secondary?}]} → corrects only the named captions; IDs, timing and all other cues are preserved."),
         ("subtitles.fromWords", "params: {analysisId?, cues:[{from,to,secondary?,start?,end?,holdToNext?}]} → uses the current transcript wording, filters profanity and aligns cue times. Use subtitles.updateText for specific recognition errors."),
         ("subtitles.set", "params: {cues:[{start,end,text,secondary?}]} → replaces all subtitles at the supplied times (one undo step). Use subtitles.updateText for local text corrections."),
         ("subtitles.style", "params: {fontScale?, bottomMargin?, backgroundOpacity?, showsSecondary?}."),
         ("audio.export", "params: {path?} → writes the edited program audio (M4A, output time) for transcription."),
-        ("html.create", "params: {name, html, start, duration?, placement:'overlay'|'main', x?, y?, width?, framed?, soundPath?, sound?, copy?} → creates and places an HTML motion. soundPath attaches a local audio file to a main clip. Identical retries reuse the file and placement. Revise with html.update; copy:true explicitly creates an independent asset."),
-        ("html.update", "params: {id OR path, html} → revises a library HTML motion used by this project in one undoable edit. IDs, timing, per-instance fields and user edits are preserved; the bin keeps one item. Returns the new path; other projects keep their existing source."),
+        ("template.read", "params: {path?, includeSource?} → folders return immediate entries and all nested HTML template paths in templates. Folder and template results include applicable README paths and introductions in styleGuides. Read a README or inspect a template's properties, imageSlots, camera slot, soundCues and optional authored HTML."),
+        ("html.create", "params: {name, html or templatePath, start or speechAnchor:{analysisId,word,localTime?}, duration?, placement:'overlay'|'main', x?, y?, width?, framed?, soundPath?, sound?, copy?} → creates and places an HTML motion. Both tracks use the declared score; soundPath or sound overrides it. Identical retries reuse the file and placement. Revise with html.update; copy:true explicitly creates an independent asset."),
+        ("html.update", "params: {id OR path, html} → revises a HTML motion used by this project in one undoable edit. IDs, timing, per-instance fields and user edits are preserved; the bin keeps one item. Returns the new path; other projects keep their existing source."),
         ("html.preview", "params: {path, times:[seconds]} → renders PNG frames of an HTML motion page so you can check your design."),
-        ("sound.create", "params: {name, events:[{type, at, duration?, volume?, pitch?, pan?}], start?, volume?} → synthesises a sound effect (types: whoosh, swoosh_down, riser, hit, boom, click, tick, pop, ding, chime, shimmer, glitch, tone), saves it to the library and, when start is given, places it on an audio track."),
+        ("sound.create", "params: {name, events:[{type, at, duration?, volume?, pitch?, pan?}], start?, volume?} → synthesises a sound effect (types: whoosh, swoosh_down, riser, hit, boom, click, tick, pop, ding, chime, shimmer, glitch, tone), saves it to the project and, when start is given, places it on an audio track."),
         ("timeline.insertBlack", "params: {start, duration?} → inserts a black clip into the main track (default 2 s); everything after it moves later."),
         ("timeline.get", "Everything on the timeline in output seconds, with ids: main-track segments, zooms, 3D moves, highlights, overlays, audio. Object IDs address individual occurrences. Zooms include authored transitions/easing; zoomJoins reports evaluated gap, leftExitDuration, rightEnterDuration, fullFrameHold at 1x and continuous handoff. These expose timing for editorial choices, not automatic merging. Overlays include layerIndex."),
         ("timeline.inspect", "Read native editable values for timeline objects, optionally filtered by ids. Returns a project revision and objects {id,kind,value}. Main clip value exposes source {start,end,speed}, audio, sceneStyle and media. source uses media seconds; output timing and availableSource bounds are reported separately."),
@@ -349,13 +388,13 @@ final class AgentBridgeServer {
         ("timeline.cut", "Cut output-time ranges in one undoable edit; dependent tracks follow. Use ranges [{start,end}], or analysisId with wordRanges [{from,to,start?,end?}] and pauses [{id,keep}]. Word IDs are inclusive; defaults are recognizer endpoints, optional start/end are exact overrides. keep is remaining pause seconds (default 0.25, minimum 0). Acoustic evidence is advisory, not permission. analysisId checks the audio snapshot; explicit ranges may be included with it. Optional revision from timeline_get binds any cut to that project state. Returns appliedRanges and, when matching speech analysis is cached, cutReview for every new join: fine edge waveform, retained quiet, utterance context and current segment IDs/source bounds for further timeline_update edits. remainingPauses lists all retained pause candidates, including those within kept sentences, in the new output clock."),
         ("timeline.remove", "params: {ids:[...]} → deletes clips by id (zoom, 3D, highlight, overlay, audio, subtitle, video, main-track segment) in one undoable step."),
         ("pointer.events", "params: {from?, to?, kinds?:['click'|'move']} → recorded mouse clicks (and optionally moves) in output seconds with x,y (0-1 of the recording). Clicks are where the viewer's attention was."),
-        ("zoom.add", "params: {start, end, x, y, scale?, transition?} → Add a purposeful camera push-in on the recording. x,y = source focus (0-1), scale 1.05-4 (default: the project's). start begins entrance; end begins return; transition is seconds per leg. Choose the span around the actual explanation or action. Touching clips continue without a 1x reset. Existing startTime/endTime, focus, scale and separate transition durations are editable with timeline_update; timeline_get reports zoomJoins."),
+        ("zoom.add", "params: {start, end, x, y, scale?, transition?, target?} → Zoom the recording (default target recording) or the frontmost active imported video (target overlayVideo). x,y = focus in the targeted source (0-1), scale 1.05-4 (default: the project's). start begins entrance; end begins return; transition is seconds per leg. Choose the span around the actual explanation or action. Touching zooms on the same surface continue without a 1x reset. Existing target, startTime/endTime, focus, scale and separate transition durations are editable with timeline_update; timeline_get reports zoomJoins."),
         ("motion3d.add", "params: {start, end, rotationX?, rotationY?, rotationZ?, scale?, x?, y?, perspective?, leadIn?} → a 3D move of the recording (degrees; small values like 8-18 look best)."),
         ("highlight.add", "params: {start, end, x, y, width, height, style:'spotlight'|'blur', dim?} → spotlight dims everything outside the box (draw attention); blur hides the box (redact). Box is 0-1 of the recording, top-left origin."),
         ("settings.get", "The whole-video settings as JSON (background, layout padding/corners, device frame, cursor, camera bubble, audio levels, motion defaults, export settings)."),
         ("settings.set", "params: {patch:{...}} → merges a JSON patch into the whole-video settings (same shape as settings.get). One undoable step; invalid values are refused with the reason."),
         ("app.help", "params: {topic?} → how DogSC itself is used: where each setting lives, shortcuts, and step-by-step paths. Use it to answer 'how do I…' questions."),
-        ("canvas.snapshot", "Render a specified output time independently of the editor playhead. Returns PNG path, requested/rendered time, decoded source timestamp, source/clip IDs and coordinate geometry. view canvas (default) includes all effects; source shows the uncropped recording. maxDimension defaults to 1280 (64...8192)."),
+        ("canvas.snapshot", "Render a specified output time independently of the editor playhead. Returns PNG path, requested/rendered time, decoded source timestamp, source/clip IDs and coordinate geometry. view canvas (default) includes all effects and reports the active caption’s subtitleRestingRect in top-left canvas pixels. source shows the uncropped recording. maxDimension defaults to 1280 (64...8192)."),
         ("audio.transcribe", "params: {language?} → transcribes the edited program's voice with the macOS recognizer; returns phrases and numbered tokens with recognizer timing ranges (output seconds)."),
         ("audio.analyzeEdits", "params: {language?,from?,to?,includeWords?,includeWaveform?,refresh?} → Raw speech, independent local waveform evidence, suggested cut times, pause IDs, utterance context spanning pauses, nearby repeated phrases with surrounding takes, and existing edit joins in output seconds. Suggestions can fall inside recognizer ranges; none is an automatic deletion or sentence verdict. from/to select a window (default 180 s, pages up to 300 s). includeWords adds token boundaries; includeWaveform adds broad peak dBFS bins. Joins always include fine local waveform; utterance context is not split by silence. pauseGroups combines brief-noise-separated pauses with text context and optional acousticInterior cut ranges. Cached with audio_transcribe; refresh reanalyses. analysisId ties word IDs and pauses to this audio snapshot. Frame counts use the current export videoFrameRate, independently of the audio measurementStep. Existing joins expose leftQuietFrames/rightQuietFrames; cutReview exposes left/right quietFrames and total retainedQuietFrames. Short includeWaveform windows give finer local detail."),
         ("subtitles.fromWords", "Caption word ranges from the current analysis; optional start/end override exact times. Optional holdToNext on each cue extends its end to the next cue's start (true), preserves a gap (false), or retains ASR gap cleanup (omitted); explicit end takes priority. No duration threshold is imposed. Returns actual cue IDs/times and remaining gaps in seconds and video frames. Local alignment evidence is returned; display text does not change audio."),
@@ -412,6 +451,7 @@ final class AgentBridgeServer {
         case "timeline.addSticker": appLocalized("添加贴图")
         case "timeline.addAudio": appLocalized((params["kind"] as? String) == "effect" ? "添加了一段音效" : "添加了一段音乐")
         case "media.import": appLocalized("导入了素材")
+        case "image.download": appLocalized("导入了素材")
         case "timeline.addVideo": appLocalized("添加了一段视频")
         case "audio.export": appLocalized("导出了节目音频")
         case "audio.transcribe": String(format: appLocalized("转写了音频，共 %lld 段"), Int64(((result as? [String: Any])?["phrases"] as? [Any])?.count ?? 0))
@@ -429,7 +469,7 @@ final class AgentBridgeServer {
             let images = method == "html.preview"
                 ? (result as? [String])?.prefix(6).map { $0 } : nil
             stepHandler(AgentChatModel.Step(title: summary, detail: Self.stepDetail(method, params, result),
-                                            time: Self.stepTime(method, params), images: images, method: method))
+                                            time: Self.stepTime(method, params, result), images: images, method: method))
         } else {
             activityHandler?(summary)
         }
@@ -466,6 +506,38 @@ final class AgentBridgeServer {
                            "userEdits": edits(clip.elementEdits)])
         }
         return result
+    }
+
+    private func motionStart(_ params: [String: Any], length: Double, duration: Double, store: EditorStore) throws -> Double {
+        guard let raw = params["speechAnchor"] else {
+            return min(max((params["start"] as? NSNumber)?.doubleValue ?? playback?.outputTime ?? 0, 0), duration)
+        }
+        guard params["placement"] as? String == "overlay", params["start"] == nil,
+              let anchor = raw as? [String: Any], let analysisID = anchor["analysisId"] as? String,
+              let number = anchor["word"] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+              let index = Int(exactly: number.doubleValue) else {
+            throw BridgeError(message: "An overlay speechAnchor needs analysisId and integer word ID in place of start.")
+        }
+        guard let cached = speechAnalysis, cached.analysis.id == analysisID,
+              try speechContext(store: store, language: cached.context.language) == cached.context,
+              cached.analysis.transcript.words.indices.contains(index) else {
+            throw BridgeError(message: "Read word times for the current edit before placing a speech-anchored motion.")
+        }
+        let word = cached.analysis.transcript.words[index]
+        guard SpeechEditAnalysis.isSpoken(word.text) else { throw BridgeError(message: "Choose a spoken word for the anchor.") }
+        var localTime = 0.0
+        if let supplied = anchor["localTime"] {
+            guard let value = supplied as? NSNumber, CFGetTypeID(value) != CFBooleanGetTypeID() else {
+                throw BridgeError(message: "localTime must be a number in seconds.")
+            }
+            localTime = value.doubleValue
+        }
+        let start = word.start - localTime
+        guard localTime.isFinite, localTime >= 0, localTime < length, word.start < duration,
+              EditorStore.animationStart(start, outputDuration: duration) == start else {
+            throw BridgeError(message: "The visual beat must fit inside the placed overlay and edited program. Adjust the HTML entrance or clip duration.")
+        }
+        return start
     }
 
     /// A retry must address the same placement, not a nearby occurrence.
@@ -562,7 +634,9 @@ final class AgentBridgeServer {
         let manifests = Dictionary(uniqueKeysWithValues: store.project.sources.map { ($0.id, $0.media) })
         return SpeechContext(sequence: store.project.timeline.sourceSequence.withoutSceneStyles,
                              inputs: inputs, manifests: manifests, audio: store.project.audio,
-                             overrides: store.project.timeline.primarySegmentAudioOverrides, language: language)
+                             overrides: store.project.timeline.primarySegmentAudioOverrides,
+                             recordingAudioEdits: store.project.timeline.programAudioClips(audio: store.project.audio)
+                                 .filter { $0.videoOrigin?.isRecordingSound == true }, language: language)
     }
 
     /// Transcription and waveform evidence share one export and one cached
@@ -594,8 +668,11 @@ final class AgentBridgeServer {
                     && (overrides?.systemVolume ?? project.audio.systemVolume) > 0
                 let microphone = tracks?.microphone != nil && !(overrides?.isMicrophoneMuted ?? project.audio.isMicrophoneMuted)
                     && (overrides?.microphoneVolume ?? project.audio.microphoneVolume) > 0
+                let audibleEdit = context.recordingAudioEdits.contains {
+                    !$0.isMuted && $0.volume > 0 && $0.timing.startTime < segment.outputEnd && segment.outputStart < $0.timing.endTime
+                }
                 return SpeechEditAnalysis.Region(segmentID: segment.id, sourceID: segment.sourceID,
-                    start: segment.outputStart, end: segment.outputEnd, audible: !segment.isInserted && (system || microphone))
+                    start: segment.outputStart, end: segment.outputEnd, audible: audibleEdit || (!segment.isInserted && overrides?.videoAudio == nil && (system || microphone)))
             }
             let task = Task { @MainActor in
                 let url = FileManager.default.temporaryDirectory.appendingPathComponent("dogsc-speech-\(UUID().uuidString).m4a")
@@ -675,31 +752,40 @@ final class AgentBridgeServer {
             }
         }
         func span(_ start: Double, _ end: Double) -> [String: Any] { ["start": start, "end": end] }
+        let videos: [[String: Any]] = t.videoClips.map { clip in
+            ["id": clip.id.uuidString, "kind": "video", "name": URL(fileURLWithPath: clip.sourcePath).lastPathComponent,
+             "start": clip.timing.startTime, "end": clip.timing.endTime, "layerIndex": clip.layerIndex,
+             "selected": store.selection == .videoClip(clip.id), "maskShape": clip.maskShape.rawValue,
+             "maskCornerRadius": clip.maskCornerRadius, "cameraMode": clip.cameraMode.rawValue]
+        }
         let orderedZooms = t.zoomClips.sorted { $0.startTime < $1.startTime }
-        let evaluatedZooms = ZoomTransitionResolution.resolve(orderedZooms, outputDuration: outputDuration())
-        let zoomJoins = evaluatedZooms.indices.dropFirst().map { i -> [String: Any] in
-            let left = evaluatedZooms[i - 1], right = evaluatedZooms[i]
-            let gap = right.startTime - left.endTime
-            let continuous = abs(gap) <= ZoomInterpolator.adjacencyTolerance
-            let rightEnter = continuous && right.enterDuration <= 0.001
-                ? min(store.project.motion.defaultZoomTransitionDuration, right.duration) : right.enterDuration
-            return ["leftId": left.id.uuidString, "rightId": right.id.uuidString,
-                "gap": gap, "continuous": continuous,
-                "leftExitDuration": left.exitDuration, "rightEnterDuration": rightEnter,
-                "fullFrameHold": continuous ? 0 : max(0, right.startTime - left.endTime - left.exitDuration)]
+        let duration = outputDuration()
+        let zoomJoins = ZoomTarget.allCases.flatMap { target -> [[String: Any]] in
+            let evaluatedZooms = ZoomTransitionResolution.resolve(orderedZooms.filter { $0.target == target }, outputDuration: duration)
+            return evaluatedZooms.indices.dropFirst().map { i -> [String: Any] in
+                let left = evaluatedZooms[i - 1], right = evaluatedZooms[i]
+                let gap = right.startTime - left.endTime
+                let continuous = abs(gap) <= ZoomInterpolator.adjacencyTolerance
+                let rightEnter = continuous && right.enterDuration <= 0.001
+                    ? min(store.project.motion.defaultZoomTransitionDuration, right.duration) : right.enterDuration
+                return ["leftId": left.id.uuidString, "rightId": right.id.uuidString,
+                    "target": target.rawValue, "gap": gap, "continuous": continuous,
+                    "leftExitDuration": left.exitDuration, "rightEnterDuration": rightEnter,
+                    "fullFrameHold": continuous ? 0 : max(0, right.startTime - left.endTime - left.exitDuration)]
+            }
         }
         return [
             "outputDuration": outputDuration(),
             "revision": try AgentTimelineAccess.revision(store.project),
             "mainTrack": main,
             "zooms": t.zoomClips.map { span($0.startTime, $0.endTime).merging(
-                ["id": $0.id.uuidString, "scale": $0.scale, "x": $0.focus.x, "y": $0.focus.y,
+                ["id": $0.id.uuidString, "target": $0.target.rawValue, "scale": $0.scale, "x": $0.focus.x, "y": $0.focus.y,
                  "enterDuration": $0.enterDuration,
                  "exitDuration": $0.requestedExitDuration(defaultTransition: store.project.motion.defaultZoomTransitionDuration),
                  "easing": $0.easing.rawValue,
                  "automatic": $0.origin == .automatic]) { a, _ in a } },
             "zoomJoins": zoomJoins,
-            "zoomTiming": "start begins the entrance; end finishes the hold and starts the return. zoomJoins reports evaluated transitions and time held at 1x before the next entrance. Touching clips continue directly from the preceding camera state. Timing/continuity choices are editable, not automatic merge decisions.",
+            "zoomTiming": "start begins the entrance; end finishes the hold and starts the return. zoomJoins reports evaluated transitions and time held at 1x before the next entrance. Touching zooms on the same target continue directly from its preceding state. Timing/continuity choices are editable, not automatic merge decisions.",
             "motion3d": t.screenMotionClips.map { span($0.timing.startTime, $0.timing.endTime).merging(
                 ["id": $0.id.uuidString, "rotationX": $0.target.rotationX, "rotationY": $0.target.rotationY,
                  "rotationZ": $0.target.rotationZ, "scale": $0.target.scale]) { a, _ in a } },
@@ -709,7 +795,7 @@ final class AgentBridgeServer {
             "overlays": t.animationClips.map { span($0.timing.startTime, $0.timing.endTime).merging(
                 ["id": $0.id.uuidString, "kind": "motion", "layerIndex": $0.layerIndex, "name": motionNames.name(for: $0.sourcePath)]) { a, _ in a } }
                 + t.stickerClips.map { span($0.timing.startTime, $0.timing.endTime).merging(["id": $0.id.uuidString, "kind": "image", "layerIndex": $0.layerIndex]) { a, _ in a } }
-                + t.videoClips.map { span($0.timing.startTime, $0.timing.endTime).merging(["id": $0.id.uuidString, "kind": "video", "layerIndex": $0.layerIndex]) { a, _ in a } },
+                + videos,
             "audio": t.audioClips.map { span($0.timing.startTime, $0.timing.endTime).merging(
                 ["id": $0.id.uuidString, "kind": $0.kind == .effect ? "effect" : "music",
                  "name": URL(fileURLWithPath: $0.sourcePath).deletingPathExtension().lastPathComponent]) { a, _ in a } },
@@ -979,6 +1065,14 @@ final class AgentBridgeServer {
                          "contentQuad": contentCorners.compactMap { screen.projectedQuad.project($0, from: screen.projectionRect) }.map(point),
                          "coordinates": "Canvas pixel coordinates, top-left origin. source view is the uncropped recording; zoom/highlight coordinates use that recording, not the canvas."] as [String: Any]]
         if let camera = snapshot.scene.camera { result["cameraRect"] = rect(camera.rect) }
+        if view == "canvas", let subtitle = snapshot.scene.subtitle {
+            let size = CGSize(width: snapshot.scene.canvasSize.width, height: snapshot.scene.canvasSize.height)
+            if let bounds = SubtitleRasterizer.boxRect(for: subtitle, canvasSize: size) {
+                result["subtitleRestingRect"] = ["x": bounds.minX, "y": bounds.minY,
+                                                 "width": bounds.width, "height": bounds.height]
+                result["subtitleCueId"] = subtitle.cueID.uuidString
+            }
+        }
         if let sourceID = snapshot.sourceID { result["sourceId"] = sourceID.uuidString }
         if let actual = snapshot.decodedSourceTime { result["decodedSourceTime"] = actual }
         return result
@@ -1021,9 +1115,11 @@ final class AgentBridgeServer {
         return ["guide": sections.isEmpty ? guide : sections.map { "## " + $0 }.joined(separator: "\n")]
     }
 
-    private static func stepTime(_ method: String, _ p: [String: Any]) -> Double? {
+    private static func stepTime(_ method: String, _ p: [String: Any], _ result: Any) -> Double? {
         switch method {
-        case "timeline.addAudio", "timeline.addVideo", "timeline.addSticker", "timeline.insertBlack", "html.create",
+        case "html.create":
+            return (result as? [String: Any])?["start"] as? Double
+        case "timeline.addAudio", "timeline.addVideo", "timeline.addSticker", "timeline.insertBlack",
              "zoom.add", "motion3d.add", "highlight.add":
             return (p["start"] as? NSNumber)?.doubleValue ?? 0
         case "canvas.snapshot":
@@ -1186,40 +1282,56 @@ final class AgentBridgeServer {
         case "methods":
             return Self.methods.map { ["name": $0.name, "summary": $0.summary] }
         case "project.summary":
+            let folders = try outputFolders(create: true).mapValues(\.path)
             let t = store.project.timeline
+            let motions = Self.motionSummary(t)
+            let usage = AgentTimelineAccess.motionUsage(motions, entries: try projectAssets().entries)
             return [
                 "workspace": workspaceURL?.path ?? "",
                 "canvas": canvasSize().map { ["width": Int($0.width), "height": Int($0.height),
                                               "htmlViewport": ["width": Int(HTMLMotionRenderer.viewport(for: $0).width),
                                                                "height": Int(HTMLMotionRenderer.viewport(for: $0).height)]] as [String: Any] } ?? [:],
                 "library": AssetLibrary.shared.folder.path,
-                "libraryFolders": Dictionary(uniqueKeysWithValues: [MediaAssetKind.animation, .image, .audio, .video].map {
-                    ($0.rawValue, AssetLibrary.shared.folder(for: $0).path)
-                }),
+                "sharedMediaFolder": AssetLibrary.sharedMediaFolder.path,
+                "assetFolders": folders,
+                "libraryFolders": folders, // Older external skills use this key for generated output.
                 "title": store.project.title,
                 "outputDuration": duration,
+                "footage": AgentTimelineAccess.footage(project: store.project, durations: recordingDurations()),
                 "playhead": playback?.outputTime ?? 0,
                 "animations": t.animationClips.count,
                 "audioClips": t.audioClips.count,
                 "stickers": t.stickerClips.count,
                 "subtitles": t.subtitleCues.count,
                 "media": t.mediaAssets.count,
-                "motions": Self.motionSummary(t),
+                "motions": motions,
+                "motionUsage": usage,
             ] as [String: Any]
         case "media.list":
             let scope = p["scope"] as? String ?? "project"
-            guard ["project", "library", "all"].contains(scope) else { throw BridgeError(message: "scope is project, library or all.") }
+            guard ["project", "shared", "library", "all"].contains(scope) else { throw BridgeError(message: "scope is project, shared, library or all.") }
             let kind = p["kind"] as? String
             var rows: [[String: Any]] = []
-            if scope != "library" {
+            if scope == "project" || scope == "all" {
                 rows += store.project.timeline.mediaAssets.filter { kind == nil || $0.kind.rawValue == kind }.map {
                     ["id": $0.id.uuidString, "name": $0.name, "kind": $0.kind.rawValue, "path": ProjectFiles.resolve($0.path),
-                     "scope": "project", "missing": !ProjectFiles.exists($0.path)] as [String: Any]
+                     "scope": "project", "projectPath": ProjectFiles.portable(ProjectFiles.resolve($0.path)),
+                     "missing": !ProjectFiles.exists($0.path)] as [String: Any]
                 }
             }
-            if scope != "project" {
+            if scope == "shared" || scope == "all" {
+                let shared = AssetLibrary.sharedMedia
+                shared.reload()
+                rows += shared.entries.filter { kind == nil || $0.kind.rawValue == kind }.map { entry in
+                    var row: [String: Any] = ["id": entry.id.uuidString, "name": entry.name, "kind": entry.kind.rawValue,
+                        "path": entry.path, "scope": "shared", "missing": false, "downloaded": entry.remoteSource != nil]
+                    if let source = entry.remoteSource { row["sourceURL"] = source.pageURL }
+                    return row
+                }
+            }
+            if scope == "library" || scope == "all" {
                 AssetLibrary.shared.reload()
-                rows += AssetLibrary.shared.entries.filter { kind == nil || $0.kind.rawValue == kind }.map {
+                rows += AssetLibrary.shared.entries.filter { $0.favorite && (kind == nil || $0.kind.rawValue == kind) }.map {
                     ["id": $0.id.uuidString, "name": $0.name, "kind": $0.kind.rawValue, "path": $0.path,
                      "scope": "library", "favorite": $0.favorite, "generated": $0.generated, "missing": !$0.exists] as [String: Any]
                 }
@@ -1227,7 +1339,51 @@ final class AgentBridgeServer {
             return rows
         case "media.import":
             let paths = p["paths"] as? [String] ?? []
-            return store.importMediaAssets(paths.map { URL(fileURLWithPath: $0) }).map { $0.id.uuidString }
+            return store.importMediaAssets(paths.map(ProjectFiles.url), keepingInProject: true).map { $0.id.uuidString }
+        case "image.download":
+            guard let raw = p["url"] as? String, let page = p["sourceURL"] as? String else {
+                throw BridgeError(message: "Supply a direct image url and its sourceURL.")
+            }
+            let url = try RemoteSoundDownloader.remoteURL(raw)
+            _ = try RemoteSoundDownloader.remoteURL(page)
+            let package = ProjectFiles.package
+            let local = try projectAssets()
+            let library = AssetLibrary.sharedMedia
+            func existing(in catalog: AssetLibrary, digest: String? = nil) -> AssetLibrary.Entry? {
+                catalog.reload()
+                return catalog.entries.first { entry in
+                    guard entry.kind == .image, entry.exists, let source = entry.remoteSource else { return false }
+                    return source.url == raw || source.sha256 == digest
+                }
+            }
+            let entry: AssetLibrary.Entry
+            if let cached = existing(in: library) { entry = cached }
+            else if let projectImage = existing(in: local) {
+                entry = try library.keepCopy(of: URL(fileURLWithPath: projectImage.path), kind: .image,
+                                             name: projectImage.name, remote: projectImage.remoteSource)
+            }
+            else {
+                let image = try await RemoteImageDownload.fetch(url)
+                try Task.checkCancellation()
+                guard self.store === store, package == ProjectFiles.package else {
+                    throw BridgeError(message: "The open project changed during the download.")
+                }
+                if let cached = existing(in: library, digest: image.digest) { entry = cached }
+                else {
+                    let temp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                        .appendingPathExtension(image.suffix)
+                    defer { try? FileManager.default.removeItem(at: temp) }
+                    try image.bytes.write(to: temp)
+                    let label = (p["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let base = label.flatMap { $0.isEmpty ? nil : $0 } ?? url.deletingPathExtension().lastPathComponent
+                    entry = try library.keepCopy(of: temp, kind: .image, name: (base.isEmpty ? "Image" : base) + "." + image.suffix,
+                        remote: .init(url: raw, pageURL: page, licenseURL: nil, sha256: image.digest))
+                }
+            }
+            let asset = try store.importAssetForPlacement(entry.path)
+            return ["assetId": asset.id.uuidString, "path": ProjectFiles.resolve(asset.path), "projectPath": asset.path,
+                    "sharedPath": entry.path,
+                    "sourceURL": entry.remoteSource?.pageURL ?? page]
         case "sound.download":
             guard let url = p["url"] as? String, let page = p["sourceURL"] as? String,
                   let license = p["licenseURL"] as? String else {
@@ -1236,33 +1392,42 @@ final class AgentBridgeServer {
             guard RemoteSoundDownloader.isCC0(license) else { throw BridgeError(message: "Only CC0 sounds are supported.") }
             _ = try RemoteSoundDownloader.remoteURL(url)
             _ = try RemoteSoundDownloader.remoteURL(page)
-            let library = AssetLibrary.shared
+            let package = ProjectFiles.package
+            let local = try projectAssets()
+            let library = AssetLibrary.sharedMedia
             library.reload()
             let result: RemoteSoundImport.Result
             let length: Double
             if let existing = RemoteSoundImport.existing(url: url, library: library) {
                 result = .init(entry: existing, reused: true)
                 length = try await AVURLAsset(url: URL(fileURLWithPath: existing.path)).load(.duration).seconds
+            } else if let existing = RemoteSoundImport.existing(url: url, library: local) {
+                let shared = try library.keepCopy(of: URL(fileURLWithPath: existing.path), kind: .audio,
+                                                  name: existing.name, remote: existing.remoteSource)
+                result = .init(entry: shared, reused: true)
+                length = try await AVURLAsset(url: URL(fileURLWithPath: shared.path)).load(.duration).seconds
             } else {
                 let download = try await RemoteSoundDownloader.shared.download(url: url, sourceURL: page, licenseURL: license)
                 defer { try? FileManager.default.removeItem(at: download.file) }
                 try Task.checkCancellation()
-                guard self.store === store else { throw BridgeError(message: "The project changed during the download; try again in the current project.") }
+                guard self.store === store, package == ProjectFiles.package else { throw BridgeError(message: "The project changed during the download; try again in the current project.") }
                 length = download.duration
                 result = try RemoteSoundImport.save(download, name: p["name"] as? String, library: library)
             }
             try Task.checkCancellation()
-            guard self.store === store else { throw BridgeError(message: "The project changed during the download; try again in the current project.") }
-            let assetID = try RemoteSoundImport.register(result.entry, store: store)
-            return ["path": result.entry.path, "assetId": assetID.uuidString, "duration": length,
+            guard self.store === store, package == ProjectFiles.package else { throw BridgeError(message: "The project changed during the download; try again in the current project.") }
+            let owned = try local.keepCopy(of: URL(fileURLWithPath: result.entry.path), kind: .audio,
+                                           name: result.entry.name, remote: result.entry.remoteSource)
+            let assetID = try RemoteSoundImport.register(owned, store: store)
+            return ["path": owned.path, "sharedPath": result.entry.path, "assetId": assetID.uuidString, "duration": length,
                     "reused": result.reused, "license": "CC0", "sourceURL": result.entry.remoteSource?.pageURL ?? page] as [String: Any]
         case "timeline.addAudio":
             guard let path = p["path"] as? String else { throw BridgeError(message: "path is required") }
-            store.importMediaAssets([URL(fileURLWithPath: path)])
+            let asset = try store.importAssetForPlacement(path)
             let kind: AudioClipKind = (p["kind"] as? String) == "effect" ? .effect : .music
             let start = min(max(num("start") ?? 0, 0), max(duration - 0.25, 0))
-            let id = try Self.insertedAudio(path: path, at: start, kind: kind, in: store.project.timeline)?.id
-                ?? store.addAudioClip(sourcePath: ProjectFiles.portable(path), kind: kind, at: start, outputDuration: duration)
+            let id = try Self.insertedAudio(path: ProjectFiles.resolve(asset.path), at: start, kind: kind, in: store.project.timeline)?.id
+                ?? store.addAudioClip(sourcePath: asset.path, kind: kind, at: start, outputDuration: duration)
             commitTimelineEdit(store, action: "AI 调整音频") { timeline in
                 guard let i = timeline.audioClips.firstIndex(where: { $0.id == id }) else { return }
                 if let v = num("volume") { timeline.audioClips[i].volume = v }
@@ -1272,15 +1437,17 @@ final class AgentBridgeServer {
             return id.uuidString
         case "timeline.addVideo":
             guard let path = p["path"] as? String else { throw BridgeError(message: "path is required") }
-            store.importMediaAssets([URL(fileURLWithPath: path)])
-            let id = try await store.addVideoClip(sourcePath: ProjectFiles.portable(path), at: num("start") ?? 0, outputDuration: duration)
-            commitTimelineEdit(store, action: "AI 调整视频") { timeline in
-                guard let i = timeline.videoClips.firstIndex(where: { $0.id == id }) else { return }
-                if let w = num("width") { timeline.videoClips[i].width = w }
-                if let x = num("x") { timeline.videoClips[i].position.x = x }
-                if let y = num("y") { timeline.videoClips[i].position.y = y }
-                if let v = num("volume") { timeline.videoClips[i].volume = v }
-                timeline.organizeVisualLayers()
+            guard AgentTimelineAccess.legacyVideoCameraFields.isDisjoint(with: p.keys) else {
+                throw BridgeError(message: "Edit camera appearance on the recording or its segment.")
+            }
+            let appearance = try AgentTimelineAccess.VideoPlacementAppearance(parameters: p)
+            let asset = try store.importAssetForPlacement(path)
+            let id = try await store.addVideoClip(sourcePath: asset.path, at: num("start") ?? 0, outputDuration: duration) { clip in
+                appearance.apply(to: &clip)
+                if let w = num("width") { clip.width = w }
+                if let x = num("x") { clip.position.x = x }
+                if let y = num("y") { clip.position.y = y }
+                if let v = num("volume") { clip.volume = v }
             }
             return id.uuidString
         case "subtitles.get":
@@ -1359,16 +1526,44 @@ final class AgentBridgeServer {
                 media: media, outputURL: url, project: store.project, progressHandler: nil)
             try await pipeline.run()
             return ["path": url.path, "duration": duration]
+        case "template.read":
+            return try MotionTemplateLibrary.read(p["path"] as? String, includeSource: p["includeSource"] as? Bool ?? false)
         case "html.create":
-            guard let html = p["html"] as? String, html.contains("<") else {
-                throw BridgeError(message: "html is required: a complete HTML motion page.")
+            let html: String
+            var template: URL?
+            switch (p["html"] as? String, p["templatePath"] as? String) {
+            case let (page?, nil): html = page
+            case let (nil, path?):
+                let url = try MotionTemplateLibrary.file(path)
+                guard HTMLMotion.isHTMLMotion(url.path) else { throw CocoaError(.fileReadInvalidFileName) }
+                template = url
+                html = try String(contentsOf: url, encoding: .utf8)
+            default: throw BridgeError(message: "Supply one of html or templatePath.")
             }
+            let length = max(num("duration") ?? HTMLMotion.declaredDuration(in: html) ?? 3, 0.2)
+            let start = try motionStart(p, length: length, duration: duration, store: store)
             let file = try HTMLMotionEditing.create(name: (p["name"] as? String) ?? "", html: html,
-                copy: (p["copy"] as? Bool) ?? false, library: .shared)
+                copy: (p["copy"] as? Bool) ?? false, template: template, timeline: store.project.timeline, library: try projectAssets())
             let url = file.url
             let name = (file.entry.name as NSString).deletingPathExtension
-            let length = max(num("duration") ?? HTMLMotion.declaredDuration(path: url.path) ?? 3, 0.2)
-            let start = min(max(num("start") ?? playback?.outputTime ?? 0, 0), duration)
+            var temporarySound: URL?
+            defer { if let temporarySound { try? FileManager.default.removeItem(at: temporarySound) } }
+            func requestedSound() throws -> URL? {
+                if let path = p["soundPath"] as? String {
+                    let local = ProjectFiles.url(path)
+                    guard ProjectFiles.exists(path), MediaAssetKind.kind(forExtension: local.pathExtension) == .audio else {
+                        throw BridgeError(message: "soundPath must be a downloaded or imported local audio file.")
+                    }
+                    return local
+                } else if let raw = p["sound"], JSONSerialization.isValidJSONObject(raw) {
+                    let events = try JSONDecoder().decode([SoundSynth.Event].self, from: JSONSerialization.data(withJSONObject: raw))
+                    let temp = FileManager.default.temporaryDirectory.appendingPathComponent("dogsc-sound-\(UUID().uuidString).m4a")
+                    try SoundSynth.render(events, length: length, to: temp)
+                    temporarySound = temp
+                    return temp
+                }
+                return nil
+            }
             if (p["placement"] as? String) == "main" {
                 let source = recordingDurations()
                 guard !source.isEmpty else { throw BridgeError(message: "The project media is not ready yet.") }
@@ -1380,44 +1575,24 @@ final class AgentBridgeServer {
                     return ["path": url.path, "segmentId": existing.uuidString, "start": start, "duration": actualDuration,
                             "note": "This motion is already on the main track here; nothing was added."] as [String: Any]
                 }
-                var soundURL: URL?
-                var temporarySound = false
-                if let path = p["soundPath"] as? String {
-                    let local = ProjectFiles.url(path)
-                    guard ProjectFiles.exists(path), MediaAssetKind.kind(forExtension: local.pathExtension) == .audio else {
-                        throw BridgeError(message: "soundPath must be a downloaded or imported local audio file.")
-                    }
-                    soundURL = local
-                } else if let raw = p["sound"], JSONSerialization.isValidJSONObject(raw) {
-                    let events = try JSONDecoder().decode([SoundSynth.Event].self, from: JSONSerialization.data(withJSONObject: raw))
-                    let temp = FileManager.default.temporaryDirectory.appendingPathComponent("dogsc-sound-\(UUID().uuidString).m4a")
-                    try SoundSynth.render(events, length: length, to: temp)
-                    soundURL = temp
-                    temporarySound = true
-                }
-                defer { if temporarySound, let soundURL { try? FileManager.default.removeItem(at: soundURL) } }
                 store.importMediaAssets([url])
                 let id = try await store.insertHTMLMotionOnMainTrack(
                     path: url.path, name: name, at: start, duration: length,
-                    usesFrameStyle: (p["framed"] as? Bool) ?? false, sound: soundURL, sourceDurations: source)
+                    usesFrameStyle: (p["framed"] as? Bool) ?? false, sound: try requestedSound(), sourceDurations: source)
                 return ["path": url.path, "segmentId": id.uuidString, "start": start, "duration": length] as [String: Any]
             }
-            if file.reused, let existing = Self.insertedOverlay(motionPath: url.path, at: start, in: store.project.timeline) {
+            let overlayStart = EditorStore.animationStart(start, outputDuration: duration)
+            if file.reused, let existing = Self.insertedOverlay(motionPath: url.path, at: overlayStart, in: store.project.timeline) {
                 return ["path": url.path, "clipId": existing.id.uuidString, "start": existing.timing.startTime,
                         "duration": existing.timing.duration, "note": "This motion is already placed here; nothing was added."] as [String: Any]
             }
             store.importMediaAssets([url])
-            let id = try store.addAnimation(sourcePath: ProjectFiles.portable(url.path), at: start, outputDuration: duration)
-            commitTimelineEdit(store, action: "AI 调整动效") { timeline in
-                guard let i = timeline.animationClips.firstIndex(where: { $0.id == id }) else { return }
-                timeline.animationClips[i].timing.duration = length
-                timeline.animationClips[i].layerIndex = timeline.visualLayer(for: timeline.animationClips[i].timing, excluding: id)
-                timeline.animationClips[i].width = num("width") ?? 1
-                if let x = num("x") { timeline.animationClips[i].position.x = x }
-                if let y = num("y") { timeline.animationClips[i].position.y = y }
-                timeline.organizeVisualLayers()
+            let id = try store.addAnimation(sourcePath: ProjectFiles.portable(url.path), at: start, outputDuration: duration,
+                requestedDuration: length, position: .init(x: num("x") ?? 0.5, y: num("y") ?? 0.5), width: num("width"), sound: try requestedSound())
+            guard let timing = store.project.timeline.animationClips.first(where: { $0.id == id })?.timing else {
+                throw BridgeError(message: "Could not resolve the placed motion.")
             }
-            return ["path": url.path, "clipId": id.uuidString, "start": start, "duration": length] as [String: Any]
+            return ["path": url.path, "clipId": id.uuidString, "start": timing.startTime, "duration": timing.duration] as [String: Any]
         case "html.update":
             guard let html = p["html"] as? String else { throw BridgeError(message: "html is required") }
             let id: UUID?
@@ -1428,7 +1603,7 @@ final class AgentBridgeServer {
                 id = parsed
             } else { id = nil }
             let result = try HTMLMotionEditing.update(id: id, path: p["path"] as? String,
-                html: html, store: store, library: .shared)
+                html: html, store: store, library: try projectAssets())
             return ["path": result.path, "assetId": result.assetID.uuidString, "unchanged": result.unchanged] as [String: Any]
         case "html.preview":
             guard let path = p["path"] as? String, let workspace = workspaceURL else { throw BridgeError(message: "path is required") }
@@ -1460,14 +1635,15 @@ final class AgentBridgeServer {
             let events = try JSONDecoder().decode([SoundSynth.Event].self, from: JSONSerialization.data(withJSONObject: raw))
             let rawName = (p["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let name = (rawName.isEmpty ? "音效" : rawName).replacingOccurrences(of: "/", with: "-")
-            let folder = AssetLibrary.shared.folder(for: .audio)
+            let library = try projectAssets()
+            let folder = library.folder(for: .audio)
             var url = folder.appendingPathComponent(name).appendingPathExtension("m4a")
             var copy = 2
             while FileManager.default.fileExists(atPath: url.path) {
                 url = folder.appendingPathComponent("\(name) \(copy)").appendingPathExtension("m4a"); copy += 1
             }
             let length = try SoundSynth.render(events, to: url)
-            AssetLibrary.shared.addGenerated(url)
+            library.addGenerated(url)
             store.importMediaAssets([url])
             var result: [String: Any] = ["path": url.path, "duration": length]
             if let start = num("start") {
@@ -1505,7 +1681,19 @@ final class AgentBridgeServer {
                 }
             }
             guard let changes = p["changes"] as? [[String: Any]] else { throw BridgeError(message: "changes [{id,patch}] is required.") }
-            let next = try AgentTimelineAccess.updated(project: store.project, changes: changes, durations: recordingDurations())
+            let original = store.project
+            var videoEnds: [String: Double] = [:]
+            for change in changes {
+                guard let id = (change["id"] as? String).flatMap(UUID.init(uuidString:)),
+                      let clip = original.timeline.videoClips.first(where: { $0.id == id }),
+                      let patch = change["patch"] as? [String: Any] else { continue }
+                let path = patch["sourcePath"] as? String ?? clip.sourcePath
+                if path != clip.sourcePath || (clip.sourceFileEnd == nil && !Set(patch.keys).isDisjoint(with: ["timing", "sourceStart", "playbackRate"])) {
+                    if videoEnds[path] == nil { videoEnds[path] = try await OverlayVideoSource.end(of: ProjectFiles.url(path)) }
+                }
+            }
+            guard store.project == original else { throw RecordingImportError.changed }
+            let next = try AgentTimelineAccess.updated(project: original, changes: changes, durations: recordingDurations(), videoFileEnds: videoEnds)
             try store.replaceTimeline(with: next, actionName: appLocalized("AI 编辑"))
             let ids = Set(changes.compactMap { ($0["id"] as? String).flatMap(UUID.init(uuidString:)) })
             return try AgentTimelineAccess.inspect(project: store.project, durations: recordingDurations(), ids: ids)
@@ -1516,7 +1704,7 @@ final class AgentBridgeServer {
                   FileManager.default.fileExists(atPath: ProjectFiles.resolve(path)) else {
                 throw BridgeError(message: "A readable local image path and start/end within the program are required.")
             }
-            let portable = ProjectFiles.portable(path)
+            let portable = try store.importAssetForPlacement(path).path
             var t = store.project.timeline
             var clip = StickerClip(timing: .init(startTime: start, duration: end - start), relativePath: portable,
                 position: .init(x: num("x") ?? 0.5, y: num("y") ?? 0.5), width: num("width") ?? 0.38)
@@ -1524,7 +1712,6 @@ final class AgentBridgeServer {
             if let opacity = num("opacity") { clip.opacity = opacity }
             t.stickerClips.append(clip)
             t.organizeVisualLayers()
-            if !t.mediaAssets.contains(where: { $0.path == portable }) { t.mediaAssets.append(MediaAsset(path: portable, kind: .image)) }
             try store.replaceTimeline(with: t, actionName: appLocalized("添加贴图"))
             return ["id": clip.id.uuidString, "value": try AgentTimelineAccess.object(clip)] as [String: Any]
         case "timeline.cut":
@@ -1544,12 +1731,21 @@ final class AgentBridgeServer {
                 throw BridgeError(message: "start and end (output seconds, end > start) are required.")
             }
             let motion = store.project.motion
+            let target: ZoomTarget
+            if let value = p["target"] {
+                guard let raw = value as? String, let selected = ZoomTarget(rawValue: raw) else {
+                    throw BridgeError(message: "target must be recording or overlayVideo.")
+                }
+                target = selected
+            } else {
+                target = .recording
+            }
             let transition = num("transition") ?? motion.defaultZoomTransitionDuration
             let clip = ZoomAnimationClip(
                 startTime: max(start, 0), endTime: min(end, duration),
                 scale: min(max(num("scale") ?? motion.defaultZoomScale ?? 1.6, 1.05), 4),
                 focus: NormalizedPoint(x: min(max(num("x") ?? 0.5, 0), 1), y: min(max(num("y") ?? 0.5, 0), 1)),
-                easing: motion.defaultZoomEasing, enterDuration: transition, exitDuration: transition)
+                easing: motion.defaultZoomEasing, enterDuration: transition, exitDuration: transition, target: target)
             try store.insertZoom(clip, actionName: "AI 添加缩放")
             return ["id": clip.id.uuidString, "start": clip.startTime, "end": clip.endTime]
         case "motion3d.add":
@@ -1617,10 +1813,13 @@ final class AgentBridgeServer {
             guard from.isFinite, requestedEnd.isFinite, from >= 0, from < analysis.duration, requestedEnd > from else {
                 throw BridgeError(message: "from/to must be a positive output-time window within the program.")
             }
-            return analysis.description(from: from, to: min(requestedEnd, from + 300, analysis.duration),
-                                        includeWords: p["includeWords"] as? Bool ?? false,
-                                        includeWaveform: p["includeWaveform"] as? Bool ?? false,
-                                        frameRate: store.project.exportSettings.frameRate.rawValue)
+            let end = min(requestedEnd, from + 300, analysis.duration)
+            var result = analysis.description(from: from, to: end, includeWords: p["includeWords"] as? Bool ?? false,
+                                              includeWaveform: p["includeWaveform"] as? Bool ?? false,
+                                              frameRate: store.project.exportSettings.frameRate.rawValue)
+            result["footage"] = AgentTimelineAccess.footage(project: store.project, durations: recordingDurations(),
+                                                           from: from, to: end)
+            return result
         case "subtitles.fromWords":
             guard let transcript = lastTranscript, !transcript.words.isEmpty else {
                 throw BridgeError(message: "Call audio_transcribe first: lines are timed from its words.")

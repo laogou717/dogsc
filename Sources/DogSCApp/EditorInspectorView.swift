@@ -651,8 +651,9 @@ struct EditorInspectorView: View {
             return ("音乐与音效", "选中片段")
         case .subtitle:
             return ("字幕", "当前字幕")
-        case .videoClip:
-            return ("视频", "选中视频")
+        case let .videoClip(id):
+            let clip = editorStore.previewProject.timeline.videoClips.first { $0.id == id }
+            return ("叠加视频", clip.map { URL(fileURLWithPath: $0.sourcePath).lastPathComponent })
         case nil:
             return (selectedInspector.localizedLabel, nil)
         }
@@ -721,7 +722,23 @@ struct EditorInspectorView: View {
         } else if case let .subtitle(id) = editorStore.selection {
             EditorSubtitleInspector(editorStore: editorStore, selectedID: id)
         } else if case let .videoClip(id) = editorStore.selection {
-            EditorVideoClipInspector(editorStore: editorStore, clipID: id)
+            let project = editorStore.previewProject
+            if let clip = project.timeline.videoClips.first(where: { $0.id == id }) {
+                let time = clip.timing.contains(playbackTime) ? playbackTime : clip.timing.startTime
+                let source = project.source(mediaSession.sourceID(at: time) ?? RecordingSource.primaryID)
+                let cameraOnly = (source?.capture.source ?? project.capture.source) == .cameraOnly
+                let aspect = EditorWorkspaceGeometry.aspectRatio(canvas: project.canvas,
+                    sourceSize: mediaSession.canvasSourceSize(for: project))
+                let cameraAbove: Bool = switch clip.cameraMode {
+                case .pictureInPicture: true
+                case .videoInFront, .hidden: false
+                case .original, .automatic:
+                    cameraLayerScene(at: time).map { $0.cameraHitLayer > Double(clip.layerIndex) * 4 } ?? !cameraOnly
+                }
+                EditorVideoClipInspector(editorStore: editorStore, clipID: id,
+                    hasCamera: project.timeline.insertedMedia(atOutputTime: time) == nil && (cameraOnly || source?.media.camera != nil),
+                    cameraAboveVideo: cameraAbove, canvasAspect: aspect)
+            }
         } else if case let .primarySegment(id) = editorStore.selection,
                   stackLevel == .object {
             // 选中主片段给真正的片段面板：此前标题写着"当前片段"，内容却是
@@ -1392,7 +1409,7 @@ struct EditorInspectorView: View {
             overlappingStart: segment.outputStart,
             end: segment.outputEnd
         )
-        let hasEmbedded = media.hasEmbeddedAudio
+        let hasEmbedded = media.hasEmbeddedAudio && timeline.primarySegmentAudioOverrides[segment.id]?.videoAudio?.detachedGroup == nil
         guard hasEmbedded || !associated.isEmpty else { return nil }
         var parts: [String] = []
         if hasEmbedded {
@@ -1417,7 +1434,9 @@ struct EditorInspectorView: View {
 
     @ViewBuilder
     func insertedSegmentSoundRows(segmentID: UUID, segment: ResolvedRecordingSegment) -> some View {
-        let hasEmbedded = segment.media?.hasEmbeddedAudio == true
+        let detached = editorStore.previewProject.timeline.primarySegmentAudioOverrides[segmentID]?.videoAudio?.detachedGroup != nil
+        let hasEmbedded = segment.media?.hasEmbeddedAudio == true && !detached
+        if detached { Text(appLocalized("声音已分离到音频轨")).foregroundStyle(.secondary) }
         let defaultEmbeddedVolume = segment.media?.transferSound?.volume ?? 1
         let associatedClips = editorStore.previewProject.timeline.associatedEffectAudioClips(
             overlappingStart: segment.outputStart,
@@ -1838,11 +1857,13 @@ struct EditorInspectorView: View {
     var motionInspector: some View {
         VStack(alignment: .leading, spacing: 14) {
             if motionInspectorMode == .zoom, let index = selectedZoomAnimationIndex {
-                EditorSegmentedControl(
-                    options: [ZoomKeyframeOrigin.automatic, .manual],
-                    title: { $0 == .automatic ? "自动跟随" : "手动定位" },
-                    selection: zoomAnimationOriginBinding(index)
-                )
+                if editorStore.previewProject.zoomAnimations[index].target == .recording {
+                    EditorSegmentedControl(
+                        options: [ZoomKeyframeOrigin.automatic, .manual],
+                        title: { $0 == .automatic ? "自动跟随" : "手动定位" },
+                        selection: zoomAnimationOriginBinding(index)
+                    )
+                }
             } else {
                 motionTypeSelector
             }
@@ -1918,32 +1939,55 @@ struct EditorInspectorView: View {
                 let animation = editorStore.previewProject.zoomAnimations[index]
                 let zoomTrack = ZoomAnimationTrack(
                     editorStore.previewProject.zoomAnimations, outputDuration: timelineDuration
-                )
-                ZoomFocusMap(
-                    mediaSession: mediaSession,
-                    outputTime: animation.startTime,
-                    sourcePixelSize: sourcePixelSize,
-                    focus: displayedZoomFocusBinding(index),
-                    refreshesDuringPlayback: animation.origin == .automatic,
-                    isPlaying: playbackController.isPlaying,
-                    onEditingChanged: {
-                        updateEditorContinuousInteraction(
-                            store: editorStore, isEditing: $0,
-                            commandScope: .selection,
-                            actionName: "调整缩放焦点",
-                            onError: onError
-                        )
-                    },
-                    onEditingCancelled: { editorStore.cancelInteraction() },
-                    onTextPreviewValidityChanged: {
-                        updateEditorTextPreviewValidity(
-                            store: editorStore, isValid: $0,
-                            commandScope: .selection, selection: .zoom(animation.id),
-                            actionName: "调整缩放焦点"
-                        )
+                ).forTarget(animation.target)
+                let timeline = editorStore.previewProject.timeline
+                let video = animation.target == .overlayVideo ? timeline.focusMapVideo(for: animation, at: playbackTime) : nil
+                if !timeline.videoClips.isEmpty || animation.target == .overlayVideo {
+                    EditorInspectorSection("缩放对象") {
+                        EditorSegmentedControl(options: ZoomTarget.allCases, title: { $0 == .recording ? "主画面" : "叠加视频" },
+                            selection: Binding(get: { animation.target }, set: { target in
+                                guard target != animation.target else { return }
+                                var changed = animation
+                                changed.target = target
+                                if target == .overlayVideo { changed.origin = .manual }
+                                updateZoomAnimation(changed)
+                            }))
                     }
-                )
-                if animation.origin == .automatic {
+                }
+                if animation.target == .overlayVideo && video == nil {
+                    Text("此处没有可缩放的叠加视频").font(.caption).foregroundStyle(.secondary)
+                } else {
+                    ZoomFocusMap(
+                        mediaSession: mediaSession,
+                        outputTime: video.map { clip in
+                            if clip.timing.contains(playbackTime), playbackTime >= animation.startTime,
+                               playbackTime < animation.effectEndTime { return playbackTime }
+                            return max(animation.startTime, clip.timing.startTime)
+                        } ?? animation.startTime,
+                        sourcePixelSize: video.map { CGSize(width: 1, height: $0.aspect) } ?? sourcePixelSize,
+                        overlay: video,
+                        focus: displayedZoomFocusBinding(index),
+                        refreshesDuringPlayback: animation.origin == .automatic,
+                        isPlaying: playbackController.isPlaying,
+                        onEditingChanged: {
+                            updateEditorContinuousInteraction(
+                                store: editorStore, isEditing: $0,
+                                commandScope: .selection,
+                                actionName: "调整缩放焦点",
+                                onError: onError
+                            )
+                        },
+                        onEditingCancelled: { editorStore.cancelInteraction() },
+                        onTextPreviewValidityChanged: {
+                            updateEditorTextPreviewValidity(
+                                store: editorStore, isValid: $0,
+                                commandScope: .selection, selection: .zoom(animation.id),
+                                actionName: "调整缩放焦点"
+                            )
+                        }
+                    )
+                }
+                if animation.origin == .automatic && animation.target == .recording {
                     EditorInfoNote(
                         systemImage: "cursorarrow.motionlines",
                         lines: [appLocalized("录制鼠标位置 · 调整焦点切换为手动定位")]
@@ -2020,8 +2064,10 @@ struct EditorInspectorView: View {
                     }
                 }
 
-                EditorFocusEffectInspector(editorStore: editorStore,
-                    selection: .zoom(animation.id), onError: onError)
+                if animation.target == .recording {
+                    EditorFocusEffectInspector(editorStore: editorStore,
+                        selection: .zoom(animation.id), onError: onError)
+                }
 
                 Button("删除片段", role: .destructive) {
                     if let selectedZoomID {

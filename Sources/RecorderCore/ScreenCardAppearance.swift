@@ -107,7 +107,8 @@ public extension RecorderProject {
         let boundary = timeline.recordingSegmentBoundary(atOutputTime: time)
         guard let current = boundary.segment, let previous = boundary.previous,
               SegmentAppearanceTransition.canSettle(from: previous, to: current),
-              SegmentAppearanceTransition.progress(at: time, boundary: boundary.start) != nil,
+              SegmentAppearanceTransition.progress(at: time, boundary: boundary.start,
+                  duration: max(SegmentAppearanceTransition.duration, SegmentAppearanceTransition.cameraDuration)) != nil,
               case var .edited(segments) = timeline.sourceSequence,
               let index = segments.firstIndex(where: { $0.id == previous.id }) else { return self }
         segments[index].sceneStyle = SegmentSceneStyle(
@@ -173,18 +174,64 @@ public extension RecorderProject {
         return result
     }
 
-    /// The camera's static pose for this instant, settled across a cut the
-    /// same way and over the same window as the card. The camera-motion track
-    /// is a separate thing: it animates on top of whatever pose this returns.
+    /// The static camera pose eases across a cut. Authored camera motion
+    /// samples this base using the clip’s own timing and easing.
     func settledCamera(atOutputTime time: TimeInterval) -> CameraStyle {
         settledCamera(atOutputTime: time, boundary: timeline.recordingSegmentBoundary(atOutputTime: time))
     }
 
-    internal func settledCamera(atOutputTime time: TimeInterval, boundary: RecordingSegmentBoundary) -> CameraStyle {
-        var result = boundary.segment?.sceneStyle?.camera ?? camera
+    /// A slot controls an existing camera feed. It cannot supply one on an
+    /// inserted shot or outside the recording's retained camera intervals.
+    internal func hasVisibleCamera(in segment: RecordingSegment?, at time: TimeInterval,
+                                   cameraTimeline: TimelineMediaPlan?) -> Bool {
+        guard segment?.media == nil, !(segment?.sceneStyle?.camera ?? camera).isHidden else { return false }
+        if let cameraTimeline { return cameraTimeline.contains(outputTime: time) }
+        let id = segment?.resolvedSourceID ?? RecordingSource.primaryID
+        if let source = source(id) { return source.media.camera != nil || source.capture.source == .cameraOnly }
+        // Standalone scene evaluations may supply decoded camera dimensions
+        // before the primary recording has a manifest.
+        return id == RecordingSource.primaryID
+    }
+
+    /// While scrubbing between output frames next to a camera-free primary shot,
+    /// keep camera-hosting overlays on the visible frame inside this occurrence.
+    /// The primary cut, audio clock and unrelated overlays keep their exact time.
+    internal func cameraHostSampleTime(at time: TimeInterval, boundary: RecordingSegmentBoundary,
+                                       frameRate: Int, cameraTimeline: TimelineMediaPlan?) -> TimeInterval {
+        guard let segment = boundary.segment else { return time }
+        let rate = Double(frameRate)
+        let end = boundary.start + segment.outputDuration
+        guard time - boundary.start < 1 / rate || end - time < 1 / rate,
+              hasVisibleCamera(in: segment, at: time, cameraTimeline: cameraTimeline) else { return time }
+        let first = OutputFrameSchedule.firstFrameIndex(atOrAfter: boundary.start, frameRate: frameRate) / rate
+        if time < first, first < end, let previous = boundary.previous,
+           !hasVisibleCamera(in: previous, at: boundary.start - TimelineMediaPlan.boundaryProbeOffset,
+                             cameraTimeline: cameraTimeline) { return first }
+        let last = (OutputFrameSchedule.firstFrameIndex(atOrAfter: end, frameRate: frameRate) - 1) / rate
+        if time > last, last >= boundary.start {
+            let after = end + TimelineMediaPlan.boundaryProbeOffset
+            if let next = timeline.recordingSegment(atOutputTime: after),
+               !hasVisibleCamera(in: next, at: after, cameraTimeline: cameraTimeline) { return last }
+        }
+        return time
+    }
+
+    private func cameraTransitionProgress(at time: TimeInterval, boundary: RecordingSegmentBoundary,
+                                          cameraTimeline: TimelineMediaPlan?) -> Double? {
         guard let current = boundary.segment, let previous = boundary.previous,
               SegmentAppearanceTransition.canSettle(from: previous, to: current),
-              let progress = SegmentAppearanceTransition.progress(at: time, boundary: boundary.start)
+              let progress = SegmentAppearanceTransition.cameraProgress(at: time, boundary: boundary),
+              hasVisibleCamera(in: previous, at: boundary.start - TimelineMediaPlan.boundaryProbeOffset,
+                               cameraTimeline: cameraTimeline),
+              hasVisibleCamera(in: current, at: boundary.start, cameraTimeline: cameraTimeline) else { return nil }
+        return progress
+    }
+
+    internal func settledCamera(atOutputTime time: TimeInterval, boundary: RecordingSegmentBoundary,
+                                cameraTimeline: TimelineMediaPlan? = nil) -> CameraStyle {
+        var result = boundary.segment?.sceneStyle?.camera ?? camera
+        guard let previous = boundary.previous,
+              let progress = cameraTransitionProgress(at: time, boundary: boundary, cameraTimeline: cameraTimeline)
         else { return result }
         result.blend(from: previous.sceneStyle?.camera ?? camera, progress: progress)
         return result
@@ -199,19 +246,19 @@ public extension RecorderProject {
     }
 
     internal func cameraAppearanceTransitionSample(atOutputTime time: TimeInterval, cameraAspectRatio: Double,
-                                                  canvasAspectRatio: Double, boundary: RecordingSegmentBoundary) -> CameraMotionSample? {
+                                                  canvasAspectRatio: Double, boundary: RecordingSegmentBoundary,
+                                                  cameraTimeline: TimelineMediaPlan? = nil, asInset: Bool = false) -> CameraMotionSample? {
         guard let current = boundary.segment, let previous = boundary.previous,
-              SegmentAppearanceTransition.canSettle(from: previous, to: current),
-              let progress = SegmentAppearanceTransition.progress(at: time, boundary: boundary.start)
+              let progress = cameraTransitionProgress(at: time, boundary: boundary, cameraTimeline: cameraTimeline)
         else { return nil }
         let currentStyle = current.sceneStyle?.camera ?? camera
         let previousStyle = previous.sceneStyle?.camera ?? camera
-        guard previousStyle.isHidden == currentStyle.isHidden else { return nil }
-        let currentSample = CameraMotionTrack.resolve(CameraMotionState(base: currentStyle),
-            cameraAspectRatio: cameraAspectRatio, canvasAspectRatio: canvasAspectRatio)
-        let previousSample = CameraMotionTrack.resolve(CameraMotionState(base: previousStyle),
-            cameraAspectRatio: cameraAspectRatio, canvasAspectRatio: canvasAspectRatio)
-        return CameraMotionTrack.transitionSample(from: previousSample, to: currentSample, progress: progress)
+        func sample(_ style: CameraStyle) -> CameraMotionSample {
+            var state = CameraMotionState(base: style)
+            if asInset { state.layout = .shape(style.shape) }
+            return CameraMotionTrack.resolve(state, cameraAspectRatio: cameraAspectRatio, canvasAspectRatio: canvasAspectRatio)
+        }
+        return CameraMotionTrack.transitionSample(from: sample(previousStyle), to: sample(currentStyle), progress: progress)
     }
 
     /// 摄像机动画片段的基准：这一刻的逐片段摄像头姿态（跨切点已 settle）。

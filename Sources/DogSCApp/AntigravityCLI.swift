@@ -61,6 +61,10 @@ enum AntigravityCLI {
                 if step["step_type"] as? String == "tool" {
                     update.toolName = step["tool_name"] as? String
                     let info = step["tool_info"] as? [String: Any]
+                    if update.toolName == "call_mcp_tool", let call = info?["parameters"] as? [String: Any],
+                       call["ServerName"] as? String == "dogsc", let tool = call["ToolName"] as? String {
+                        update.toolName = tool
+                    }
                     if let parameters = info?["parameters"], JSONSerialization.isValidJSONObject(parameters),
                        let data = try? JSONSerialization.data(withJSONObject: parameters, options: [.sortedKeys]) {
                         update.toolDetail = String(String(decoding: data, as: UTF8.self).prefix(2_000))

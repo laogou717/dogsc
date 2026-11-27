@@ -89,7 +89,8 @@ final class AgentCanvasSnapshot: @unchecked Sendable {
             stickerTrack: StickerTransitionTrack(project.timeline.stickerClips), cameraTimeline: media.plan.camera,
             recordingSourceID: slice.media == nil ? slice.sourceID : nil,
             geometrySourceAspectRatio: transitions.sourceAspectRatio(atOutputTime: time,
-                sourceID: slice.media == nil ? slice.sourceID : nil))
+                sourceID: slice.media == nil ? slice.sourceID : nil),
+            layoutAspectRatio: media.layoutAspectRatio(for: project.canvas))
         let image: CIImage
         if sourceOnly {
             let ratio = min(maxDimension / max(source.extent.width, source.extent.height), 1)

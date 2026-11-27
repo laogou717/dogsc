@@ -747,7 +747,7 @@ final class AgentChatModel: ObservableObject {
 
     /// Each project keeps its own conversation in its AI workspace.
     func loadConversation() {
-        guard let workspace = AgentBridgeServer.shared.workspaceURL,
+        guard let workspace = AgentBridgeServer.shared.conversationRootURL,
               conversationWorkspace != workspace else { return }
         conversationWorkspace = workspace
         threads = []
@@ -816,18 +816,18 @@ final class AgentChatModel: ObservableObject {
     func refreshThreads() {
         historyRevision &+= 1
         let revision = historyRevision
-        guard let workspace = AgentBridgeServer.shared.workspaceURL else { threads = []; return }
+        guard let workspace = AgentBridgeServer.shared.conversationRootURL else { threads = []; return }
         conversationPersistence.summaries(in: workspace) { [weak self] result in
             EditorMainRunLoop.perform { [weak self] in
                 guard let self, self.historyRevision == revision,
-                      AgentBridgeServer.shared.workspaceURL == workspace else { return }
+                      AgentBridgeServer.shared.conversationRootURL == workspace else { return }
                 self.threads = result
             }
         }
     }
 
     func openThread(_ id: String) {
-        guard !isRunning, let workspace = AgentBridgeServer.shared.workspaceURL else { return }
+        guard !isRunning, let workspace = AgentBridgeServer.shared.conversationRootURL else { return }
         let url = threadURL(id, in: workspace)
         guard currentThreadID != id else { return }
         conversationPersistence.flush()
@@ -837,15 +837,15 @@ final class AgentChatModel: ObservableObject {
 
     /// Starts an empty thread; the current one stays in the history.
     func newThread() {
-        guard !isRunning, let workspace = AgentBridgeServer.shared.workspaceURL else { return }
+        guard !isRunning, let workspace = AgentBridgeServer.shared.conversationRootURL else { return }
         conversationPersistence.flush()
         open(AgentConversationPersistence.newThreadURL(in: workspace), messages: [])
         refreshThreads()
     }
 
     func deleteThread(_ id: String) {
-        guard let workspace = AgentBridgeServer.shared.workspaceURL else { return }
-        AntigravityCheckpoint.save(nil, thread: id, workspace: workspace)
+        guard let workspace = AgentBridgeServer.shared.conversationRootURL else { return }
+        AntigravityCheckpoint.save(nil, thread: id, workspace: AgentBridgeServer.workspace(for: id, in: workspace))
         let url = threadURL(id, in: workspace)
         let isCurrent = currentThreadID == id
         conversationPersistence.remove(url)
@@ -916,17 +916,13 @@ final class AgentChatModel: ObservableObject {
         // DogSC never breaks the connection.
         let mcp = AgentIntegrations.mcpLauncher.path
         let skill = AgentIntegrations.bundledSkill?.path ?? ""
-        let workspaceInstruction = AgentBridgeServer.shared.workspaceURL.map {
-            "一次性的工作文件（字幕稿、预览图等）保存到：\(String(reflecting: $0.path))"
-        } ?? "打开项目后，将一次性的工作文件（字幕稿、预览图等）保存到该项目的 AI 工作区。"
         return """
         请帮我安装 DogSC 的编辑能力，之后你就可以直接编辑我在 DogSC 里打开的项目：
         1. 添加一个名为 "dogsc" 的 MCP 服务器（stdio，用户级），启动命令：\(String(reflecting: mcp))，不需要参数。工具调用超时请设为 15 分钟（渲染动效、转写会比较久）。使用时 DogSC 需要保持打开。
         2. 把这个 Skill 复制到你的技能目录，技能名 dogsc-editor（目录里放 SKILL.md）：\(String(reflecting: skill))
            常见位置：Claude Code ~/.claude/skills/dogsc-editor/；Codex ~/.codex/skills/dogsc-editor/；Antigravity CLI ~/.gemini/antigravity-cli/skills/dogsc-editor/；其他支持 Agent Skills 的工具 ~/.agents/skills/dogsc-editor/。不支持技能的工具可跳过，MCP 服务器连接时会自带使用说明。
         3. 装好后调用 dogsc 的 project_summary 工具，确认已连接并告诉我项目名称。
-        4. \(workspaceInstruction)
-        5. 可复用的成品（动效、图片、音乐、视频）保存到 DogSC 素材库：\(AssetLibrary.shared.folder.path)（按类型放进 动效／图片／音频／视频 子文件夹），删除项目也不会丢失。
+        4. 一次性的工作文件放在当前 project_summary 返回的 workspace。
         """
     }
 
@@ -987,12 +983,14 @@ final class AgentChatModel: ObservableObject {
             self?.appendStep(AgentChatModel.Step(title: summary))
         }
         AgentBridgeServer.shared.stepHandler = { [weak self] step in
-            guard self?.acceptsOutput(from: turn) == true else { return }
-            self?.appendStep(step)
-            self?.activity = Activity(kind: .thinking, title: appLocalized("正在思考"))
+            guard let self, self.acceptsOutput(from: turn) else { return }
+            if provider == .gemini { self.antigravitySession?.noteProgress() }
+            self.appendStep(step)
+            self.activity = Activity(kind: .thinking, title: appLocalized("正在思考"))
         }
         AgentBridgeServer.shared.progressHandler = { [weak self] title, progress, detail in
             guard let self, self.acceptsOutput(from: turn) else { return }
+            if provider == .gemini { self.antigravitySession?.noteProgress() }
             self.activity = Activity(kind: .rendering, title: title, progress: progress, detail: detail)
         }
         if let command = provider.executable {
@@ -1202,7 +1200,7 @@ final class AgentChatModel: ObservableObject {
         case "timeline_add_audio": return appLocalized("正在添加音频")
         case "timeline_add_video", "timeline_add_sticker": return appLocalized("正在放置素材")
         case "timeline_insert_black": return appLocalized("正在插入黑场")
-        case "media_list", "media_import": return appLocalized("正在整理素材")
+        case "media_list", "media_import", "image_download": return appLocalized("正在整理素材")
         case "Read", "read_file", "ReadFile": return appLocalized("正在读文件")
         case "Write", "Edit", "write_file", "replace", "WriteFile": return appLocalized("正在写文件")
         case "Bash", "run_shell_command", "Shell": return appLocalized("正在运行命令")
@@ -1253,9 +1251,8 @@ final class AgentChatModel: ObservableObject {
 
     private static func briefing(history: [Message]) -> String {
         var text = """
-        You are the editing assistant inside DogSC, a macOS screen-recording editor. Act on the project \
-        that is open right now using the DogSC tools; do not ask the user to do steps you can do with tools. \
-        Reply briefly in the user's language and say what you changed.
+        You are the editing assistant inside DogSC, a macOS screen-recording editor. Use the DogSC tools \
+        within the scope of the user's request. Reply briefly in the user's language and report what you inspected or changed.
 
         \(skillText)
         """
@@ -1281,15 +1278,12 @@ final class AgentChatModel: ObservableObject {
         }
         let mcp = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/dogsc-mcp").path
         let prompt = Self.briefing(history: history)
-            + "\n\nYour working folder is this project's AI workspace: \(workspace.path). Keep one-off working files there (transcripts, previews)."
-            + " Save reusable results — motion graphics, images, music, video — into the DogSC library instead: \(AssetLibrary.shared.folder.path) (subfolders 动效, 图片, 音频, 视频); they survive even if the project is deleted."
+            + "\n\nYour working folder is this conversation's workspace: \(workspace.path). Keep one-off working files there (transcripts, previews)."
             + "\n\nUser request: " + request + Self.attachmentNote(attachments)
         let replyURL = FileManager.default.temporaryDirectory.appendingPathComponent("dogsc-agent-\(UUID().uuidString).txt")
         var arguments = [
-            "exec", "--json", "--skip-git-repo-check", "--ignore-user-config", "--ephemeral",
+            "--search", "exec", "--json", "--skip-git-repo-check", "--ignore-user-config", "--ephemeral",
             "--cd", workspace.path, "--sandbox", "workspace-write",
-            // The library lives outside the project, so it must be writable too.
-            "-c", "sandbox_workspace_write.writable_roots=[\"\(AssetLibrary.shared.folder.path)\"]",
             "-c", "mcp_servers.dogsc.command=\"\(mcp)\"",
             "-c", "mcp_servers.dogsc.default_tools_approval_mode=\"approve\"",
             "-c", "mcp_servers.dogsc.tool_timeout_sec=900",
@@ -1409,8 +1403,7 @@ final class AgentChatModel: ObservableObject {
         let configJSON: [String: Any] = ["mcpServers": ["dogsc": ["type": "stdio", "command": mcp, "args": [] as [String]]]]
         if let data = try? JSONSerialization.data(withJSONObject: configJSON) { try? data.write(to: config, options: .atomic) }
         let system = Self.briefing(history: history)
-            + "\n\nYour working folder is this project's AI workspace: \(workspace.path). Keep one-off working files there (transcripts, previews)."
-            + " Save reusable results — motion graphics, images, music, video — into the DogSC library instead: \(AssetLibrary.shared.folder.path) (subfolders 动效, 图片, 音频, 视频); they survive even if the project is deleted."
+            + "\n\nYour working folder is this conversation's workspace: \(workspace.path). Keep one-off working files there (transcripts, previews)."
         // Claude Code reads images itself from a path in the prompt.
         let images = attachments.filter { $0.kind == .image }.map { "\n- Look at this reference image: \($0.path)" }.joined()
         let prompt = request + Self.attachmentNote(attachments.filter { $0.kind == .text }) + images
@@ -1419,10 +1412,9 @@ final class AgentChatModel: ObservableObject {
             "--no-session-persistence",
             "--strict-mcp-config", "--mcp-config", config.path,
             "--append-system-prompt", system,
-            // DogSC's own tools, plus file access in the workspace and library.
+            // Project editing and read-only source research for requested assets.
             "--permission-mode", "acceptEdits",
-            "--allowedTools", "mcp__dogsc", "Read", "Write", "Edit", "Glob", "Grep",
-            "--add-dir", AssetLibrary.shared.folder.path,
+            "--allowedTools", "mcp__dogsc", "Read", "Write", "Edit", "Glob", "Grep", "WebSearch", "WebFetch",
             "--model", selectedClaudeModel.slug,
         ]
         let effort = claudeEffort.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1589,8 +1581,7 @@ final class AgentChatModel: ObservableObject {
                 + context.map { ($0.role == .user ? "User: " : "Assistant: ") + $0.text }.joined(separator: "\n") + "\n\n"
         }
         prompt += "Current user request:\n" + request + Self.attachmentNote(attachments.filter { $0.kind == .text }) + images
-        var arguments = ["--input-format", "stream-json", "--output-format", "stream-json", "--dangerously-skip-permissions",
-                         "--add-dir", AssetLibrary.shared.folder.path]
+        var arguments = ["--input-format", "stream-json", "--output-format", "stream-json", "--dangerously-skip-permissions"]
         if !model.isEmpty { arguments += ["--model", model] }
         if !cliEffort.isEmpty { arguments += ["--effort", cliEffort] }
         if let id = checkpoint?.conversationID { arguments += ["--conversation", id] }
@@ -1607,9 +1598,25 @@ final class AgentChatModel: ObservableObject {
             let previous = checkpoint
             var succeeded = false
             var textMessages: [String: UUID] = [:]
-            try session.send(prompt, update: { [weak self] update in
+            try session.send(prompt, onSilence: { [weak self] silence in
+                guard let self, self.acceptsOutput(from: runningTurn) else { return }
+                switch silence {
+                case .waiting:
+                    AgentBridgeServer.shared.recordDiagnostics("antigravity.waiting", turn: runningTurn,
+                        fields: ["lastActivity": self.activity?.title ?? ""], includeProject: false)
+                    if self.activity?.kind != .tool, self.activity?.kind != .rendering {
+                        self.setLiveActivity(Activity(kind: .thinking, title: appLocalized("等待 Antigravity 返回下一步")))
+                    }
+                case .expired:
+                    AgentBridgeServer.shared.recordDiagnostics("antigravity.inactivityTimeout", turn: runningTurn,
+                        fields: ["lastActivity": self.activity?.title ?? ""], includeProject: false)
+                    self.isStopping = true
+                    self.activity = Activity(kind: .thinking, title: appLocalized("正在停止…"))
+                    AgentBridgeServer.shared.cancelRunning()
+                }
+            }, update: { [weak self] update in
                 guard let self, self.turnID == runningTurn else { return }
-                if update.status == "SUCCESS" { succeeded = true }
+                if update.status == "SUCCESS", self.acceptsOutput(from: runningTurn) { succeeded = true }
                 if let id = update.conversationID, id != nativeID {
                     nativeID = id
                     AntigravityCheckpoint.save(.init(conversationID: id, messageID: previous?.messageID,
@@ -1688,7 +1695,7 @@ final class AgentChatModel: ObservableObject {
         let images = attachments.filter { $0.kind == .image }.map { "\n- Look at this reference image: \($0.path)" }.joined()
         let prompt = Self.systemBriefing(history: history, workspace: workspace) + "\n\nCurrent user request:\n" + request
         var arguments = ["-p", prompt + Self.attachmentNote(attachments.filter { $0.kind == .text }) + images,
-                         "--output-format", "stream-json", "--add-dir", AssetLibrary.shared.folder.path]
+                         "--output-format", "stream-json"]
         if let model = selectedCLIModel?.slug, !model.isEmpty { arguments += ["-m", model] }
         runStreamJSON(executable: executable, arguments: arguments, workspace: workspace,
                       environment: ["KIMI_CODE_TRUST_WORKSPACE": "1"], name: "Kimi Code")
@@ -1700,8 +1707,7 @@ final class AgentChatModel: ObservableObject {
 
     private static func systemBriefing(history: [Message], workspace: URL) -> String {
         briefing(history: history)
-            + "\n\nYour working folder is this project's AI workspace: \(workspace.path). Keep one-off working files there (transcripts, previews)."
-            + " Save reusable results — motion graphics, images, music, video — into the DogSC library instead: \(AssetLibrary.shared.folder.path) (subfolders 动效, 图片, 音频, 视频); they survive even if the project is deleted."
+            + "\n\nYour working folder is this conversation's workspace: \(workspace.path). Keep one-off working files there (transcripts, previews)."
     }
 
     /// Kimi's independent `role` / `content` headless stream.
@@ -1881,17 +1887,22 @@ final class AgentChatModel: ObservableObject {
         }
         let number: [String: Any] = ["type": "number"], string: [String: Any] = ["type": "string"]
         return [
-            fn("project_summary", "Title, output duration (s), playhead and clip counts of the open project."),
-            fn("media_list", "List existing media: scope project (default), library, or all; optional kind video/image/audio/animation. Returns IDs, names, paths and missing status.", ["scope": string, "kind": string]),
-            fn("media_import", "Add files to the media bin (referenced where they are).",
+            fn("project_summary", "Title, output duration (s), playhead, clip counts, motionUsage by template/source, and footage (recording sources and timed main/overlay visuals)."),
+            fn("media_list", "List existing media: scope project (default), shared (reusable files), library (favorites), or all; optional kind video/image/audio/animation. Returns IDs, names, paths and missing status.", ["scope": string, "kind": string]),
+            fn("media_import", "Import media into the project bin. External files get a project-owned copy.",
                ["paths": ["type": "array", "items": string]], ["paths"]),
-            fn("sound_download", "Download an existing CC0 sound into the library and project bin; retries reuse existing files. Supply its direct audio url, source page sourceURL and verified CC0 licenseURL. Returns local path and duration. Place with timeline_add_audio or attach via html_create soundPath.",
+            fn("image_download", "Import a direct HTTPS PNG, JPEG, WebP or standalone SVG (imported as PNG) into shared media and the project bin. Supply the source page URL and optional display name. Returns assetId, path and projectPath for image slots.",
+               ["url": string, "sourceURL": string, "name": string], ["url", "sourceURL"]),
+            fn("sound_download", "Download an existing CC0 sound into shared media and keep a project copy; retries reuse existing files. Supply its direct audio url, source page sourceURL and verified CC0 licenseURL. Returns local path and duration. Place with timeline_add_audio or attach via html_create soundPath.",
                ["url": string, "sourceURL": string, "licenseURL": string, "name": string], ["url", "sourceURL", "licenseURL"]),
             fn("audio_export", "Write the edited program audio (M4A, output time) and return its path.", ["path": string]),
             fn("timeline_add_audio", "Place music or a sound effect. Reuses the same path/start/kind on a retry.",
                ["path": string, "start": number, "kind": ["type": "string", "enum": ["music", "effect"]], "volume": number, "fadeIn": number, "fadeOut": number], ["path", "start"]),
-            fn("timeline_add_video", "Place a video over the recording (full frame by default; width ~0.3 + x/y for picture-in-picture).",
-               ["path": string, "start": number, "x": number, "y": number, "width": number, "volume": number], ["path", "start"]),
+            fn("timeline_add_video", "Place fitted B-roll. maskShape and maskCornerRadius control the video mask (radius as a fraction of its short edge, default 0.12). pictureInPicture puts the camera above the video; videoInFront puts the video above. Omit cameraMode to use the last manual choice, initially camera above.",
+               ["path": string, "start": number, "x": number, "y": number, "width": number, "volume": number,
+                      "maskShape": ["type": "string", "enum": ["矩形", "圆角矩形", "圆形"]],
+                      "maskCornerRadius": ["type": "number", "minimum": 0, "maximum": 0.5],
+                      "cameraMode": ["type": "string", "enum": ["videoInFront", "pictureInPicture"]]], ["path", "start"]),
             fn("subtitles_get", "Current subtitle cues with stable IDs, text and output times."),
             fn("subtitles_update_text", "Correct text/translation on specific subtitle IDs. Preserves every cue's start, end and order. Use for local corrections.",
                ["cues": ["type": "array", "items": ["type": "object", "properties": ["id": string, "text": string, "secondary": string], "required": ["id"]]]], ["cues"]),
@@ -1900,7 +1911,7 @@ final class AgentChatModel: ObservableObject {
             fn("subtitles_style", "Subtitle style: defaults fontScale 0.03, bottomMargin 0.05, backgroundOpacity 1; existing custom styles are preserved.", ["fontScale": number, "bottomMargin": number, "backgroundOpacity": number, "showsSecondary": ["type": "boolean"]]),
             fn("timeline_get", "Everything on the timeline in output seconds, with ids: main-track segments, zooms, 3D moves, highlights, overlays, audio. Object IDs address individual occurrences. Zooms include authored transitions/easing; zoomJoins reports evaluated gap, leftExitDuration, rightEnterDuration, fullFrameHold at 1x and continuous handoff. These expose timing for editorial choices, not automatic merging. Overlays include layerIndex.", [:], [] as [String]),
             fn("timeline_inspect", "Read native editable values for timeline objects, optionally filtered by ids. Returns a project revision and objects {id,kind,value}. Main clip value exposes source {start,end,speed}, audio, sceneStyle and media. source uses media seconds; output timing and availableSource bounds are reported separately.", ["ids": ["type": "array", "items": string]]),
-            fn("timeline_update", "Apply partial patches to existing native objects in one undoable edit. changes [{id,patch}] uses the value shape from timeline_inspect; omitted fields stay unchanged. Supports zoom, 3D, camera motion, highlight, sticker, animation, video, audio, subtitle, and main clip source/media/appearance/audio. Main patch.source {start?,end?,speed?} trims or extends media-source edges and ripples dependent tracks, like manual edge dragging. Optional revision detects intervening edits. Returns actual updated values.",
+            fn("timeline_update", "Apply partial patches to existing native objects in one undoable edit. changes [{id,patch}] uses the value shape from timeline_inspect; omitted fields stay unchanged. Supports zoom, 3D, camera motion, highlight, sticker, animation, video, audio, subtitle, and main clip source/media/appearance/audio. On a video, patch maskShape (矩形/圆角矩形/圆形), maskCornerRadius (0–0.5 of short edge), cameraMode (pictureInPicture/videoInFront), or layerIndex among visual overlays. Main patch.source {start?,end?,speed?} trims or extends media-source edges and ripples dependent tracks, like manual edge dragging. Optional revision detects intervening edits. Returns actual updated values.",
                ["revision": string, "changes": ["type": "array", "items": ["type": "object", "properties": ["id": string, "patch": ["type": "object"]], "required": ["id", "patch"]]]], ["changes"]),
             fn("timeline_add_sticker", "Place an image as a native editable sticker over the program. start/end are output seconds; x/y are canvas centre coordinates (0-1); width is canvas width fraction.",
                ["path": string, "start": number, "end": number, "x": number, "y": number, "width": number, "opacity": number], ["path", "start", "end"]),
@@ -1910,22 +1921,26 @@ final class AgentChatModel: ObservableObject {
                       "ranges": ["type": "array", "items": ["type": "object", "properties": ["start": number, "end": number], "required": ["start", "end"]]]], []),
             fn("timeline_remove", "Delete clips by id (zoom, 3D, highlight, overlay, audio, subtitle, video or main-track segment) in one undoable step. Ids come from timeline_get.", ["ids": ["type": "array", "items": ["type": "string"]]], ["ids"]),
             fn("pointer_events", "Recorded mouse clicks (and optionally moves) in output seconds with x,y (0-1 of the recording). Clicks show where the viewer's attention was — good zoom targets.", ["from": ["type": "number"], "to": ["type": "number"], "kinds": ["type": "array", "items": ["type": "string", "enum": ["click", "move"]]]], [] as [String]),
-            fn("zoom_add", "Add a purposeful camera push-in on the recording. x,y = source focus (0-1), scale 1.05-4 (default: the project's). start begins entrance; end begins return; transition is seconds per leg. Choose the span around the actual explanation or action. Touching clips continue without a 1x reset. Existing startTime/endTime, focus, scale and separate transition durations are editable with timeline_update; timeline_get reports zoomJoins.", ["start": ["type": "number"], "end": ["type": "number"], "x": ["type": "number"], "y": ["type": "number"], "scale": ["type": "number"], "transition": ["type": "number"]], ["start", "end", "x", "y"]),
+            fn("zoom_add", "Zoom the recording (default target recording) or the frontmost active imported video (target overlayVideo). x,y = focus in the targeted source (0-1), scale 1.05-4 (default: the project's). start begins entrance; end begins return; transition is seconds per leg. Choose the span around the actual explanation or action. Touching zooms on the same surface continue without a 1x reset. Existing target, startTime/endTime, focus, scale and separate transition durations are editable with timeline_update; timeline_get reports zoomJoins.", ["start": ["type": "number"], "end": ["type": "number"], "x": ["type": "number"], "y": ["type": "number"], "scale": ["type": "number"], "transition": ["type": "number"], "target": ["type": "string", "enum": ["recording", "overlayVideo"]]], ["start", "end", "x", "y"]),
             fn("motion3d_add", "Add a 3D move of the recording (tilt in degrees). Position and timing are editable.", ["start": ["type": "number"], "end": ["type": "number"], "rotationX": ["type": "number"], "rotationY": ["type": "number"], "rotationZ": ["type": "number"], "scale": ["type": "number"], "x": ["type": "number"], "y": ["type": "number"], "leadIn": ["type": "number"]], ["start", "end"]),
             fn("highlight_add", "Highlight a box on the recording: 'spotlight' dims everything else to draw the eye, 'blur' hides the box (passwords, private data). Box is 0-1 of the recording, top-left origin.", ["start": ["type": "number"], "end": ["type": "number"], "x": ["type": "number"], "y": ["type": "number"], "width": ["type": "number"], "height": ["type": "number"], "style": ["type": "string", "enum": ["spotlight", "blur"]], "dim": ["type": "number"]], ["start", "end", "x", "y", "width", "height"]),
             fn("settings_get", "The whole-video settings as JSON: canvas (background, padding, corners, device frame), camera bubble, audio levels, cursor, motion defaults, export settings.", [:], [] as [String]),
             fn("settings_set", "Change whole-video settings with a JSON patch in the same shape as settings_get (merged, one undoable step). Invalid values are refused with the reason — read settings_get first.", ["patch": ["type": "object"]], ["patch"]),
             fn("app_help", "How DogSC itself is used: where each setting lives, shortcuts and step-by-step paths. Use it to answer the user's 'how do I…' questions accurately.", ["topic": ["type": "string"]], [] as [String]),
             fn("timeline_insert_black", "Insert a black clip into the main track at start (default 2 s).", ["start": number, "duration": number], ["start"]),
-            fn("html_create", "Create and place an HTML motion (see skill). placement overlay|main. Identical retries reuse the placement; revisions use html_update. copy:true creates an independent asset.",
-               ["name": string, "html": string, "start": number, "duration": number, "placement": string, "x": number, "y": number,
-                "width": number, "framed": ["type": "boolean"], "copy": ["type": "boolean"], "soundPath": string, "sound": ["type": "array", "items": ["type": "object"]]], ["name", "html", "placement"]),
-            fn("html_update", "Revise an existing library HTML motion in this project. Supply exactly one current clip/asset id or path, plus the full html. Preserves IDs, timing, per-instance fields and user edits; one bin item, undoable. Returns the new path; other projects retain their source.",
+            fn("template_read", "Browse local style packs. Folders return immediate entries and all nested HTML paths in templates. Folder and template results include applicable README paths and introductions in styleGuides. Pass a returned relative path to read a README, or inspect fields, editable imageSlots, camera placement and soundCues. includeSource returns authored HTML.",
+               ["path": string, "includeSource": ["type": "boolean"]], [] as [String]),
+            fn("html_create", "Create and place an HTML motion (see skill). Supply html or a templatePath from template_read. For a speech-timed overlay, supply speechAnchor instead of start. It aligns a local visual beat (seconds, default 0) with the onset of a numbered transcript word. placement overlay|main. Identical retries reuse the placement; revisions use html_update. copy:true creates an independent asset. Both tracks use the HTML score unless sound or soundPath overrides it.",
+               ["name": string, "html": string, "templatePath": string, "start": number, "speechAnchor": ["type": "object", "properties": [
+                    "analysisId": string, "word": ["type": "integer"], "localTime": number],
+                    "required": ["analysisId", "word"], "additionalProperties": false], "duration": number, "placement": string, "x": number, "y": number,
+                "width": number, "framed": ["type": "boolean"], "copy": ["type": "boolean"], "soundPath": string, "sound": ["type": "array", "items": ["type": "object"]]], ["name", "placement"]),
+            fn("html_update", "Revise an existing HTML motion in this project. Supply exactly one current clip/asset id or path, plus the full html. Preserves IDs, timing, per-instance fields and user edits; one bin item, undoable. Returns the new path; other projects retain their source.",
                ["id": string, "path": string, "html": string], ["html"]),
             fn("html_preview", "Render PNG frames of an HTML motion page at given times.", ["path": string, "times": ["type": "array", "items": number]], ["path"]),
             fn("sound_create", "Synthesise a sound effect (types: whoosh, swoosh_down, riser, hit, boom, click, tick, pop, ding, chime, shimmer, glitch, tone) from events [{type, at, duration?, volume?, pitch?, pan?}]; with start, place it on an audio track.",
                ["name": string, "events": ["type": "array", "items": ["type": "object"]], "start": number, "volume": number], ["name", "events"]),
-            fn("canvas_snapshot", "Render a specified output time independently of the editor playhead. Returns PNG path, requested/rendered time, decoded source timestamp, source/clip IDs and coordinate geometry. view canvas (default) includes all effects; source shows the uncropped recording. maxDimension defaults to 1280 (64...8192).", ["time": number, "view": string, "maxDimension": number]),
+            fn("canvas_snapshot", "Render a specified output time independently of the editor playhead. Returns PNG path, requested/rendered time, decoded source timestamp, source/clip IDs and coordinate geometry. view canvas (default) includes all effects and reports the active caption’s subtitleRestingRect in top-left canvas pixels. source shows the uncropped recording. maxDimension defaults to 1280 (64...8192).", ["time": number, "view": string, "maxDimension": number]),
             fn("audio_transcribe", "Transcribe the program voice; returns phrases and numbered tokens {i,s,e,t}. Cached with audio_analyze_edits; refresh forces reanalysis. Use audio_analyze_edits for speech cutting.", ["language": string, "refresh": ["type": "boolean"]]),
             fn("audio_analyze_edits", "Raw speech, independent local waveform evidence, suggested cut times, pause IDs, utterance context spanning pauses, nearby repeated phrases with surrounding takes, and existing edit joins in output seconds. Suggestions can fall inside recognizer ranges; none is an automatic deletion or sentence verdict. from/to select a window (default 180 s, pages up to 300 s). includeWords adds token boundaries; includeWaveform adds broad peak dBFS bins. Joins always include fine local waveform; utterance context is not split by silence. pauseGroups combines brief-noise-separated pauses with text context and optional acousticInterior cut ranges. Cached with audio_transcribe; refresh reanalyses. analysisId ties word IDs and pauses to this audio snapshot. Frame counts use the current export videoFrameRate, independently of the audio measurementStep. Existing joins expose leftQuietFrames/rightQuietFrames; cutReview exposes left/right quietFrames and total retainedQuietFrames. Short includeWaveform windows give finer local detail.", ["language": string, "from": number, "to": number, "includeWords": ["type": "boolean"], "includeWaveform": ["type": "boolean"], "refresh": ["type": "boolean"]]),
             fn("subtitles_set_from_words", "Generate captions from inclusive from/to word IDs. Omit text for faithful transcript wording and automatic profanity filtering. Put translations in secondary; use subtitles_update_text for specific recognition errors. Only supply text for an explicitly requested rewrite. Local waveform evidence refines edges. holdToNext extends the cue to the next start; explicit start/end take priority. Returns cue IDs, times and gaps.",
@@ -1939,7 +1954,7 @@ final class AgentChatModel: ObservableObject {
     private static let toolMethods: [String: String] = [
         "project_summary": "project.summary", "media_list": "media.list",
         "media_import": "media.import", "audio_export": "audio.export",
-        "sound_download": "sound.download",
+        "sound_download": "sound.download", "image_download": "image.download",
         "timeline_add_audio": "timeline.addAudio",
         "timeline_add_video": "timeline.addVideo", "subtitles_get": "subtitles.get", "subtitles_set": "subtitles.set", "subtitles_update_text": "subtitles.updateText", "subtitles_style": "subtitles.style",
         "audio_analyze_edits": "audio.analyzeEdits", "audio_transcribe": "audio.transcribe", "subtitles_set_from_words": "subtitles.fromWords", "subtitles_align_to_speech": "subtitles.alignToSpeech",
@@ -1955,7 +1970,7 @@ final class AgentChatModel: ObservableObject {
         "settings_get": "settings.get",
         "settings_set": "settings.set",
         "app_help": "app.help", "sound_create": "sound.create",
-        "html_create": "html.create", "html_update": "html.update", "html_preview": "html.preview",
+        "template_read": "template.read", "html_create": "html.create", "html_update": "html.update", "html_preview": "html.preview",
     ]
 
     private func runAPI(request: String, attachments: [Attachment], history: [Message]) {
@@ -2021,6 +2036,17 @@ final class AgentChatModel: ObservableObject {
                             guard let method = Self.toolMethods[name] else { throw AgentBridgeServer.BridgeError(message: "Unknown tool \(name)") }
                             let result = try await AgentBridgeServer.shared.perform(method, arguments)
                             try Task.checkCancellation()
+                            if seesImages {
+                                let paths: [String]
+                                switch method {
+                                case "canvas.snapshot": paths = ((result as? [String: Any])?["path"] as? String).map { [$0] } ?? []
+                                case "html.preview": paths = result as? [String] ?? []
+                                default: paths = []
+                                }
+                                pendingImages += paths.prefix(6).compactMap {
+                                    Self.imageDataURL(Attachment(kind: .image, path: $0, name: ""))
+                                }
+                            }
                             content = JSONSerialization.isValidJSONObject(result)
                                 ? String(decoding: try JSONSerialization.data(withJSONObject: result), as: UTF8.self)
                                 : "\(result)"
@@ -2028,14 +2054,6 @@ final class AgentChatModel: ObservableObject {
                             content = "Error: \(error.localizedDescription)"
                         }
                         conversation.append(["role": "tool", "tool_call_id": call["id"] as? String ?? "", "content": content])
-                        // Let the model look at frames it rendered, as a CLI
-                        // can by opening the PNG.
-                        if seesImages, name == "canvas_snapshot" || name == "html_preview" {
-                            let urls = Self.pngPaths(in: content).prefix(6).compactMap {
-                                Self.imageDataURL(Attachment(kind: .image, path: $0, name: ""))
-                            }
-                            if !urls.isEmpty { pendingImages += urls }
-                        }
                     }
                     if !pendingImages.isEmpty {
                         conversation.append(["role": "user", "content": [["type": "text", "text": Self.renderedFramesNote]]
@@ -2053,14 +2071,6 @@ final class AgentChatModel: ObservableObject {
     }
 
     private nonisolated static let renderedFramesNote = "The frames you just rendered:"
-
-    private nonisolated static func pngPaths(in text: String) -> [String] {
-        let pattern = try? NSRegularExpression(pattern: "/[^\"\\s]+\\.png")
-        let range = NSRange(text.startIndex..., in: text)
-        return (pattern?.matches(in: text, range: range) ?? []).compactMap {
-            Range($0.range, in: text).map { String(text[$0]) }
-        }.filter { FileManager.default.fileExists(atPath: $0) }
-    }
 
     private nonisolated static func hasImageParts(_ conversation: [[String: Any]]) -> Bool {
         conversation.contains { message in

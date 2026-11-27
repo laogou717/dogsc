@@ -1,6 +1,24 @@
 import Foundation
 import RecorderCore
 
+/// Modes available for a new recording. Saved projects may carry additional source kinds.
+enum RecorderSourceMode: CaseIterable, Sendable {
+    case display, window, area, device
+
+    var captureSource: CaptureSource {
+        switch self {
+        case .display: .display
+        case .window: .window
+        case .area: .area
+        case .device: .device
+        }
+    }
+
+    static func restored(from preference: String) -> Self {
+        allCases.first { $0.captureSource.rawValue == preference } ?? .display
+    }
+}
+
 struct CaptureSelectionToken: RawRepresentable, Equatable, Hashable, Sendable {
     let rawValue: UInt64
 
@@ -22,7 +40,7 @@ enum CaptureSelectionTarget: Equatable, Sendable {
     case area(displayID: UInt32?, displayName: String?, rect: NormalizedRect)
     case device(id: String, name: String)
 
-    var source: CaptureSource {
+    var source: RecorderSourceMode {
         switch self {
         case .display: .display
         case .window: .window
@@ -33,7 +51,7 @@ enum CaptureSelectionTarget: Equatable, Sendable {
 
     func materializing(in base: CaptureConfiguration) -> CaptureConfiguration {
         var result = base
-        result.source = source
+        result.source = source.captureSource
         result.displayID = nil
         result.displayName = nil
         result.windowID = nil
@@ -77,7 +95,7 @@ enum CaptureSelectionTarget: Equatable, Sendable {
 
 struct CaptureSelectionSession: Equatable, Sendable {
     var token: CaptureSelectionToken
-    var source: CaptureSource
+    var source: RecorderSourceMode
 }
 
 enum CaptureSelectionState: Equatable, Sendable {
@@ -94,7 +112,7 @@ enum CaptureSelectionState: Equatable, Sendable {
         }
     }
 
-    var selectedSource: CaptureSource? { session?.source }
+    var selectedSource: RecorderSourceMode? { session?.source }
     var target: CaptureSelectionTarget? {
         guard case let .ready(_, target) = self else { return nil }
         return target
@@ -103,7 +121,7 @@ enum CaptureSelectionState: Equatable, Sendable {
 }
 
 enum CaptureSelectionEvent: Equatable, Sendable {
-    case choose(source: CaptureSource, token: CaptureSelectionToken)
+    case choose(source: RecorderSourceMode, token: CaptureSelectionToken)
     case confirm(target: CaptureSelectionTarget, token: CaptureSelectionToken)
     case unlock(token: CaptureSelectionToken)
     case cancel(token: CaptureSelectionToken)
@@ -145,7 +163,7 @@ final class CaptureSelectionCoordinator {
     private var nextTokenValue: UInt64 = 0
 
     @discardableResult
-    func choose(_ source: CaptureSource) -> CaptureSelectionSession {
+    func choose(_ source: RecorderSourceMode) -> CaptureSelectionSession {
         nextTokenValue &+= 1
         let token = CaptureSelectionToken(rawValue: nextTokenValue)
         setState(CaptureSelectionReducer.reduce(

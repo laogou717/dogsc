@@ -281,6 +281,13 @@ struct SpeechEditAnalysis: Sendable {
             row["rightQuietLead"] = rightSeconds
             row["leftQuietFrames"] = leftSeconds * Double(frameRate)
             row["rightQuietFrames"] = rightSeconds * Double(frameRate)
+            // The separate edge intervals can miss a longer pause interrupted
+            // by a transient. Report the measured group on the edited audio.
+            if let group = acoustics.groups(from: time, to: time).first {
+                row["pauseGroupAtJoin"] = ["start": group.start, "end": group.end,
+                    "quietFrames": group.quietSeconds * Double(frameRate),
+                    "briefActivitySeconds": group.briefActivitySeconds]
+            }
             row["leftAcoustic"] = previous.audible
                 ? acoustics.edgeEvidence(at: time, from: previous.start, to: previous.end) : ["measured": false]
             row["rightAcoustic"] = region.audible

@@ -95,6 +95,7 @@ struct EditorPlaybackSourceFrame: Equatable, Sendable {
     let screenTransform: CGAffineTransform
     let cameraTransform: CGAffineTransform
     let cameraContentCrop: NormalizedCrop?
+    var usesPrimaryFrameForCamera = false
 
     var recordingSourceID: UUID? {
         screenSlice.flatMap { $0.media == nil ? $0.sourceID : nil }
@@ -107,6 +108,7 @@ struct PreviewSourceMetadata: Sendable {
     let cameras: [UUID: CGAffineTransform]
     let crops: [UUID: NormalizedCrop]
     let inserts: [String: CGAffineTransform]
+    var primaryCameraOffsets: [UUID: TimeInterval] = [:]
 
     func frame(at outputTime: TimeInterval) -> EditorPlaybackSourceFrame {
         let time = EditorPlaybackClockPolicy.frameLookupTime(outputTime, duration: plan.outputDuration)
@@ -118,17 +120,29 @@ struct PreviewSourceMetadata: Sendable {
                 return screens[slice.sourceID]
             } ?? .identity,
             cameraTransform: camera.flatMap { cameras[$0.sourceID] } ?? .identity,
-            cameraContentCrop: camera.flatMap { crops[$0.sourceID] })
+            cameraContentCrop: camera.flatMap { crops[$0.sourceID] },
+            usesPrimaryFrameForCamera: screen.map { primary in
+                primaryCameraOffsets[primary.sourceID].map {
+                    primary.sharesCameraFrame(with: camera, at: time, sourceOffset: $0)
+                } ?? false
+            } ?? false)
     }
 }
 
 extension TimelineCompositionBundle {
+    func layoutAspectRatio(for canvas: CanvasStyle) -> Double? {
+        recordingSources[RecordingSource.primaryID]?.screen.displaySize.map {
+            Double(EditorWorkspaceGeometry.aspectRatio(canvas: canvas, sourceSize: $0))
+        }
+    }
+
     var previewMetadata: PreviewSourceMetadata {
         PreviewSourceMetadata(plan: plan,
             screens: recordingSources.mapValues { $0.screen.preferredTransform },
             cameras: recordingSources.compactMapValues { $0.camera?.preferredTransform },
             crops: recordingSources.compactMapValues { $0.cameraContentCrop },
-            inserts: insertedSources.mapValues { $0.preferredTransform })
+            inserts: insertedSources.mapValues { $0.preferredTransform },
+            primaryCameraOffsets: recordingSources.compactMapValues { $0.usesCameraAsPrimary ? $0.screen.timeRange.start.seconds : nil })
     }
 
     func frameMetadata(at outputTime: TimeInterval) -> EditorPlaybackSourceFrame {

@@ -6,7 +6,6 @@ import SwiftUI
 extension CanvasPreview {
     func previewLayout(
         canvasSize: CGSize,
-        renderScale: CGFloat,
         playbackTime: TimeInterval,
         tracks: EditorCanvasPlaybackTracks
     ) -> CanvasPreviewLayout {
@@ -61,52 +60,6 @@ extension CanvasPreview {
             motion: evaluatedProject.motion,
             style: evaluatedProject.cursorStyle
         ) ?? PointerTrackEvaluation(position: nil, cursor: nil)
-        let activeZoomClip = tracks.zoom.activeClip(at: playbackTime)
-        let activeAutomaticClip = activeZoomClip.flatMap {
-            $0.origin == .automatic ? $0 : nil
-        }
-        let automaticCameraPosition = activeAutomaticClip.map { clip in
-            mediaPlan?.pointer.automaticCameraFocus(
-                at: playbackTime,
-                clip: clip,
-                motion: evaluatedProject.motion
-            ) ?? clip.focus
-        }
-        let inheritedAutomaticCameraPosition: NormalizedPoint? = activeZoomClip
-            .flatMap { tracks.zoom.adjacentPreviousClip(to: $0) }
-            .flatMap { previous in
-                guard previous.origin == .automatic else { return nil }
-                return mediaPlan?.pointer.automaticCameraFocus(
-                    at: previous.endTime,
-                    clip: previous,
-                    motion: evaluatedProject.motion
-                ) ?? previous.focus
-            }
-        // This evaluation is interaction-only: it supplies drag normalization
-        // and selection-overlay transforms. Visible project pixels are lowered
-        // exclusively from `frameScene` by `SharedRenderedPreviewView`.
-        var interactionProject = evaluatedProject
-        interactionProject.canvas = evaluatedProject.screenCanvas(atOutputTime: playbackTime, recordingSourceID: sourceID)
-        if let sourceID, let source = evaluatedProject.source(sourceID) {
-            interactionProject.media = source.media
-        }
-        let scene = CompositionSceneEvaluator.evaluate(
-            project: interactionProject,
-            time: playbackTime,
-            canvasWidth: Double(canvasSize.width),
-            canvasHeight: Double(canvasSize.height),
-            sourceAspectRatio: geometryAspect ?? Double(sourceAspect),
-            cameraAspectRatio: geometry?.cameraSize.map { Double($0.width / max($0.height, 1)) } ?? 4.0 / 3.0,
-            styleScale: Double(renderScale),
-            automaticZoomFocus: automaticCameraPosition,
-            inheritedAutomaticZoomFocus: inheritedAutomaticCameraPosition,
-            reanchorAutomaticEntry: activeAutomaticClip.map {
-                mediaPlan?.pointer.automaticEntryStartsAfterCut($0) ?? false
-            } ?? false,
-            zoomTrack: tracks.zoom,
-            screenMotionTrack: tracks.screenMotion,
-            cameraMotionTrack: tracks.cameraMotion
-        )
         let cursorMetrics = CursorAssetLibrary.resolvedAsset(
             for: evaluatedProject.cursorStyle.assetID
         )?.metrics
@@ -131,8 +84,10 @@ extension CanvasPreview {
             screenMotionTrack: tracks.screenMotion,
             cameraMotionTrack: tracks.cameraMotion,
             stickerTrack: stickerTrack,
+            cameraTimeline: mediaPlan?.camera,
             recordingSourceID: sourceID,
-            geometrySourceAspectRatio: geometryAspect
+            geometrySourceAspectRatio: geometryAspect,
+            layoutAspectRatio: previewAspectRatio
         )
         let makeEvaluation: (CGSize) -> CanvasPlaybackEvaluationContext = { rasterSize in
             CanvasPlaybackEvaluationContext(
@@ -155,13 +110,13 @@ extension CanvasPreview {
                 stickerTrack: stickerTrack,
                 primaryPlan: mediaPlan?.primary,
                 recordingGeometry: recordingGeometry,
-                aspectTransitions: transitions
+                aspectTransitions: transitions,
+                layoutAspectRatio: previewAspectRatio
             )
         }
         let previewEvaluation = makeEvaluation(previewRasterCanvasSize)
         let visibleFrame = previewEvaluation.frame(at: playbackTime)
         return CanvasPreviewLayout(
-            scene: scene,
             frameScene: frameScene,
             rasterFrameScene: visibleFrame.semanticScene,
             renderPlan: visibleFrame.renderPlan,
@@ -181,7 +136,7 @@ extension CanvasPreview {
         guard !playbackController.isPlaying else { return project }
         let frameDuration = 1 / Double(max(project.exportSettings.frameRate.rawValue, 1))
         // Scrubbing and frame stepping land on authored values, never on an
-        // appearance mid-settle; playback and export still run the 240 ms blend.
+        // appearance mid-settle; playback and export use the timed blends.
         var authored = project.settlingSegmentAppearance(atOutputTime: playbackTime)
         // Every sticker whose own first frame is under the paused playhead
         // must be composable, not only the most recently selected one.

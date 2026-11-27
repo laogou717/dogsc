@@ -6,19 +6,22 @@ public struct TimelineZoomSegment: Equatable, Identifiable, Sendable {
     public let endTime: TimeInterval
     public let scale: Double
     public let origin: ZoomKeyframeOrigin
+    public let target: ZoomTarget
 
     public init(
         id: UUID,
         startTime: TimeInterval,
         endTime: TimeInterval,
         scale: Double,
-        origin: ZoomKeyframeOrigin
+        origin: ZoomKeyframeOrigin,
+        target: ZoomTarget = .recording
     ) {
         self.id = id
         self.startTime = startTime
         self.endTime = endTime
         self.scale = scale
         self.origin = origin
+        self.target = target
     }
 }
 
@@ -123,7 +126,7 @@ public enum EditorTimelineMath {
                     startTime: min(max(clip.startTime, 0), duration),
                     endTime: min(max(clip.endTime, 0), duration),
                     scale: clip.scale,
-                    origin: clip.origin
+                    origin: clip.origin, target: clip.target
                 )
             }
             .filter { $0.endTime - $0.startTime > 0.001 }

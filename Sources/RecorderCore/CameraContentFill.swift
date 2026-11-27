@@ -14,7 +14,8 @@ public enum CameraContentFill {
         sourceHeight: Double,
         target: CompositionRect,
         focus: NormalizedPoint = NormalizedPoint(x: 0.5, y: 0.5),
-        contentScale: Double = 1
+        contentScale: Double = 1,
+        overscan: Double = edgeOverscanScale
     ) -> CameraContentFillLayout? {
         guard sourceWidth.isFinite,
               sourceHeight.isFinite,
@@ -32,7 +33,7 @@ public enum CameraContentFill {
         let scale = max(
             target.width / sourceWidth,
             target.height / sourceHeight
-        ) * edgeOverscanScale * sourceZoom
+        ) * overscan * sourceZoom
         let visibleSourceWidth = target.width / scale
         let visibleSourceHeight = target.height / scale
         let focusX = min(max(focus.x.isFinite ? focus.x : 0.5, 0), 1)

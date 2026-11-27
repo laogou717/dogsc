@@ -69,7 +69,7 @@ public extension CameraMotionState {
     /// 出来的目标会把"看不见"写进片段，之后取消隐藏也还是看不见。
     init(base style: CameraStyle) {
         self.init(
-            layout: .shape(style.shape),
+            layout: style.isFullscreen ? .fullscreen : .shape(style.shape),
             position: style.position,
             size: style.size,
             roundness: style.roundness,

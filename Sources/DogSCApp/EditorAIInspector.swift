@@ -372,7 +372,7 @@ private struct AgentConversationView: View {
         (.list, "生成中英双语字幕", nil),
         (.sparkle, "在开头做一个标题动画", nil),
         (.speaker, "加一段轻柔的背景音乐", nil),
-        (.scissors, "智能剪辑", "帮我剪辑这个项目。结合语义、原始字词时间和波形，去掉口误、重说、语气词及多余停顿，重复录制保留完整正确的一遍。让表达连贯、节奏紧凑，普通讲话切口以发声前后约 1–2 帧余量为目标，必要停顿由你判断。检查剪后的衔接，修正残留空白或被截断的发音。"),
+        (.scissors, "智能剪辑", "帮我智能剪辑这个项目。"),
     ]
 
     var body: some View {
@@ -1435,6 +1435,8 @@ private struct ComposerModelPopover: View {
             EditorSegmentedControl(
                 options: providers,
                 title: { $0.shortTitle },
+                compactTitle: { $0 == .gemini ? "AGY" : nil },
+                accessibilityTitle: { $0.title },
                 optionHelp: { $0.title },
                 selection: Binding(
                     get: { chat.provider ?? providers.first ?? .codex },

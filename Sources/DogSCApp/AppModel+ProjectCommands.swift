@@ -29,7 +29,7 @@ extension AppModel {
         guard phase == .recording,
               let run = recordingRuns.active,
               run.plan.configuration.source != .window,
-              run.plan.configuration.source != .device else { return }
+              run.plan.configuration.source.capturesDesktop else { return }
         var updated = run.plan.configuration
         updated.hidesDesktopFiles = configuration.hidesDesktopFiles
         updated.hidesDock = configuration.hidesDock
@@ -708,7 +708,7 @@ extension AppModel {
                 performanceLog.notice("open \(name, privacy: .public): \(Int(elapsed.components.seconds * 1000 + elapsed.components.attoseconds / 1_000_000_000_000_000), privacy: .public)ms")
             }
             let loader = Task.detached(priority: .userInitiated) {
-                try ProjectOpenSnapshot.load(at: packageURL)
+                try await ProjectOpenSnapshot.load(at: packageURL)
             }
             do {
                 let loaded = try await withTaskCancellationHandler {
@@ -807,7 +807,7 @@ extension AppModel {
         }
     }
 
-    func selectCaptureSource(_ source: CaptureSource) {
+    func selectCaptureSource(_ source: RecorderSourceMode) {
         cancelPendingRecordingRestart()
         guard phase == .setup else { return }
         RecorderPopoverPresenter.shared.dismiss()
@@ -968,7 +968,7 @@ extension AppModel {
             cameraRuntimeFormat = nil
             availableCameraResolutions = []
             _ = captureSetup.clearCamera(ifMatching: disconnectedDeviceID)
-            if phase == .setup || phase == .preparing || phase == .recording {
+            if !cameraStudioIsPresented && (phase == .setup || phase == .preparing || phase == .recording) {
                 cameraPreviewController.showDisconnected(
                     deviceName: disconnectedDeviceName
                 )
@@ -1003,6 +1003,56 @@ extension AppModel {
         }
     }
 
+    var preferredStudioCamera: CaptureDeviceInfo? {
+        let preferredID = UserDefaults.standard.string(forKey: CaptureDevicePreferenceKey.cameraID)
+        return availableCameras.first { $0.id == preferredID } ?? availableCameras.first
+    }
+
+    func openCameraStudio() {
+        guard purpose == .recording, phase == .setup, !cameraStudioIsPresented else { return }
+        cameraBeforeStudio = availableCameras.first { $0.id == configuration.cameraDeviceID }
+        resolutionBeforeStudio = configuration.cameraCaptureResolution
+        cameraStudioIsPresented = true
+        captureSetup.stopPresentation()
+        cameraPreviewController.releaseResources()
+        if !configuration.recordsCamera, let device = preferredStudioCamera { selectCamera(device) }
+        refreshCaptureDevicesInBackground()
+    }
+
+    func leaveCameraStudio() {
+        guard cameraStudioIsPresented else { return }
+        cancelPendingRecordingRestart()
+        let device = availableCameras.first { $0.id == cameraBeforeStudio?.id }
+        // Restore only the camera input the studio borrowed. The saved take
+        // already owns its own configuration and camera appearance.
+        let canReusePreview = device != nil && configuration.cameraDeviceID == device?.id
+            && configuration.cameraCaptureResolution == resolutionBeforeStudio && cameraRuntimeFormat != nil
+        captureSetup.setCamera(device)
+        captureSetup.setCameraCaptureResolution(resolutionBeforeStudio)
+        if phase == .setup {
+            if canReusePreview { cameraPreviewController.showPreview() }
+            else { selectCamera(device, clearingError: false) }
+        }
+        cameraStudioIsPresented = false
+        cameraBeforeStudio = nil
+        resolutionBeforeStudio = nil
+    }
+
+    func setRecordingBeautyEnabled(_ enabled: Bool) {
+        let defaults = UserDefaults.standard
+        let key = "recording.camera-last-enabled-beauty"
+        if enabled {
+            recordingCameraBeauty = defaults.data(forKey: key)
+                .flatMap { try? JSONDecoder().decode(CameraBeautySettings.self, from: $0) }
+                ?? CameraBeautySettings(smoothing: 0.25, whitening: 0.1)
+        } else {
+            if recordingCameraBeauty.isEnabled {
+                defaults.set(try? JSONEncoder().encode(recordingCameraBeauty), forKey: key)
+            }
+            recordingCameraBeauty = CameraBeautySettings()
+        }
+    }
+
     func selectCamera(_ device: CaptureDeviceInfo?) {
         selectCamera(device, clearingError: true)
     }
@@ -1015,7 +1065,7 @@ extension AppModel {
         captureSetup.setCamera(device)
         cameraRuntimeFormat = nil
         refreshAvailableCameraResolutions(deviceUniqueID: device?.id)
-        saveCameraPreference(device)
+        if !cameraStudioIsPresented { saveCameraPreference(device) }
         if clearingError { errorMessage = nil }
         if let device {
             startCameraPreview(device, operation: operation)
@@ -1138,7 +1188,9 @@ extension AppModel {
         // Device restoration also runs after project-open failures. Keep that
         // pending notice until the user acknowledges it or chooses a device.
         let defaults = UserDefaults.standard
-        if !configuration.recordsCamera,
+        if cameraStudioIsPresented, !configuration.recordsCamera, let camera = preferredStudioCamera {
+            selectCamera(camera, clearingError: false)
+        } else if !configuration.recordsCamera,
            defaults.bool(forKey: CaptureDevicePreferenceKey.cameraEnabled),
            let preferredID = defaults.string(forKey: CaptureDevicePreferenceKey.cameraID),
            let device = availableCameras.first(where: { $0.id == preferredID }) {

@@ -98,12 +98,32 @@ extension EditorTimelineView {
         multiSelection.count + (multiSelection.isEmpty && selectedPrimarySegmentIDs.count <= 1 ? 0 : selectedPrimarySegmentIDs.count)
     }
 
-    /// ⇧/⌘-click: add the clip, or take it out if it is already selected.
-    func toggleInMultiSelection(_ selection: EditorSelection) {
-        var items = multiSelection
-        if items.isEmpty, let current = editorStore.selection, Self.isGroupSelectable(current) {
-            items.insert(current)
+    var itemsForExtendingSelection: Set<EditorSelection> {
+        if multiSelection.isEmpty, let current = editorStore.selection, Self.isGroupSelectable(current) {
+            return [current]
         }
+        return multiSelection
+    }
+
+    // Motion and zoom begin a preview edit on mouse-down. Remember the
+    // pre-press selection so a click can still toggle the hit clip on mouse-up.
+    func captureEffectPressSelection() {
+        effectPressSelection = NSEvent.modifierFlags.intersection([.shift, .command]).isEmpty
+            ? nil : (itemsForExtendingSelection, selectedPrimarySegmentIDs)
+    }
+
+    func finishEffectClick(_ selection: EditorSelection) {
+        if let press = effectPressSelection {
+            selectedPrimarySegmentIDs = press.primary
+            toggleInMultiSelection(selection, startingWith: press.items)
+        } else {
+            activateTimelineSelection(selection, extendingWith: [])
+        }
+    }
+
+    /// ⇧/⌘-click: add the clip, or take it out if it is already selected.
+    func toggleInMultiSelection(_ selection: EditorSelection, startingWith base: Set<EditorSelection>? = nil) {
+        var items = base ?? itemsForExtendingSelection
         if items.contains(selection) {
             items.remove(selection)
             multiSelection = items
@@ -140,10 +160,7 @@ extension EditorTimelineView {
         if !marqueeModel.isActive {
             guard Self.isTimelinePointerDrag(value.translation), beginTimelineGesture(.marquee) else { return }
             let additive = !NSEvent.modifierFlags.intersection([.shift, .command]).isEmpty
-            var baseItems = additive ? multiSelection : []
-            if additive, baseItems.isEmpty, let current = editorStore.selection, Self.isGroupSelectable(current) {
-                baseItems.insert(current)
-            }
+            let baseItems = additive ? itemsForExtendingSelection : []
             playbackController.pause(revealingPlayhead: false)
             playbackController.endHoverPreview()
             marqueeModel.begin(at: value.startLocation, baseItems: baseItems,

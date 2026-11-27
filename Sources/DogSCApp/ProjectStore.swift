@@ -454,6 +454,8 @@ enum RecordingProjectNaming {
             ) ?? "窗口"
         case .area:
             return "区域"
+        case .cameraOnly:
+            return firstNonempty(configuration.cameraDeviceName) ?? "摄像头"
         case .device:
             return firstNonempty(configuration.deviceName) ?? "iOS 设备"
         }

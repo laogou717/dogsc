@@ -160,7 +160,7 @@ enum RecorderCaptureSourceAccessibilityID {
     static let area = "recorder.capture-source.area"
     static let device = "recorder.capture-source.device"
 
-    static func value(for source: CaptureSource) -> String {
+    static func value(for source: RecorderSourceMode) -> String {
         switch source {
         case .display: display
         case .window: window

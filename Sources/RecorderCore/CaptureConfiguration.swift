@@ -31,9 +31,13 @@ public struct CameraCaptureResolution: Codable, Equatable, Hashable, Identifiabl
 
     public var id: String { "\(width)x\(height)" }
 
+    /// A capture-quality choice shared by both orientations. Actual frame dimensions stay ordered.
+    public var qualitySize: Self { Self(width: max(width, height), height: min(width, height)) }
+
     public var resolutionLabel: String {
-        switch (width, height) {
-        case (3840, 2160), (4096, 2160): "4K"
+        switch (max(width, height), min(width, height)) {
+        case (3840, 2160): "4K"
+        case (4096, 2160): "DCI 4K"
         case (2560, 1440): "1440p"
         case (1920, 1080): "1080p"
         case (1280, 720): "720p"
@@ -65,6 +69,9 @@ public enum CaptureSource: String, CaseIterable, Codable, Identifiable, Sendable
     case window = "单个窗口"
     case area = "自选区域"
     case device = "iOS 设备"
+    case cameraOnly = "仅摄像头"
+
+    public var capturesDesktop: Bool { self == .display || self == .window || self == .area }
 
     public var id: String { rawValue }
 }

@@ -64,6 +64,7 @@ final class DirectExportPipeline: @unchecked Sendable {
     private let audioInput: AVAssetWriterInput?
     private let adaptor: AVAssetWriterInputPixelBufferAdaptor
     private let canvasSize: CGSize
+    private let layoutAspectRatio: Double?
     private let project: RecorderProject
     private let frameRate: OutputFrameRate
     private let outputFrameSchedule: OutputFrameSchedule
@@ -143,6 +144,7 @@ final class DirectExportPipeline: @unchecked Sendable {
         self.colorProfile = colorProfile
         context = colorProfile.makeContext(cacheIntermediates: false)
         self.canvasSize = canvasSize
+        self.layoutAspectRatio = media.layoutAspectRatio(for: project.canvas)
         self.project = project
         self.frameRate = frameRate
         let renderRange = outputRange ?? MediaTimeRange(
@@ -444,7 +446,13 @@ final class DirectExportPipeline: @unchecked Sendable {
                         throw VideoExporterError.exportFailed("没有读到可渲染的视频帧")
                     }
                     sourcePixelBuffer = frame
-                    cameraBuffer = try cameraPixelBuffer(at: targetSeconds)
+                    if let tracks = recordingSources[slice.sourceID], tracks.usesCameraAsPrimary,
+                       slice.sharesCameraFrame(with: cameraPlan?.slice(atOutputTime: targetSeconds),
+                                               at: targetSeconds, sourceOffset: tracks.screen.timeRange.start.seconds) {
+                        cameraBuffer = frame
+                    } else {
+                        cameraBuffer = try cameraPixelBuffer(at: targetSeconds)
+                    }
                 } catch {
                     finishVideo(error: error)
                     return
@@ -510,7 +518,8 @@ final class DirectExportPipeline: @unchecked Sendable {
                     cameraTimeline: cameraPlan,
                     recordingSourceID: slice.media == nil ? slice.sourceID : nil,
                     geometrySourceAspectRatio: aspectTransitions.sourceAspectRatio(
-                        atOutputTime: targetSeconds, sourceID: slice.media == nil ? slice.sourceID : nil)
+                        atOutputTime: targetSeconds, sourceID: slice.media == nil ? slice.sourceID : nil),
+                    layoutAspectRatio: layoutAspectRatio
                 )
                 let cursorSource = renderPlan.scene.cursor.flatMap {
                     cursorSources[$0.assetID]
@@ -614,10 +623,17 @@ final class DirectExportPipeline: @unchecked Sendable {
         let task = Task { [videoDecoder] in
             var images: [UUID: CIImage] = [:]
             for video in scene.videos {
-                if Task.isCancelled { break }
-                if let image = await videoDecoder.frame(clip: video.id, path: video.sourcePath, at: video.sourceTime) {
-                    images[video.id] = image
+                if Task.isCancelled {
+                    pending.complete(.failure(VideoExporterError.cancelled))
+                    return
                 }
+                guard let image = await videoDecoder.frame(clip: video.id, path: video.sourcePath, at: video.sourceTime) else {
+                    let message = String(format: appLocalized("无法读取叠加视频「%@」的画面（成片 %.3f 秒）。"),
+                        URL(fileURLWithPath: video.sourcePath).lastPathComponent, outputTime)
+                    pending.complete(.failure(VideoExporterError.exportFailed(message)))
+                    return
+                }
+                images[video.id] = image
             }
             pending.complete(.success(images))
         }

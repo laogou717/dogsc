@@ -516,8 +516,10 @@ public struct AnimationClip: Codable, Equatable, Identifiable, Sendable {
     /// Per-element edits by element key (EDT-073).
     public var elementEdits: [String: MotionElementEdit]
 
+    public var cameraSlot: MotionCameraSlot?
+
     private enum CodingKeys: String, CodingKey {
-        case id, timing, sourcePath, artboard, stateMachine, position, width, opacity, properties, layerIndex, timeOffset, elementEdits, mainTrackStyle, playbackRate, soundtrack
+        case cameraSlot, id, timing, sourcePath, artboard, stateMachine, position, width, opacity, properties, layerIndex, timeOffset, elementEdits, mainTrackStyle, playbackRate, soundtrack
     }
 
     public init(from decoder: any Decoder) throws {
@@ -525,6 +527,7 @@ public struct AnimationClip: Codable, Equatable, Identifiable, Sendable {
         id = try c.decode(UUID.self, forKey: .id)
         timing = try c.decode(OverlayTiming.self, forKey: .timing)
         sourcePath = try c.decode(String.self, forKey: .sourcePath)
+        cameraSlot = try c.decodeIfPresent(MotionCameraSlot.self, forKey: .cameraSlot)
         artboard = try c.decodeIfPresent(String.self, forKey: .artboard)
         stateMachine = try c.decodeIfPresent(String.self, forKey: .stateMachine)
         position = try c.decode(NormalizedPoint.self, forKey: .position)
